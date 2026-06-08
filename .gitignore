@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.db
+*.log
+.env
+reports/
+*.pdf
+bot.py.save*
+.cache/
+.bash_history
