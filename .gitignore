@@ -8,3 +8,14 @@ reports/
 bot.py.save*
 .cache/
 .bash_history
+.bashrc
+.profile
+.ssh/
+.vscode-server/
+.local/
+.dotnet/
+.copilot/
+clarity-bot/
+.lesshst
+.sqlite_history
+.wget-hsts
