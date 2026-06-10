@@ -160,7 +160,7 @@ CATEGORY_EMOJIS = {
     "LEBENSMITTEL": "🛒", "MOBILITAET": "🚗", "RESTAURANTS": "🍽️",
     "ABOS": "📱", "SHOPPING": "🛍️", "FREIZEIT": "🎮",
     "VERSICHERUNG": "🛡️", "MIETE": "🏠", "DROGERIE": "🧴",
-    "GESUNDHEIT": "💊", "SONSTIGES": "📦",
+    "GESUNDHEIT": "💊", "SONSTIGES": "📦", "PFLEGE": "💇",
 }
 
 # ====================== GAMIFICATION CONSTANTS ======================
@@ -251,6 +251,25 @@ def init_db():
             UNIQUE(user_id, month),
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS score_history (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id            INTEGER,
+            recorded_date      TEXT,
+            clarity_score      INTEGER DEFAULT 0,
+            clarity_points     INTEGER DEFAULT 0,
+            rank_name          TEXT    DEFAULT '',
+            proof_days         INTEGER DEFAULT 0,
+            budget_points      INTEGER DEFAULT 0,
+            savings_points     INTEGER DEFAULT 0,
+            consistency_points INTEGER DEFAULT 0,
+            structure_points   INTEGER DEFAULT 0,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_score_history_user_date
+            ON score_history(user_id, recorded_date)
+        ''')
 
         conn.execute('''CREATE TABLE IF NOT EXISTS report_jobs (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -553,6 +572,68 @@ def format_expense_confirmation(items: list, cp_text: str) -> str:
     lines.append(cp_text)
     return "\n".join(lines)
 
+def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
+    asks_total_money = (
+        "wie viel geld habe ich insgesamt" in text_lower
+        or "wieviel geld habe ich insgesamt" in text_lower
+        or "wie hoch ist mein nettovermoegen" in text_lower
+        or "wie hoch ist mein nettovermögen" in text_lower
+        or "wie viel vermoegen habe ich" in text_lower
+        or "wie viel vermögen habe ich" in text_lower
+    )
+    if asks_total_money:
+        investments = u.get("current_investments") or 0.0
+        cash = u.get("current_cash") or 0.0
+        total = investments + cash
+        return (
+            f"Dein aktuelles Nettovermoegen liegt bei {total:.2f} EUR.\n"
+            f"Investments: {investments:.2f} EUR\n"
+            f"Cash: {cash:.2f} EUR"
+        )
+
+    asks_savings = (
+        "wie hoch ist meine sparrate" in text_lower
+        or "wie hoch ist meine sparquote" in text_lower
+        or "wie viel spare ich" in text_lower
+    )
+    if asks_savings:
+        etf = u.get("etf_savings") or 0.0
+        cash = u.get("cash_savings") or 0.0
+        total = etf + cash
+        income = (u.get("income") or 0.0) + (u.get("other_income") or 0.0)
+        quote = (total / income * 100.0) if income > 0 else 0.0
+        return (
+            f"Deine monatliche Sparrate liegt bei {total:.2f} EUR.\n"
+            f"ETF: {etf:.2f} EUR\n"
+            f"Cash: {cash:.2f} EUR\n"
+            f"Sparquote: {quote:.1f}%"
+        )
+
+    asks_fixed = (
+        "wie hoch sind meine fixkosten" in text_lower
+        or "wie viel fixkosten habe ich" in text_lower
+    )
+    if asks_fixed:
+        fixed = u.get("fixed_costs") or 0.0
+        return f"Deine aktuellen Fixkosten liegen bei {fixed:.2f} EUR pro Monat."
+
+    asks_available = (
+        "wie viel geld habe ich noch" in text_lower
+        or "wie viel habe ich noch uebrig" in text_lower
+        or "wie viel habe ich noch übrig" in text_lower
+        or "wieviel habe ich noch uebrig" in text_lower
+        or "wieviel habe ich noch übrig" in text_lower
+    )
+    if asks_available:
+        remaining, total_expenses, income, fixed = calculate_remaining_budget(u, user_id)
+        return (
+            f"Dir bleiben diesen Monat aktuell {remaining:.2f} EUR.\n"
+            f"Einnahmen: {income:.2f} EUR\n"
+            f"Fixkosten: {fixed:.2f} EUR\n"
+            f"Ausgaben bisher: {total_expenses:.2f} EUR"
+        )
+
+    return ""
 
 def is_off_topic_request(text_lower: str) -> bool:
     finance_words = [
@@ -849,6 +930,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Profil verfeinern"),
         telebot.types.BotCommand("undo",       "↩️ Letzte Ausgabe löschen"),
+        telebot.types.BotCommand("editlast",   "Letzte Ausgabe anpassen"),
         telebot.types.BotCommand("reset",      "🗑️ Alle Daten löschen"),
     ]
     bot.set_my_commands(commands)
@@ -898,7 +980,7 @@ def handle_callbacks(call):
 
 # ====================== COMMAND HANDLER ======================
 @bot.message_handler(commands=[
-    'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'id',
+    'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport'
 ])
 def handle_commands(message):
@@ -932,6 +1014,7 @@ def handle_commands(message):
             "/investiert – Sparrate bestätigen (+20 CP)\n"
             "/verfeinern – Profil verfeinern\n"
             "/undo – Letzte Ausgabe löschen\n"
+            "/editlast – Letzte Ausgabe anpassen\n"
             "/settings – Profil neu einrichten",
             parse_mode="Markdown"
         )
@@ -966,10 +1049,10 @@ def handle_commands(message):
             f"├ Konsistenz:       {score_data['consistency']}/25\n"
             f"└ Spareffizienz:    {score_data['efficiency']}/25\n\n"
             f"{rank_emoji} *{rank_name}* · {cp} CP\n"
-            f"{rank_line}",
+            f"{rank_line}"
             f"\n\nMehr Kontext: /scoreinfo",
             parse_mode="Markdown"
-        )
+        ) 
 
     elif cmd == '/scoreinfo':
         bot.send_message(
@@ -1193,6 +1276,42 @@ def handle_commands(message):
             reply_markup=markup
         )
 
+    elif cmd == '/editlast':
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            bot.send_message(uid, "Bitte nutze: /editlast 34")
+            return
+
+        new_amount = parse_currency(parts[1])
+        if new_amount is None:
+            bot.send_message(uid, "Bitte gib einen gueltigen Betrag an, z.B. /editlast 34")
+            return
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, amount, merchant, category FROM expenses WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (uid,)
+            )
+            last = cursor.fetchone()
+            if not last:
+                bot.send_message(uid, "Keine Ausgabe gefunden, die ich bearbeiten kann.")
+                return
+
+            old_amount = last["amount"]
+            cursor.execute(
+                "UPDATE expenses SET amount = ? WHERE id = ?",
+                (new_amount, last["id"])
+            )
+            conn.commit()
+
+        bot.send_message(
+            uid,
+            f"Letzte Ausgabe aktualisiert:\n"
+            f"{last['merchant']} · {last['category']}\n"
+            f"{old_amount:.2f} EUR -> {new_amount:.2f} EUR"
+        )
+
     elif cmd == '/reset_confirm':
         # Fallback für direkte Text-Eingabe
         with get_db() as conn:
@@ -1216,9 +1335,34 @@ def handle_msg(message):
     text_input = message.text.strip()
     text_lower = text_input.lower()
 
+
     u = get_or_create_user(uid)
     step = u.get("onboarding_step") or STEP_START
 
+    if step == STEP_START:
+        bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
+        return
+
+    if text_lower in {"zurueck", "zurück"}:
+        if 0 < step < STEP_NORMAL:
+            prev_step = ONBOARDING_BACK_STEPS.get(step)
+            if prev_step is None:
+                bot.send_message(uid, "Du bist bereits beim ersten Onboarding-Schritt.")
+                return
+            update_user_field(uid, "onboarding_step", prev_step)
+            bot.send_message(uid, ONBOARDING_BACK_MESSAGES[prev_step])
+            return
+
+        if STEP_ADAPT_HOUSING <= step <= STEP_ADAPT_CREDITS:
+            prev_step = REFINE_BACK_STEPS.get(step)
+            if prev_step is None:
+                bot.send_message(uid, "Du bist bereits beim ersten Verfeinern-Schritt.")
+                return
+            update_user_field(uid, "onboarding_step", prev_step)
+            bot.send_message(uid, REFINE_BACK_MESSAGES[prev_step])
+            return
+        return
+        
     if step >= STEP_NORMAL:
         handle_month_transition(uid, u, bot)
 
@@ -1232,24 +1376,11 @@ def handle_msg(message):
             bot.send_message(uid, category_reply, parse_mode="Markdown")
             return
 
-        if text_lower in {"zurueck", "zurück"}:
-            if 0 < step < STEP_NORMAL:
-                prev_step = ONBOARDING_BACK_STEPS.get(step)
-                if prev_step is None:
-                    bot.send_message(uid, "Du bist bereits beim ersten Onboarding-Schritt.")
-                    return
-                update_user_field(uid, "onboarding_step", prev_step)
-                bot.send_message(uid, ONBOARDING_BACK_MESSAGES[prev_step])
-                return
+        profile_reply = maybe_answer_profile_finance(uid, u, text_lower)
+        if profile_reply:
+            bot.send_message(uid, profile_reply, parse_mode="Markdown")
+            return
 
-            if STEP_ADAPT_HOUSING <= step <= STEP_ADAPT_CREDITS:
-                prev_step = REFINE_BACK_STEPS.get(step)
-                if prev_step is None:
-                    bot.send_message(uid, "Du bist bereits beim ersten Verfeinern-Schritt.")
-                    return
-                update_user_field(uid, "onboarding_step", prev_step)
-                bot.send_message(uid, REFINE_BACK_MESSAGES[prev_step])
-                return
 
     # ─── ONBOARDING ─────────────────────────────────────────────────────
     if 0 < step < STEP_NORMAL:

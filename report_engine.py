@@ -138,11 +138,11 @@ def build_pdf(user_id: int, report_month: str):
 
     income = row_float(user, "income") + row_float(user, "other_income")
     fixed_costs = row_float(user, "fixed_costs")
-    etf_rate = row_float(user, "etf_rate")
-    cash_rate = row_float(user, "cash_rate")
+    etf_rate = row_float(user, "etf_savings")
+    cash_rate = row_float(user, "cash_savings")
     target_amount = row_float(user, "goal_amount")
     current_investments = row_float(user, "current_investments")
-    cash_reserve = row_float(user, "cash_reserve")
+    cash_reserve = row_float(user, "current_cash")
 
     free_budget = income - fixed_costs
     remaining = free_budget - total_expenses
