@@ -19,3 +19,9 @@ clarity-bot/
 .lesshst
 .sqlite_history
 .wget-hsts
+
+.DS_Store
+*.db-shm
+*.db-wal
+*.lock
+*.zip
