@@ -8,8 +8,10 @@ import json
 import re
 import random
 import calendar
+import fcntl
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager
+from pathlib import Path
 import telebot
 import openai
 from dotenv import load_dotenv
@@ -36,6 +38,7 @@ ADMIN_USER_IDS = {
     int(x.strip()) for x in ADMIN_USER_IDS_RAW.split(",")
     if x.strip().lstrip("-").isdigit()
 }
+USER_APPROVAL_ENABLED = os.getenv("CLARITY_USER_APPROVAL", "1").lower() not in {"0", "false", "no"}
 
 REPORT_SEND_WINDOW_START_HOUR = int(os.getenv("REPORT_SEND_WINDOW_START_HOUR", "8"))
 REPORT_SEND_WINDOW_END_HOUR = int(os.getenv("REPORT_SEND_WINDOW_END_HOUR", "14"))
@@ -44,6 +47,7 @@ REPORT_WORKER_INTERVAL_SECONDS = int(os.getenv("REPORT_WORKER_INTERVAL_SECONDS",
 REPORT_MAX_ATTEMPTS = int(os.getenv("REPORT_MAX_ATTEMPTS", "3"))
 REPORT_RETRY_DELAY_MINUTES = int(os.getenv("REPORT_RETRY_DELAY_MINUTES", "15"))
 REPORT_CREATION_MISFIRE_GRACE_SECONDS = int(os.getenv("REPORT_CREATION_MISFIRE_GRACE_SECONDS", "21600"))
+BOT_LOCK_FILE = os.getenv("CLARITY_BOT_LOCK_FILE", "clarity_bot.lock")
 
 # ====================== LOGGING ======================
 logging.basicConfig(
@@ -107,6 +111,51 @@ CATEGORY_MAPPING = {
     "DM": "DROGERIE", "Rossmann": "DROGERIE",
 }
 
+DIRECT_CATEGORY_INPUTS = {
+    "essen": ("RESTAURANTS", "Essen"),
+    "restaurant": ("RESTAURANTS", "Restaurant"),
+    "resturant": ("RESTAURANTS", "Restaurant"),
+    "restaurante": ("RESTAURANTS", "Restaurant"),
+    "restaurants": ("RESTAURANTS", "Restaurant"),
+    "lebensmittel": ("LEBENSMITTEL", "Lebensmittel"),
+    "einkaufen": ("LEBENSMITTEL", "Einkaufen"),
+    "supermarkt": ("LEBENSMITTEL", "Supermarkt"),
+    "freizeit": ("FREIZEIT", "Freizeit"),
+    "mobilität": ("MOBILITAET", "Mobilität"),
+    "mobilitaet": ("MOBILITAET", "Mobilität"),
+    "tanken": ("MOBILITAET", "Tanken"),
+    "shopping": ("SHOPPING", "Shopping"),
+    "pflege": ("PFLEGE", "Pflege"),
+    "friseur": ("PFLEGE", "Friseur"),
+    "frisör": ("PFLEGE", "Friseur"),
+    "gesundheit": ("GESUNDHEIT", "Gesundheit"),
+    "drogerie": ("DROGERIE", "Drogerie"),
+    "abos": ("ABOS", "Abos"),
+    "abo": ("ABOS", "Abo"),
+    "fixkosten": ("FIXKOSTEN", "Fixkosten"),
+}
+
+INVESTMENT_INPUTS = {
+    "etf", "etfs", "investment", "investments", "investieren",
+    "sparplan", "depot", "aktien", "aktie", "stock", "stocks",
+    "bitcoin", "btc", "ethereum", "eth", "crypto", "krypto",
+    "fonds", "fond", "msci", "s&p", "sp500", "s&p500", "nasdaq",
+    "world", "anlage", "wertpapier", "wertpapiere",
+}
+
+PORTFOLIO_SNAPSHOT_INPUTS = [
+    "depotwert", "portfolio wert", "portfoliowert", "investmentstand",
+    "investment stand", "depot stand", "depotstand", "mein depot",
+    "mein portfolio", "aktueller depotwert", "aktuelles depot",
+]
+
+FASTFOOD_KEYWORDS = [
+    "mcdonald", "mcdonalds", "mc donalds", "burger king", "burgerking",
+    "subway", "kfc", "kentucky", "döner", "doener", "kebab", "imbiss",
+    "fastfood", "fast food", "lieferando", "takeaway", "pizza", "pommes",
+    "currywurst", "shawarma", "falafel",
+]
+
 # ====================== CATEGORY KEYWORDS (Hybrid Layer 2) ======================
 # Ermöglicht lokale Erkennung ohne KI: "Döner 8€", "Kino 15", "Tanken 60" etc.
 CATEGORY_KEYWORDS = {
@@ -161,6 +210,7 @@ CATEGORY_EMOJIS = {
     "ABOS": "📱", "SHOPPING": "🛍️", "FREIZEIT": "🎮",
     "VERSICHERUNG": "🛡️", "MIETE": "🏠", "DROGERIE": "🧴",
     "GESUNDHEIT": "💊", "SONSTIGES": "📦", "PFLEGE": "💇",
+    "FIXKOSTEN": "🏠",
 }
 
 # ====================== GAMIFICATION CONSTANTS ======================
@@ -169,9 +219,19 @@ RANKS = [
     (50,   "Stratege",         "🔍"),
     (200,  "Controller",       "📊"),
     (500,  "Investor",         "🧱"),
-    (1000, "Portfoliomanager", "🏗️"),
+    (1000, "Manager",          "🏗️"),
     (2500, "Kapitalist",       "🏛️"),
     (5000, "Clarity Elite",    "💎"),
+]
+
+SCORE_RANKS = [
+    (0, 44, "Rookie", "🥚"),
+    (45, 54, "Stratege", "🔍"),
+    (55, 64, "Controller", "📊"),
+    (65, 74, "Investor", "🧱"),
+    (75, 84, "Manager", "🏗️"),
+    (85, 92, "Kapitalist", "🏛️"),
+    (93, 100, "Clarity Elite", "💎"),
 ]
 
 BADGES = {
@@ -182,7 +242,7 @@ BADGES = {
     "emergency_fund":   ("🛡️", "Notgroschen",           "3 Monate Fixkosten als Reserve aufgebaut."),
     "savings_master":   ("🏆", "Spar-Meister",          "Sparquote über 20%."),
     "ten_k_club":       ("💎", "Fünfstellige Freiheit", "10.000€ Portfolio erreicht."),
-    "no_fastfood_30":   ("🥗", "Fast Food Fasten",      "30 Tage keine Restaurant-Ausgaben."),
+    "no_fastfood_30":   ("🥗", "Fast-Food-Pause",       "30 Tage keine Fast-Food-Ausgaben."),
     "month_win":        ("🏅", "Monats-Sieg",           "Monat im grünen Budget abgeschlossen."),
 }
 
@@ -271,6 +331,39 @@ def init_db():
             ON score_history(user_id, recorded_date)
         ''')
 
+        conn.execute('''CREATE TABLE IF NOT EXISTS investment_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            amount      REAL    NOT NULL,
+            direction   TEXT    NOT NULL DEFAULT 'in',
+            asset_type  TEXT    NOT NULL DEFAULT 'investment',
+            asset_name  TEXT    DEFAULT '',
+            event_type  TEXT    NOT NULL DEFAULT 'one_time',
+            source      TEXT    NOT NULL DEFAULT 'chat',
+            note        TEXT    DEFAULT '',
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_investment_events_user_date
+            ON investment_events(user_id, created_at)
+        ''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            amount      REAL    NOT NULL,
+            scope       TEXT    NOT NULL DEFAULT 'investments',
+            source      TEXT    NOT NULL DEFAULT 'chat',
+            note        TEXT    DEFAULT '',
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_user_date
+            ON portfolio_snapshots(user_id, created_at)
+        ''')
+
         conn.execute('''CREATE TABLE IF NOT EXISTS report_jobs (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id       INTEGER NOT NULL,
@@ -287,6 +380,27 @@ def init_db():
 
         conn.execute('''CREATE INDEX IF NOT EXISTS idx_report_jobs_due
             ON report_jobs(status, scheduled_at)
+        ''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS user_access (
+            user_id      INTEGER PRIMARY KEY,
+            status       TEXT    NOT NULL DEFAULT 'pending',
+            requested_at TEXT    DEFAULT CURRENT_TIMESTAMP,
+            approved_at  TEXT    DEFAULT '',
+            approved_by  INTEGER DEFAULT 0,
+            revoked_at   TEXT    DEFAULT '',
+            display_name TEXT    DEFAULT '',
+            username     TEXT    DEFAULT '',
+            note         TEXT    DEFAULT ''
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_user_access_status
+            ON user_access(status, requested_at)
+        ''')
+
+        conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
+            SELECT user_id, 'approved', CURRENT_TIMESTAMP, 'Bestehender Nutzer vor Freigabesystem'
+            FROM users
         ''')
 
         # Sichere Migration fuer bestehende Datenbanken
@@ -355,6 +469,105 @@ def update_user_field(user_id: int, field: str, value) -> bool:
         conn.commit()
     return True
 
+
+def save_investment_event(user_id: int, amount: float, direction: str = "in",
+                          asset_type: str = "investment", asset_name: str = "",
+                          event_type: str = "one_time", source: str = "chat",
+                          note: str = "") -> bool:
+    if amount <= 0:
+        return False
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO investment_events
+               (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+        )
+        conn.commit()
+    return True
+
+
+def replace_onboarding_investment_start(user_id: int, amount: float) -> None:
+    with get_db() as conn:
+        conn.execute(
+            """DELETE FROM investment_events
+               WHERE user_id = ?
+               AND source = 'onboarding'
+               AND event_type = 'manual_adjustment'
+               AND note = 'Startwert Investments'""",
+            (user_id,)
+        )
+        if amount > 0:
+            conn.execute(
+                """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                   VALUES (?, ?, 'in', 'investment', 'Startwert', 'manual_adjustment', 'onboarding', 'Startwert Investments')""",
+                (user_id, amount)
+            )
+        conn.commit()
+
+
+def save_portfolio_snapshot(user_id: int, amount: float, scope: str = "investments",
+                            source: str = "chat", note: str = "") -> bool:
+    if amount < 0:
+        return False
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, amount, scope, source, note)
+        )
+        conn.commit()
+    return True
+
+
+def replace_onboarding_portfolio_snapshots(user_id: int, investments: float, cash: float) -> None:
+    net_worth = max(0.0, investments) + max(0.0, cash)
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM portfolio_snapshots WHERE user_id = ? AND source = 'onboarding'",
+            (user_id,)
+        )
+        rows = [
+            (user_id, max(0.0, investments), "investments", "onboarding", "Startwert Investments"),
+            (user_id, max(0.0, cash), "cash", "onboarding", "Startwert Cash"),
+            (user_id, net_worth, "net_worth", "onboarding", "Startwert Nettovermögen"),
+        ]
+        conn.executemany(
+            """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+               VALUES (?, ?, ?, ?, ?)""",
+            rows
+        )
+        conn.commit()
+
+
+def detect_investment_asset(text_lower: str) -> tuple[str, str]:
+    if any(word in text_lower for word in ["bitcoin", "btc"]):
+        return "crypto", "Bitcoin"
+    if any(word in text_lower for word in ["ethereum", "eth"]):
+        return "crypto", "Ethereum"
+    if any(word in text_lower for word in ["crypto", "krypto"]):
+        return "crypto", "Crypto"
+    if any(word in text_lower for word in ["aktie", "aktien", "stock", "stocks"]):
+        return "stock", "Aktien"
+    if any(word in text_lower for word in ["fonds", "fond"]):
+        return "fund", "Fonds"
+    if any(word in text_lower for word in ["etf", "msci", "s&p", "sp500", "s&p500", "nasdaq", "world"]):
+        return "etf", "ETF"
+    if "depot" in text_lower:
+        return "investment", "Depot"
+    return "investment", "Investment"
+
+
+def is_portfolio_snapshot_input(text_lower: str) -> bool:
+    if any(phrase in text_lower for phrase in PORTFOLIO_SNAPSHOT_INPUTS):
+        return True
+    if re.search(r"\b(depot|portfolio)\b", text_lower):
+        event_words = ["gekauft", "kauf", "investiert", "investiere", "sparplan", "etf", "aktie", "aktien"]
+        return not any(word in text_lower for word in event_words)
+    return False
+
+
 ONBOARDING_BACK_STEPS = {
     STEP_INCOME: None,
     STEP_OTHER_INCOME: STEP_INCOME,
@@ -373,7 +586,7 @@ ONBOARDING_BACK_MESSAGES = {
     STEP_FIXED_COSTS: "Schritt 3 von 9: Fixkosten gesamt?",
     STEP_GOAL_DESCRIPTION: "Schritt 4 von 9: Dein Sparziel in Worten?",
     STEP_GOAL_AMOUNT: "Schritt 5 von 9: Welchen Betrag brauchst du?",
-    STEP_CURRENT_INVESTMENTS: "Schritt 6 von 9: Aktuell investiertes Vermoegen? (ETF/Aktien, 0 falls keines)",
+    STEP_CURRENT_INVESTMENTS: "Schritt 6 von 9: Aktuell investiertes Vermögen? (ETF/Aktien, 0 falls keines)",
     STEP_CURRENT_CASH: "Schritt 7 von 9: Cash-Reserven? (Tagesgeld/Giro)",
     STEP_ETF_SAVINGS: "Schritt 8 von 9: Monatliche ETF-Sparrate?",
     STEP_CASH_SAVINGS: "Schritt 9 von 9: Monatliche Cash-Sparrate?",
@@ -389,10 +602,10 @@ REFINE_BACK_STEPS = {
 
 REFINE_BACK_MESSAGES = {
     STEP_ADAPT_HOUSING: "Profil verfeinern - Teil 1: Wohnen\n\nMiete, Strom, Gas?\n(z.B. 800 60 40)",
-    STEP_ADAPT_MOBILITY: "Teil 2: Mobilitaet\nAuto, Versicherung, Bahn?\n(z.B. 200 80 49)",
+    STEP_ADAPT_MOBILITY: "Teil 2: Mobilität\nAuto, Versicherung, Bahn?\n(z.B. 200 80 49)",
     STEP_ADAPT_ABOS: "Teil 3: Abos\nNetflix, Spotify, Prime, Disney?\n(z.B. 14 10 9 8)",
     STEP_ADAPT_INSURANCE: "Teil 4: Versicherungen\nHaftpflicht, BU, Rechtsschutz?\n(z.B. 6 45 25)",
-    STEP_ADAPT_CREDITS: "Teil 5: Kredite\nImmobilie, Auto, Konsum?\n(Falls keine -> 0)",
+    STEP_ADAPT_CREDITS: "Teil 5: Kredite\nImmobilie, Auto, Konsum?\n(Falls keine → 0)",
 }
 
 def add_cp(user_id: int, points: int) -> int:
@@ -415,6 +628,136 @@ def parse_currency(text: str):
         return val if val >= 0 else None
     except ValueError:
         return None
+
+
+def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
+    normalized = text.lower()
+    result = {}
+    for raw_amount, raw_label in re.findall(
+        r"(\d+(?:[.,]\d+)?)\s*(?:€|eur|euro)?\s*([a-zäöüß][a-zäöüß\s-]{0,30})",
+        normalized,
+    ):
+        label_text = raw_label.strip()
+        for alias, key in aliases.items():
+            if re.search(rf"\b{re.escape(alias)}\b", label_text):
+                result[key] = float(raw_amount.replace(",", "."))
+                break
+    return result
+
+
+def merge_number_defaults(parsed: dict, nums: list, keys: list) -> dict:
+    if parsed:
+        remaining_keys = [key for key in keys if key not in parsed]
+        for key, value in zip(remaining_keys, nums):
+            parsed.setdefault(key, value)
+        return parsed
+
+    if len(nums) >= len(keys):
+        return {key: nums[index] for index, key in enumerate(keys)}
+    return {"gesamt": sum(nums)}
+
+
+DETAIL_VALUE_ALIASES = {
+    "miete": ("wohnen", "miete", "Miete"),
+    "kaltmiete": ("wohnen", "miete", "Miete"),
+    "warmmiete": ("wohnen", "miete", "Miete"),
+    "strom": ("wohnen", "strom", "Strom"),
+    "gas": ("wohnen", "gas", "Gas"),
+    "heizung": ("wohnen", "gas", "Gas"),
+    "hausgeld": ("wohnen", "hausgeld", "Hausgeld"),
+    "nebenkosten": ("wohnen", "nebenkosten", "Nebenkosten"),
+    "auto": ("mobilitaet", "auto", "Auto"),
+    "leasing": ("mobilitaet", "auto", "Auto"),
+    "versicherung": ("mobilitaet", "versicherung", "Versicherung"),
+    "bahn": ("mobilitaet", "bahn", "Bahn"),
+    "ticket": ("mobilitaet", "bahn", "Bahn"),
+    "tanken": ("mobilitaet", "tanken", "Tanken"),
+    "netflix": ("abos", "netflix", "Netflix"),
+    "spotify": ("abos", "spotify", "Spotify"),
+    "prime": ("abos", "prime", "Prime"),
+    "disney": ("abos", "disney", "Disney"),
+    "gym": ("abos", "gym", "Gym"),
+    "fitness": ("abos", "gym", "Gym"),
+    "handy": ("abos", "handy", "Handy"),
+    "icloud": ("abos", "icloud", "iCloud"),
+    "haftpflicht": ("versicherungen", "haftpflicht", "Haftpflicht"),
+    "bu": ("versicherungen", "bu", "Berufsunfähigkeit"),
+    "berufsunfähigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
+    "berufsunfaehigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
+    "rechtsschutz": ("versicherungen", "rechtsschutz", "Rechtsschutz"),
+    "hausrat": ("versicherungen", "hausrat", "Hausrat"),
+    "kredit": ("kredite", "kredit", "Kredit"),
+    "kredite": ("kredite", "kredit", "Kredit"),
+    "darlehen": ("kredite", "kredit", "Kredit"),
+    "immobilie": ("kredite", "immobilie", "Immobilie"),
+    "immo": ("kredite", "immobilie", "Immobilie"),
+    "hausverwalter": ("kredite", "hausverwalter", "Hausverwalter"),
+    "verwaltung": ("kredite", "hausverwalter", "Hausverwalter"),
+    "konsum": ("kredite", "konsum", "Konsum"),
+}
+
+
+def format_eur(value) -> str:
+    return f"{float(value or 0):.2f}€"
+
+
+def format_detail_summary(values: dict) -> str:
+    if not values:
+        return "Erkannt: keine Werte."
+    parts = []
+    for key, value in values.items():
+        label = key.replace("_", " ").title()
+        parts.append(f"{label}: {format_eur(value)}")
+    return "Erkannt: " + ", ".join(parts)
+
+
+def fixed_costs_total(details: dict) -> float:
+    return sum(
+        float(value)
+        for section in details.values()
+        if isinstance(section, dict)
+        for value in section.values()
+    )
+
+
+def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
+    if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
+        return ""
+    correction_words = [
+        "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
+        "setze", "setz", "aktualisiere", "update",
+    ]
+    if not any(word in text_lower for word in correction_words):
+        return ""
+
+    numbers = re.findall(r"\d+(?:[.,]\d+)?", text_lower)
+    if not numbers:
+        return ""
+
+    for alias, (section, key, label) in DETAIL_VALUE_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+            value = float(numbers[-1].replace(",", "."))
+            details = u.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+            section_values = details.get(section, {})
+            if not isinstance(section_values, dict):
+                section_values = {}
+            section_values[key] = value
+            details[section] = section_values
+
+            update_user_field(user_id, "fixed_costs_details", json.dumps(details))
+            total_fixed = fixed_costs_total(details)
+            if total_fixed > 0:
+                update_user_field(user_id, "fixed_costs", total_fixed)
+
+            return (
+                f"Aktualisiert: {label} {format_eur(value)}.\n"
+                f"Fixkosten gesamt: {format_eur(total_fixed)}"
+            )
+
+    return ""
+
 
 def calculate_time_to_goal(goal_amount: float, etf_monthly: float, cash_monthly: float,
                            current_investments: float = 0.0, current_cash: float = 0.0) -> str:
@@ -440,6 +783,153 @@ def extract_merchant_name(text_input: str) -> str:
 def get_actor_id(message) -> int:
     """User-ID fuer Admin-Pruefungen; in Gruppen ist chat.id nicht zwingend die User-ID."""
     return message.from_user.id if getattr(message, "from_user", None) else message.chat.id
+
+
+ADMIN_COMMANDS = {
+    "/admin", "/pending", "/approve", "/revoke", "/adminusers",
+    "/health", "/reportjobs", "/backupnow",
+}
+
+
+def is_admin_id(user_id: int) -> bool:
+    return bool(ADMIN_USER_IDS) and user_id in ADMIN_USER_IDS
+
+
+def get_message_identity(message) -> tuple[str, str]:
+    user = getattr(message, "from_user", None)
+    if not user:
+        return "", ""
+    username = f"@{user.username}" if getattr(user, "username", None) else ""
+    display_name = " ".join(
+        part for part in [getattr(user, "first_name", "") or "", getattr(user, "last_name", "") or ""]
+        if part
+    ).strip()
+    return display_name, username
+
+
+def require_admin(message) -> bool:
+    actor_id = get_actor_id(message)
+    if is_admin_id(actor_id):
+        return True
+    bot.send_message(
+        message.chat.id,
+        "Dieser Befehl ist nur für Admins. Sende /id und trage deine Telegram-ID in ADMIN_USER_ID ein."
+    )
+    return False
+
+
+def notify_admins(text: str):
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            bot.send_message(admin_id, text)
+        except Exception as e:
+            logger.warning(f"Admin-Benachrichtigung an {admin_id} fehlgeschlagen: {e}")
+
+
+def get_access_status(user_id: int) -> str:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT status FROM user_access WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+    return row["status"] if row else ""
+
+
+def ensure_access_record(user_id: int, display_name: str = "", username: str = "") -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT status FROM user_access WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+        if row:
+            conn.execute(
+                """UPDATE user_access
+                   SET display_name = COALESCE(NULLIF(?, ''), display_name),
+                       username = COALESCE(NULLIF(?, ''), username)
+                   WHERE user_id = ?""",
+                (display_name, username, user_id)
+            )
+            conn.commit()
+            return row["status"]
+
+        conn.execute(
+            """INSERT INTO user_access (user_id, status, requested_at, display_name, username)
+               VALUES (?, 'pending', ?, ?, ?)""",
+            (user_id, now, display_name, username)
+        )
+        conn.commit()
+
+    notify_admins(
+        "Neue Clarity-Freigabe wartet:\n"
+        f"ID: {user_id}\n"
+        f"Name: {display_name or '-'} {username or ''}\n\n"
+        f"Freigeben mit: /approve {user_id}"
+    )
+    return "pending"
+
+
+def ensure_user_approved(message) -> bool:
+    if not USER_APPROVAL_ENABLED:
+        return True
+    if not ADMIN_USER_IDS:
+        logger.warning("CLARITY_USER_APPROVAL ist aktiv, aber ADMIN_USER_ID(S) fehlt. Zugang wird nicht blockiert.")
+        return True
+
+    actor_id = get_actor_id(message)
+    if is_admin_id(actor_id):
+        return True
+
+    display_name, username = get_message_identity(message)
+    status = ensure_access_record(actor_id, display_name, username)
+
+    if status == "approved":
+        return True
+
+    if status == "revoked":
+        bot.send_message(
+            message.chat.id,
+            "Dein Zugang zu Clarity ist aktuell nicht freigeschaltet. Bitte wende dich an den Support."
+        )
+        return False
+
+    bot.send_message(
+        message.chat.id,
+        "Dein Zugang ist angefragt.\n\n"
+        "Clarity ist aktuell im Testlauf. Sobald du freigegeben bist, kannst du direkt starten."
+    )
+    return False
+
+
+def approve_user_access(user_id: int, admin_id: int):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO user_access (user_id, status, approved_at, approved_by)
+               VALUES (?, 'approved', ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   status = 'approved',
+                   approved_at = excluded.approved_at,
+                   approved_by = excluded.approved_by,
+                   revoked_at = ''""",
+            (user_id, now, admin_id)
+        )
+        conn.commit()
+
+
+def revoke_user_access(user_id: int, admin_id: int):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO user_access (user_id, status, revoked_at, approved_by)
+               VALUES (?, 'revoked', ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   status = 'revoked',
+                   revoked_at = excluded.revoked_at,
+                   approved_by = excluded.approved_by""",
+            (user_id, now, admin_id)
+        )
+        conn.commit()
 
 
 def days_left_in_month(today: date = None) -> int:
@@ -563,16 +1053,120 @@ def format_expense_confirmation(items: list, cp_text: str) -> str:
     if len(items) == 1:
         item = items[0]
         emoji = CATEGORY_EMOJIS.get(item["category"], "")
-        return f"OK: {item['amount']:.2f} EUR - {item['merchant']}\n{emoji} {item['category']} - {cp_text}"
+        merchant = item["merchant"]
+        if merchant.lower() == "unbekannt":
+            merchant = item["category"].title()
+        return f"OK: {item['amount']:.2f} EUR - {merchant}\n{emoji} {item['category']} - {cp_text}"
 
     lines = [f"{len(items)} Ausgaben verbucht:"]
     for item in items:
         emoji = CATEGORY_EMOJIS.get(item["category"], "")
-        lines.append(f"{emoji} {item['merchant']} - {item['category']} - {item['amount']:.2f} EUR")
+        merchant = item["merchant"]
+        if merchant.lower() == "unbekannt":
+            merchant = item["category"].title()
+        lines.append(f"{emoji} {merchant} - {item['category']} - {item['amount']:.2f} EUR")
     lines.append(cp_text)
     return "\n".join(lines)
 
 def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
+    def eur(value: float) -> str:
+        return f"{value:.2f} EUR"
+
+    def detail_value(section: str, key: str):
+        details = u.get("details", {})
+        if not isinstance(details, dict):
+            return None
+        section_data = details.get(section, {})
+        if not isinstance(section_data, dict):
+            return None
+        value = section_data.get(key)
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    detail_questions = [
+        (["miete"], "wohnen", "miete", "Miete"),
+        (["strom"], "wohnen", "strom", "Strom"),
+        (["gas"], "wohnen", "gas", "Gas"),
+        (["wohnen", "wohnkosten"], "wohnen", "gesamt", "Wohnkosten"),
+        (["auto"], "mobilitaet", "auto", "Auto"),
+        (["bahn", "ticket"], "mobilitaet", "bahn", "Bahn"),
+        (["mobilität", "mobilitaet"], "mobilitaet", "gesamt", "Mobilität"),
+        (["netflix"], "abos", "netflix", "Netflix"),
+        (["spotify"], "abos", "spotify", "Spotify"),
+        (["prime", "amazon prime"], "abos", "prime", "Prime"),
+        (["disney"], "abos", "disney", "Disney"),
+        (["abos", "abo"], "abos", "gesamt", "Abos"),
+        (["haftpflicht"], "versicherungen", "haftpflicht", "Haftpflicht"),
+        (["berufsunfähigkeit", "bu"], "versicherungen", "bu", "Berufsunfähigkeit"),
+        (["rechtsschutz"], "versicherungen", "rechtsschutz", "Rechtsschutz"),
+        (["versicherung", "versicherungen"], "versicherungen", "gesamt", "Versicherungen"),
+        (["kredit", "kredite"], "kredite", "gesamt", "Kredite"),
+    ]
+
+    for triggers, section, key, label in detail_questions:
+        if any(trigger in text_lower for trigger in triggers):
+            value = detail_value(section, key)
+            if value is None and key != "gesamt":
+                value = detail_value(section, "gesamt")
+            if value is not None:
+                return f"{label}: {eur(value)} pro Monat."
+
+    asks_largest_expense = (
+        "größte ausgabe" in text_lower
+        or "groesste ausgabe" in text_lower
+        or "höchste ausgabe" in text_lower
+        or "hoechste ausgabe" in text_lower
+        or "teuerste ausgabe" in text_lower
+    )
+    if asks_largest_expense:
+        period_sql, period_label = detect_period_sql(text_lower)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""SELECT amount, merchant, category, created_at
+                    FROM expenses
+                    WHERE user_id = ? AND {period_sql}
+                    ORDER BY amount DESC, created_at DESC
+                    LIMIT 1""",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+        if not row:
+            return f"Ich habe {period_label} noch keine Ausgaben gefunden."
+        emoji = CATEGORY_EMOJIS.get(row["category"], "")
+        return (
+            f"Deine größte Ausgabe {period_label} war {eur(row['amount'])} "
+            f"bei {row['merchant']}.\n{emoji} {row['category']}"
+        )
+
+    asks_top_category = (
+        "größte kategorie" in text_lower
+        or "groesste kategorie" in text_lower
+        or "stärkste kategorie" in text_lower
+        or "staerkste kategorie" in text_lower
+        or "top kategorie" in text_lower
+    )
+    if asks_top_category:
+        period_sql, period_label = detect_period_sql(text_lower)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""SELECT category, SUM(amount) AS total
+                    FROM expenses
+                    WHERE user_id = ? AND {period_sql}
+                    GROUP BY category
+                    ORDER BY total DESC
+                    LIMIT 1""",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+        if not row or not row["total"]:
+            return f"Ich habe {period_label} noch keine Ausgaben gefunden."
+        emoji = CATEGORY_EMOJIS.get(row["category"], "")
+        return f"Deine größte Kategorie {period_label}: {emoji} {row['category']} mit {eur(row['total'])}."
+
     asks_total_money = (
         "wie viel geld habe ich insgesamt" in text_lower
         or "wieviel geld habe ich insgesamt" in text_lower
@@ -586,7 +1180,7 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
         cash = u.get("current_cash") or 0.0
         total = investments + cash
         return (
-            f"Dein aktuelles Nettovermoegen liegt bei {total:.2f} EUR.\n"
+            f"Dein aktuelles Nettovermögen liegt bei {total:.2f} EUR.\n"
             f"Investments: {investments:.2f} EUR\n"
             f"Cash: {cash:.2f} EUR"
         )
@@ -635,11 +1229,140 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
 
     return ""
 
+
+def build_ai_user_context(user_id: int, u: dict) -> str:
+    def eur(value) -> str:
+        try:
+            return f"{float(value or 0):.2f} EUR"
+        except (TypeError, ValueError):
+            return "0.00 EUR"
+
+    income = (u.get("income") or 0.0) + (u.get("other_income") or 0.0)
+    etf_savings = u.get("etf_savings") or 0.0
+    cash_savings = u.get("cash_savings") or 0.0
+    investments = u.get("current_investments") or 0.0
+    cash = u.get("current_cash") or 0.0
+    savings_total = etf_savings + cash_savings
+    savings_rate = (savings_total / income * 100.0) if income > 0 else 0.0
+    remaining, total_expenses, _, _ = calculate_remaining_budget(u, user_id)
+
+    lines = [
+        "Nutzerprofil aus der Clarity-Datenbank:",
+        f"- Monatliches Nettoeinkommen: {eur(u.get('income'))}",
+        f"- Weitere monatliche Einkommen: {eur(u.get('other_income'))}",
+        f"- Monatliche Fixkosten gesamt: {eur(u.get('fixed_costs'))}",
+        f"- Sparziel: {u.get('goal_description') or 'nicht hinterlegt'}",
+        f"- Zielbetrag: {eur(u.get('goal_amount'))}",
+        f"- Aktuelle Investments: {eur(investments)}",
+        f"- Aktuelle Cash-Reserven: {eur(cash)}",
+        f"- ETF-Sparrate: {eur(etf_savings)}",
+        f"- Cash-Sparrate: {eur(cash_savings)}",
+        f"- Gesamte monatliche Sparrate: {eur(savings_total)}",
+        f"- Sparquote: {savings_rate:.1f}%",
+        f"- Ausgaben diesen Monat: {eur(total_expenses)}",
+        f"- Freies Restbudget diesen Monat: {eur(remaining)}",
+    ]
+
+    details = u.get("details", {})
+    if isinstance(details, dict) and details:
+        lines.append("- Verfeinertes Profil:")
+        for section, values in details.items():
+            if isinstance(values, dict):
+                clean_values = ", ".join(f"{key}: {eur(value)}" for key, value in values.items())
+                lines.append(f"  - {section}: {clean_values}")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT merchant, category, amount, created_at
+               FROM expenses
+               WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 5""",
+            (user_id,)
+        )
+        latest_expenses = cursor.fetchall()
+
+        cursor.execute(
+            """SELECT category, SUM(amount) AS total
+               FROM expenses
+               WHERE user_id = ?
+               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+               GROUP BY category
+               ORDER BY total DESC
+               LIMIT 5""",
+            (user_id,)
+        )
+        top_categories = cursor.fetchall()
+
+        cursor.execute(
+            """SELECT amount, direction, asset_type, asset_name, event_type, source, created_at
+               FROM investment_events
+               WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 5""",
+            (user_id,)
+        )
+        latest_investments = cursor.fetchall()
+
+        cursor.execute(
+            """SELECT amount, scope, source, created_at
+               FROM portfolio_snapshots
+               WHERE user_id = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 3""",
+            (user_id,)
+        )
+        latest_snapshots = cursor.fetchall()
+
+    if latest_expenses:
+        lines.append("- Letzte Ausgaben:")
+        for row in latest_expenses:
+            lines.append(f"  - {row['merchant']} ({row['category']}): {eur(row['amount'])}")
+
+    if top_categories:
+        lines.append("- Top-Kategorien diesen Monat:")
+        for row in top_categories:
+            lines.append(f"  - {row['category']}: {eur(row['total'])}")
+
+    if latest_investments:
+        lines.append("- Letzte Investment-Ereignisse:")
+        for row in latest_investments:
+            name = row["asset_name"] or row["asset_type"]
+            lines.append(
+                f"  - {row['event_type']} / {name}: {row['direction']} {eur(row['amount'])} ({row['source']})"
+            )
+
+    if latest_snapshots:
+        lines.append("- Letzte Portfolio-Stände:")
+        for row in latest_snapshots:
+            lines.append(f"  - {row['scope']}: {eur(row['amount'])} ({row['source']})")
+
+    return "\n".join(lines)
+
+
+def is_hard_off_topic_request(text_lower: str) -> bool:
+    hard_off_topic = [
+        "schreib mir ein buch", "schreibe mir ein buch", "schreib ein buch",
+        "schreibe ein buch", "rette die welt", "weltfrieden", "hausaufgabe",
+        "aufsatz", "essay", "gedicht", "liebesbrief", "rezept",
+    ]
+    return any(phrase in text_lower for phrase in hard_off_topic)
+
+
 def is_off_topic_request(text_lower: str) -> bool:
+    if is_hard_off_topic_request(text_lower):
+        return True
+
     finance_words = [
         "geld", "budget", "ausgabe", "ausgaben", "sparen", "sparrate", "score",
         "invest", "investment", "konto", "cash", "vermögen", "vermoegen", "report",
         "monat", "woche", "ziel", "fixkosten", "einkommen", "essen", "friseur",
+        "etf", "fonds", "indexfonds", "aktie", "aktien", "msci", "ftse", "sparplan",
+        "depot", "portfolio", "dividende", "rendite", "zins", "zinsen", "risiko",
+        "altersvorsorge", "rente", "finanz", "finanzen", "vermögensaufbau",
+        "vermoegensaufbau", "miete", "strom", "gas", "hausgeld", "hausverwalter",
+        "tanken", "kredit", "versicherung",
     ]
     if any(w in text_lower for w in finance_words):
         return False
@@ -668,44 +1391,235 @@ def get_rank(points: int) -> tuple:
             next_threshold = threshold
     return name, emoji, (next_threshold - points) if next_threshold else 0
 
-def calculate_clarity_score(u: dict, total_expenses: float) -> dict:
+def get_score_rank(score: int) -> tuple:
+    for low, high, name, emoji in SCORE_RANKS:
+        if low <= score <= high:
+            return name, emoji
+    return SCORE_RANKS[-1][2], SCORE_RANKS[-1][3]
+
+
+def get_platform_days(user_id: int) -> int:
+    """Plattformtage starten mit dem ersten echten Expense-Eintrag."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MIN(DATE(created_at)) AS first_day FROM expenses WHERE user_id = ?",
+            (user_id,)
+        )
+        first_day = cursor.fetchone()["first_day"]
+    if not first_day:
+        return 0
+    try:
+        first_date = date.fromisoformat(first_day)
+    except ValueError:
+        return 0
+    return max(1, (date.today() - first_date).days + 1)
+
+
+def get_tracking_days_90(user_id: int) -> int:
+    since = (date.today() - timedelta(days=89)).isoformat()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT COUNT(DISTINCT DATE(created_at)) AS days
+               FROM expenses
+               WHERE user_id = ? AND DATE(created_at) >= DATE(?)""",
+            (user_id, since)
+        )
+        return int(cursor.fetchone()["days"] or 0)
+
+
+def has_confirmed_investment_for_month(user_id: int, month_key: str = None) -> bool:
+    month_key = month_key or date.today().strftime("%Y-%m")
+    badge_key = f"inv_{month_key.replace('-', '_')}"
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
+            (user_id, badge_key)
+        )
+        if cursor.fetchone():
+            return True
+        cursor.execute(
+            """SELECT 1 FROM investment_events
+               WHERE user_id = ?
+               AND source = 'investiert_command'
+               AND strftime('%Y-%m', created_at) = ?
+               LIMIT 1""",
+            (user_id, month_key)
+        )
+        return cursor.fetchone() is not None
+
+
+def get_score_cap(platform_days: int) -> tuple:
+    if platform_days < 30:
+        return 59, max(0, 30 - platform_days), 60
+    if platform_days < 60:
+        return 69, 60 - platform_days, 70
+    if platform_days < 90:
+        return 79, 90 - platform_days, 80
+    if platform_days < 180:
+        return 85, 180 - platform_days, 86
+    if platform_days < 365:
+        return 92, 365 - platform_days, 93
+    return 100, 0, 100
+
+
+def calculate_start_score(u: dict) -> int:
+    income = (u.get("income") or 0) + (u.get("other_income") or 0)
+    fixed = u.get("fixed_costs") or 0
+    savings = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
+    investments = u.get("current_investments") or 0
+    cash = u.get("current_cash") or 0
+    savings_ratio = savings / income if income > 0 else 0
+
+    score = 30
+    if savings > 0:
+        score += 5
+    if savings_ratio >= 0.10:
+        score += 5
+    if savings_ratio >= 0.20:
+        score += 5
+    if investments > 0:
+        score += 5
+    if fixed > 0 and cash >= fixed * 3:
+        score += 7
+    elif fixed > 0 and cash >= fixed:
+        score += 3
+    if (
+        u.get("onboarding_step") == STEP_NORMAL
+        and income > 0
+        and fixed >= 0
+        and bool(u.get("goal_description"))
+        and (u.get("goal_amount") or 0) > 0
+    ):
+        score += 5
+    return min(score, 65)
+
+
+def calculate_savings_execution_points(savings_ratio: float, confirmed: bool) -> int:
+    if confirmed and savings_ratio >= 0.20:
+        return 25
+    if confirmed and savings_ratio >= 0.15:
+        return 18
+    if confirmed and savings_ratio >= 0.10:
+        return 12
+    if savings_ratio >= 0.20:
+        return 10
+    if savings_ratio >= 0.15:
+        return 6
+    if savings_ratio >= 0.10:
+        return 3
+    return 0
+
+
+def calculate_clarity_score(user_id: int, u: dict, total_expenses: float, report_month: str = None) -> dict:
     """
-    Clarity Score (0–100) aus 4 Säulen:
-    1. Budgetkontrolle (25) – Wie viel freies Budget ist übrig?
-    2. Sparquote (25)        – Liegt Sparrate über 15% des Einkommens?
-    3. Konsistenz (25)       – Wie viele Tage im Monat wurde getrackt?
-    4. Spareffizienz (25)    – Reicht verbleibendes Budget für Sparrate?
+    Clarity Score V2: schwerer Prestige-Score aus Budget, Umsetzung,
+    90-Tage-Konstanz und finanzieller Struktur.
     """
+    report_month = report_month or date.today().strftime("%Y-%m")
     income = (u.get("income") or 0) + (u.get("other_income") or 0)
     fixed = u.get("fixed_costs") or 0
     free_budget = income - fixed
     remaining = free_budget - total_expenses
-    savings_rate = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
+    savings_amount = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
+    savings_ratio = savings_amount / income if income > 0 else 0
+    cash = u.get("current_cash") or 0
 
-    s1 = 0
+    budget_points = 0
     if free_budget > 0:
-        ratio = remaining / free_budget
-        s1 = 25 if ratio >= 0.2 else max(0, int(25 * ratio / 0.2))
+        remaining_ratio = remaining / free_budget
+        budget_points = 25 if remaining_ratio >= 0.30 else max(0, int(25 * remaining_ratio / 0.30))
 
-    s2 = 0
-    if income > 0:
-        ratio = savings_rate / income
-        s2 = 25 if ratio >= 0.15 else max(0, int(25 * ratio / 0.15))
+    confirmed = has_confirmed_investment_for_month(user_id, report_month)
+    savings_points = calculate_savings_execution_points(savings_ratio, confirmed)
 
-    days_elapsed = max(date.today().day, 1)
-    streak = min(u.get("streak_days") or 0, days_elapsed)
-    s3 = int(25 * streak / days_elapsed)
+    tracking_days_90 = get_tracking_days_90(user_id)
+    consistency_points = min(25, int(25 * min(tracking_days_90, 90) / 90))
 
-    s4 = 0
-    if savings_rate > 0:
-        s4 = 25 if remaining >= savings_rate else max(0, int(25 * remaining / savings_rate))
-    elif remaining > 0:
-        s4 = 25
+    structure_points = 0
+    if fixed > 0 and cash >= fixed * 3:
+        structure_points += 10
+    if savings_ratio >= 0.15:
+        structure_points += 8
+    if free_budget > 0:
+        structure_points += 7
+
+    raw_total = budget_points + savings_points + consistency_points + structure_points
+    start_score = calculate_start_score(u)
+    platform_days = get_platform_days(user_id)
+    proof_days = platform_days
+    cap, days_to_unlock, next_unlock_level = get_score_cap(platform_days)
+    baseline = start_score if platform_days == 0 else min(start_score, cap)
+    capped_total = min(max(raw_total, baseline), cap)
+    rank_name, rank_emoji = get_score_rank(capped_total)
+
+    if platform_days < 30:
+        phase = "Aufbauphase"
+    elif platform_days < 90:
+        phase = "Proof-Phase"
+    else:
+        phase = "Verified"
 
     return {
-        "total": min(100, s1 + s2 + s3 + s4),
-        "budget": s1, "savings": s2, "consistency": s3, "efficiency": s4
+        "total": capped_total,
+        "raw_total": raw_total,
+        "cap": cap,
+        "budget": budget_points,
+        "savings": savings_points,
+        "consistency": consistency_points,
+        "structure": structure_points,
+        "start_score": start_score,
+        "platform_days": platform_days,
+        "proof_days": proof_days,
+        "tracking_days_90": tracking_days_90,
+        "savings_confirmed": confirmed,
+        "savings_ratio": savings_ratio,
+        "rank_name": rank_name,
+        "rank_emoji": rank_emoji,
+        "phase": phase,
+        "days_to_unlock": days_to_unlock,
+        "next_unlock_level": next_unlock_level,
     }
+
+
+def record_score_history_if_needed(user_id: int, u: dict = None) -> None:
+    today = date.today().isoformat()
+    month_key = date.today().strftime("%Y-%m")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM score_history WHERE user_id = ? AND recorded_date = ?",
+            (user_id, today)
+        )
+        if cursor.fetchone():
+            return
+
+    u = u or get_or_create_user(user_id)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT SUM(amount) FROM expenses WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?",
+            (user_id, month_key)
+        )
+        total_expenses = cursor.fetchone()[0] or 0.0
+
+    score_data = calculate_clarity_score(user_id, u, total_expenses, month_key)
+    cp = u.get("clarity_points") or 0
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO score_history
+               (user_id, recorded_date, clarity_score, clarity_points, rank_name,
+                proof_days, budget_points, savings_points, consistency_points, structure_points)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id, today, score_data["total"], cp, score_data["rank_name"],
+                score_data["proof_days"], score_data["budget"], score_data["savings"],
+                score_data["consistency"], score_data["structure"],
+            )
+        )
+        conn.commit()
 
 def award_badge(user_id: int, badge_key: str) -> bool:
     """
@@ -780,14 +1694,20 @@ def check_wealth_badges(user_id: int, u: dict) -> list:
     return new_badges
 
 def check_fastfood_badge(user_id: int) -> bool:
-    """Prüft Fast-Food-Fasten Badge. Gibt True zurück wenn neu vergeben."""
+    """Prüft Fast-Food-Pause Badge. Gibt True zurück wenn neu vergeben."""
     thirty_ago = (date.today() - timedelta(days=30)).isoformat()
     with get_db() as conn:
         cursor = conn.cursor()
+        keyword_sql = " OR ".join(
+            "LOWER(COALESCE(merchant, '') || ' ' || COALESCE(description, '')) LIKE ?"
+            for _ in FASTFOOD_KEYWORDS
+        )
         cursor.execute(
-            "SELECT COUNT(id) as cnt FROM expenses "
-            "WHERE user_id = ? AND category = 'RESTAURANTS' AND DATE(created_at) >= ?",
-            (user_id, thirty_ago)
+            f"""SELECT COUNT(id) as cnt FROM expenses
+                WHERE user_id = ?
+                AND DATE(created_at) >= ?
+                AND ({keyword_sql})""",
+            (user_id, thirty_ago, *[f"%{keyword}%" for keyword in FASTFOOD_KEYWORDS])
         )
         if cursor.fetchone()["cnt"] == 0:
             return award_badge(user_id, "no_fastfood_30")
@@ -815,6 +1735,7 @@ def handle_daily_activity(user_id: int, bot_instance) -> int:
         streak = row["streak_days"] or 0
 
     if last_date == today:
+        record_score_history_if_needed(user_id)
         return 0
 
     streak = streak + 1 if last_date == yesterday else 1
@@ -841,6 +1762,7 @@ def handle_daily_activity(user_id: int, bot_instance) -> int:
         new_pts = add_cp(user_id, 5)
         bot_instance.send_message(user_id, f"{streak}-Tage Streak · +5 CP")
 
+    record_score_history_if_needed(user_id)
     return 1
 
 def handle_month_transition(user_id: int, u: dict, bot_instance):
@@ -867,7 +1789,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
         )
         old_expenses = cursor.fetchone()[0] or 0.0
 
-    score_data = calculate_clarity_score(u, old_expenses)
+    score_data = calculate_clarity_score(user_id, u, old_expenses, stored_month)
     income = (u.get("income") or 0) + (u.get("other_income") or 0)
     free_budget = income - (u.get("fixed_costs") or 0)
     budget_ok = free_budget > 0 and old_expenses <= free_budget
@@ -881,7 +1803,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
         latest_points = add_cp(user_id, 50)
         bonus_lines.append(f"Budget eingehalten - +50 CP - Gesamt: {latest_points} CP")
     else:
-        bonus_lines.append("Budget ueberschritten - kein Monats-Bonus.")
+        bonus_lines.append("Budget überschritten - kein Monats-Bonus.")
 
     with get_db() as conn:
         try:
@@ -901,22 +1823,23 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
             logger.error(f"Snapshot-Fehler User {user_id}: {e}")
 
     update_user_field(user_id, "current_month", current_month)
-    rank_name, rank_emoji, _ = get_rank(latest_points)
+    rank_name, rank_emoji = score_data["rank_name"], score_data["rank_emoji"]
 
     bot_instance.send_message(
         user_id,
         f"*{stored_month} - Monatsabschluss*\n\n"
         f"Clarity Score: *{score_data['total']}/100*\n"
         f"Ausgaben: {old_expenses:.2f} EUR\n"
-        f"Nettovermoegen: {net_worth:.2f} EUR\n"
+        f"Nettovermögen: {net_worth:.2f} EUR\n"
         f"{chr(10).join(bonus_lines)}\n\n"
-        f"{rank_emoji} {rank_name}",
+        f"{rank_emoji} Score-Rang: {rank_name}",
         parse_mode="Markdown"
     )
 
 # ====================== BOT INIT ======================
 bot = telebot.TeleBot(TOKEN)
 user_last_message: dict = {}
+user_pending_actions: dict = {}
 
 def setup_bot_menu():
     commands = [
@@ -924,23 +1847,136 @@ def setup_bot_menu():
         telebot.types.BotCommand("status",     "📊 Restbudget checken"),
         telebot.types.BotCommand("stats",      "📈 Ausgaben nach Kategorien"),
         telebot.types.BotCommand("score",      "🌟 Clarity Score & Rang"),
-        telebot.types.BotCommand("scoreinfo",  "Clarity Score erklaert"),
+        telebot.types.BotCommand("scoreinfo",  "Clarity Score erklärt"),
         telebot.types.BotCommand("badges",     "🏆 Errungenschaften"),
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Profil verfeinern"),
         telebot.types.BotCommand("undo",       "↩️ Letzte Ausgabe löschen"),
-        telebot.types.BotCommand("editlast",   "Letzte Ausgabe anpassen"),
+        telebot.types.BotCommand("editlast",   "Letzte Ausgabe ändern"),
         telebot.types.BotCommand("reset",      "🗑️ Alle Daten löschen"),
     ]
     bot.set_my_commands(commands)
+
+    admin_commands = commands + [
+        telebot.types.BotCommand("admin",      "Admin-Befehle anzeigen"),
+        telebot.types.BotCommand("pending",    "Wartende Nutzer anzeigen"),
+        telebot.types.BotCommand("approve",    "Nutzer freigeben"),
+        telebot.types.BotCommand("revoke",     "Nutzer sperren"),
+        telebot.types.BotCommand("adminusers", "Nutzerstatus anzeigen"),
+        telebot.types.BotCommand("health",     "Bot-Status prüfen"),
+        telebot.types.BotCommand("reportjobs", "Report-Jobs prüfen"),
+        telebot.types.BotCommand("backupnow",  "Datenbank sichern"),
+    ]
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            bot.set_my_commands(
+                admin_commands,
+                scope=telebot.types.BotCommandScopeChat(admin_id)
+            )
+        except Exception as e:
+            logger.warning(f"Admin-Menü für {admin_id} konnte nicht gesetzt werden: {e}")
+
     logger.info("✅ Telegram Menü eingerichtet.")
+
+
+def get_last_expense(user_id: int):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT id, amount, merchant, category FROM expenses "
+            "WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        ).fetchone()
+
+
+def start_edit_last_flow(user_id: int):
+    last = get_last_expense(user_id)
+    if not last:
+        bot.send_message(user_id, "Ich finde noch keine Ausgabe, die ich ändern kann.")
+        return
+
+    user_pending_actions[user_id] = {
+        "type": "edit_last_expense",
+        "expense_id": last["id"],
+    }
+    bot.send_message(
+        user_id,
+        "Welche neue Summe soll ich eintragen?\n\n"
+        f"Letzte Ausgabe: {last['merchant']} · {last['category']} · {format_eur(last['amount'])}\n\n"
+        "Schick mir einfach den neuen Betrag, z.B. 24,50.\n"
+        "Mit „abbrechen“ bleibt alles unverändert."
+    )
+
+
+def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, amount, merchant, category FROM expenses "
+            "WHERE user_id = ? AND id = ?",
+            (user_id, expense_id)
+        )
+        expense = cursor.fetchone()
+        if not expense:
+            return None
+
+        cursor.execute(
+            "UPDATE expenses SET amount = ? WHERE id = ? AND user_id = ?",
+            (new_amount, expense_id, user_id)
+        )
+        conn.commit()
+        return expense
+
+
+def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> bool:
+    action = user_pending_actions.get(user_id)
+    if not action:
+        return False
+
+    if text_lower in {"abbrechen", "stop", "cancel"}:
+        user_pending_actions.pop(user_id, None)
+        bot.send_message(user_id, "Alles klar, die letzte Ausgabe bleibt unverändert.")
+        return True
+
+    if action.get("type") == "edit_last_expense":
+        new_amount = parse_currency(text_input)
+        if new_amount is None:
+            bot.send_message(
+                user_id,
+                "Bitte schick mir nur den neuen Betrag, z.B. 24,50. "
+                "Oder schreibe „abbrechen“."
+            )
+            return True
+
+        old_expense = update_expense_amount(user_id, action["expense_id"], new_amount)
+        user_pending_actions.pop(user_id, None)
+        if not old_expense:
+            bot.send_message(user_id, "Diese Ausgabe existiert nicht mehr. Bitte versuche es erneut.")
+            return True
+
+        bot.send_message(
+            user_id,
+            "Letzte Ausgabe aktualisiert:\n"
+            f"{old_expense['merchant']} · {old_expense['category']}\n"
+            f"{format_eur(old_expense['amount'])} → {format_eur(new_amount)}"
+        )
+        return True
+
+    return False
 
 # ====================== CALLBACK HANDLER (Inline Buttons) ======================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     uid = call.message.chat.id
     data = call.data
+    actor_id = call.from_user.id if getattr(call, "from_user", None) else uid
+
+    if USER_APPROVAL_ENABLED and not is_admin_id(actor_id) and get_access_status(actor_id) != "approved":
+        try:
+            bot.answer_callback_query(call.id, "Dein Zugang ist noch nicht freigegeben.")
+        except Exception:
+            pass
+        return
 
     if data == "confirm_reset":
         with get_db() as conn:
@@ -979,14 +2015,201 @@ def handle_callbacks(call):
         pass
 
 # ====================== COMMAND HANDLER ======================
+def parse_command_user_id(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
+        return None
+    return int(parts[1].strip())
+
+
+def build_health_report() -> str:
+    with get_db() as conn:
+        users_total = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        expenses_total = conn.execute("SELECT COUNT(*) AS c FROM expenses").fetchone()["c"]
+        access_rows = conn.execute(
+            "SELECT status, COUNT(*) AS c FROM user_access GROUP BY status"
+        ).fetchall()
+        job_rows = conn.execute(
+            "SELECT status, COUNT(*) AS c FROM report_jobs GROUP BY status"
+        ).fetchall()
+        last_error = conn.execute(
+            """SELECT status, user_id, report_month, last_error
+               FROM report_jobs
+               WHERE COALESCE(last_error, '') != ''
+               ORDER BY updated_at DESC LIMIT 1"""
+        ).fetchone()
+
+    db_size = Path(DB_NAME).stat().st_size if Path(DB_NAME).exists() else 0
+    scheduler_state = "aktiv" if REPORT_SCHEDULER and getattr(REPORT_SCHEDULER, "running", False) else "nicht aktiv"
+    access_text = ", ".join(f"{row['status']}: {row['c']}" for row in access_rows) or "keine"
+    jobs_text = ", ".join(f"{row['status']}: {row['c']}" for row in job_rows) or "keine"
+    error_text = "Keine aktuellen Report-Fehler."
+    if last_error:
+        error_text = (
+            f"Letzter Hinweis: {last_error['status']} · User {last_error['user_id']} · "
+            f"{last_error['report_month']} · {last_error['last_error'][:120]}"
+        )
+
+    return (
+        "*Clarity Health*\n\n"
+        f"Bot: läuft\n"
+        f"Scheduler: {scheduler_state}\n"
+        f"User: {users_total}\n"
+        f"Ausgaben: {expenses_total}\n"
+        f"Zugänge: {access_text}\n"
+        f"Reports: {jobs_text}\n"
+        f"Datenbank: {db_size / 1024:.1f} KB\n\n"
+        f"{error_text}"
+    )
+
+
+def handle_admin_command(message, cmd: str) -> bool:
+    uid = message.chat.id
+    actor_id = get_actor_id(message)
+    if cmd not in ADMIN_COMMANDS:
+        return False
+    if not require_admin(message):
+        return True
+
+    if cmd == "/admin":
+        bot.send_message(
+            uid,
+            "*Admin-Befehle*\n\n"
+            "/pending – wartende Freigaben\n"
+            "/approve USER_ID – Nutzer freigeben\n"
+            "/revoke USER_ID – Nutzer sperren\n"
+            "/adminusers – Nutzerstatus anzeigen\n"
+            "/health – Bot, DB und Reports prüfen\n"
+            "/reportjobs – Report-Versandstatus\n"
+            "/backupnow – Datenbank sichern",
+            parse_mode="Markdown"
+        )
+        return True
+
+    if cmd == "/pending":
+        with get_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, display_name, username, requested_at
+                   FROM user_access
+                   WHERE status = 'pending'
+                   ORDER BY requested_at ASC LIMIT 20"""
+            ).fetchall()
+        if not rows:
+            bot.send_message(uid, "Keine wartenden Freigaben.")
+            return True
+        text = "*Wartende Freigaben:*\n\n"
+        for row in rows:
+            name = " ".join(part for part in [row["display_name"], row["username"]] if part) or "-"
+            text += f"{row['user_id']} · {name} · {row['requested_at']}\n"
+        bot.send_message(uid, text, parse_mode="Markdown")
+        return True
+
+    if cmd == "/approve":
+        target_id = parse_command_user_id(message)
+        if target_id is None:
+            bot.send_message(uid, "Bitte nutze: /approve USER_ID")
+            return True
+        approve_user_access(target_id, actor_id)
+        bot.send_message(uid, f"Nutzer {target_id} ist freigegeben.")
+        try:
+            bot.send_message(target_id, "Du bist für Clarity freigeschaltet. Sende /start und leg los.")
+        except Exception as e:
+            logger.info(f"Freigabe-Nachricht an {target_id} nicht gesendet: {e}")
+        return True
+
+    if cmd == "/revoke":
+        target_id = parse_command_user_id(message)
+        if target_id is None:
+            bot.send_message(uid, "Bitte nutze: /revoke USER_ID")
+            return True
+        revoke_user_access(target_id, actor_id)
+        bot.send_message(uid, f"Nutzer {target_id} ist gesperrt.")
+        return True
+
+    if cmd == "/adminusers":
+        with get_db() as conn:
+            rows = conn.execute(
+                """SELECT u.user_id,
+                          COALESCE(a.status, 'approved') AS access_status,
+                          u.onboarding_step,
+                          u.last_activity_date,
+                          (SELECT COUNT(*) FROM expenses e WHERE e.user_id = u.user_id) AS expenses_count,
+                          (SELECT COUNT(DISTINCT DATE(e.created_at))
+                           FROM expenses e
+                           WHERE e.user_id = u.user_id
+                           AND strftime('%Y-%m', e.created_at) = strftime('%Y-%m', 'now', 'localtime')) AS tracked_days
+                   FROM users u
+                   LEFT JOIN user_access a ON a.user_id = u.user_id
+                   ORDER BY u.last_activity_date DESC, u.user_id DESC
+                   LIMIT 20"""
+            ).fetchall()
+        if not rows:
+            bot.send_message(uid, "Noch keine Nutzer in der Datenbank.")
+            return True
+        text = "*Nutzerübersicht:*\n\n"
+        for row in rows:
+            onboarding = "fertig" if row["onboarding_step"] == STEP_NORMAL else f"Step {row['onboarding_step']}"
+            text += (
+                f"{row['user_id']} · {row['access_status']} · {onboarding} · "
+                f"{row['expenses_count']} Buchungen · {row['tracked_days']} Tracking-Tage\n"
+            )
+        bot.send_message(uid, text, parse_mode="Markdown")
+        return True
+
+    if cmd == "/health":
+        bot.send_message(uid, build_health_report(), parse_mode="Markdown")
+        return True
+
+    if cmd == "/reportjobs":
+        with get_db() as conn:
+            summary = conn.execute(
+                "SELECT status, COUNT(*) AS c FROM report_jobs GROUP BY status ORDER BY status"
+            ).fetchall()
+            recent = conn.execute(
+                """SELECT user_id, report_month, status, attempts, scheduled_at, last_error
+                   FROM report_jobs
+                   ORDER BY updated_at DESC LIMIT 8"""
+            ).fetchall()
+        text = "*Report-Jobs*\n\n"
+        text += "Status: " + (", ".join(f"{row['status']}: {row['c']}" for row in summary) or "keine") + "\n\n"
+        for row in recent:
+            hint = f" · {row['last_error'][:70]}" if row["last_error"] else ""
+            text += f"{row['user_id']} · {row['report_month']} · {row['status']} · Versuch {row['attempts']}{hint}\n"
+        bot.send_message(uid, text, parse_mode="Markdown")
+        return True
+
+    if cmd == "/backupnow":
+        backups_dir = Path("backups")
+        backups_dir.mkdir(exist_ok=True)
+        backup_path = backups_dir / f"clarity_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        with sqlite3.connect(DB_NAME) as source, sqlite3.connect(backup_path) as target:
+            source.backup(target)
+        bot.send_message(uid, f"Backup erstellt:\n{backup_path.resolve()}")
+        return True
+
+    return False
+
+
 @bot.message_handler(commands=[
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
-    'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport'
+    'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
+    'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow'
 ])
 def handle_commands(message):
     uid = message.chat.id
     cmd = message.text.split()[0].lower()
     u = get_or_create_user(uid)
+
+    if handle_admin_command(message, cmd):
+        return
+
+    if cmd == '/id':
+        actor_id = get_actor_id(message)
+        bot.send_message(uid, f"Deine Telegram-ID: {actor_id}\nChat-ID: {uid}")
+        return
+
+    if not ensure_user_approved(message):
+        return
 
     if (u.get("onboarding_step") or 0) >= STEP_NORMAL:
         handle_month_transition(uid, u, bot)
@@ -997,7 +2220,7 @@ def handle_commands(message):
             uid,
             "👋 Willkommen bei *Clarity*.\n\n"
             "📝 *Schritt 1 von 9:* Wie hoch ist dein monatliches Nettoeinkommen?\n_(z.B. 2500)_\n\n"
-            "_Mit 'zurueck' gehst du einen Schritt zurueck._",
+            "_Mit 'zurück' gehst du einen Schritt zurück._",
             parse_mode="Markdown"
        )
 
@@ -1014,14 +2237,10 @@ def handle_commands(message):
             "/investiert – Sparrate bestätigen (+20 CP)\n"
             "/verfeinern – Profil verfeinern\n"
             "/undo – Letzte Ausgabe löschen\n"
-            "/editlast – Letzte Ausgabe anpassen\n"
+            "/editlast – Letzte Ausgabe ändern\n"
             "/settings – Profil neu einrichten",
             parse_mode="Markdown"
         )
-
-    elif cmd == '/id':
-        actor_id = get_actor_id(message)
-        bot.send_message(uid, f"Deine Telegram-ID: {actor_id}\nChat-ID: {uid}")
 
     elif cmd == '/score':
         with get_db() as conn:
@@ -1034,22 +2253,38 @@ def handle_commands(message):
             total_exp = cursor.fetchone()[0] or 0.0
 
 
-        score_data = calculate_clarity_score(u, total_exp)
+        score_data = calculate_clarity_score(uid, u, total_exp)
+        record_score_history_if_needed(uid, u)
         cp = u.get("clarity_points") or 0
-        rank_name, rank_emoji, pts_needed = get_rank(cp)
-        rank_line = (f"Noch *{pts_needed} CP* bis zum nächsten Rang."
-                     if pts_needed > 0 else "Höchster Rang erreicht.")
-
+        cp_rank_name, cp_rank_emoji, pts_needed = get_rank(cp)
+        cp_rank_line = (f"Noch *{pts_needed} CP* bis zum nächsten CP-Rang."
+                        if pts_needed > 0 else "Höchster CP-Rang erreicht.")
+        unlock_line = ""
+        if score_data["days_to_unlock"] > 0:
+            unlock_line = (
+                f"\nNoch *{score_data['days_to_unlock']} Tage* bis "
+                f"Score-Level {score_data['next_unlock_level']}+ freigeschaltet wird."
+            )
+        confirm_hint = (
+            "Sparrate bestätigt"
+            if score_data["savings_confirmed"]
+            else "Bestätige deine Sparrate mit /investiert für mehr Savings-Punkte."
+        )
 
         bot.send_message(
             uid,
-            f"📊 *Finanz-Gesundheit: {score_data['total']}/100*\n"
-            f"├ Budgetkontrolle:  {score_data['budget']}/25\n"
-            f"├ Sparquote:        {score_data['savings']}/25\n"
-            f"├ Konsistenz:       {score_data['consistency']}/25\n"
-            f"└ Spareffizienz:    {score_data['efficiency']}/25\n\n"
-            f"{rank_emoji} *{rank_name}* · {cp} CP\n"
-            f"{rank_line}"
+            f"📊 *Clarity Score: {score_data['total']}/100*\n"
+            f"{score_data['rank_emoji']} *{score_data['rank_name']}*\n"
+            f"Status: {score_data['phase']} · Datenbasis: {score_data['proof_days']}/90 Tage"
+            f"{unlock_line}\n\n"
+            f"*Breakdown*\n"
+            f"├ Budget Control:       {score_data['budget']}/25\n"
+            f"├ Savings Execution:    {score_data['savings']}/25\n"
+            f"├ Tracking Consistency: {score_data['consistency']}/25\n"
+            f"└ Financial Structure:  {score_data['structure']}/25\n\n"
+            f"*Nächster Hebel:*\n{confirm_hint}\n\n"
+            f"{cp_rank_emoji} CP-Level: *{cp_rank_name}* · {cp} CP\n"
+            f"{cp_rank_line}"
             f"\n\nMehr Kontext: /scoreinfo",
             parse_mode="Markdown"
         ) 
@@ -1057,13 +2292,14 @@ def handle_commands(message):
     elif cmd == '/scoreinfo':
         bot.send_message(
             uid,
-            "Der *Clarity Score* zeigt dir, wie gesund dein Geldsystem gerade aufgestellt ist.\n\n"
+            "Der *Clarity Score V2* ist dein Prestige-Score für finanzielle Disziplin.\n\n"
             "*Die 4 Bereiche:*\n"
-            "1. Budgetkontrolle - Wie gut du dein freies Monatsbudget im Griff hast.\n"
-            "2. Sparquote - Wie viel du fuer Vermoegensaufbau zuruecklegst.\n"
-            "3. Konsistenz - Wie regelmaessig du deine Ausgaben trackst.\n"
-            "4. Spareffizienz - Wie sinnvoll dein uebriges Geld fuer deine Ziele arbeitet.\n\n"
-            "*Wichtig:* Der Score ist kein Urteil ueber dich. Er ist ein Kompass, der dir zeigt, wo dein groesster Hebel liegt.",
+            "1. Budget Control - wie viel freies Monatsbudget übrig bleibt.\n"
+            "2. Savings Execution - ob du deine Sparrate wirklich bestätigst.\n"
+            "3. Tracking Consistency - wie stark deine 90-Tage-Datenbasis ist.\n"
+            "4. Financial Structure - Notgroschen, Sparquote und positives Budget.\n\n"
+            "Hohe Scores werden über Zeit freigeschaltet. Das schützt den Score vor Farming und macht ihn wertvoll.\n\n"
+            "*Wichtig:* Der Score ist kein Urteil. Er zeigt dir den nächsten klaren Hebel.",
             parse_mode="Markdown"
         )
 
@@ -1095,7 +2331,7 @@ def handle_commands(message):
     elif cmd == '/investiert':
         month_key = f"inv_{date.today().strftime('%Y_%m')}"
         if has_badge(uid, month_key):
-            bot.send_message(uid, f"Investment-Bonus fuer {date.today().strftime('%B %Y')} bereits vergeben.")
+            bot.send_message(uid, f"Investment-Bonus für {date.today().strftime('%B %Y')} bereits vergeben.")
             return
 
         with get_db() as conn:
@@ -1107,7 +2343,7 @@ def handle_commands(message):
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
-                bot.send_message(uid, "Bonus fuer diesen Monat bereits vergeben.")
+                bot.send_message(uid, "Bonus für diesen Monat bereits vergeben.")
                 return
 
         etf_savings = u.get("etf_savings") or 0
@@ -1116,18 +2352,37 @@ def handle_commands(message):
         new_cash = (u.get("current_cash") or 0) + cash_savings
         update_user_field(uid, "current_investments", new_investments)
         update_user_field(uid, "current_cash", new_cash)
+        save_investment_event(
+            uid, etf_savings, asset_type="etf", asset_name="ETF-Sparrate",
+            event_type="recurring_plan", source="investiert_command",
+            note="Monatliche ETF-Sparrate bestätigt"
+        )
+        save_investment_event(
+            uid, cash_savings, asset_type="cash", asset_name="Cash-Sparrate",
+            event_type="recurring_plan", source="investiert_command",
+            note="Monatliche Cash-Sparrate bestätigt"
+        )
+        save_portfolio_snapshot(
+            uid, new_investments, scope="investments",
+            source="investiert_command", note="Stand nach Sparrate"
+        )
+        save_portfolio_snapshot(
+            uid, new_cash, scope="cash",
+            source="investiert_command", note="Stand nach Sparrate"
+        )
 
         new_pts = add_cp(uid, 20)
         u_fresh = get_or_create_user(uid)
+        record_score_history_if_needed(uid, u_fresh)
         new_badges = check_wealth_badges(uid, u_fresh)
         total_wealth = new_investments + new_cash
 
         bot.send_message(
             uid,
-            f"Sparrate bestaetigt - *+20 CP* - Gesamt: {new_pts} CP\n"
+            f"Sparrate bestätigt - *+20 CP* - Gesamt: {new_pts} CP\n"
             f"ETF/Investments: +{etf_savings:.2f} EUR\n"
             f"Cash: +{cash_savings:.2f} EUR\n"
-            f"Nettovermoegen: *{total_wealth:.2f} EUR*",
+            f"Nettovermögen: *{total_wealth:.2f} EUR*",
             parse_mode="Markdown"
         )
         send_badge_summary(bot, uid, new_badges)
@@ -1200,7 +2455,7 @@ def handle_commands(message):
     elif cmd == '/testreport':
         actor_id = get_actor_id(message)
         if not ADMIN_USER_IDS or actor_id not in ADMIN_USER_IDS:
-            bot.send_message(uid, "Dieser Befehl ist nur fuer Admins freigeschaltet. Sende /id und trage deine Telegram-ID in ADMIN_USER_ID ein.")
+            bot.send_message(uid, "Dieser Befehl ist nur für Admins freigeschaltet. Sende /id und trage deine Telegram-ID in ADMIN_USER_ID ein.")
             return
 
         parts = message.text.split(maxsplit=1)
@@ -1209,7 +2464,7 @@ def handle_commands(message):
             bot.send_message(uid, "Bitte nutze das Format YYYY-MM, z.B. /testreport 2026-06")
             return
 
-        bot.send_message(uid, f"Testreport fuer {report_month} wird vorbereitet...")
+        bot.send_message(uid, f"Testreport für {report_month} wird vorbereitet...")
 
         try:
             import report_engine
@@ -1226,7 +2481,7 @@ def handle_commands(message):
             if ok:
                 bot.send_message(uid, "Testreport abgeschlossen.")
             else:
-                bot.send_message(uid, "Testreport konnte nicht generiert werden. Bitte pruefe die Logs.")
+                bot.send_message(uid, "Testreport konnte nicht generiert werden. Bitte prüfe die Logs.")
         except Exception as e:
             logger.error(f"Testreport-Fehler User {uid}: {e}", exc_info=True)
             bot.send_message(uid, f"Testreport fehlgeschlagen: {type(e).__name__}")
@@ -1245,7 +2500,7 @@ def handle_commands(message):
         update_user_field(uid, "onboarding_step", STEP_INCOME)
         bot.send_message(
             uid,
-            "*Schritt 1 von 9:* Nettoeinkommen?\n\n_Mit 'zurueck' gehst du einen Schritt zurueck._",
+            "*Schritt 1 von 9:* Nettoeinkommen?\n\n_Mit 'zurück' gehst du einen Schritt zurück._",
             parse_mode="Markdown"
         )
 
@@ -1279,37 +2534,29 @@ def handle_commands(message):
     elif cmd == '/editlast':
         parts = message.text.split(maxsplit=1)
         if len(parts) < 2:
-            bot.send_message(uid, "Bitte nutze: /editlast 34")
+            start_edit_last_flow(uid)
             return
 
         new_amount = parse_currency(parts[1])
         if new_amount is None:
-            bot.send_message(uid, "Bitte gib einen gueltigen Betrag an, z.B. /editlast 34")
+            bot.send_message(uid, "Bitte gib einen gültigen Betrag an, z.B. /editlast 34")
             return
 
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, amount, merchant, category FROM expenses WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-                (uid,)
-            )
-            last = cursor.fetchone()
-            if not last:
-                bot.send_message(uid, "Keine Ausgabe gefunden, die ich bearbeiten kann.")
-                return
+        last = get_last_expense(uid)
+        if not last:
+            bot.send_message(uid, "Keine Ausgabe gefunden, die ich bearbeiten kann.")
+            return
 
-            old_amount = last["amount"]
-            cursor.execute(
-                "UPDATE expenses SET amount = ? WHERE id = ?",
-                (new_amount, last["id"])
-            )
-            conn.commit()
+        old_expense = update_expense_amount(uid, last["id"], new_amount)
+        if not old_expense:
+            bot.send_message(uid, "Diese Ausgabe existiert nicht mehr. Bitte versuche es erneut.")
+            return
 
         bot.send_message(
             uid,
             f"Letzte Ausgabe aktualisiert:\n"
-            f"{last['merchant']} · {last['category']}\n"
-            f"{old_amount:.2f} EUR -> {new_amount:.2f} EUR"
+            f"{old_expense['merchant']} · {old_expense['category']}\n"
+            f"{format_eur(old_expense['amount'])} → {format_eur(new_amount)}"
         )
 
     elif cmd == '/reset_confirm':
@@ -1339,6 +2586,12 @@ def handle_msg(message):
     u = get_or_create_user(uid)
     step = u.get("onboarding_step") or STEP_START
 
+    if not ensure_user_approved(message):
+        return
+
+    if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
+        return
+
     if step == STEP_START:
         bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
         return
@@ -1362,9 +2615,21 @@ def handle_msg(message):
             bot.send_message(uid, REFINE_BACK_MESSAGES[prev_step])
             return
         return
+
+    if is_hard_off_topic_request(text_lower):
+        bot.send_message(
+            uid,
+            "Ich bleibe bei Clarity: Ausgaben, Budget, Sparziele, Vermögen und Reports."
+        )
+        return
         
     if step >= STEP_NORMAL:
         handle_month_transition(uid, u, bot)
+
+        correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
+        if correction_reply:
+            bot.send_message(uid, correction_reply, parse_mode="Markdown")
+            return
 
         weekly_reply = maybe_answer_weekly_budget(uid, u, text_lower)
         if weekly_reply:
@@ -1416,6 +2681,13 @@ def handle_msg(message):
         if step in steps:
             field, next_step, msg = steps[step]
             update_user_field(uid, field, val)
+            if field == "current_investments":
+                replace_onboarding_investment_start(uid, val)
+            elif field == "current_cash":
+                u_after_cash = get_or_create_user(uid)
+                replace_onboarding_portfolio_snapshots(
+                    uid, u_after_cash.get("current_investments") or 0.0, val
+                )
             update_user_field(uid, "onboarding_step", next_step)
             bot.send_message(uid, msg, parse_mode="Markdown")
 
@@ -1455,36 +2727,86 @@ def handle_msg(message):
         details = u.get("details", {})
 
         if step == STEP_ADAPT_HOUSING:
-            details["wohnen"] = ({"miete": nums[0], "strom": nums[1], "gas": nums[2]}
-                                 if len(nums) >= 3 else {"gesamt": sum(nums)})
+            parsed = parse_labeled_amounts(text_input, {
+                "miete": "miete",
+                "kaltmiete": "miete",
+                "warmmiete": "miete",
+                "strom": "strom",
+                "gas": "gas",
+                "heizung": "gas",
+                "hausgeld": "hausgeld",
+                "nebenkosten": "nebenkosten",
+            })
+            details["wohnen"] = merge_number_defaults(parsed, nums, ["miete", "strom", "gas"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_MOBILITY)
             bot.send_message(uid, "🚗 *Teil 2: Mobilität*\nAuto, Versicherung, Bahn?\n_(z.B. 200 80 49)_", parse_mode="Markdown")
 
         elif step == STEP_ADAPT_MOBILITY:
-            details["mobilitaet"] = ({"auto": nums[0], "vers": nums[1], "bahn": nums[2]}
-                                     if len(nums) >= 3 else {"gesamt": sum(nums)})
+            parsed = parse_labeled_amounts(text_input, {
+                "auto": "auto",
+                "leasing": "auto",
+                "rate": "auto",
+                "versicherung": "versicherung",
+                "vers": "versicherung",
+                "bahn": "bahn",
+                "ticket": "bahn",
+                "deutschlandticket": "bahn",
+                "tanken": "tanken",
+                "benzin": "tanken",
+                "diesel": "tanken",
+            })
+            details["mobilitaet"] = merge_number_defaults(parsed, nums, ["auto", "versicherung", "bahn"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_ABOS)
             bot.send_message(uid, "📺 *Teil 3: Abos*\nNetflix, Spotify, Prime, Disney?\n_(z.B. 14 10 9 8)_", parse_mode="Markdown")
 
         elif step == STEP_ADAPT_ABOS:
-            details["abos"] = ({"netflix": nums[0], "spotify": nums[1], "prime": nums[2], "disney": nums[3]}
-                               if len(nums) >= 4 else {"gesamt": sum(nums)})
+            parsed = parse_labeled_amounts(text_input, {
+                "netflix": "netflix",
+                "spotify": "spotify",
+                "prime": "prime",
+                "amazon": "prime",
+                "disney": "disney",
+                "gym": "gym",
+                "fitness": "gym",
+                "handy": "handy",
+                "icloud": "icloud",
+            })
+            details["abos"] = merge_number_defaults(parsed, nums, ["netflix", "spotify", "prime", "disney"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_INSURANCE)
             bot.send_message(uid, "🛡️ *Teil 4: Versicherungen*\nHaftpflicht, BU, Rechtsschutz?\n_(z.B. 6 45 25)_", parse_mode="Markdown")
 
         elif step == STEP_ADAPT_INSURANCE:
-            details["versicherungen"] = ({"haftpflicht": nums[0], "bu": nums[1], "rechtsschutz": nums[2]}
-                                         if len(nums) >= 3 else {"gesamt": sum(nums)})
+            parsed = parse_labeled_amounts(text_input, {
+                "haftpflicht": "haftpflicht",
+                "bu": "bu",
+                "berufsunfähigkeit": "bu",
+                "berufsunfaehigkeit": "bu",
+                "rechtsschutz": "rechtsschutz",
+                "hausrat": "hausrat",
+                "krankenversicherung": "krankenversicherung",
+            })
+            details["versicherungen"] = merge_number_defaults(parsed, nums, ["haftpflicht", "bu", "rechtsschutz"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_CREDITS)
             bot.send_message(uid, "💳 *Teil 5: Kredite*\nImmobilie, Auto, Konsum?\n_(Falls keine → 0)_", parse_mode="Markdown")
 
         elif step == STEP_ADAPT_CREDITS:
-            details["kredite"] = ({"immo": nums[0], "konsum": nums[1]}
-                                  if len(nums) >= 2 else {"gesamt": sum(nums)})
+            parsed = parse_labeled_amounts(text_input, {
+                "kredit": "kredit",
+                "kredite": "kredit",
+                "darlehen": "kredit",
+                "immobilie": "immobilie",
+                "immo": "immobilie",
+                "hausgeld": "hausgeld",
+                "hausverwalter": "hausverwalter",
+                "verwaltung": "hausverwalter",
+                "konsum": "konsum",
+                "auto": "auto",
+            })
+            details["kredite"] = merge_number_defaults(parsed, nums, ["kredit", "hausgeld", "hausverwalter"])
             total_fixed = sum(
                 float(v) for cat in details.values()
                 if isinstance(cat, dict) for v in cat.values()
@@ -1492,14 +2814,19 @@ def handle_msg(message):
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "fixed_costs", total_fixed)
             update_user_field(uid, "onboarding_step", STEP_NORMAL)
+            summary_lines = ["*Profil verfeinert*", ""]
+            for section, values in details.items():
+                if isinstance(values, dict) and values:
+                    summary_lines.append(f"*{section.title()}*")
+                    for key, value in values.items():
+                        summary_lines.append(f"{key.title()}: {format_eur(value)}")
+                    summary_lines.append("")
             bot.send_message(uid,
-                f"✅ Profil verfeinert · Fixkosten: *{total_fixed:.2f}€*",
+                "\n".join(summary_lines)
+                + f"Fixkosten gesamt: *{total_fixed:.2f}€*\n"
+                + "Wenn etwas nicht stimmt, schreib z.B. `ändere Miete auf 450`.",
                 parse_mode="Markdown"
             )
-            u_fresh = get_or_create_user(uid)
-            new_badges = check_wealth_badges(uid, u_fresh)
-            if new_badges:
-                send_badge_summary(bot, uid, new_badges)
         return
 
     # ─── HYBRID-TRACKER ──────────────────────────────────────────────────
@@ -1514,13 +2841,71 @@ def handle_msg(message):
         amount_val = float(expense_nums[0].replace(',', '.'))
         merchant_found = None
         category_found = None
+        direct_category_label = None
+
+        if is_portfolio_snapshot_input(text_lower):
+            update_user_field(uid, "current_investments", amount_val)
+            save_portfolio_snapshot(
+                uid, amount_val, scope="investments",
+                source="chat", note="Manueller Depotstand"
+            )
+            cp_earned = handle_daily_activity(uid, bot)
+            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            total_wealth = amount_val + (u.get("current_cash") or 0)
+            bot.send_message(
+                uid,
+                f"📊 Depotstand aktualisiert: *{amount_val:.2f}€*\n"
+                f"Nettovermögen: *{total_wealth:.2f}€* · {cp_str}",
+                parse_mode="Markdown"
+            )
+            return
+
+        if any(word in text_lower for word in INVESTMENT_INPUTS):
+            direction = "out" if any(word in text_lower for word in ["verkauft", "verkauf", "entnommen", "ausgezahlt"]) else "in"
+            current_investments = u.get("current_investments") or 0
+            new_investments = max(0.0, current_investments - amount_val) if direction == "out" else current_investments + amount_val
+            update_user_field(uid, "current_investments", new_investments)
+            asset_type, asset_name = detect_investment_asset(text_lower)
+            event_type = "recurring_plan" if "sparplan" in text_lower else "one_time"
+            save_investment_event(
+                uid, amount_val, direction=direction, asset_type=asset_type,
+                asset_name=asset_name, event_type=event_type, source="chat",
+                note="Investment aus Chat erkannt"
+            )
+            save_portfolio_snapshot(
+                uid, new_investments, scope="investments",
+                source="chat", note="Stand nach Investment-Ereignis"
+            )
+            cp_earned = handle_daily_activity(uid, bot)
+            u_fresh = get_or_create_user(uid)
+            new_badges = check_wealth_badges(uid, u_fresh)
+            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            total_wealth = new_investments + (u.get("current_cash") or 0)
+            verb = "Investment verkauft/entnommen" if direction == "out" else "Investment erfasst"
+            bot.send_message(
+                uid,
+                f"📈 {verb}: *{amount_val:.2f}€*\n"
+                f"Investments: {new_investments:.2f}€\n"
+                f"Nettovermögen: *{total_wealth:.2f}€* · {cp_str}",
+                parse_mode="Markdown"
+            )
+            send_badge_summary(bot, uid, new_badges)
+            return
+
+        for alias, (category, label) in DIRECT_CATEGORY_INPUTS.items():
+            if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+                category_found = category
+                merchant_found = label
+                direct_category_label = label
+                break
 
         # Layer 1: Bekannte Händler
-        for m, keys in MERCHANT_KEYWORDS.items():
-            if any(k in text_lower for k in keys):
-                merchant_found = m
-                category_found = CATEGORY_MAPPING.get(m, "SONSTIGES")
-                break
+        if not merchant_found:
+            for m, keys in MERCHANT_KEYWORDS.items():
+                if any(k in text_lower for k in keys):
+                    merchant_found = m
+                    category_found = CATEGORY_MAPPING.get(m, "SONSTIGES")
+                    break
 
         # Layer 2: Kategorie-Keywords (Döner, Kino, Tanken etc.)
         if not merchant_found:
@@ -1543,12 +2928,11 @@ def handle_msg(message):
 
             # Badge-Checks – dezent inline, kein Extra-Message
             new_badge_lines = []
-            if check_fastfood_badge(uid):
-                new_badge_lines.append(badge_line("no_fastfood_30"))
 
             emoji = CATEGORY_EMOJIS.get(category_found, "🔸")
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
-            msg = f"✅ *{amount_val:.2f}€ · {merchant_found}*\n{emoji} {category_found} · {cp_str}"
+            headline = direct_category_label or merchant_found
+            msg = f"✅ *{amount_val:.2f}€ · {headline}*\n{emoji} {category_found} · {cp_str}"
             if new_badge_lines:
                 msg += "\n" + "\n".join(new_badge_lines)
             bot.send_message(uid, msg, parse_mode="Markdown")
@@ -1605,17 +2989,27 @@ def handle_msg(message):
 
     # ─── KI-FALLBACK (Nur für komplexe/unbekannte Anfragen) ─────────────
     bot.send_chat_action(uid, 'typing')
+    user_context = build_ai_user_context(uid, u)
     prompt = f"""Du bist Clarity, ein Finanz-Assistent. Antworte auf Deutsch.
 Datum: {date.today().isoformat()}
 Kategorien: LEBENSMITTEL, MOBILITAET, RESTAURANTS, ABOS, FREIZEIT, SHOPPING, VERSICHERUNG, MIETE, GESUNDHEIT, DROGERIE, PFLEGE, SONSTIGES
 
-Bleibe strikt bei persoenlichen Finanzen, Ausgaben, Budget, Sparzielen und Reports. Bei Off-Topic-Fragen keine langen Antworten schreiben.
+Du beantwortest Fragen zu persönlichen Finanzen, Ausgaben, Budget, Sparzielen, Vermögensaufbau, ETFs, Fonds, Sparplänen und Reports.
+Nutze das Nutzerprofil unten aktiv, wenn es für die Frage relevant ist.
+Wenn eine Information im Profil steht, behandle sie als bekannt und frage nicht erneut danach.
+Erfinde keine Zahlen. Wenn eine Zahl nicht im Profil oder in den Ausgaben steht, sage kurz, dass sie noch nicht hinterlegt ist.
+
+ETF- und Finanzbildungsfragen sind erlaubt. Erklaere ruhig, klar und hilfreich.
+Keine Panik-Disclaimer. Keine konkreten Kauf-/Verkaufsempfehlungen für einzelne Produkte.
+Blocke nur Off-Topic-Fragen, z.B. Buch schreiben, Weltpolitik, Hausaufgaben, Rezepte oder allgemeines Gelaber ohne Finanzbezug.
 
 Antwortformat (reines JSON):
 {{
   "expenses": [{{"amount": 12.5, "category": "LEBENSMITTEL", "merchant": "Rewe"}}],
   "reply_text": "Kurze Antwort auf Deutsch"
 }}
+
+{user_context}
 
 Nutzereingabe: {text_input}"""
 
@@ -1654,8 +3048,6 @@ Nutzereingabe: {text_input}"""
             cp_earned = handle_daily_activity(uid, bot)
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
             reply += format_expense_confirmation(booked_items, cp_str) + "\n"
-            if check_fastfood_badge(uid):
-                reply += badge_line("no_fastfood_30") + "\n"
 
         if data.get("reply_text") and booked == 0:
             reply += data["reply_text"]
@@ -1686,7 +3078,14 @@ def previous_month_key(today: date = None) -> str:
 def get_active_user_ids() -> list:
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM users WHERE onboarding_step = ?", (STEP_NORMAL,))
+        cursor.execute(
+            """SELECT u.user_id
+               FROM users u
+               LEFT JOIN user_access a ON a.user_id = u.user_id
+               WHERE u.onboarding_step = ?
+               AND COALESCE(a.status, 'approved') = 'approved'""",
+            (STEP_NORMAL,)
+        )
         return [row["user_id"] for row in cursor.fetchall()]
 
 
@@ -1772,6 +3171,19 @@ def mark_report_job_failed(job: dict, error: str):
         conn.commit()
 
 
+def mark_report_job_skipped(job: dict, reason: str):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean_reason = (reason or "Report übersprungen")[:1000]
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE report_jobs
+               SET status = 'skipped', last_error = ?, updated_at = ?
+               WHERE id = ?""",
+            (clean_reason, now, job["id"])
+        )
+        conn.commit()
+
+
 def process_report_job(job: dict):
     try:
         import report_engine
@@ -1782,6 +3194,10 @@ def process_report_job(job: dict):
         else:
             mark_report_job_failed(job, "send_report_to_user returned False")
     except Exception as e:
+        if type(e).__name__ == "ReportSkipped":
+            logger.info(f"Report-Job {job.get('id')} übersprungen: {e}")
+            mark_report_job_skipped(job, str(e))
+            return
         logger.error(f"Report-Job-Fehler {job.get('id')}: {e}", exc_info=True)
         mark_report_job_failed(job, f"{type(e).__name__}: {e}")
 
@@ -1844,8 +3260,25 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+
+def acquire_bot_lock():
+    lock_file = open(BOT_LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.error(
+            "Bot startet nicht: In diesem Projektordner läuft bereits eine Clarity-Instanz. "
+            "Bitte das andere Terminal mit Ctrl+C beenden."
+        )
+        sys.exit(1)
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
 # ====================== START ======================
 if __name__ == "__main__":
+    BOT_LOCK_HANDLE = acquire_bot_lock()
     init_db()
     setup_bot_menu()
     REPORT_SCHEDULER = setup_monthly_report_scheduler()
@@ -1854,5 +3287,10 @@ if __name__ == "__main__":
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except Exception as e:
-        logger.error(f"Polling-Fehler: {e}", exc_info=True)
-
+        if "409" in str(e) and "getUpdates" in str(e):
+            logger.error(
+                "Telegram blockiert Polling: Es läuft noch eine zweite Bot-Instanz mit demselben Token. "
+                "Stoppe die andere Instanz auf Mac, VS Code oder Server und starte dann neu."
+            )
+        else:
+            logger.error(f"Polling-Fehler: {e}", exc_info=True)
