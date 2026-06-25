@@ -2634,26 +2634,40 @@ def handle_msg(message):
         return
 
     if uid in user_reset_pending:
-        if time.time() - user_reset_pending[uid] > 300:
+        if text_lower.startswith("/") and text_lower not in {"/reset", "/reset_confirm"}:
             user_reset_pending.pop(uid, None)
-            bot.send_message(uid, "Reset abgelaufen. Bitte starte ihn bei Bedarf neu mit /reset.")
-            return
-        if text_lower in {"ja, alles löschen", "ja alles löschen", "alles löschen", "loeschen", "löschen"}:
-            try:
-                reset_user_data(uid)
+            bot.send_message(uid, "Reset abgebrochen. Ich mache mit deinem neuen Befehl weiter.")
+        else:
+            if text_lower == "/reset_confirm":
+                try:
+                    reset_user_data(uid)
+                    user_reset_pending.pop(uid, None)
+                    bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+                    logger.info(f"User {uid} hat alle Daten per /reset_confirm gelöscht.")
+                except Exception as e:
+                    logger.error(f"Reset per /reset_confirm fehlgeschlagen für User {uid}: {e}", exc_info=True)
+                    bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
+                return
+            if time.time() - user_reset_pending[uid] > 300:
                 user_reset_pending.pop(uid, None)
-                bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
-                logger.info(f"User {uid} hat alle Daten per Text-Bestätigung gelöscht.")
-            except Exception as e:
-                logger.error(f"Reset per Text fehlgeschlagen für User {uid}: {e}", exc_info=True)
-                bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
+                bot.send_message(uid, "Reset abgelaufen. Bitte starte ihn bei Bedarf neu mit /reset.")
+                return
+            if text_lower in {"ja", "yes", "ja, alles löschen", "ja alles löschen", "alles löschen", "loeschen", "löschen"}:
+                try:
+                    reset_user_data(uid)
+                    user_reset_pending.pop(uid, None)
+                    bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+                    logger.info(f"User {uid} hat alle Daten per Text-Bestätigung gelöscht.")
+                except Exception as e:
+                    logger.error(f"Reset per Text fehlgeschlagen für User {uid}: {e}", exc_info=True)
+                    bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
+                return
+            if text_lower in {"abbrechen", "stop", "cancel", "nein"}:
+                user_reset_pending.pop(uid, None)
+                bot.send_message(uid, "Abgebrochen.")
+                return
+            bot.send_message(uid, "Bitte bestätige mit „Ja, alles löschen“ oder brich mit „Abbrechen“ ab.")
             return
-        if text_lower in {"abbrechen", "stop", "cancel", "nein"}:
-            user_reset_pending.pop(uid, None)
-            bot.send_message(uid, "Abgebrochen.")
-            return
-        bot.send_message(uid, "Bitte bestätige mit „Ja, alles löschen“ oder brich mit „Abbrechen“ ab.")
-        return
 
     if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
         return
