@@ -67,6 +67,7 @@ BADGE_LABELS = {
     "ten_k_club": "Fünfstellige Freiheit",
     "month_win": "Monats-Sieg",
     "fastfood_free": "Fast-Food-Pause",
+    "no_fastfood_30": "30 Tage ohne Fast Food",
 }
 
 PAGE_W, PAGE_H = landscape(A4)
