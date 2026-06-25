@@ -76,6 +76,17 @@ ALLOWED_USER_FIELDS = {
     "portfolio_balance", "streak_days", "current_month"
 }
 
+RESET_USER_TABLES = [
+    "expenses",
+    "user_badges",
+    "monthly_snapshots",
+    "score_history",
+    "investment_events",
+    "portfolio_snapshots",
+    "report_jobs",
+    "users",
+]
+
 # ====================== MERCHANT KEYWORDS (Hybrid Layer 1) ======================
 MERCHANT_KEYWORDS = {
     "Lidl":       ["lidl"],
@@ -458,6 +469,19 @@ def get_or_create_user(user_id: int) -> dict:
         u = dict(row)
         u["details"] = details
         return u
+
+
+def reset_user_data(user_id: int) -> None:
+    """Loescht alle Profildaten, behaelt aber die Freigabe im Testlauf."""
+    with get_db() as conn:
+        for table in RESET_USER_TABLES:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,)
+            ).fetchone()
+            if row:
+                conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        conn.commit()
 
 def update_user_field(user_id: int, field: str, value) -> bool:
     """Aktualisiert ein Nutzerfeld – Whitelist schützt vor SQL-Injection."""
@@ -1979,10 +2003,7 @@ def handle_callbacks(call):
         return
 
     if data == "confirm_reset":
-        with get_db() as conn:
-            for table in ["expenses", "user_badges", "monthly_snapshots", "report_jobs", "users"]:
-                conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,))
-            conn.commit()
+        reset_user_data(uid)
         bot.edit_message_text(
             "Alle Daten gelöscht. /start für Neuanfang.",
             uid, call.message.message_id
@@ -2561,10 +2582,7 @@ def handle_commands(message):
 
     elif cmd == '/reset_confirm':
         # Fallback für direkte Text-Eingabe
-        with get_db() as conn:
-            for table in ["expenses", "user_badges", "monthly_snapshots", "report_jobs", "users"]:
-                conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (uid,))
-            conn.commit()
+        reset_user_data(uid)
         bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
 
 # ====================== MAIN MESSAGE HANDLER ======================
