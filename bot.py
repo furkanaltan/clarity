@@ -2003,14 +2003,32 @@ def handle_callbacks(call):
         return
 
     if data == "confirm_reset":
-        reset_user_data(uid)
-        bot.edit_message_text(
-            "Alle Daten gelöscht. /start für Neuanfang.",
-            uid, call.message.message_id
-        )
-        logger.info(f"User {uid} hat alle Daten gelöscht.")
+        try:
+            bot.answer_callback_query(call.id, "Ich lösche deine Daten...")
+        except Exception:
+            pass
+        try:
+            reset_user_data(uid)
+            bot.edit_message_text(
+                "Alle Daten gelöscht. /start für Neuanfang.",
+                uid, call.message.message_id
+            )
+            logger.info(f"User {uid} hat alle Daten gelöscht.")
+        except Exception as e:
+            logger.error(f"Reset fehlgeschlagen für User {uid}: {e}", exc_info=True)
+            try:
+                bot.edit_message_text(
+                    "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal oder nutze /reset_confirm.",
+                    uid, call.message.message_id
+                )
+            except Exception:
+                bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal oder nutze /reset_confirm.")
 
     elif data == "cancel_reset":
+        try:
+            bot.answer_callback_query(call.id, "Abgebrochen.")
+        except Exception:
+            pass
         bot.edit_message_text("Abgebrochen.", uid, call.message.message_id)
 
     elif data == "start_refine":
