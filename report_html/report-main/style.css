@@ -1257,6 +1257,7 @@ body {
   @page {
     size: 1260px 708px;
     margin: 0;
+    background: #f2f2f0;
   }
 
   :root {
@@ -1266,7 +1267,7 @@ body {
 
   html,
   body {
-    background: #ffffff;
+    background: var(--bg);
     margin: 0;
     padding: 0;
   }
@@ -1281,6 +1282,7 @@ body {
     width: var(--page-w);
     height: var(--page-h);
     min-height: var(--page-h);
+    background: var(--bg);
     margin: 0;
     padding: var(--page-pad);
     padding-bottom: 74px;
