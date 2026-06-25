@@ -1996,6 +1996,12 @@ def handle_callbacks(call):
     data = call.data
     actor_id = call.from_user.id if getattr(call, "from_user", None) else uid
 
+    logger.info(f"Callback erhalten: user={uid}, actor={actor_id}, data={data}")
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        logger.warning(f"Callback konnte nicht sofort bestaetigt werden: {e}")
+
     if USER_APPROVAL_ENABLED and not is_admin_id(actor_id) and get_access_status(actor_id) != "approved":
         try:
             bot.answer_callback_query(call.id, "Dein Zugang ist noch nicht freigegeben.")
@@ -2035,6 +2041,7 @@ def handle_callbacks(call):
         bot.edit_message_text("Abgebrochen.", uid, call.message.message_id)
 
     elif data == "start_refine":
+        get_or_create_user(uid)
         update_user_field(uid, "onboarding_step", STEP_ADAPT_HOUSING)
         try:
             bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
