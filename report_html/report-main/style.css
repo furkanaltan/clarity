@@ -1260,8 +1260,8 @@ body {
   }
 
   :root {
-    --page-pad: 48px;
-    --card-pad: 24px;
+    --page-pad: 40px;
+    --card-pad: 20px;
   }
 
   html,
@@ -1283,7 +1283,7 @@ body {
     min-height: var(--page-h);
     margin: 0;
     padding: var(--page-pad);
-    padding-bottom: 86px;
+    padding-bottom: 74px;
     border: none;
     border-radius: 0;
     box-shadow: none;
@@ -1302,18 +1302,22 @@ body {
     position: absolute;
     left: var(--page-pad);
     right: var(--page-pad);
-    bottom: 28px;
+    bottom: 22px;
     margin-top: 0;
     padding-top: 14px;
   }
 
   .display {
-    font-size: 58px;
-    margin-bottom: 18px;
+    font-size: 52px;
+    margin-bottom: 14px;
   }
 
   .display-cover {
-    font-size: 68px;
+    font-size: 64px;
+  }
+
+  .card {
+    padding: var(--card-pad);
   }
 
   .card-label {
@@ -1326,11 +1330,16 @@ body {
   }
 
   .cover-kpis {
-    margin-top: 44px;
+    margin-top: 36px;
+    gap: 24px;
+  }
+
+  .cover-kpi {
+    height: 260px;
   }
 
   .fin-hero {
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
 
   .fin-hero-label {
@@ -1343,7 +1352,7 @@ body {
   }
 
   .fin-hero-divider {
-    height: 100px;
+    height: 88px;
   }
 
   .fin-hero .right .icon-circle {
@@ -1359,5 +1368,39 @@ body {
 
   .fin-kpi-pct {
     font-size: 12.5px;
+  }
+
+  .monat-grid,
+  .recap-grid,
+  .insights-grid,
+  .journey-kpis {
+    gap: 10px;
+  }
+
+  .fazit-card p,
+  .recap-card ul li {
+    line-height: 1.42;
+  }
+
+  .chart-area {
+    height: 130px;
+  }
+
+  .chart-caption {
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+
+  .goal-kpis,
+  .ms-kpis {
+    padding-top: 14px;
+  }
+
+  .bar-row {
+    margin-bottom: 10px;
+  }
+
+  .milestone-card {
+    margin-bottom: 10px;
   }
 }
