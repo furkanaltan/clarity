@@ -8,6 +8,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.colors import HexColor
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 load_dotenv()
@@ -77,6 +79,29 @@ GOOD = HexColor("#1F7A4D")
 ALERT = HexColor("#A33A32")
 
 
+def register_font(name: str, candidates: list[str], fallback: str) -> str:
+    for candidate in candidates:
+        if Path(candidate).exists():
+            try:
+                pdfmetrics.registerFont(TTFont(name, candidate))
+                return name
+            except Exception:
+                continue
+    return fallback
+
+
+FONT_DISPLAY = register_font(
+    "ClarityDisplay",
+    [
+        "/System/Library/Fonts/Supplemental/BigCaslon.ttf",
+        "/System/Library/Fonts/NewYork.ttf",
+        "/System/Library/Fonts/Supplemental/Georgia.ttf",
+    ],
+    "Times-Roman",
+)
+FONT_TEXT = "Helvetica"
+
+
 def fmt_eur(value) -> str:
     try:
         return f"{float(value or 0):,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -114,7 +139,7 @@ def clamp_text(text, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def draw_spaced_text(c, x, y, text, spacing=8, font="Helvetica", size=11):
+def draw_spaced_text(c, x, y, text, spacing=8, font=FONT_TEXT, size=11):
     c.setFont(font, size)
     cursor = x
     for char in text:
@@ -124,16 +149,20 @@ def draw_spaced_text(c, x, y, text, spacing=8, font="Helvetica", size=11):
 
 def draw_clarity_mark(c, x, y, scale=1.0, color=MUTED):
     c.setStrokeColor(color)
-    c.setLineWidth(1.4 * scale)
-    r = 10 * scale
-    c.arc(x - r, y - r, x + r, y + r, 35, 330)
-    c.arc(x - r * 0.62, y - r * 0.62, x + r * 0.62, y + r * 0.62, 35, 330)
+    c.setLineWidth(1.25 * scale)
+    try:
+        c.setLineCap(1)
+    except Exception:
+        pass
+    r = 9.6 * scale
+    c.arc(x - r, y - r, x + r, y + r, 38, 322)
+    c.arc(x - r * 0.62, y - r * 0.62, x + r * 0.62, y + r * 0.62, 38, 322)
 
 
 def draw_clarity_logo(c, x, y, scale=1.0):
     c.setFillColor(MUTED)
     draw_clarity_mark(c, x, y, scale, MUTED)
-    draw_spaced_text(c, x + 26 * scale, y - 4 * scale, "CLARITY", spacing=5.5 * scale, size=10 * scale)
+    draw_spaced_text(c, x + 29 * scale, y - 4.2 * scale, "CLARITY", spacing=6.8 * scale, size=10.5 * scale)
 
 
 def draw_footer(c, page_number=1):
@@ -144,7 +173,7 @@ def draw_footer(c, page_number=1):
     draw_clarity_logo(c, MARGIN_X + 10, y + 10, 0.78)
     c.setStrokeColor(LINE)
     c.line(MARGIN_X + 118, y - 2, MARGIN_X + 118, y + 22)
-    c.setFont("Helvetica", 9)
+    c.setFont(FONT_TEXT, 9)
     c.setFillColor(MUTED)
     c.drawString(MARGIN_X + 138, y + 6, "Clarity Report")
     c.drawRightString(PAGE_W - MARGIN_X, y + 6, f"{page_number} / 10")
@@ -237,25 +266,25 @@ def draw_card(c, x, y, w, h, label, value, sub=None, value_size=18):
         c.drawString(x + 16, y - h + 18, clamp_text(sub, 48))
 
 
-def draw_cover_card(c, x, y, w, h, icon, label, main, sub=None, main_size=48):
+def draw_cover_card(c, x, y, w, h, icon, label, main, sub=None, main_size=48, sub_size=22):
     c.setFillColor(HexColor("#FFFFFF"))
     c.setStrokeColor(HexColor("#D2D2D2"))
     c.setLineWidth(0.85)
     c.roundRect(x, y - h, w, h, 13, fill=1, stroke=1)
     draw_cover_icon(c, icon, x + 37, y - 38)
-    c.setFont("Times-Roman", 15)
+    c.setFont(FONT_DISPLAY, 15)
     c.setFillColor(HexColor("#555555"))
     c.drawString(x + 76, y - 43, label)
     c.setStrokeColor(HexColor("#D8D8D8"))
     c.setLineWidth(0.7)
     c.line(x + 26, y - 72, x + w - 26, y - 72)
-    c.setFont("Times-Bold", main_size)
+    c.setFont(FONT_DISPLAY, main_size)
     c.setFillColor(INK)
-    c.drawString(x + 34, y - 143, main)
+    c.drawCentredString(x + w / 2, y - 143, main)
     if sub:
-        c.setFont("Times-Roman", 22)
+        c.setFont(FONT_DISPLAY, sub_size)
         c.setFillColor(HexColor("#666666"))
-        c.drawString(x + 38, y - 178, sub)
+        c.drawCentredString(x + w / 2, y - 178, sub)
 
 
 def draw_progress_bar(c, x, y, w, h, percent):
@@ -923,9 +952,13 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             f"Stärkste Kategorie: {strongest_category['category']} mit {strongest_category['total']:.2f} EUR."
         )
     if remaining_budget < 0:
-        money_map_insights.append("Optimierungspotenzial: Der Monat lag über dem freien Budget.")
+        money_map_insights.append("Dein freies Budget ist überzogen - hier liegt dein dringendster Hebel.")
+    elif strongest_category:
+        money_map_insights.append(
+            f"{strongest_category['category']} dominiert deinen Monat - hier liegt dein größter Hebel."
+        )
     elif free_budget > 0:
-        money_map_insights.append("Optimierungspotenzial: Freies Budget bleibt kontrollierbar.")
+        money_map_insights.append("Dein freies Budget bleibt stabil - diesen Vorsprung solltest du halten.")
 
     recap_good = "Deine Struktur steht: Einnahmen, Fixkosten, Sparziel und Vermögenswerte sind erfasst."
     if tracked_days >= 7:
@@ -1054,26 +1087,26 @@ def draw_cover_page(c, data):
     begin_page(c)
     draw_clarity_logo(c, MARGIN_X + 8, PAGE_H - 66, 1.0)
 
-    c.setFont("Times-Bold", 68)
+    c.setFont(FONT_DISPLAY, 72)
     c.setFillColor(INK)
     c.drawString(MARGIN_X, PAGE_H - 165, "Clarity Report")
 
     y = PAGE_H - 225
-    card_w = 232
-    card_h = 205
-    gap = 13
+    card_w = 236
+    card_h = 215
+    gap = 14
     draw_cover_card(
         c, MARGIN_X, y, card_w, card_h,
-        "calendar", "Zeitraum", month_name.upper(), year, main_size=58
+        "calendar", "Zeitraum", month_name.upper(), year, main_size=59, sub_size=29
     )
     draw_cover_card(
         c, MARGIN_X + card_w + gap, y, card_w, card_h,
         "mountain", "Freiheits-Schritt", fmt_eur_cover(cover["freedom_step"]),
-        "näher an deinem Ziel", main_size=56
+        "näher an deinem Ziel", main_size=61, sub_size=22
     )
     draw_cover_card(
         c, MARGIN_X + (card_w + gap) * 2, y, card_w, card_h,
-        "trend", "Entwicklung", development, development_sub, main_size=max(development_size, 56)
+        "trend", "Entwicklung", development, development_sub, main_size=max(development_size, 61), sub_size=22
     )
     draw_footer(c, 1)
     end_page(c)
@@ -1248,19 +1281,9 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"clarity_report_{user_id}_{report_month}.pdf"
 
-    c = canvas.Canvas(str(file_path), pagesize=(PAGE_W, PAGE_H))
-    draw_cover_page(c, report_data)
-    draw_financial_story_page(c, report_data)
-    draw_month_page(c, report_data)
-    draw_score_page(c, report_data)
-    draw_wealth_journey_page(c, report_data)
-    draw_goal_page(c, report_data)
-    draw_money_map_page(c, report_data)
-    draw_milestones_page(c, report_data)
-    draw_recap_page(c, report_data)
-    draw_closing_page(c, report_data)
+    from report_html_renderer import build_pdf_report
 
-    c.save()
+    build_pdf_report(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
 
 

@@ -25,3 +25,5 @@ clarity-bot/
 *.db-wal
 *.lock
 *.zip
+
+report_html/report-main/generated/
