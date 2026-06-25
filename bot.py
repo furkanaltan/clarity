@@ -671,9 +671,6 @@ def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
 
 def merge_number_defaults(parsed: dict, nums: list, keys: list) -> dict:
     if parsed:
-        remaining_keys = [key for key in keys if key not in parsed]
-        for key, value in zip(remaining_keys, nums):
-            parsed.setdefault(key, value)
         return parsed
 
     if len(nums) >= len(keys):
@@ -2817,6 +2814,10 @@ def handle_msg(message):
                 "leasing": "auto",
                 "rate": "auto",
                 "versicherung": "versicherung",
+                "autoversicherung": "versicherung",
+                "auto-versicherung": "versicherung",
+                "kfzversicherung": "versicherung",
+                "kfz-versicherung": "versicherung",
                 "vers": "versicherung",
                 "bahn": "bahn",
                 "ticket": "bahn",
