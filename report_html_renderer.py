@@ -5,6 +5,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from report_engine import GERMAN_MONTHS, build_report_data
 
@@ -689,7 +690,16 @@ def build_html_report(user_id: int, report_month: str, report_data: dict | None 
     report_data = report_data or build_report_data(user_id, report_month)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     rendered_pages = [render_page(filename, report_data) for filename, _title in PAGE_FILES]
-    doc = """<!doctype html>
+    doc = build_html_document(rendered_pages)
+    output_path = GENERATED_DIR / f"clarity_report_{user_id}_{report_month}.html"
+    output_path.write_text(doc, encoding="utf-8")
+    latest_path = GENERATED_DIR / "latest_preview.html"
+    latest_path.write_text(doc, encoding="utf-8")
+    return output_path
+
+
+def build_html_document(pages: list[str]) -> str:
+    return """<!doctype html>
 <html lang="de">
   <head>
     <meta charset="UTF-8" />
@@ -703,16 +713,12 @@ def build_html_report(user_id: int, report_month: str, report_data: dict | None 
     </main>
   </body>
 </html>
-""".format(pages="\n\n".join(rendered_pages))
-    output_path = GENERATED_DIR / f"clarity_report_{user_id}_{report_month}.html"
-    output_path.write_text(doc, encoding="utf-8")
-    latest_path = GENERATED_DIR / "latest_preview.html"
-    latest_path.write_text(doc, encoding="utf-8")
-    return output_path
+""".format(pages="\n\n".join(pages))
 
 
 def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_data: dict | None = None) -> Path:
     """Render the premium HTML report and convert it into a sendable PDF."""
+    report_data = report_data or build_report_data(user_id, report_month)
     html_path = build_html_report(user_id, report_month, report_data=report_data)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -723,7 +729,33 @@ def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_
             "WeasyPrint fehlt. Installiere es mit: python3 -m pip install weasyprint"
         ) from exc
 
-    HTML(filename=str(html_path), base_url=str(html_path.parent)).write_pdf(str(output_path))
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "pypdf fehlt. Installiere es mit: python3 -m pip install pypdf"
+        ) from exc
+
+    # Render each page independently and merge only the first rendered page.
+    # This prevents WeasyPrint from turning one long HTML document into 11+ pages.
+    with TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        writer = PdfWriter()
+        for idx, (filename, _title) in enumerate(PAGE_FILES, start=1):
+            single_html_path = tmp_path / f"page_{idx:02d}.html"
+            single_pdf_path = tmp_path / f"page_{idx:02d}.pdf"
+            single_html_path.write_text(
+                build_html_document([render_page(filename, report_data)]),
+                encoding="utf-8",
+            )
+            HTML(filename=str(single_html_path), base_url=str(html_path.parent)).write_pdf(str(single_pdf_path))
+            reader = PdfReader(str(single_pdf_path))
+            if not reader.pages:
+                raise RuntimeError(f"PDF-Seite {idx} konnte nicht gerendert werden.")
+            writer.add_page(reader.pages[0])
+
+        with output_path.open("wb") as pdf_file:
+            writer.write(pdf_file)
     return output_path
 
 
