@@ -98,6 +98,21 @@ def month_name_only(month_label: str) -> str:
     return month_name.title()
 
 
+def clean_goal_description(value: str) -> str:
+    text = str(value or "").strip()
+    command_values = {
+        "/zurueck",
+        "/zurück",
+        "zurueck",
+        "zurück",
+        "back",
+        "/back",
+    }
+    if not text or text.lower() in command_values:
+        return "Dein Ziel"
+    return text
+
+
 def next_month_label(report_month: str) -> str:
     year, month = map(int, report_month.split("-"))
     if month == 12:
@@ -545,7 +560,7 @@ def render_goal(page_html: str, data: dict) -> str:
     target = float(goal["target_amount"] or 0)
     current = float(data["profile"]["net_worth"] or 0)
     remaining = max(0.0, target - current)
-    page_html = replace_first(page_html, r'(<div class="goal-name">).*?(</div>)', rf'\g<1>{h(goal["description"])}\g<2>', flags=re.S)
+    page_html = replace_first(page_html, r'(<div class="goal-name">).*?(</div>)', rf'\g<1>{h(clean_goal_description(goal["description"]))}\g<2>', flags=re.S)
     page_html = replace_first(page_html, r'(<div class="goal-pct">).*?(</div>)', rf'\g<1>{h(fmt_percent(goal["progress_percent"], 0))}\g<2>', flags=re.S)
     page_html = replace_first(
         page_html,

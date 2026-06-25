@@ -1403,4 +1403,47 @@ body {
   .milestone-card {
     margin-bottom: 10px;
   }
+
+  .milestone-header {
+    margin-bottom: 12px;
+  }
+
+  .ms-progress-track {
+    margin: 10px 0 8px;
+  }
+
+  .ms-progress-pct {
+    margin-bottom: 12px;
+  }
+
+  .ms-kpi .mk-val {
+    font-size: 25px;
+  }
+
+  .ms-next {
+    margin-top: 10px;
+    padding: 10px 14px;
+  }
+
+  .badges-header {
+    margin-bottom: 6px;
+  }
+
+  .badges-sub {
+    margin-bottom: 12px;
+  }
+
+  .badges-grid {
+    gap: 8px;
+  }
+
+  .badge-tile {
+    padding: 12px;
+    gap: 9px;
+  }
+
+  .badge-tile svg {
+    width: 18px;
+    height: 18px;
+  }
 }
