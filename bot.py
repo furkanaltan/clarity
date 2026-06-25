@@ -1864,6 +1864,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
 bot = telebot.TeleBot(TOKEN)
 user_last_message: dict = {}
 user_pending_actions: dict = {}
+user_reset_pending: dict = {}
 
 def setup_bot_menu():
     commands = [
@@ -2009,6 +2010,7 @@ def handle_callbacks(call):
             pass
         try:
             reset_user_data(uid)
+            user_reset_pending.pop(uid, None)
             bot.edit_message_text(
                 "Alle Daten gelöscht. /start für Neuanfang.",
                 uid, call.message.message_id
@@ -2025,6 +2027,7 @@ def handle_callbacks(call):
                 bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal oder nutze /reset_confirm.")
 
     elif data == "cancel_reset":
+        user_reset_pending.pop(uid, None)
         try:
             bot.answer_callback_query(call.id, "Abgebrochen.")
         except Exception:
@@ -2559,14 +2562,15 @@ def handle_commands(message):
         bot.send_message(uid, f"↩️ {last['amount']:.2f}€ bei {last['merchant']} gelöscht.")
 
     elif cmd == '/reset':
-        # FIX: Echter tippbarer Button statt Text-Bestätigung
+        user_reset_pending[uid] = time.time()
         markup = telebot.types.InlineKeyboardMarkup()
         markup.add(
             telebot.types.InlineKeyboardButton("Ja, alles löschen", callback_data="confirm_reset"),
             telebot.types.InlineKeyboardButton("Abbrechen", callback_data="cancel_reset")
         )
         bot.send_message(uid,
-            "⚠️ Alle Daten werden unwiderruflich gelöscht.",
+            "⚠️ Alle Daten werden unwiderruflich gelöscht.\n\n"
+            "Drücke den Button oder schreibe: Ja, alles löschen",
             reply_markup=markup
         )
 
@@ -2623,6 +2627,28 @@ def handle_msg(message):
     step = u.get("onboarding_step") or STEP_START
 
     if not ensure_user_approved(message):
+        return
+
+    if uid in user_reset_pending:
+        if time.time() - user_reset_pending[uid] > 300:
+            user_reset_pending.pop(uid, None)
+            bot.send_message(uid, "Reset abgelaufen. Bitte starte ihn bei Bedarf neu mit /reset.")
+            return
+        if text_lower in {"ja, alles löschen", "ja alles löschen", "alles löschen", "loeschen", "löschen"}:
+            try:
+                reset_user_data(uid)
+                user_reset_pending.pop(uid, None)
+                bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+                logger.info(f"User {uid} hat alle Daten per Text-Bestätigung gelöscht.")
+            except Exception as e:
+                logger.error(f"Reset per Text fehlgeschlagen für User {uid}: {e}", exc_info=True)
+                bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
+            return
+        if text_lower in {"abbrechen", "stop", "cancel", "nein"}:
+            user_reset_pending.pop(uid, None)
+            bot.send_message(uid, "Abgebrochen.")
+            return
+        bot.send_message(uid, "Bitte bestätige mit „Ja, alles löschen“ oder brich mit „Abbrechen“ ab.")
         return
 
     if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
