@@ -1305,6 +1305,8 @@ body {
     bottom: 22px;
     margin-top: 0;
     padding-top: 14px;
+    background: var(--bg);
+    z-index: 10;
   }
 
   .display {
@@ -1368,6 +1370,18 @@ body {
 
   .fin-kpi-pct {
     font-size: 12.5px;
+  }
+
+  .fin-bottom {
+    gap: 10px;
+  }
+
+  .fin-bottom .card {
+    min-height: 0;
+  }
+
+  .fin-bottom .big-num-compact {
+    font-size: 32px;
   }
 
   .monat-grid,
