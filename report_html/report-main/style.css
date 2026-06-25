@@ -1259,6 +1259,11 @@ body {
     margin: 0;
   }
 
+  :root {
+    --page-pad: 48px;
+    --card-pad: 24px;
+  }
+
   html,
   body {
     background: #ffffff;
@@ -1277,15 +1282,82 @@ body {
     height: var(--page-h);
     min-height: var(--page-h);
     margin: 0;
+    padding: var(--page-pad);
+    padding-bottom: 86px;
     border: none;
     border-radius: 0;
     box-shadow: none;
+    break-inside: avoid;
     break-after: page;
+    page-break-inside: avoid;
     page-break-after: always;
   }
 
   .page:last-child {
     break-after: auto;
     page-break-after: auto;
+  }
+
+  .page-footer {
+    position: absolute;
+    left: var(--page-pad);
+    right: var(--page-pad);
+    bottom: 28px;
+    margin-top: 0;
+    padding-top: 14px;
+  }
+
+  .display {
+    font-size: 58px;
+    margin-bottom: 18px;
+  }
+
+  .display-cover {
+    font-size: 68px;
+  }
+
+  .card-label {
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+  }
+
+  .divider {
+    margin: 16px 0;
+  }
+
+  .cover-kpis {
+    margin-top: 44px;
+  }
+
+  .fin-hero {
+    margin-bottom: 12px;
+  }
+
+  .fin-hero-label {
+    font-size: 31px;
+  }
+
+  .fin-hero-value,
+  .fin-hero .right .delta {
+    font-size: 52px;
+  }
+
+  .fin-hero-divider {
+    height: 100px;
+  }
+
+  .fin-hero .right .icon-circle {
+    width: 72px;
+    height: 72px;
+  }
+
+  .insight-card p {
+    font-size: 12.5px;
+    line-height: 1.48;
+    margin-bottom: 6px;
+  }
+
+  .fin-kpi-pct {
+    font-size: 12.5px;
   }
 }
