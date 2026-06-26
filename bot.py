@@ -596,7 +596,7 @@ ONBOARDING_BACK_STEPS = {
     STEP_INCOME: None,
     STEP_OTHER_INCOME: STEP_INCOME,
     STEP_FIXED_COSTS: STEP_OTHER_INCOME,
-    STEP_GOAL_DESCRIPTION: STEP_FIXED_COSTS,
+    STEP_GOAL_DESCRIPTION: STEP_OTHER_INCOME,
     STEP_GOAL_AMOUNT: STEP_GOAL_DESCRIPTION,
     STEP_CURRENT_INVESTMENTS: STEP_GOAL_AMOUNT,
     STEP_CURRENT_CASH: STEP_CURRENT_INVESTMENTS,
@@ -605,15 +605,15 @@ ONBOARDING_BACK_STEPS = {
 }
 
 ONBOARDING_BACK_MESSAGES = {
-    STEP_INCOME: "Schritt 1 von 9: Wie hoch ist dein monatliches Nettoeinkommen?\n(z.B. 2500)",
-    STEP_OTHER_INCOME: "Schritt 2 von 9: Weitere Einkommen? (Falls keine, 0)",
-    STEP_FIXED_COSTS: "Schritt 3 von 9: Fixkosten gesamt?",
-    STEP_GOAL_DESCRIPTION: "Schritt 4 von 9: Dein Sparziel in Worten?",
-    STEP_GOAL_AMOUNT: "Schritt 5 von 9: Welchen Betrag brauchst du?",
-    STEP_CURRENT_INVESTMENTS: "Schritt 6 von 9: Aktuell investiertes Vermögen? (ETF/Aktien, 0 falls keines)",
-    STEP_CURRENT_CASH: "Schritt 7 von 9: Cash-Reserven? (Tagesgeld/Giro)",
-    STEP_ETF_SAVINGS: "Schritt 8 von 9: Monatliche ETF-Sparrate?",
-    STEP_CASH_SAVINGS: "Schritt 9 von 9: Monatliche Cash-Sparrate?",
+    STEP_INCOME: "Schritt 1 von 8: Wie hoch ist dein monatliches Nettoeinkommen?\n(z.B. 2500)",
+    STEP_OTHER_INCOME: "Schritt 2 von 8: Weitere Einkommen? (Falls keine, 0)",
+    STEP_FIXED_COSTS: "Schritt 3 von 8: Dein Sparziel in Worten?",
+    STEP_GOAL_DESCRIPTION: "Schritt 3 von 8: Dein Sparziel in Worten?",
+    STEP_GOAL_AMOUNT: "Schritt 4 von 8: Welchen Betrag brauchst du?",
+    STEP_CURRENT_INVESTMENTS: "Schritt 5 von 8: Aktuell investiertes Vermögen? (ETF/Aktien, 0 falls keines)",
+    STEP_CURRENT_CASH: "Schritt 6 von 8: Cash-Reserven? (Tagesgeld/Giro)",
+    STEP_ETF_SAVINGS: "Schritt 7 von 8: Monatliche ETF-Sparrate?",
+    STEP_CASH_SAVINGS: "Schritt 8 von 8: Monatliche Cash-Sparrate?",
 }
 
 REFINE_BACK_STEPS = {
@@ -667,6 +667,11 @@ def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
                 result[key] = float(raw_amount.replace(",", "."))
                 break
     return result
+
+
+def is_back_request(text_lower: str) -> bool:
+    normalized = text_lower.strip().lstrip("/")
+    return normalized in {"zurueck", "zurück", "back"} or normalized.startswith(("zurueck ", "zurück ", "back "))
 
 
 def merge_number_defaults(parsed: dict, nums: list, keys: list) -> dict:
@@ -753,7 +758,9 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
         "hinzu", "ergänze", "ergaenze", "nimm auf",
     ]
-    if not any(word in text_lower for word in correction_words):
+    has_correction_word = any(word in text_lower for word in correction_words)
+    has_monthly_context = any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"])
+    if not has_correction_word and not has_monthly_context:
         return ""
 
     numbers = re.findall(r"\d+(?:[.,]\d+)?", text_lower)
@@ -790,9 +797,26 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
     return ""
 
 
+def looks_like_profile_correction(text_lower: str) -> bool:
+    correction_words = {
+        "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
+        "setze", "setz", "aktualisiere", "update", "füge", "fuege",
+        "hinzu", "ergänze", "ergaenze", "nimm auf",
+    }
+    if any(word in text_lower for word in correction_words):
+        return True
+    if any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"]):
+        return any(re.search(rf"\b{re.escape(alias)}\b", text_lower) for alias in DETAIL_VALUE_ALIASES)
+    return False
+
+
 def calculate_time_to_goal(goal_amount: float, etf_monthly: float, cash_monthly: float,
                            current_investments: float = 0.0, current_cash: float = 0.0) -> str:
     """Ziel-Prognose mit echten Startwerten und Zinseszins."""
+    if goal_amount <= 0:
+        return "Bitte hinterlege zuerst einen Zielbetrag."
+    if current_investments + current_cash >= goal_amount:
+        return "Ziel rechnerisch bereits erreicht."
     if etf_monthly + cash_monthly <= 0:
         return "Sparrate ist 0 – Ziel nicht erreichbar."
     etf_bal, cash_bal, months = current_investments, current_cash, 0
@@ -1884,6 +1908,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Profil verfeinern"),
+        telebot.types.BotCommand("zurueck",    "Einen Schritt zurück"),
         telebot.types.BotCommand("undo",       "↩️ Letzte Ausgabe löschen"),
         telebot.types.BotCommand("editlast",   "Letzte Ausgabe ändern"),
         telebot.types.BotCommand("reset",      "🗑️ Alle Daten löschen"),
@@ -2275,8 +2300,8 @@ def handle_commands(message):
         bot.send_message(
             uid,
             "👋 Willkommen bei *Clarity*.\n\n"
-            "📝 *Schritt 1 von 9:* Wie hoch ist dein monatliches Nettoeinkommen?\n_(z.B. 2500)_\n\n"
-            "_Mit 'zurück' gehst du einen Schritt zurück._",
+            "📝 *Schritt 1 von 8:* Wie hoch ist dein monatliches Nettoeinkommen?\n_(z.B. 2500)_\n\n"
+            "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
             parse_mode="Markdown"
        )
 
@@ -2556,7 +2581,7 @@ def handle_commands(message):
         update_user_field(uid, "onboarding_step", STEP_INCOME)
         bot.send_message(
             uid,
-            "*Schritt 1 von 9:* Nettoeinkommen?\n\n_Mit 'zurück' gehst du einen Schritt zurück._",
+            "*Schritt 1 von 8:* Nettoeinkommen?\n\n_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
             parse_mode="Markdown"
         )
 
@@ -2675,14 +2700,7 @@ def handle_msg(message):
             bot.send_message(uid, "Bitte bestätige mit „Ja, alles löschen“ oder brich mit „Abbrechen“ ab.")
             return
 
-    if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
-        return
-
-    if step == STEP_START:
-        bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
-        return
-
-    if text_lower in {"zurueck", "zurück"}:
+    if is_back_request(text_lower):
         if 0 < step < STEP_NORMAL:
             prev_step = ONBOARDING_BACK_STEPS.get(step)
             if prev_step is None:
@@ -2700,6 +2718,27 @@ def handle_msg(message):
             update_user_field(uid, "onboarding_step", prev_step)
             bot.send_message(uid, REFINE_BACK_MESSAGES[prev_step])
             return
+        if step == STEP_START:
+            bot.send_message(uid, "Du bist bereits am Anfang. Tippe /start, um zu starten.")
+            return
+        return
+
+    if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
+        return
+
+    if step == STEP_START:
+        bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
+        return
+
+    if looks_like_profile_correction(text_lower):
+        correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
+        if correction_reply:
+            bot.send_message(uid, correction_reply, parse_mode="Markdown")
+        else:
+            bot.send_message(
+                uid,
+                "Ich konnte die Profiländerung nicht eindeutig zuordnen. Beispiel: „ändere Miete auf 800€“ oder „füge hinzu Autoversicherung 105€“."
+            )
         return
 
     if is_hard_off_topic_request(text_lower):
@@ -2741,7 +2780,7 @@ def handle_msg(message):
                 update_user_field(uid, "goal_description", text_input)
                 update_user_field(uid, "onboarding_step", STEP_GOAL_AMOUNT)
                 bot.send_message(uid,
-                    f"🎯 Ziel: *{text_input}*\n\n✅ *Schritt 5 von 9:* Welchen Betrag brauchst du?",
+                    f"🎯 Ziel: *{text_input}*\n\n✅ *Schritt 4 von 8:* Welchen Betrag brauchst du?",
                     parse_mode="Markdown"
                 )
             else:
@@ -2755,13 +2794,13 @@ def handle_msg(message):
 
         # Schritt-Map: step → (field, next_step, message)
         steps = {
-            STEP_INCOME:              ("income",              STEP_OTHER_INCOME,        "✅ *Schritt 2 von 9:* Weitere Einkommen? _(Falls keine, 0)_"),
-            STEP_OTHER_INCOME:        ("other_income",        STEP_FIXED_COSTS,         "✅ *Schritt 3 von 9:* Fixkosten gesamt?"),
-            STEP_FIXED_COSTS:         ("fixed_costs",         STEP_GOAL_DESCRIPTION,    "✅ *Schritt 4 von 9:* Dein Sparziel in Worten?"),
-            STEP_GOAL_AMOUNT:         ("goal_amount",         STEP_CURRENT_INVESTMENTS, "✅ *Schritt 6 von 9:* Aktuell investiertes Vermögen? _(ETF/Aktien, 0 falls keines)_"),
-            STEP_CURRENT_INVESTMENTS: ("current_investments", STEP_CURRENT_CASH,        "✅ *Schritt 7 von 9:* Cash-Reserven? _(Tagesgeld/Giro)_"),
-            STEP_CURRENT_CASH:        ("current_cash",        STEP_ETF_SAVINGS,         "✅ *Schritt 8 von 9:* Monatliche ETF-Sparrate?"),
-            STEP_ETF_SAVINGS:         ("etf_savings",         STEP_CASH_SAVINGS,        "✅ *Schritt 9 von 9:* Monatliche Cash-Sparrate?"),
+            STEP_INCOME:              ("income",              STEP_OTHER_INCOME,        "✅ *Schritt 2 von 8:* Weitere Einkommen? _(Falls keine, 0)_"),
+            STEP_OTHER_INCOME:        ("other_income",        STEP_GOAL_DESCRIPTION,    "✅ *Schritt 3 von 8:* Dein Sparziel in Worten?"),
+            STEP_FIXED_COSTS:         ("fixed_costs",         STEP_GOAL_DESCRIPTION,    "✅ *Schritt 3 von 8:* Dein Sparziel in Worten?"),
+            STEP_GOAL_AMOUNT:         ("goal_amount",         STEP_CURRENT_INVESTMENTS, "✅ *Schritt 5 von 8:* Aktuell investiertes Vermögen? _(ETF/Aktien, 0 falls keines)_"),
+            STEP_CURRENT_INVESTMENTS: ("current_investments", STEP_CURRENT_CASH,        "✅ *Schritt 6 von 8:* Cash-Reserven? _(Tagesgeld/Giro)_"),
+            STEP_CURRENT_CASH:        ("current_cash",        STEP_ETF_SAVINGS,         "✅ *Schritt 7 von 8:* Monatliche ETF-Sparrate?"),
+            STEP_ETF_SAVINGS:         ("etf_savings",         STEP_CASH_SAVINGS,        "✅ *Schritt 8 von 8:* Monatliche Cash-Sparrate?"),
         }
 
         if step in steps:
