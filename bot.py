@@ -1161,7 +1161,60 @@ def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
     )
 
 
-def format_expense_confirmation(items: list, cp_text: str) -> str:
+MICRO_CONFIRMATIONS = [
+    "Ist drin.",
+    "Hab ich notiert.",
+    "Erfasst.",
+    "Ich hab's im Blick.",
+]
+
+
+def get_month_expense_count(user_id: int) -> int:
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c
+               FROM expenses
+               WHERE user_id = ?
+               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')""",
+            (user_id,)
+        ).fetchone()
+    return int(row["c"] or 0)
+
+
+def remember_monthly_moment(user_id: int, moment_key: str) -> bool:
+    month_key = date.today().strftime("%Y_%m")
+    badge_key = f"moment_{moment_key}_{month_key}"
+    with get_db() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO user_badges (user_id, badge_key) VALUES (?, ?)",
+                (user_id, badge_key)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def get_micro_confirmation(expense_count: int = 0) -> str:
+    index = max(0, expense_count - 1) % len(MICRO_CONFIRMATIONS)
+    return MICRO_CONFIRMATIONS[index]
+
+
+def build_report_seed_moment(user_id: int, expense_count: int) -> str:
+    if expense_count >= 7 and remember_monthly_moment(user_id, "report_seed"):
+        return (
+            "\n\nDu hast jetzt genug Daten, um ein erstes klares Bild zu bekommen.\n"
+            "Ich halte das für deinen Report fest."
+        )
+    return ""
+
+
+def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) -> str:
+    expense_count = get_month_expense_count(user_id) if user_id else 0
+    confirmation = get_micro_confirmation(expense_count)
+    report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
+
     if len(items) == 1:
         item = items[0]
         emoji = CATEGORY_EMOJIS.get(item["category"], "")
@@ -1169,13 +1222,13 @@ def format_expense_confirmation(items: list, cp_text: str) -> str:
         if merchant.lower() == "unbekannt":
             merchant = item["category"].title()
         return (
-            "Hab ich erfasst.\n\n"
+            f"{confirmation}\n\n"
             f"{item['amount']:.2f} EUR - {merchant}\n"
-            f"{emoji} {item['category']} - {cp_text}\n\n"
-            "Ich halte das für dich fest."
+            f"{emoji} {item['category']} - {cp_text}"
+            f"{report_moment}"
         )
 
-    lines = [f"Hab ich erfasst. {len(items)} Ausgaben sind festgehalten:", ""]
+    lines = [f"{confirmation} {len(items)} Ausgaben sind festgehalten:", ""]
     for item in items:
         emoji = CATEGORY_EMOJIS.get(item["category"], "")
         merchant = item["merchant"]
@@ -1184,6 +1237,8 @@ def format_expense_confirmation(items: list, cp_text: str) -> str:
         lines.append(f"{emoji} {merchant} - {item['category']} - {item['amount']:.2f} EUR")
     lines.append("")
     lines.append(cp_text)
+    if report_moment:
+        lines.append(report_moment.strip())
     return "\n".join(lines)
 
 def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
@@ -3249,14 +3304,12 @@ def handle_msg(message):
             # Badge-Checks – dezent inline, kein Extra-Message
             new_badge_lines = []
 
-            emoji = CATEGORY_EMOJIS.get(category_found, "🔸")
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
             headline = direct_category_label or merchant_found
-            msg = (
-                "Hab ich erfasst.\n\n"
-                f"*{amount_val:.2f}€ · {headline}*\n"
-                f"{emoji} {category_found} · {cp_str}\n\n"
-                "Ich halte das für dich fest."
+            msg = format_expense_confirmation(
+                [{"amount": amount_val, "category": category_found, "merchant": headline}],
+                cp_str,
+                user_id=uid
             )
             if new_badge_lines:
                 msg += "\n" + "\n".join(new_badge_lines)
@@ -3376,7 +3429,7 @@ Nutzereingabe: {text_input}"""
         if booked > 0:
             cp_earned = handle_daily_activity(uid, bot)
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
-            reply += format_expense_confirmation(booked_items, cp_str) + "\n"
+            reply += format_expense_confirmation(booked_items, cp_str, user_id=uid) + "\n"
 
         if data.get("reply_text") and booked == 0:
             reply += data["reply_text"]
