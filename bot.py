@@ -2787,14 +2787,14 @@ def handle_msg(message):
             return
         return
 
-    if step >= STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
+    if step == STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
         return
 
     if step == STEP_START:
         bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
         return
 
-    if looks_like_profile_correction(text_lower):
+    if step == STEP_NORMAL and looks_like_profile_correction(text_lower):
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
@@ -2812,7 +2812,7 @@ def handle_msg(message):
         )
         return
         
-    if step >= STEP_NORMAL:
+    if step == STEP_NORMAL:
         handle_month_transition(uid, u, bot)
 
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
