@@ -656,16 +656,59 @@ def parse_currency(text: str):
 
 def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
     normalized = text.lower()
-    result = {}
-    for raw_amount, raw_label in re.findall(
-        r"(\d+(?:[.,]\d+)?)\s*(?:€|eur|euro)?\s*([a-zäöüß][a-zäöüß\s-]{0,30})",
-        normalized,
-    ):
-        label_text = raw_label.strip()
-        for alias, key in aliases.items():
-            if re.search(rf"\b{re.escape(alias)}\b", label_text):
-                result[key] = float(raw_amount.replace(",", "."))
+    result: dict[str, float] = {}
+    alias_pattern = "|".join(
+        re.escape(alias)
+        for alias in sorted(aliases, key=len, reverse=True)
+    )
+    if not alias_pattern:
+        return result
+
+    tokens = []
+    for match in re.finditer(rf"\b(?P<label>{alias_pattern})\b", normalized):
+        tokens.append({
+            "type": "label",
+            "start": match.start(),
+            "end": match.end(),
+            "key": aliases[match.group("label")],
+        })
+    for match in re.finditer(r"\d+(?:[.,]\d+)?", normalized):
+        tokens.append({
+            "type": "amount",
+            "start": match.start(),
+            "end": match.end(),
+            "value": float(match.group(0).replace(",", ".")),
+        })
+
+    tokens.sort(key=lambda item: (item["start"], 0 if item["type"] == "label" else 1))
+    for index, token in enumerate(tokens):
+        if token["type"] != "amount":
+            continue
+
+        previous_label = None
+        for prev_index in range(index - 1, -1, -1):
+            if tokens[prev_index]["type"] == "label":
+                previous_label = tokens[prev_index]
                 break
+
+        next_label = None
+        for next_index in range(index + 1, len(tokens)):
+            if tokens[next_index]["type"] == "label":
+                next_label = tokens[next_index]
+                break
+
+        target = None
+        if previous_label and previous_label["key"] not in result:
+            target = previous_label
+        elif next_label and next_label["key"] not in result:
+            target = next_label
+        elif previous_label:
+            target = previous_label
+        elif next_label:
+            target = next_label
+
+        if target:
+            result[target["key"]] = token["value"]
     return result
 
 
@@ -710,6 +753,7 @@ DETAIL_VALUE_ALIASES = {
     "berufsunfähigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
     "berufsunfaehigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
     "rechtsschutz": ("versicherungen", "rechtsschutz", "Rechtsschutz"),
+    "rechtschutz": ("versicherungen", "rechtsschutz", "Rechtsschutz"),
     "hausrat": ("versicherungen", "hausrat", "Hausrat"),
     "autoversicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
     "auto-versicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
@@ -720,6 +764,7 @@ DETAIL_VALUE_ALIASES = {
     "kredite": ("kredite", "kredit", "Kredit"),
     "darlehen": ("kredite", "kredit", "Kredit"),
     "immobilie": ("kredite", "immobilie", "Immobilie"),
+    "immobile": ("kredite", "immobilie", "Immobilie"),
     "immo": ("kredite", "immobilie", "Immobilie"),
     "hausverwalter": ("kredite", "hausverwalter", "Hausverwalter"),
     "verwaltung": ("kredite", "hausverwalter", "Hausverwalter"),
@@ -2939,6 +2984,7 @@ def handle_msg(message):
                 "berufsunfähigkeit": "bu",
                 "berufsunfaehigkeit": "bu",
                 "rechtsschutz": "rechtsschutz",
+                "rechtschutz": "rechtsschutz",
                 "hausrat": "hausrat",
                 "autoversicherung": "autoversicherung",
                 "auto-versicherung": "autoversicherung",
@@ -2957,6 +3003,7 @@ def handle_msg(message):
                 "kredite": "kredit",
                 "darlehen": "kredit",
                 "immobilie": "immobilie",
+                "immobile": "immobilie",
                 "immo": "immobilie",
                 "hausgeld": "hausgeld",
                 "hausverwalter": "hausverwalter",
@@ -2964,7 +3011,7 @@ def handle_msg(message):
                 "konsum": "konsum",
                 "auto": "auto",
             })
-            details["kredite"] = merge_number_defaults(parsed, nums, ["kredit", "hausgeld", "hausverwalter"])
+            details["kredite"] = merge_number_defaults(parsed, nums, ["immobilie", "hausgeld", "hausverwalter"])
             total_fixed = sum(
                 float(v) for cat in details.values()
                 if isinstance(cat, dict) for v in cat.values()
