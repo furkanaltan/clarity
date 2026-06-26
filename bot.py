@@ -2296,6 +2296,23 @@ def handle_commands(message):
         handle_month_transition(uid, u, bot)
 
     if cmd == '/start':
+        if (u.get("onboarding_step") or 0) >= STEP_NORMAL:
+            remaining, total_expenses, income, fixed = calculate_remaining_budget(u, uid)
+            e = "🟢" if remaining > 200 else ("🟡" if remaining > 0 else "🔴")
+            bot.send_message(
+                uid,
+                "👋 *Clarity ist bereit.*\n\n"
+                f"Einnahmen: {income:.2f}€\n"
+                f"Fixkosten: {fixed:.2f}€\n"
+                f"Ausgaben diesen Monat: {total_expenses:.2f}€\n"
+                f"{e} *Restbudget: {remaining:.2f}€*\n\n"
+                "Du kannst jetzt Ausgaben schreiben, z.B. `Lidl 34€`.\n\n"
+                "/status – Monatsstatus\n"
+                "/verfeinern – Profil verfeinern\n"
+                "/settings – Profil bewusst neu einrichten",
+                parse_mode="Markdown"
+            )
+            return
         update_user_field(uid, "onboarding_step", STEP_INCOME)
         bot.send_message(
             uid,
@@ -2581,7 +2598,9 @@ def handle_commands(message):
         update_user_field(uid, "onboarding_step", STEP_INCOME)
         bot.send_message(
             uid,
-            "*Schritt 1 von 8:* Nettoeinkommen?\n\n_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
+            "Du richtest dein Basisprofil jetzt neu ein.\n\n"
+            "*Schritt 1 von 8:* Nettoeinkommen?\n\n"
+            "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
             parse_mode="Markdown"
         )
 
