@@ -1478,6 +1478,35 @@ def is_off_topic_request(text_lower: str) -> bool:
     return any(w in text_lower for w in off_topic_words) or any(text_lower.startswith(w) for w in question_words)
 
 
+def is_help_question(text_lower: str) -> bool:
+    help_phrases = [
+        "was kann ich", "was kann man", "wie benutze", "wie nutze",
+        "wie funktioniert", "wie geht", "was mache ich", "was kann der bot",
+        "was kannst du", "hilfe", "erklär", "erklaer", "anleitung",
+    ]
+    clarity_terms = ["clarity", "bot", "dich", "hier", "das"]
+    return any(phrase in text_lower for phrase in help_phrases) and any(term in text_lower for term in clarity_terms)
+
+
+def build_help_answer() -> str:
+    return (
+        "*So nutzt du Clarity:*\n\n"
+        "1. Schreib Ausgaben einfach in den Chat:\n"
+        "`Lidl 34€`, `Tanken 60€`, `Restaurant 20€`\n\n"
+        "2. Frag nach deinem Geld:\n"
+        "`Wie viel habe ich noch übrig?`\n"
+        "`Was war meine größte Ausgabe?`\n"
+        "`Wie lange bis zu meinem Ziel?`\n\n"
+        "3. Pflege dein Profil:\n"
+        "`/verfeinern` für Fixkosten im Detail\n"
+        "`füge hinzu Autoversicherung 105€ im Monat`\n"
+        "`ändere Miete auf 800€`\n\n"
+        "4. Check deinen Fortschritt:\n"
+        "`/status`, `/score`, `/goal`, `/stats`\n\n"
+        "Am Monatsanfang bekommst du deinen Clarity Report als PDF."
+    )
+
+
 # ====================== GAMIFICATION ENGINE ======================
 
 def get_rank(points: int) -> tuple:
@@ -2805,6 +2834,10 @@ def handle_msg(message):
             )
         return
 
+    if is_help_question(text_lower):
+        bot.send_message(uid, build_help_answer(), parse_mode="Markdown")
+        return
+
     if is_hard_off_topic_request(text_lower):
         bot.send_message(
             uid,
@@ -3182,6 +3215,10 @@ def handle_msg(message):
             f"💸 *Budget-Check*\n\n{e} Noch *{frei:.2f}€* zur freien Verfügung.",
             parse_mode="Markdown"
         )
+        return
+
+    if is_help_question(text_lower):
+        bot.send_message(uid, build_help_answer(), parse_mode="Markdown")
         return
 
     if is_off_topic_request(text_lower):
