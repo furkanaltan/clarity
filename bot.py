@@ -795,6 +795,28 @@ def fixed_costs_total(details: dict) -> float:
     )
 
 
+def find_detail_alias_matches(text_lower: str) -> list:
+    matches = []
+    for alias, (section, key, label) in DETAIL_VALUE_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+            matches.append((len(alias), section, key, label))
+    return matches
+
+
+def is_profile_removal_request(text_lower: str) -> bool:
+    removal_words = [
+        "lösche", "loesche", "entferne", "streiche", "raus", "weg",
+        "kündige", "kuendige", "gekündigt", "gekuendigt", "beendet",
+        "abbezahlt", "abgezahlt", "fertig bezahlt", "läuft aus", "laeuft aus",
+    ]
+    if any(word in text_lower for word in removal_words):
+        return True
+    return "nicht mehr" in text_lower and any(
+        re.search(rf"\b{re.escape(alias)}\b", text_lower)
+        for alias in DETAIL_VALUE_ALIASES
+    )
+
+
 def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
     if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
         return ""
@@ -802,20 +824,63 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
         "hinzu", "ergänze", "ergaenze", "nimm auf",
+        "lösche", "loesche", "entferne", "streiche", "kündige", "kuendige",
+        "gekündigt", "gekuendigt", "abbezahlt", "abgezahlt",
     ]
     has_correction_word = any(word in text_lower for word in correction_words)
     has_monthly_context = any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"])
     if not has_correction_word and not has_monthly_context:
         return ""
 
+    alias_matches = find_detail_alias_matches(text_lower)
+    if is_profile_removal_request(text_lower) and alias_matches:
+        _length, section, key, label = max(alias_matches, key=lambda item: item[0])
+        details = u.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        section_values = details.get(section, {})
+        if not isinstance(section_values, dict):
+            section_values = {}
+
+        old_value = section_values.pop(key, None)
+        if old_value is None and section == "kredite" and key == "kredit":
+            if len(section_values) == 1:
+                fallback_key, old_value = next(iter(section_values.items()))
+                section_values.pop(fallback_key, None)
+                key = fallback_key
+                label = key.replace("_", " ").title()
+            elif len(section_values) > 1:
+                available = ", ".join(k.replace("_", " ").title() for k in section_values.keys())
+                return (
+                    "Ich sehe mehrere Kredit-Einträge.\n\n"
+                    f"Meinst du: {available}?\n"
+                    "Schreib zum Beispiel `lösche Immobilienkredit` oder `lösche Hausgeld`."
+                )
+        if not section_values and section in details:
+            details.pop(section, None)
+        else:
+            details[section] = section_values
+
+        update_user_field(user_id, "fixed_costs_details", json.dumps(details))
+        total_fixed = fixed_costs_total(details)
+        update_user_field(user_id, "fixed_costs", total_fixed)
+
+        if old_value is None:
+            return (
+                "Ich habe dazu keinen bestehenden Eintrag gefunden.\n\n"
+                f"{label} ist aktuell nicht in deinem Profil hinterlegt."
+            )
+
+        return (
+            "Alles klar, ich habe das aus deinem Profil entfernt.\n\n"
+            f"{label}: {format_eur(old_value)} rausgenommen\n"
+            f"Fixkosten gesamt: {format_eur(total_fixed)}\n\n"
+            "Ich nutze das ab jetzt für deine Auswertung."
+        )
+
     numbers = re.findall(r"\d+(?:[.,]\d+)?", text_lower)
     if not numbers:
         return ""
-
-    alias_matches = []
-    for alias, (section, key, label) in DETAIL_VALUE_ALIASES.items():
-        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
-            alias_matches.append((len(alias), section, key, label))
 
     if alias_matches:
         _length, section, key, label = max(alias_matches, key=lambda item: item[0])
@@ -849,8 +914,12 @@ def looks_like_profile_correction(text_lower: str) -> bool:
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
         "hinzu", "ergänze", "ergaenze", "nimm auf",
+        "lösche", "loesche", "entferne", "streiche", "kündige", "kuendige",
+        "gekündigt", "gekuendigt", "abbezahlt", "abgezahlt",
     }
     if any(word in text_lower for word in correction_words):
+        return True
+    if is_profile_removal_request(text_lower):
         return True
     if any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"]):
         return any(re.search(rf"\b{re.escape(alias)}\b", text_lower) for alias in DETAIL_VALUE_ALIASES)
@@ -1576,7 +1645,9 @@ def build_help_answer() -> str:
         "Ich gebe dir klare Antworten - ohne dass du selbst rechnen musst.\n\n"
         "Dein Profil kannst du jederzeit anpassen:\n\n"
         "`Miete jetzt 800€`\n"
-        "`Autoversicherung 105€ im Monat`\n\n"
+        "`Autoversicherung 105€ im Monat`\n"
+        "`lösche Spotify`\n"
+        "`Kredit ist abbezahlt`\n\n"
         "Oder du nutzt /verfeinern, wenn du es genauer einstellen willst.\n\n"
         "Für einen schnellen Überblick:\n\n"
         "/status\n"
