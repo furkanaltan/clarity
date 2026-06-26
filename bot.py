@@ -918,10 +918,19 @@ def require_admin(message) -> bool:
     return False
 
 
-def notify_admins(text: str):
+def build_access_action_markup(user_id: int):
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("Freigeben", callback_data=f"admin_approve:{user_id}"),
+        telebot.types.InlineKeyboardButton("Ablehnen", callback_data=f"admin_revoke:{user_id}")
+    )
+    return markup
+
+
+def notify_admins(text: str, reply_markup=None):
     for admin_id in ADMIN_USER_IDS:
         try:
-            bot.send_message(admin_id, text)
+            bot.send_message(admin_id, text, reply_markup=reply_markup)
         except Exception as e:
             logger.warning(f"Admin-Benachrichtigung an {admin_id} fehlgeschlagen: {e}")
 
@@ -961,10 +970,11 @@ def ensure_access_record(user_id: int, display_name: str = "", username: str = "
         conn.commit()
 
     notify_admins(
-        "Neue Clarity-Freigabe wartet:\n"
+        "Neue Clarity-Freigabe wartet:\n\n"
         f"ID: {user_id}\n"
         f"Name: {display_name or '-'} {username or ''}\n\n"
-        f"Freigeben mit: /approve {user_id}"
+        "Du kannst den Zugang direkt hier freigeben.",
+        reply_markup=build_access_action_markup(user_id)
     )
     return "pending"
 
@@ -2117,6 +2127,47 @@ def handle_callbacks(call):
     except Exception as e:
         logger.warning(f"Callback konnte nicht sofort bestaetigt werden: {e}")
 
+    if data.startswith("admin_approve:") or data.startswith("admin_revoke:"):
+        if not is_admin_id(actor_id):
+            try:
+                bot.answer_callback_query(call.id, "Nur Admins können das tun.")
+            except Exception:
+                pass
+            return
+
+        action, raw_target_id = data.split(":", 1)
+        if not raw_target_id.strip().lstrip("-").isdigit():
+            bot.send_message(uid, "Diese Freigabe konnte nicht gelesen werden. Bitte nutze /pending.")
+            return
+
+        target_id = int(raw_target_id.strip())
+        if action == "admin_approve":
+            approve_user_access(target_id, actor_id)
+            admin_text = f"Nutzer freigegeben:\nID: {target_id}"
+            user_text = "Du bist für Clarity freigeschaltet. Sende /start und leg los."
+            callback_text = "Freigegeben."
+        else:
+            revoke_user_access(target_id, actor_id)
+            admin_text = f"Nutzer abgelehnt/gesperrt:\nID: {target_id}"
+            user_text = "Dein Zugang zu Clarity wurde aktuell nicht freigeschaltet."
+            callback_text = "Abgelehnt."
+
+        try:
+            bot.edit_message_text(admin_text, uid, call.message.message_id)
+        except Exception:
+            bot.send_message(uid, admin_text)
+
+        try:
+            bot.send_message(target_id, user_text)
+        except Exception as e:
+            logger.info(f"Zugangs-Nachricht an {target_id} nicht gesendet: {e}")
+
+        try:
+            bot.answer_callback_query(call.id, callback_text)
+        except Exception:
+            pass
+        return
+
     if USER_APPROVAL_ENABLED and not is_admin_id(actor_id) and get_access_status(actor_id) != "approved":
         try:
             bot.answer_callback_query(call.id, "Dein Zugang ist noch nicht freigegeben.")
@@ -2261,11 +2312,14 @@ def handle_admin_command(message, cmd: str) -> bool:
         if not rows:
             bot.send_message(uid, "Keine wartenden Freigaben.")
             return True
-        text = "*Wartende Freigaben:*\n\n"
+        bot.send_message(uid, "*Wartende Freigaben:*", parse_mode="Markdown")
         for row in rows:
             name = " ".join(part for part in [row["display_name"], row["username"]] if part) or "-"
-            text += f"{row['user_id']} · {name} · {row['requested_at']}\n"
-        bot.send_message(uid, text, parse_mode="Markdown")
+            bot.send_message(
+                uid,
+                f"ID: {row['user_id']}\nName: {name}\nAngefragt: {row['requested_at']}",
+                reply_markup=build_access_action_markup(row["user_id"])
+            )
         return True
 
     if cmd == "/approve":
