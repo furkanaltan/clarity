@@ -626,7 +626,7 @@ REFINE_BACK_STEPS = {
 
 REFINE_BACK_MESSAGES = {
     STEP_ADAPT_HOUSING: "Profil verfeinern - Teil 1: Wohnen\n\nMiete, Strom, Gas?\n(z.B. 800 60 40)",
-    STEP_ADAPT_MOBILITY: "Teil 2: Mobilität\nAuto, Versicherung, Bahn?\n(z.B. 200 80 49)",
+    STEP_ADAPT_MOBILITY: "Teil 2: Mobilität\nAuto, Tanken, Bahn?\n(z.B. 250 120 49)",
     STEP_ADAPT_ABOS: "Teil 3: Abos\nNetflix, Spotify, Prime, Disney?\n(z.B. 14 10 9 8)",
     STEP_ADAPT_INSURANCE: "Teil 4: Versicherungen\nHaftpflicht, BU, Rechtsschutz?\n(z.B. 6 45 25)",
     STEP_ADAPT_CREDITS: "Teil 5: Kredite\nImmobilie, Auto, Konsum?\n(Falls keine → 0)",
@@ -689,7 +689,6 @@ DETAIL_VALUE_ALIASES = {
     "nebenkosten": ("wohnen", "nebenkosten", "Nebenkosten"),
     "auto": ("mobilitaet", "auto", "Auto"),
     "leasing": ("mobilitaet", "auto", "Auto"),
-    "versicherung": ("mobilitaet", "versicherung", "Versicherung"),
     "bahn": ("mobilitaet", "bahn", "Bahn"),
     "ticket": ("mobilitaet", "bahn", "Bahn"),
     "tanken": ("mobilitaet", "tanken", "Tanken"),
@@ -707,6 +706,11 @@ DETAIL_VALUE_ALIASES = {
     "berufsunfaehigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
     "rechtsschutz": ("versicherungen", "rechtsschutz", "Rechtsschutz"),
     "hausrat": ("versicherungen", "hausrat", "Hausrat"),
+    "autoversicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
+    "auto-versicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
+    "kfzversicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
+    "kfz-versicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
+    "versicherung": ("versicherungen", "sonstige", "Versicherung"),
     "kredit": ("kredite", "kredit", "Kredit"),
     "kredite": ("kredite", "kredit", "Kredit"),
     "darlehen": ("kredite", "kredit", "Kredit"),
@@ -746,7 +750,8 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         return ""
     correction_words = [
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
-        "setze", "setz", "aktualisiere", "update",
+        "setze", "setz", "aktualisiere", "update", "füge", "fuege",
+        "hinzu", "ergänze", "ergaenze", "nimm auf",
     ]
     if not any(word in text_lower for word in correction_words):
         return ""
@@ -755,27 +760,32 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
     if not numbers:
         return ""
 
+    alias_matches = []
     for alias, (section, key, label) in DETAIL_VALUE_ALIASES.items():
         if re.search(rf"\b{re.escape(alias)}\b", text_lower):
-            value = float(numbers[-1].replace(",", "."))
-            details = u.get("details", {})
-            if not isinstance(details, dict):
-                details = {}
-            section_values = details.get(section, {})
-            if not isinstance(section_values, dict):
-                section_values = {}
-            section_values[key] = value
-            details[section] = section_values
+            alias_matches.append((len(alias), section, key, label))
 
-            update_user_field(user_id, "fixed_costs_details", json.dumps(details))
-            total_fixed = fixed_costs_total(details)
-            if total_fixed > 0:
-                update_user_field(user_id, "fixed_costs", total_fixed)
+    if alias_matches:
+        _length, section, key, label = max(alias_matches, key=lambda item: item[0])
+        value = float(numbers[-1].replace(",", "."))
+        details = u.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        section_values = details.get(section, {})
+        if not isinstance(section_values, dict):
+            section_values = {}
+        section_values[key] = value
+        details[section] = section_values
 
-            return (
-                f"Aktualisiert: {label} {format_eur(value)}.\n"
-                f"Fixkosten gesamt: {format_eur(total_fixed)}"
-            )
+        update_user_field(user_id, "fixed_costs_details", json.dumps(details))
+        total_fixed = fixed_costs_total(details)
+        if total_fixed > 0:
+            update_user_field(user_id, "fixed_costs", total_fixed)
+
+        return (
+            f"Aktualisiert: {label} {format_eur(value)}.\n"
+            f"Fixkosten gesamt: {format_eur(total_fixed)}"
+        )
 
     return ""
 
@@ -2567,15 +2577,11 @@ def handle_commands(message):
 
     elif cmd == '/reset':
         user_reset_pending[uid] = time.time()
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(
-            telebot.types.InlineKeyboardButton("Ja, alles löschen", callback_data="confirm_reset"),
-            telebot.types.InlineKeyboardButton("Abbrechen", callback_data="cancel_reset")
-        )
         bot.send_message(uid,
             "⚠️ Alle Daten werden unwiderruflich gelöscht.\n\n"
-            "Drücke den Button oder schreibe: Ja, alles löschen",
-            reply_markup=markup
+            "Schreibe *Ja*, um alles zu löschen.\n"
+            "Schreibe *Abbrechen*, um den Reset zu stoppen.",
+            parse_mode="Markdown"
         )
 
     elif cmd == '/editlast':
@@ -2820,19 +2826,13 @@ def handle_msg(message):
             details["wohnen"] = merge_number_defaults(parsed, nums, ["miete", "strom", "gas"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_MOBILITY)
-            bot.send_message(uid, "🚗 *Teil 2: Mobilität*\nAuto, Versicherung, Bahn?\n_(z.B. 200 80 49)_", parse_mode="Markdown")
+            bot.send_message(uid, "🚗 *Teil 2: Mobilität*\nAuto, Tanken, Bahn?\n_(z.B. 250 120 49)_", parse_mode="Markdown")
 
         elif step == STEP_ADAPT_MOBILITY:
             parsed = parse_labeled_amounts(text_input, {
                 "auto": "auto",
                 "leasing": "auto",
                 "rate": "auto",
-                "versicherung": "versicherung",
-                "autoversicherung": "versicherung",
-                "auto-versicherung": "versicherung",
-                "kfzversicherung": "versicherung",
-                "kfz-versicherung": "versicherung",
-                "vers": "versicherung",
                 "bahn": "bahn",
                 "ticket": "bahn",
                 "deutschlandticket": "bahn",
@@ -2840,7 +2840,19 @@ def handle_msg(message):
                 "benzin": "tanken",
                 "diesel": "tanken",
             })
-            details["mobilitaet"] = merge_number_defaults(parsed, nums, ["auto", "versicherung", "bahn"])
+            insurance_parsed = parse_labeled_amounts(text_input, {
+                "autoversicherung": "autoversicherung",
+                "auto-versicherung": "autoversicherung",
+                "kfzversicherung": "autoversicherung",
+                "kfz-versicherung": "autoversicherung",
+            })
+            if insurance_parsed:
+                current_insurance = details.get("versicherungen", {})
+                if not isinstance(current_insurance, dict):
+                    current_insurance = {}
+                current_insurance.update(insurance_parsed)
+                details["versicherungen"] = current_insurance
+            details["mobilitaet"] = merge_number_defaults(parsed, nums, ["auto", "tanken", "bahn"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_ABOS)
             bot.send_message(uid, "📺 *Teil 3: Abos*\nNetflix, Spotify, Prime, Disney?\n_(z.B. 14 10 9 8)_", parse_mode="Markdown")
@@ -2870,9 +2882,13 @@ def handle_msg(message):
                 "berufsunfaehigkeit": "bu",
                 "rechtsschutz": "rechtsschutz",
                 "hausrat": "hausrat",
+                "autoversicherung": "autoversicherung",
+                "auto-versicherung": "autoversicherung",
+                "kfzversicherung": "autoversicherung",
+                "kfz-versicherung": "autoversicherung",
                 "krankenversicherung": "krankenversicherung",
             })
-            details["versicherungen"] = merge_number_defaults(parsed, nums, ["haftpflicht", "bu", "rechtsschutz"])
+            details["versicherungen"] = merge_number_defaults(parsed, nums, ["haftpflicht", "bu", "rechtsschutz", "autoversicherung"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_CREDITS)
             bot.send_message(uid, "💳 *Teil 5: Kredite*\nImmobilie, Auto, Konsum?\n_(Falls keine → 0)_", parse_mode="Markdown")
