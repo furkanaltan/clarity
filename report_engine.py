@@ -1301,6 +1301,11 @@ def send_report_to_user(user_id: int, report_month: str, bot):
             user_id,
             f,
             visible_file_name=file_path.name,
-            caption=f"Dein Clarity Report für {report_month} ist da."
+            caption=(
+                "Dein Clarity Report ist fertig.\n\n"
+                "Er zeigt dir, was in diesem Monat wirklich passiert ist - "
+                "klar, ruhig und ohne unnötige Zahlen.\n\n"
+                "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
+            )
         )
     return True

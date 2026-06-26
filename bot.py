@@ -835,8 +835,10 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
             update_user_field(user_id, "fixed_costs", total_fixed)
 
         return (
-            f"Aktualisiert: {label} {format_eur(value)}.\n"
-            f"Fixkosten gesamt: {format_eur(total_fixed)}"
+            "Alles klar, ich habe das aktualisiert.\n\n"
+            f"{label}: {format_eur(value)}\n"
+            f"Fixkosten gesamt: {format_eur(total_fixed)}\n\n"
+            "Ich nutze das ab jetzt für deine Auswertung."
         )
 
     return ""
@@ -1166,15 +1168,21 @@ def format_expense_confirmation(items: list, cp_text: str) -> str:
         merchant = item["merchant"]
         if merchant.lower() == "unbekannt":
             merchant = item["category"].title()
-        return f"OK: {item['amount']:.2f} EUR - {merchant}\n{emoji} {item['category']} - {cp_text}"
+        return (
+            "Hab ich erfasst.\n\n"
+            f"{item['amount']:.2f} EUR - {merchant}\n"
+            f"{emoji} {item['category']} - {cp_text}\n\n"
+            "Ich halte das für dich fest."
+        )
 
-    lines = [f"{len(items)} Ausgaben verbucht:"]
+    lines = [f"Hab ich erfasst. {len(items)} Ausgaben sind festgehalten:", ""]
     for item in items:
         emoji = CATEGORY_EMOJIS.get(item["category"], "")
         merchant = item["merchant"]
         if merchant.lower() == "unbekannt":
             merchant = item["category"].title()
         lines.append(f"{emoji} {merchant} - {item['category']} - {item['amount']:.2f} EUR")
+    lines.append("")
     lines.append(cp_text)
     return "\n".join(lines)
 
@@ -1500,7 +1508,7 @@ def is_help_question(text_lower: str) -> bool:
 
 def build_help_answer() -> str:
     return (
-        "Ich halte dein Geld für dich im Blick.\n\n"
+        "Ich kümmere mich um deine Übersicht.\n\n"
         "Du kannst mir Ausgaben einfach so schreiben, wie sie dir in den Kopf kommen:\n\n"
         "`Lidl 34€`\n"
         "`Tanken 60€`\n"
@@ -1511,18 +1519,40 @@ def build_help_answer() -> str:
         "`Was war meine größte Ausgabe?`\n"
         "`Wie weit bin ich von meinem Ziel entfernt?`\n\n"
         "Ich gebe dir klare Antworten - ohne dass du selbst rechnen musst.\n\n"
-        "Dein Profil kannst du jederzeit anpassen, ganz entspannt nebenbei:\n\n"
-        "`Autoversicherung 105€ im Monat`\n"
-        "`Miete jetzt 800€`\n\n"
+        "Dein Profil kannst du jederzeit anpassen:\n\n"
+        "`Miete jetzt 800€`\n"
+        "`Autoversicherung 105€ im Monat`\n\n"
         "Oder du nutzt /verfeinern, wenn du es genauer einstellen willst.\n\n"
-        "Für einen schnellen Überblick kannst du jederzeit nach deinem Status fragen:\n\n"
+        "Für einen schnellen Überblick:\n\n"
         "/status\n"
         "/score\n"
         "/goal\n"
         "/stats\n\n"
-        "Am Anfang eines neuen Monats bekommst du von mir automatisch deinen persönlichen Clarity Report.\n\n"
-        "Du musst nichts vorbereiten.\n"
-        "Ich kümmere mich darum."
+        "Am Monatsanfang bekommst du automatisch deinen Report."
+    )
+
+
+def build_not_understood_answer() -> str:
+    return (
+        "Das habe ich nicht ganz verstanden.\n\n"
+        "Schreib es einfach so, wie du es im Alltag sagen würdest.\n"
+        "Zum Beispiel:\n\n"
+        "`Lidl 34€`\n"
+        "`Tanken 60€`\n\n"
+        "Ich kümmere mich um den Rest."
+    )
+
+
+def build_start_intro() -> str:
+    return (
+        "Gut, dass du hier bist.\n\n"
+        "Ich halte dein Geld für dich im Blick.\n"
+        "Du musst nichts vorbereiten - wir gehen das Schritt für Schritt zusammen durch.\n\n"
+        "Ich stelle dir ein paar Fragen, damit ich dein Profil sauber aufbauen kann.\n"
+        "Danach kannst du mich einfach im Alltag nutzen.\n\n"
+        "*Schritt 1 von 8:* Wie hoch ist dein monatliches Nettoeinkommen?\n"
+        "_(z.B. 2500)_\n\n"
+        "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._"
     )
 
 
@@ -2184,7 +2214,7 @@ def handle_callbacks(call):
             reset_user_data(uid)
             user_reset_pending.pop(uid, None)
             bot.edit_message_text(
-                "Alle Daten gelöscht. /start für Neuanfang.",
+                "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.",
                 uid, call.message.message_id
             )
             logger.info(f"User {uid} hat alle Daten gelöscht.")
@@ -2438,12 +2468,13 @@ def handle_commands(message):
             e = "🟢" if remaining > 200 else ("🟡" if remaining > 0 else "🔴")
             bot.send_message(
                 uid,
-                "👋 *Clarity ist bereit.*\n\n"
+                "*Clarity ist bereit.*\n\n"
+                "Ich habe deinen aktuellen Stand für dich im Blick.\n\n"
                 f"Einnahmen: {income:.2f}€\n"
                 f"Fixkosten: {fixed:.2f}€\n"
                 f"Ausgaben diesen Monat: {total_expenses:.2f}€\n"
                 f"{e} *Restbudget: {remaining:.2f}€*\n\n"
-                "Du kannst jetzt Ausgaben schreiben, z.B. `Lidl 34€`.\n\n"
+                "Du kannst mir jetzt Ausgaben einfach schreiben, z.B. `Lidl 34€`.\n\n"
                 "/status – Monatsstatus\n"
                 "/verfeinern – Profil verfeinern\n"
                 "/settings – Profil bewusst neu einrichten",
@@ -2451,31 +2482,10 @@ def handle_commands(message):
             )
             return
         update_user_field(uid, "onboarding_step", STEP_INCOME)
-        bot.send_message(
-            uid,
-            "👋 Willkommen bei *Clarity*.\n\n"
-            "📝 *Schritt 1 von 8:* Wie hoch ist dein monatliches Nettoeinkommen?\n_(z.B. 2500)_\n\n"
-            "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
-            parse_mode="Markdown"
-       )
+        bot.send_message(uid, build_start_intro(), parse_mode="Markdown")
 
     elif cmd == '/help':
-        bot.send_message(uid,
-            "🤖 *Clarity – Befehle:*\n\n"
-            "💬 Ausgaben: `Lidl 34€` · `Döner 8€` · `Kino 15` · `Tanken 60`\n\n"
-            "/status – Restbudget\n"
-            "/stats – Ausgaben nach Kategorien\n"
-            "/scoreinfo – Score verstehen\n"
-            "/score – Clarity Score & Rang\n"
-            "/badges – Errungenschaften\n"
-            "/goal – Sparziel & Prognose\n"
-            "/investiert – Sparrate bestätigen (+20 CP)\n"
-            "/verfeinern – Profil verfeinern\n"
-            "/undo – Letzte Ausgabe löschen\n"
-            "/editlast – Letzte Ausgabe ändern\n"
-            "/settings – Profil neu einrichten",
-            parse_mode="Markdown"
-        )
+        bot.send_message(uid, build_help_answer(), parse_mode="Markdown")
 
     elif cmd == '/score':
         with get_db() as conn:
@@ -2520,7 +2530,9 @@ def handle_commands(message):
             f"*Nächster Hebel:*\n{confirm_hint}\n\n"
             f"{cp_rank_emoji} CP-Level: *{cp_rank_name}* · {cp} CP\n"
             f"{cp_rank_line}"
-            f"\n\nMehr Kontext: /scoreinfo",
+            f"\n\nDas ist dein aktueller Stand.\n"
+            f"Wichtig ist, dass du dranbleibst.\n\n"
+            f"Mehr Kontext: /scoreinfo",
             parse_mode="Markdown"
         ) 
 
@@ -2656,12 +2668,14 @@ def handle_commands(message):
         e = "🟢" if remaining > 200 else ("🟡" if remaining > 0 else "🔴")
 
         bot.send_message(uid,
-            f"📊 *Monatsstatus*\n\n"
+            "Ich habe deinen aktuellen Stand für dich im Blick.\n\n"
+            f"*Monatsstatus*\n\n"
             f"Einnahmen: {income:.2f}€\n"
             f"Fixkosten: {u.get('fixed_costs', 0):.2f}€\n"
             f"Ausgaben: {total_exp:.2f}€\n"
             f"{'─' * 20}\n"
-            f"{e} *Restbudget: {remaining:.2f}€*",
+            f"{e} *Restbudget: {remaining:.2f}€*\n\n"
+            "Wenn du tiefer gehen willst, frag mich einfach nach deinem Monat.",
             parse_mode="Markdown"
         )
 
@@ -2678,7 +2692,7 @@ def handle_commands(message):
             rows = cursor.fetchall()
 
         if not rows:
-            bot.send_message(uid, "Noch keine Ausgaben diesen Monat.")
+            bot.send_message(uid, "Noch keine Ausgaben diesen Monat. Sobald du etwas einträgst, halte ich es für dich fest.")
             return
 
         text = "*Ausgaben nach Kategorien:*\n\n"
@@ -2714,7 +2728,7 @@ def handle_commands(message):
             report_engine.MIN_TRACKING_DAYS = 0
             ok = report_engine.send_report_to_user(uid, report_month, bot)
             if ok:
-                bot.send_message(uid, "Testreport abgeschlossen.")
+                bot.send_message(uid, "Dein Testreport ist fertig.")
             else:
                 bot.send_message(uid, "Testreport konnte nicht generiert werden. Bitte prüfe die Logs.")
         except Exception as e:
@@ -2760,8 +2774,8 @@ def handle_commands(message):
         user_reset_pending[uid] = time.time()
         bot.send_message(uid,
             "⚠️ Alle Daten werden unwiderruflich gelöscht.\n\n"
-            "Schreibe *Ja*, um alles zu löschen.\n"
-            "Schreibe *Abbrechen*, um den Reset zu stoppen.",
+            "Wenn du sicher bist, schreibe *Ja*.\n"
+            "Wenn nicht, schreibe *Abbrechen*.",
             parse_mode="Markdown"
         )
 
@@ -2796,7 +2810,7 @@ def handle_commands(message):
     elif cmd == '/reset_confirm':
         # Fallback für direkte Text-Eingabe
         reset_user_data(uid)
-        bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+        bot.send_message(uid, "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.")
 
 # ====================== MAIN MESSAGE HANDLER ======================
 @bot.message_handler(func=lambda message: True)
@@ -2829,7 +2843,7 @@ def handle_msg(message):
                 try:
                     reset_user_data(uid)
                     user_reset_pending.pop(uid, None)
-                    bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+                    bot.send_message(uid, "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.")
                     logger.info(f"User {uid} hat alle Daten per /reset_confirm gelöscht.")
                 except Exception as e:
                     logger.error(f"Reset per /reset_confirm fehlgeschlagen für User {uid}: {e}", exc_info=True)
@@ -2843,7 +2857,7 @@ def handle_msg(message):
                 try:
                     reset_user_data(uid)
                     user_reset_pending.pop(uid, None)
-                    bot.send_message(uid, "Alle Daten gelöscht. /start für Neuanfang.")
+                    bot.send_message(uid, "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.")
                     logger.info(f"User {uid} hat alle Daten per Text-Bestätigung gelöscht.")
                 except Exception as e:
                     logger.error(f"Reset per Text fehlgeschlagen für User {uid}: {e}", exc_info=True)
@@ -2875,7 +2889,7 @@ def handle_msg(message):
             bot.send_message(uid, REFINE_BACK_MESSAGES[prev_step])
             return
         if step == STEP_START:
-            bot.send_message(uid, "Du bist bereits am Anfang. Tippe /start, um zu starten.")
+            bot.send_message(uid, "Du bist bereits am Anfang. Mit /start starten wir sauber von vorne.")
             return
         return
 
@@ -2883,7 +2897,7 @@ def handle_msg(message):
         return
 
     if step == STEP_START:
-        bot.send_message(uid, "Tippe /start um Clarity einzurichten.")
+        bot.send_message(uid, "Schreib /start, dann richten wir Clarity in Ruhe ein.")
         return
 
     if step == STEP_NORMAL and looks_like_profile_correction(text_lower):
@@ -2893,7 +2907,11 @@ def handle_msg(message):
         else:
             bot.send_message(
                 uid,
-                "Ich konnte die Profiländerung nicht eindeutig zuordnen. Beispiel: „ändere Miete auf 800€“ oder „füge hinzu Autoversicherung 105€“."
+                "Das konnte ich deinem Profil noch nicht sicher zuordnen.\n\n"
+                "Schreib es kurz und klar, zum Beispiel:\n"
+                "`ändere Miete auf 800€`\n"
+                "`füge Autoversicherung 105€ hinzu`",
+                parse_mode="Markdown"
             )
         return
 
@@ -2904,7 +2922,8 @@ def handle_msg(message):
     if is_hard_off_topic_request(text_lower):
         bot.send_message(
             uid,
-            "Ich bleibe bei Clarity: Ausgaben, Budget, Sparziele, Vermögen und Reports."
+            "Dabei kann ich dir nicht sinnvoll helfen.\n\n"
+            "Ich halte für dich Ausgaben, Budget, Sparziele, Vermögen und Reports im Blick."
         )
         return
         
@@ -3006,7 +3025,7 @@ def handle_msg(message):
     if STEP_ADAPT_HOUSING <= step <= STEP_ADAPT_CREDITS:
         nums = [float(x.replace(',', '.')) for x in re.findall(r'\d+(?:[.,]\d+)?', text_input)]
         if not nums:
-            bot.send_message(uid, "Bitte gib die Zahlen ein _(z.B. 800 60 40)_", parse_mode="Markdown")
+            bot.send_message(uid, "Das habe ich noch nicht sicher erkannt.\n\nSchreib die Werte bitte kurz, z.B. `Miete 800 Strom 60`.", parse_mode="Markdown")
             return
 
         details = u.get("details", {})
@@ -3233,7 +3252,12 @@ def handle_msg(message):
             emoji = CATEGORY_EMOJIS.get(category_found, "🔸")
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
             headline = direct_category_label or merchant_found
-            msg = f"✅ *{amount_val:.2f}€ · {headline}*\n{emoji} {category_found} · {cp_str}"
+            msg = (
+                "Hab ich erfasst.\n\n"
+                f"*{amount_val:.2f}€ · {headline}*\n"
+                f"{emoji} {category_found} · {cp_str}\n\n"
+                "Ich halte das für dich fest."
+            )
             if new_badge_lines:
                 msg += "\n" + "\n".join(new_badge_lines)
             bot.send_message(uid, msg, parse_mode="Markdown")
@@ -3287,8 +3311,8 @@ def handle_msg(message):
     if is_off_topic_request(text_lower):
         bot.send_message(
             uid,
-            "Ich bleibe bei Clarity: Ausgaben, Budget, Sparziele, Score und Reports. "
-            "Dabei helfe ich dir gern konkret weiter."
+            "Dabei kann ich dir nicht sinnvoll helfen.\n\n"
+            "Ich halte für dich Ausgaben, Budget, Sparziele, Score und Reports im Blick."
         )
         return
 
@@ -3358,18 +3382,18 @@ Nutzereingabe: {text_input}"""
             reply += data["reply_text"]
 
         if not reply.strip():
-            reply = "Das habe ich nicht verstanden. Bitte nochmal versuchen."
+            reply = build_not_understood_answer()
 
         bot.send_message(uid, reply.strip(), parse_mode="Markdown")
 
     except json.JSONDecodeError as e:
         logger.error(f"KI JSON-Fehler User {uid}: {e}")
-        bot.send_message(uid, "Unerwartete Antwort. Bitte nochmal versuchen.")
+        bot.send_message(uid, build_not_understood_answer(), parse_mode="Markdown")
     except openai.RateLimitError:
         bot.send_message(uid, "Kurz warten – bitte in 10 Sekunden nochmal versuchen.")
     except Exception as e:
         logger.error(f"KI-Fehler User {uid}: {e}", exc_info=True)
-        bot.send_message(uid, "Das habe ich nicht verstanden. Bitte nochmal versuchen.")
+        bot.send_message(uid, build_not_understood_answer(), parse_mode="Markdown")
 
 
 # ====================== REPORT QUEUE ======================
