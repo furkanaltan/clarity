@@ -1045,6 +1045,14 @@ def get_message_identity(message) -> tuple[str, str]:
     return display_name, username
 
 
+def format_admin_identity(row) -> str:
+    display_name = (row["display_name"] if "display_name" in row.keys() else "") or ""
+    username = (row["username"] if "username" in row.keys() else "") or ""
+    if display_name and username:
+        return f"{display_name} ({username})"
+    return display_name or username or "Unbekannt"
+
+
 def require_admin(message) -> bool:
     actor_id = get_actor_id(message)
     if is_admin_id(actor_id):
@@ -1109,8 +1117,9 @@ def ensure_access_record(user_id: int, display_name: str = "", username: str = "
 
     notify_admins(
         "Neue Clarity-Freigabe wartet:\n\n"
-        f"ID: {user_id}\n"
-        f"Name: {display_name or '-'} {username or ''}\n\n"
+        f"Name: {display_name or 'Unbekannt'}\n"
+        f"Username: {username or '-'}\n"
+        f"ID: {user_id}\n\n"
         f"Freigeben mit: /approve {user_id}"
     )
     return "pending"
@@ -2630,13 +2639,13 @@ def handle_admin_command(message, cmd: str) -> bool:
         if not rows:
             bot.send_message(uid, "Keine wartenden Freigaben.")
             return True
-        bot.send_message(uid, "*Wartende Freigaben:*", parse_mode="Markdown")
+        bot.send_message(uid, "Wartende Freigaben:")
         for row in rows:
-            name = " ".join(part for part in [row["display_name"], row["username"]] if part) or "-"
+            identity = format_admin_identity(row)
             bot.send_message(
                 uid,
+                f"Name: {identity}\n"
                 f"ID: {row['user_id']}\n"
-                f"Name: {name}\n"
                 f"Angefragt: {row['requested_at']}\n\n"
                 f"Freigeben: /approve {row['user_id']}\n"
                 f"Sperren: /revoke {row['user_id']}"
@@ -2669,6 +2678,8 @@ def handle_admin_command(message, cmd: str) -> bool:
         with get_db() as conn:
             rows = conn.execute(
                 """SELECT u.user_id,
+                          a.display_name,
+                          a.username,
                           COALESCE(a.status, 'approved') AS access_status,
                           u.onboarding_step,
                           u.last_activity_date,
@@ -2685,14 +2696,19 @@ def handle_admin_command(message, cmd: str) -> bool:
         if not rows:
             bot.send_message(uid, "Noch keine Nutzer in der Datenbank.")
             return True
-        text = "*Nutzerübersicht:*\n\n"
+        text = "Nutzerübersicht:\n\n"
         for row in rows:
             onboarding = "fertig" if row["onboarding_step"] == STEP_NORMAL else f"Step {row['onboarding_step']}"
+            identity = format_admin_identity(row)
+            last_activity = row["last_activity_date"] or "-"
             text += (
-                f"{row['user_id']} · {row['access_status']} · {onboarding} · "
-                f"{row['expenses_count']} Buchungen · {row['tracked_days']} Tracking-Tage\n"
+                f"{identity}\n"
+                f"ID: {row['user_id']}\n"
+                f"Status: {row['access_status']} · Onboarding: {onboarding}\n"
+                f"Aktivität: {last_activity} · Buchungen: {row['expenses_count']} · "
+                f"Tracking-Tage: {row['tracked_days']}\n\n"
             )
-        bot.send_message(uid, text, parse_mode="Markdown")
+        bot.send_message(uid, text)
         return True
 
     if cmd == "/health":
