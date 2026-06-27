@@ -677,6 +677,18 @@ def extract_amounts(text: str, exclude_years: bool = False) -> list[float]:
     return amounts
 
 
+def normalize_recurring_amount(text_lower: str, amount: float) -> tuple[float, str]:
+    annual_markers = [
+        "jährlich", "jaehrlich", "pro jahr", "im jahr", "jahr",
+        "jahresabo", "jahresbeitrag", "jahresgebühr", "jahresgebuehr",
+        "jährliche", "jaehrliche",
+    ]
+    monthly_markers = ["im monat", "monatlich", "pro monat"]
+    if any(marker in text_lower for marker in annual_markers) and not any(marker in text_lower for marker in monthly_markers):
+        return amount / 12, f"{format_eur(amount)} jährlich umgerechnet."
+    return amount, ""
+
+
 def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
     normalized = text.lower()
     result: dict[str, float] = {}
@@ -776,6 +788,11 @@ DETAIL_VALUE_ALIASES = {
     "fitnessabo": ("abos", "gym", "Fitnessstudio"),
     "handy": ("abos", "handy", "Handy"),
     "icloud": ("abos", "icloud", "iCloud"),
+    "abo": ("abos", "abo", "Abo"),
+    "abos": ("abos", "abo", "Abo"),
+    "abonnement": ("abos", "abo", "Abo"),
+    "jahresabo": ("abos", "abo", "Abo"),
+    "mitgliedschaft": ("abos", "abo", "Mitgliedschaft"),
     "haftpflicht": ("versicherungen", "haftpflicht", "Haftpflicht"),
     "bu": ("versicherungen", "bu", "Berufsunfähigkeit"),
     "berufsunfähigkeit": ("versicherungen", "bu", "Berufsunfähigkeit"),
@@ -864,12 +881,16 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
         "hinzu", "ergänze", "ergaenze", "nimm auf",
+        "neu", "neue", "neuer", "neues",
         "lösche", "loesche", "entferne", "streiche", "kündige", "kuendige",
         "gekündigt", "gekuendigt", "abbezahlt", "abgezahlt",
     ]
     has_correction_word = any(word in text_lower for word in correction_words)
-    has_monthly_context = any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"])
-    if not has_correction_word and not has_monthly_context:
+    has_recurring_context = any(phrase in text_lower for phrase in [
+        "im monat", "monatlich", "pro monat", "jährlich", "jaehrlich",
+        "pro jahr", "im jahr", "jahresabo", "jahresbeitrag",
+    ])
+    if not has_correction_word and not has_recurring_context:
         return ""
 
     alias_matches = find_detail_alias_matches(text_lower)
@@ -918,13 +939,14 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
             "Ich nutze das ab jetzt für deine Auswertung."
         )
 
-    numbers = re.findall(r"\d+(?:[.,]\d+)?", text_lower)
-    if not numbers:
+    amounts = extract_amounts(text_lower, exclude_years=True)
+    if not amounts:
         return ""
 
     if alias_matches:
         _length, section, key, label = max(alias_matches, key=lambda item: item[0])
-        value = float(numbers[-1].replace(",", "."))
+        raw_value = float(amounts[-1])
+        value, recurrence_note = normalize_recurring_amount(text_lower, raw_value)
         details = u.get("details", {})
         if not isinstance(details, dict):
             details = {}
@@ -941,7 +963,8 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
 
         return (
             "Alles klar, ich habe das aktualisiert.\n\n"
-            f"{label}: {format_eur(value)}\n"
+            f"{label}: {format_eur(value)} pro Monat\n"
+            f"{recurrence_note + chr(10) if recurrence_note else ''}"
             f"Fixkosten gesamt: {format_eur(total_fixed)}\n\n"
             "Ich nutze das ab jetzt für deine Auswertung."
         )
@@ -954,6 +977,7 @@ def looks_like_profile_correction(text_lower: str) -> bool:
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
         "hinzu", "ergänze", "ergaenze", "nimm auf",
+        "neu", "neue", "neuer", "neues",
         "lösche", "loesche", "entferne", "streiche", "kündige", "kuendige",
         "gekündigt", "gekuendigt", "abbezahlt", "abgezahlt",
     }
@@ -961,7 +985,10 @@ def looks_like_profile_correction(text_lower: str) -> bool:
         return True
     if is_profile_removal_request(text_lower):
         return True
-    if any(phrase in text_lower for phrase in ["im monat", "monatlich", "pro monat"]):
+    if any(phrase in text_lower for phrase in [
+        "im monat", "monatlich", "pro monat", "jährlich", "jaehrlich",
+        "pro jahr", "im jahr", "jahresabo", "jahresbeitrag",
+    ]):
         return any(re.search(rf"\b{re.escape(alias)}\b", text_lower) for alias in DETAIL_VALUE_ALIASES)
     return False
 
@@ -1372,6 +1399,7 @@ DETAIL_ITEM_LABELS = {
     "spotify": "Spotify",
     "prime": "Prime",
     "disney": "Disney",
+    "abo": "Abo",
     "gym": "Gym",
     "handy": "Handy",
     "icloud": "iCloud",
@@ -3332,6 +3360,11 @@ def handle_msg(message):
                 "prime": "prime",
                 "amazon": "prime",
                 "disney": "disney",
+                "abo": "abo",
+                "abos": "abo",
+                "abonnement": "abo",
+                "jahresabo": "abo",
+                "mitgliedschaft": "abo",
                 "gym": "gym",
                 "fitness": "gym",
                 "fitnessstudio": "gym",
