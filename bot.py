@@ -646,12 +646,35 @@ def add_cp(user_id: int, points: int) -> int:
 
 def parse_currency(text: str):
     """Wandelt Text in float um. Gibt None zurück bei ungültigem Input."""
+    token_match = re.search(r"\d+(?:[.,]\d+)?\s*k\b", text.lower())
+    if token_match:
+        cleaned_k = re.sub(r"[^\d,.-]", "", token_match.group(0)).replace(",", ".")
+        try:
+            return float(cleaned_k) * 1000
+        except ValueError:
+            return None
+
     cleaned = re.sub(r'[^\d,.-]', '', text).replace(',', '.')
     try:
         val = float(cleaned)
         return val if val >= 0 else None
     except ValueError:
         return None
+
+
+def extract_amounts(text: str, exclude_years: bool = False) -> list[float]:
+    amounts = []
+    for match in re.finditer(r"\b\d+(?:[.,]\d+)?\s*k\b|\b\d+(?:[.,]\d{1,2})?\b", text.lower()):
+        raw = match.group(0).strip()
+        multiplier = 1000 if raw.endswith("k") else 1
+        cleaned = re.sub(r"[^\d,.-]", "", raw).replace(",", ".")
+        if exclude_years and multiplier == 1 and re.match(r"^(19|20)\d{2}$", cleaned.split(".")[0]):
+            continue
+        try:
+            amounts.append(float(cleaned) * multiplier)
+        except ValueError:
+            continue
+    return amounts
 
 
 def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
@@ -814,6 +837,18 @@ def is_profile_removal_request(text_lower: str) -> bool:
     return "nicht mehr" in text_lower and any(
         re.search(rf"\b{re.escape(alias)}\b", text_lower)
         for alias in DETAIL_VALUE_ALIASES
+    )
+
+
+def looks_like_investment_update(text_lower: str) -> bool:
+    investment_phrases = [
+        "investiertes vermögen", "investiertes vermoegen", "aktuell investiert",
+        "aktuelle investments", "meine investments", "mein depot", "depot",
+        "portfolio", "cryptowährung", "cryptowaehrung", "kryptowährung",
+        "kryptowaehrung", "crypto", "krypto",
+    ]
+    return any(word in text_lower for word in INVESTMENT_INPUTS) or any(
+        phrase in text_lower for phrase in investment_phrases
     )
 
 
@@ -1310,6 +1345,67 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
         lines.append(report_moment.strip())
     return "\n".join(lines)
 
+
+DETAIL_SECTION_LABELS = {
+    "wohnen": ("🏠", "Wohnen"),
+    "mobilitaet": ("🚗", "Mobilität"),
+    "abos": ("📱", "Abos"),
+    "versicherungen": ("🛡️", "Versicherungen"),
+    "kredite": ("💳", "Kredite"),
+}
+
+
+DETAIL_ITEM_LABELS = {
+    "miete": "Miete",
+    "strom": "Strom",
+    "gas": "Gas",
+    "nebenkosten": "Nebenkosten",
+    "hausgeld": "Hausgeld",
+    "auto": "Auto",
+    "tanken": "Tanken",
+    "bahn": "Bahn",
+    "netflix": "Netflix",
+    "spotify": "Spotify",
+    "prime": "Prime",
+    "disney": "Disney",
+    "gym": "Gym",
+    "handy": "Handy",
+    "icloud": "iCloud",
+    "haftpflicht": "Haftpflicht",
+    "bu": "Berufsunfähigkeit",
+    "rechtsschutz": "Rechtsschutz",
+    "hausrat": "Hausrat",
+    "autoversicherung": "Autoversicherung",
+    "krankenversicherung": "Krankenversicherung",
+    "sonstige": "Sonstige",
+    "kredit": "Kredit",
+    "immobilie": "Immobilie",
+    "hausverwalter": "Hausverwalter",
+    "konsum": "Konsum",
+}
+
+
+def format_fixed_cost_breakdown(u: dict) -> str:
+    details = u.get("details", {})
+    total = u.get("fixed_costs") or fixed_costs_total(details if isinstance(details, dict) else {})
+    if not isinstance(details, dict) or not any(isinstance(v, dict) and v for v in details.values()):
+        return f"Deine aktuellen Fixkosten liegen bei {total:.2f} EUR pro Monat."
+
+    lines = ["*Deine Fixkosten*", ""]
+    for section, values in details.items():
+        if not isinstance(values, dict) or not values:
+            continue
+        emoji, section_label = DETAIL_SECTION_LABELS.get(section, ("•", section.replace("_", " ").title()))
+        lines.append(f"{emoji} *{section_label}*")
+        for key, value in values.items():
+            label = DETAIL_ITEM_LABELS.get(key, key.replace("_", " ").title())
+            lines.append(f"{label}: {format_eur(value)}")
+        lines.append("")
+
+    lines.append(f"*Gesamt: {format_eur(total)}*")
+    return "\n".join(lines)
+
+
 def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
     def eur(value: float) -> str:
         return f"{value:.2f} EUR"
@@ -1326,6 +1422,17 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
             return float(value) if value is not None else None
         except (TypeError, ValueError):
             return None
+
+    asks_fixed_breakdown = (
+        "fixkosten" in text_lower
+        and any(word in text_lower for word in [
+            "zeig", "zeige", "aufschlüssel", "aufschluessel", "aufgeschlüsselt",
+            "aufgeschluesselt", "liste", "auflisten", "überblick", "ueberblick",
+            "details", "detail", "welche", "was sind",
+        ])
+    )
+    if asks_fixed_breakdown:
+        return format_fixed_cost_breakdown(u)
 
     detail_questions = [
         (["miete"], "wohnen", "miete", "Miete"),
@@ -1448,10 +1555,10 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
     asks_fixed = (
         "wie hoch sind meine fixkosten" in text_lower
         or "wie viel fixkosten habe ich" in text_lower
+        or "wieviel fixkosten habe ich" in text_lower
     )
     if asks_fixed:
-        fixed = u.get("fixed_costs") or 0.0
-        return f"Deine aktuellen Fixkosten liegen bei {fixed:.2f} EUR pro Monat."
+        return format_fixed_cost_breakdown(u)
 
     asks_available = (
         "wie viel geld habe ich noch" in text_lower
@@ -3026,7 +3133,7 @@ def handle_msg(message):
         bot.send_message(uid, "Schreib /start, dann richten wir Clarity in Ruhe ein.")
         return
 
-    if step == STEP_NORMAL and looks_like_profile_correction(text_lower):
+    if step == STEP_NORMAL and looks_like_profile_correction(text_lower) and not looks_like_investment_update(text_lower):
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
@@ -3056,7 +3163,7 @@ def handle_msg(message):
     if step == STEP_NORMAL:
         handle_month_transition(uid, u, bot)
 
-        correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
+        correction_reply = "" if looks_like_investment_update(text_lower) else maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
             return
@@ -3276,15 +3383,10 @@ def handle_msg(message):
         return
 
     # ─── HYBRID-TRACKER ──────────────────────────────────────────────────
-    numbers = re.findall(r'\b\d+(?:[.,]\d{1,2})?\b', text_lower)
-    # FIX: Besserer Jahresfilter – schließt 4-stellige Zahlen (1900–2099) aus
-    expense_nums = [
-        n for n in numbers
-        if not re.match(r'^(19|20)\d{2}$', n.replace(',', '.').split('.')[0])
-    ]
+    expense_amounts = extract_amounts(text_lower, exclude_years=True)
 
-    if len(expense_nums) == 1:
-        amount_val = float(expense_nums[0].replace(',', '.'))
+    if len(expense_amounts) == 1:
+        amount_val = expense_amounts[0]
         merchant_found = None
         category_found = None
         direct_category_label = None
