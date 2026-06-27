@@ -1346,10 +1346,32 @@ def get_micro_confirmation(expense_count: int = 0) -> str:
 
 
 def build_report_seed_moment(user_id: int, expense_count: int) -> str:
-    if expense_count >= 7 and remember_monthly_moment(user_id, "report_seed"):
+    if expense_count >= 5 and remember_monthly_moment(user_id, "report_seed"):
         return (
-            "\n\nDu hast jetzt genug Daten, um ein erstes klares Bild zu bekommen.\n"
-            "Ich halte das für deinen Report fest."
+            "\n\nIch sehe langsam dein Monatsbild.\n"
+            "Du musst nicht alles perfekt eintragen - ein paar ehrliche Einträge reichen schon, damit dein Report klarer wird."
+        )
+    return ""
+
+
+def build_smart_spending_hint(user_id: int, items: list) -> str:
+    if not user_id or not any(item.get("category") == "RESTAURANTS" for item in items):
+        return ""
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c, SUM(amount) AS total
+               FROM expenses
+               WHERE user_id = ?
+               AND category = 'RESTAURANTS'
+               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')""",
+            (user_id,)
+        ).fetchone()
+    restaurant_count = int(row["c"] or 0)
+    restaurant_total = float(row["total"] or 0)
+    if restaurant_count >= 3 and restaurant_total >= 40 and remember_monthly_moment(user_id, "restaurant_pattern"):
+        return (
+            "\n\nRestaurants fallen diesen Monat etwas stärker ins Gewicht.\n"
+            "Ich halte das für deinen Report im Blick."
         )
     return ""
 
@@ -1358,6 +1380,7 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
     expense_count = get_month_expense_count(user_id) if user_id else 0
     confirmation = get_micro_confirmation(expense_count)
     report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
+    smart_hint = build_smart_spending_hint(user_id, items) if user_id else ""
 
     if len(items) == 1:
         item = items[0]
@@ -1370,6 +1393,7 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
             f"{item['amount']:.2f} EUR - {merchant}\n"
             f"{emoji} {item['category']} - {cp_text}"
             f"{report_moment}"
+            f"{smart_hint}"
         )
 
     lines = [f"{confirmation} {len(items)} Ausgaben sind festgehalten:", ""]
@@ -1383,6 +1407,8 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
     lines.append(cp_text)
     if report_moment:
         lines.append(report_moment.strip())
+    if smart_hint:
+        lines.append(smart_hint.strip())
     return "\n".join(lines)
 
 
@@ -1786,6 +1812,8 @@ def build_help_answer() -> str:
         "`Tanken 60€`\n"
         "`Restaurant 20€`\n\n"
         "Ich ordne das automatisch ein und behalte den Überblick für dich.\n\n"
+        "Du musst nicht alles perfekt eintragen.\n"
+        "Ein paar ehrliche Einträge reichen schon, damit dein Monatsbild klarer wird.\n\n"
         "Wenn du wissen willst, wo du stehst, frag mich einfach:\n\n"
         "`Wie viel habe ich noch übrig?`\n"
         "`Was war meine größte Ausgabe?`\n"
@@ -1819,14 +1847,17 @@ def build_not_understood_answer() -> str:
 
 def build_start_intro() -> str:
     return (
-        "Gut, dass du hier bist.\n\n"
+        "Hi, ich bin Clarity.\n"
+        "Schön, dass du da bist.\n\n"
         "Ich halte dein Geld für dich im Blick.\n"
-        "Du musst nichts vorbereiten - wir gehen das Schritt für Schritt zusammen durch.\n\n"
-        "Ich stelle dir ein paar Fragen, damit ich dein Profil sauber aufbauen kann.\n"
+        "Wir gehen das Schritt für Schritt zusammen durch.\n\n"
+        "Du musst nichts vorbereiten.\n"
+        "Ein paar ehrliche Einträge reichen schon, damit ich dein Monatsbild klarer machen kann.\n\n"
+        "Ich stelle dir jetzt ein paar Fragen, damit ich dein Profil sauber aufbauen kann.\n"
         "Danach kannst du mich einfach im Alltag nutzen.\n\n"
         "*Schritt 1 von 8:* Wie hoch ist dein monatliches Nettoeinkommen?\n"
         "_(z.B. 2500)_\n\n"
-        "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._"
+        "_Schreib zurück oder nutze /zurueck, um einen Schritt zurückzugehen._"
     )
 
 
