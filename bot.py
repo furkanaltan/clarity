@@ -1789,6 +1789,29 @@ def build_start_intro() -> str:
     )
 
 
+def is_score_info_question(text_lower: str) -> bool:
+    if "score" not in text_lower:
+        return False
+    info_triggers = [
+        "was ist", "was bedeutet", "erklär", "erklaer", "wie funktioniert",
+        "wie wird", "wofür", "wofuer", "warum", "was sagt",
+    ]
+    return any(trigger in text_lower for trigger in info_triggers)
+
+
+def build_score_info_answer() -> str:
+    return (
+        "Der *Clarity Score* zeigt, wie stabil dein finanzielles Verhalten gerade ist.\n\n"
+        "*Er besteht aus 4 Bereichen:*\n"
+        "1. Budget Control - wie viel freies Monatsbudget übrig bleibt.\n"
+        "2. Savings Execution - ob du deine Sparrate wirklich umsetzt.\n"
+        "3. Tracking Consistency - wie verlässlich deine Datenbasis ist.\n"
+        "4. Financial Structure - Notgroschen, Sparquote und positives Budget.\n\n"
+        "Hohe Scores entstehen nicht über Nacht. Sie werden über Zeit freigeschaltet, damit der Score wertvoll bleibt.\n\n"
+        "Wichtig: Der Score ist kein Urteil. Er zeigt dir deinen nächsten klaren Hebel."
+    )
+
+
 # ====================== GAMIFICATION ENGINE ======================
 
 def get_rank(points: int) -> tuple:
@@ -2770,18 +2793,7 @@ def handle_commands(message):
         ) 
 
     elif cmd == '/scoreinfo':
-        bot.send_message(
-            uid,
-            "Der *Clarity Score V2* ist dein Prestige-Score für finanzielle Disziplin.\n\n"
-            "*Die 4 Bereiche:*\n"
-            "1. Budget Control - wie viel freies Monatsbudget übrig bleibt.\n"
-            "2. Savings Execution - ob du deine Sparrate wirklich bestätigst.\n"
-            "3. Tracking Consistency - wie stark deine 90-Tage-Datenbasis ist.\n"
-            "4. Financial Structure - Notgroschen, Sparquote und positives Budget.\n\n"
-            "Hohe Scores werden über Zeit freigeschaltet. Das schützt den Score vor Farming und macht ihn wertvoll.\n\n"
-            "*Wichtig:* Der Score ist kein Urteil. Er zeigt dir den nächsten klaren Hebel.",
-            parse_mode="Markdown"
-        )
+        bot.send_message(uid, build_score_info_answer(), parse_mode="Markdown")
 
     elif cmd == '/badges':
         with get_db() as conn:
@@ -3131,6 +3143,10 @@ def handle_msg(message):
 
     if step == STEP_START:
         bot.send_message(uid, "Schreib /start, dann richten wir Clarity in Ruhe ein.")
+        return
+
+    if is_score_info_question(text_lower):
+        bot.send_message(uid, build_score_info_answer(), parse_mode="Markdown")
         return
 
     if step == STEP_NORMAL and looks_like_profile_correction(text_lower) and not looks_like_investment_update(text_lower):
