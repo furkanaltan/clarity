@@ -3692,6 +3692,31 @@ def create_monthly_report_jobs(report_month: str = None) -> int:
     return created
 
 
+def has_report_jobs_for_month(report_month: str) -> bool:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM report_jobs WHERE report_month = ? LIMIT 1",
+            (report_month,)
+        ).fetchone()
+    return row is not None
+
+
+def ensure_monthly_report_jobs(today: date = None) -> int:
+    today = today or date.today()
+    if today.day not in {1, 2}:
+        return 0
+
+    report_month = previous_month_key(today)
+    if has_report_jobs_for_month(report_month):
+        return 0
+
+    created = create_monthly_report_jobs(report_month)
+    logger.warning(
+        f"Report-Safety-Net hat fehlende Jobs fuer {report_month} nacherzeugt: {created}."
+    )
+    return created
+
+
 def claim_due_report_jobs(limit: int = None) -> list:
     limit = limit or REPORT_WORKER_BATCH_SIZE
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3809,7 +3834,17 @@ def setup_monthly_report_scheduler():
         coalesce=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        ensure_monthly_report_jobs,
+        trigger=CronTrigger(day="1-2", minute=5),
+        id="ensure_monthly_report_jobs",
+        replace_existing=True,
+        misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
+        coalesce=True,
+        max_instances=1,
+    )
     scheduler.start()
+    ensure_monthly_report_jobs()
     logger.info(
         "Report-Queue aktiv: Jobs am 1. um 07:55, Versandfenster "
         f"{REPORT_SEND_WINDOW_START_HOUR}:00-{REPORT_SEND_WINDOW_END_HOUR}:00, "
