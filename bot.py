@@ -769,6 +769,11 @@ DETAIL_VALUE_ALIASES = {
     "disney": ("abos", "disney", "Disney"),
     "gym": ("abos", "gym", "Gym"),
     "fitness": ("abos", "gym", "Gym"),
+    "fitnessstudio": ("abos", "gym", "Fitnessstudio"),
+    "fitnesstudio": ("abos", "gym", "Fitnessstudio"),
+    "fittnesstudio": ("abos", "gym", "Fitnessstudio"),
+    "fintesstudio": ("abos", "gym", "Fitnessstudio"),
+    "fitnessabo": ("abos", "gym", "Fitnessstudio"),
     "handy": ("abos", "handy", "Handy"),
     "icloud": ("abos", "icloud", "iCloud"),
     "haftpflicht": ("versicherungen", "haftpflicht", "Haftpflicht"),
@@ -1079,8 +1084,7 @@ def ensure_access_record(user_id: int, display_name: str = "", username: str = "
         "Neue Clarity-Freigabe wartet:\n\n"
         f"ID: {user_id}\n"
         f"Name: {display_name or '-'} {username or ''}\n\n"
-        "Du kannst den Zugang direkt hier freigeben.",
-        reply_markup=build_access_action_markup(user_id)
+        f"Freigeben mit: /approve {user_id}"
     )
     return "pending"
 
@@ -2286,9 +2290,9 @@ def setup_bot_menu():
         telebot.types.BotCommand("badges",     "🏆 Errungenschaften"),
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
-        telebot.types.BotCommand("verfeinern", "⚙️ Profil verfeinern"),
-        telebot.types.BotCommand("zurueck",    "Einen Schritt zurück"),
-        telebot.types.BotCommand("undo",       "↩️ Letzte Ausgabe löschen"),
+        telebot.types.BotCommand("verfeinern", "⚙️ Fixkosten & Profil bearbeiten"),
+        telebot.types.BotCommand("zurueck",    "Nur Onboarding: Schritt zurück"),
+        telebot.types.BotCommand("undo",       "Letzte Ausgabe löschen"),
         telebot.types.BotCommand("editlast",   "Letzte Ausgabe ändern"),
         telebot.types.BotCommand("reset",      "🗑️ Alle Daten löschen"),
     ]
@@ -2603,8 +2607,11 @@ def handle_admin_command(message, cmd: str) -> bool:
             name = " ".join(part for part in [row["display_name"], row["username"]] if part) or "-"
             bot.send_message(
                 uid,
-                f"ID: {row['user_id']}\nName: {name}\nAngefragt: {row['requested_at']}",
-                reply_markup=build_access_action_markup(row["user_id"])
+                f"ID: {row['user_id']}\n"
+                f"Name: {name}\n"
+                f"Angefragt: {row['requested_at']}\n\n"
+                f"Freigeben: /approve {row['user_id']}\n"
+                f"Sperren: /revoke {row['user_id']}"
             )
         return True
 
@@ -3252,18 +3259,12 @@ def handle_msg(message):
             new_badges = check_wealth_badges(uid, u_fresh)
             sparrate = (u_fresh.get("etf_savings") or 0) + val
 
-            # Post-Onboarding: Profil verfeinern anbieten
-            markup = telebot.types.InlineKeyboardMarkup()
-            markup.add(
-                telebot.types.InlineKeyboardButton("Profil verfeinern", callback_data="start_refine"),
-                telebot.types.InlineKeyboardButton("Später", callback_data="skip_refine")
-            )
             bot.send_message(uid,
                 f"🎉 *Einrichtung abgeschlossen!*\n\n"
                 f"Sparrate: {sparrate:.2f}€/Monat\n\n"
-                f"Verfeinere dein Profil für maßgeschneiderte Clarity Reports.",
-                parse_mode="Markdown",
-                reply_markup=markup
+                "Als nächstes kannst du deine Fixkosten genauer hinterlegen.\n"
+                "Schreib dafür einfach /verfeinern.",
+                parse_mode="Markdown"
             )
             # Badges dezent als separate Zeilen falls vorhanden
             if new_badges:
@@ -3333,6 +3334,11 @@ def handle_msg(message):
                 "disney": "disney",
                 "gym": "gym",
                 "fitness": "gym",
+                "fitnessstudio": "gym",
+                "fitnesstudio": "gym",
+                "fittnesstudio": "gym",
+                "fintesstudio": "gym",
+                "fitnessabo": "gym",
                 "handy": "handy",
                 "icloud": "icloud",
             })
