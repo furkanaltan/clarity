@@ -2,6 +2,7 @@ import os
 import sqlite3
 import calendar
 import json
+from contextlib import contextmanager
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -344,10 +345,19 @@ def draw_section_rows(c, x, y, rows, row_gap=26):
     return y
 
 
+@contextmanager
 def get_db():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def ensure_net_worth_column():

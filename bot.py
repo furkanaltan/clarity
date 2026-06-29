@@ -1025,7 +1025,7 @@ def get_actor_id(message) -> int:
 
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
-    "/health", "/reportjobs", "/backupnow",
+    "/health", "/reportjobs", "/backupnow", "/testreport",
 }
 
 
@@ -2654,7 +2654,8 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/adminusers – Nutzerstatus anzeigen\n"
             "/health – Bot, DB und Reports prüfen\n"
             "/reportjobs – Report-Versandstatus\n"
-            "/backupnow – Datenbank sichern",
+            "/backupnow – Datenbank sichern\n"
+            "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
         )
         return True
@@ -2772,6 +2773,9 @@ def handle_admin_command(message, cmd: str) -> bool:
             source.backup(target)
         bot.send_message(uid, f"Backup erstellt:\n{backup_path.resolve()}")
         return True
+
+    if cmd == "/testreport":
+        return False
 
     return False
 
