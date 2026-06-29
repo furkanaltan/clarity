@@ -108,8 +108,9 @@ MERCHANT_KEYWORDS = {
     "Spotify":    ["spotify"],
     "Disney+":    ["disney+", "disneyplus"],
     "Zalando":    ["zalando"],
-    "DM":         ["dm drogerie", "dm-drogerie"],
+    "DM":         ["dm", "dm drogerie", "dm-drogerie"],
     "Rossmann":   ["rossmann"],
+    "Müller":     ["müller", "mueller"],
 }
 
 CATEGORY_MAPPING = {
@@ -119,7 +120,7 @@ CATEGORY_MAPPING = {
     "Agip": "MOBILITAET", "Esso": "MOBILITAET", "McDonalds": "RESTAURANTS",
     "Burger King": "RESTAURANTS", "Subway": "RESTAURANTS", "Amazon": "SHOPPING",
     "Zalando": "SHOPPING", "Netflix": "ABOS", "Spotify": "ABOS", "Disney+": "ABOS",
-    "DM": "DROGERIE", "Rossmann": "DROGERIE",
+    "DM": "DROGERIE", "Rossmann": "DROGERIE", "Müller": "DROGERIE",
 }
 
 DIRECT_CATEGORY_INPUTS = {
@@ -135,10 +136,13 @@ DIRECT_CATEGORY_INPUTS = {
     "mobilität": ("MOBILITAET", "Mobilität"),
     "mobilitaet": ("MOBILITAET", "Mobilität"),
     "tanken": ("MOBILITAET", "Tanken"),
+    "tankstelle": ("MOBILITAET", "Tankstelle"),
+    "tankstellen": ("MOBILITAET", "Tankstelle"),
     "shopping": ("SHOPPING", "Shopping"),
     "pflege": ("PFLEGE", "Pflege"),
     "friseur": ("PFLEGE", "Friseur"),
     "frisör": ("PFLEGE", "Friseur"),
+    "frisoer": ("PFLEGE", "Friseur"),
     "gesundheit": ("GESUNDHEIT", "Gesundheit"),
     "drogerie": ("DROGERIE", "Drogerie"),
     "abos": ("ABOS", "Abos"),
@@ -171,9 +175,9 @@ FASTFOOD_KEYWORDS = [
 # Ermöglicht lokale Erkennung ohne KI: "Döner 8€", "Kino 15", "Tanken 60" etc.
 CATEGORY_KEYWORDS = {
     "RESTAURANTS": [
-        "döner", "pizza", "kebab", "sushi", "ramen", "restaurant", "lieferando",
-        "lieferdienst", "takeaway", "fastfood", "bäcker", "bäckerei", "café",
-        "coffee", "wok", "mensa", "imbiss", "currywurst", "pommes", "schnitzel",
+        "döner", "doener", "pizza", "kebab", "sushi", "ramen", "restaurant", "lieferando",
+        "lieferdienst", "takeaway", "fastfood", "bäcker", "baecker", "bäckerei", "baeckerei",
+        "café", "cafe", "coffee", "wok", "mensa", "imbiss", "currywurst", "pommes", "schnitzel",
         "sandwich", "wraps", "mittagessen", "abendessen", "frühstück", "brunch",
         "shawarma", "falafel", "burger", "wings", "nuggets", "asia", "thai",
         "griechisch", "türkisch", "italienisch",
@@ -186,7 +190,7 @@ CATEGORY_KEYWORDS = {
         "fußball", "basketball", "sport event", "handball",
     ],
     "MOBILITAET": [
-        "tanken", "benzin", "diesel", "super", "e10", "e5", "parkhaus",
+        "tanken", "tankstelle", "tankstellen", "benzin", "diesel", "sprit", "super", "e10", "e5", "parkhaus",
         "parken", "parkticket", "taxi", "uber", "bolt", "öpnv", "bahn",
         "bus", "tram", "autowäsche", "werkstatt", "reparatur", "reifen",
         "ölwechsel", "hauptuntersuchung", "hu", "tüv",
