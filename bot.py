@@ -1392,6 +1392,49 @@ def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
     )
 
 
+def is_affordability_question(text_lower: str) -> bool:
+    return (
+        any(phrase in text_lower for phrase in [
+            "kann ich mir", "koennte ich mir", "könnte ich mir",
+            "kann ich", "leisten", "drin", "passt das noch",
+        ])
+        and any(word in text_lower for word in ["leisten", "kaufen", "ausgeben", "ausgabe", "drin"])
+    )
+
+
+def maybe_answer_affordability(user_id: int, u: dict, text_lower: str) -> str:
+    if not is_affordability_question(text_lower):
+        return ""
+    amounts = extract_amounts(text_lower, exclude_years=True)
+    if not amounts:
+        return ""
+
+    planned = float(amounts[-1])
+    remaining, total_expenses, income, fixed = calculate_remaining_budget(u, user_id)
+    after_purchase = remaining - planned
+    left_days = days_left_in_month()
+    daily_after = after_purchase / left_days if left_days > 0 else after_purchase
+
+    if after_purchase >= 200:
+        verdict = "Ja, das wirkt aktuell machbar."
+        note = "Dein Restbudget bleibt danach noch entspannt positiv."
+    elif after_purchase >= 0:
+        verdict = "Ja, aber eher bewusst."
+        note = "Es passt noch rein, aber dein Puffer wird kleiner."
+    else:
+        verdict = "Ich wäre vorsichtig."
+        note = "Damit würdest du dein aktuelles Restbudget überziehen."
+
+    return (
+        f"{verdict}\n\n"
+        f"Geplante Ausgabe: {format_eur(planned)}\n"
+        f"Aktuelles Restbudget: {format_eur(remaining)}\n"
+        f"Danach übrig: {format_eur(after_purchase)}\n"
+        f"Tagesbudget danach: ca. {format_eur(daily_after)}\n\n"
+        f"{note}"
+    )
+
+
 MICRO_CONFIRMATIONS = [
     "Ist drin.",
     "Hab ich notiert.",
@@ -3370,6 +3413,11 @@ def handle_msg(message):
         weekly_reply = maybe_answer_weekly_budget(uid, u, text_lower)
         if weekly_reply:
             bot.send_message(uid, weekly_reply, parse_mode="Markdown")
+            return
+
+        affordability_reply = maybe_answer_affordability(uid, u, text_lower)
+        if affordability_reply:
+            bot.send_message(uid, affordability_reply, parse_mode="Markdown")
             return
 
         category_reply = maybe_answer_category_spending(uid, text_lower)
