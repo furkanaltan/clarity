@@ -1018,6 +1018,89 @@ def extract_merchant_name(text_input: str) -> str:
     return words[0].capitalize() if words else "Unbekannt"
 
 
+def detect_expense_label(text_input: str, text_lower: str) -> tuple[str, str, str]:
+    for alias, (category, label) in DIRECT_CATEGORY_INPUTS.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+            return category, label, label
+
+    for merchant, keys in MERCHANT_KEYWORDS.items():
+        if any(key in text_lower for key in keys):
+            return CATEGORY_MAPPING.get(merchant, "SONSTIGES"), merchant, ""
+
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(keyword in text_lower for keyword in keywords):
+            return category, extract_merchant_name(text_input), ""
+
+    return "", "", ""
+
+
+def parse_hybrid_expense_items(text_input: str, amounts: list[float]) -> list[dict]:
+    if not amounts:
+        return []
+
+    amount_matches = list(re.finditer(r"\b\d+(?:[.,]\d+)?\s*k\b|\b\d+(?:[.,]\d{1,2})?\b", text_input.lower()))
+    if len(amount_matches) != len(amounts):
+        return []
+
+    items = []
+    used_context_spans = set()
+    for index, match in enumerate(amount_matches):
+        prev_end = amount_matches[index - 1].end() if index > 0 else 0
+        next_start = amount_matches[index + 1].start() if index + 1 < len(amount_matches) else len(text_input)
+        context_options = [
+            (prev_end, match.start(), text_input[prev_end:match.start()].strip(" ,;+-")),
+            (match.end(), next_start, text_input[match.end():next_start].strip(" ,;+-")),
+        ]
+        selected = None
+        for start, end, context in context_options:
+            if not context or (start, end) in used_context_spans:
+                continue
+            category, merchant, direct_label = detect_expense_label(context, context.lower())
+            if category and merchant:
+                selected = (start, end, category, merchant, direct_label)
+                break
+        if not selected:
+            return []
+
+        start, end, category, merchant, direct_label = selected
+        used_context_spans.add((start, end))
+        items.append({
+            "amount": amounts[index],
+            "category": category,
+            "merchant": direct_label or merchant,
+        })
+    return items
+
+
+def build_unclear_amount_answer(amounts: list[float]) -> str:
+    if not amounts:
+        return build_not_understood_answer()
+    amount_text = ", ".join(format_eur(amount) for amount in amounts[:3])
+    return (
+        "Ich sehe den Betrag, aber mir fehlt noch, wofür er war.\n\n"
+        f"Erkannt: {amount_text}\n\n"
+        "Schreib es kurz mit Händler oder Kategorie, zum Beispiel:\n"
+        "`Lidl 34€`\n"
+        "`Tanken 60€`\n"
+        "`Restaurant 20€`"
+    )
+
+
+def looks_like_unclear_expense_attempt(text_lower: str, amounts: list[float]) -> bool:
+    if not amounts:
+        return False
+    if text_lower.startswith(("wie ", "was ", "warum ", "wann ", "wo ", "wer ", "kannst du")):
+        return False
+    words = re.findall(r"[a-zA-ZäöüÄÖÜß]+", text_lower)
+    return (
+        "€" in text_lower
+        or "eur" in text_lower
+        or "euro" in text_lower
+        or any(word in text_lower for word in ["ausgabe", "bezahlt", "gekauft"])
+        or len(words) <= 2
+    )
+
+
 def get_actor_id(message) -> int:
     """User-ID fuer Admin-Pruefungen; in Gruppen ist chat.id nicht zwingend die User-ID."""
     return message.from_user.id if getattr(message, "from_user", None) else message.chat.id
@@ -2907,6 +2990,16 @@ def handle_commands(message):
         bot.send_message(uid, text, parse_mode="Markdown")
 
     elif cmd == '/investiert':
+        etf_savings = u.get("etf_savings") or 0
+        cash_savings = u.get("cash_savings") or 0
+        if etf_savings + cash_savings <= 0:
+            bot.send_message(
+                uid,
+                "Ich sehe noch keine hinterlegte Sparrate.\n\n"
+                "Leg sie zuerst im Onboarding oder über /settings fest. Danach kannst du sie mit /investiert bestätigen."
+            )
+            return
+
         month_key = f"inv_{date.today().strftime('%Y_%m')}"
         if has_badge(uid, month_key):
             bot.send_message(uid, f"Investment-Bonus für {date.today().strftime('%B %Y')} bereits vergeben.")
@@ -2924,22 +3017,22 @@ def handle_commands(message):
                 bot.send_message(uid, "Bonus für diesen Monat bereits vergeben.")
                 return
 
-        etf_savings = u.get("etf_savings") or 0
-        cash_savings = u.get("cash_savings") or 0
         new_investments = (u.get("current_investments") or 0) + etf_savings
         new_cash = (u.get("current_cash") or 0) + cash_savings
         update_user_field(uid, "current_investments", new_investments)
         update_user_field(uid, "current_cash", new_cash)
-        save_investment_event(
-            uid, etf_savings, asset_type="etf", asset_name="ETF-Sparrate",
-            event_type="recurring_plan", source="investiert_command",
-            note="Monatliche ETF-Sparrate bestätigt"
-        )
-        save_investment_event(
-            uid, cash_savings, asset_type="cash", asset_name="Cash-Sparrate",
-            event_type="recurring_plan", source="investiert_command",
-            note="Monatliche Cash-Sparrate bestätigt"
-        )
+        if etf_savings > 0:
+            save_investment_event(
+                uid, etf_savings, asset_type="etf", asset_name="ETF-Sparrate",
+                event_type="recurring_plan", source="investiert_command",
+                note="Monatliche ETF-Sparrate bestätigt"
+            )
+        if cash_savings > 0:
+            save_investment_event(
+                uid, cash_savings, asset_type="cash", asset_name="Cash-Sparrate",
+                event_type="recurring_plan", source="investiert_command",
+                note="Monatliche Cash-Sparrate bestätigt"
+            )
         save_portfolio_snapshot(
             uid, new_investments, scope="investments",
             source="investiert_command", note="Stand nach Sparrate"
@@ -3491,6 +3584,27 @@ def handle_msg(message):
     # ─── HYBRID-TRACKER ──────────────────────────────────────────────────
     expense_amounts = extract_amounts(text_lower, exclude_years=True)
 
+    if len(expense_amounts) > 1 and not looks_like_investment_update(text_lower) and not is_portfolio_snapshot_input(text_lower):
+        parsed_items = parse_hybrid_expense_items(text_input, expense_amounts)
+        if parsed_items:
+            with get_db() as conn:
+                for item in parsed_items:
+                    conn.execute(
+                        "INSERT INTO expenses (user_id, amount, category, merchant, description) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (uid, item["amount"], item["category"], item["merchant"], "Via Hybrid Multi")
+                    )
+                conn.commit()
+
+            cp_earned = handle_daily_activity(uid, bot)
+            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            bot.send_message(
+                uid,
+                format_expense_confirmation(parsed_items, cp_str, user_id=uid),
+                parse_mode="Markdown"
+            )
+            return
+
     if len(expense_amounts) == 1:
         amount_val = expense_amounts[0]
         merchant_found = None
@@ -3546,28 +3660,7 @@ def handle_msg(message):
             send_badge_summary(bot, uid, new_badges)
             return
 
-        for alias, (category, label) in DIRECT_CATEGORY_INPUTS.items():
-            if re.search(rf"\b{re.escape(alias)}\b", text_lower):
-                category_found = category
-                merchant_found = label
-                direct_category_label = label
-                break
-
-        # Layer 1: Bekannte Händler
-        if not merchant_found:
-            for m, keys in MERCHANT_KEYWORDS.items():
-                if any(k in text_lower for k in keys):
-                    merchant_found = m
-                    category_found = CATEGORY_MAPPING.get(m, "SONSTIGES")
-                    break
-
-        # Layer 2: Kategorie-Keywords (Döner, Kino, Tanken etc.)
-        if not merchant_found:
-            for cat, keywords in CATEGORY_KEYWORDS.items():
-                if any(k in text_lower for k in keywords):
-                    category_found = cat
-                    merchant_found = extract_merchant_name(text_input)
-                    break
+        category_found, merchant_found, direct_category_label = detect_expense_label(text_input, text_lower)
 
         if merchant_found and category_found:
             with get_db() as conn:
@@ -3646,6 +3739,10 @@ def handle_msg(message):
             "Dabei kann ich dir nicht sinnvoll helfen.\n\n"
             "Ich halte für dich Ausgaben, Budget, Sparziele, Score und Reports im Blick."
         )
+        return
+
+    if looks_like_unclear_expense_attempt(text_lower, expense_amounts):
+        bot.send_message(uid, build_unclear_amount_answer(expense_amounts), parse_mode="Markdown")
         return
 
     # ─── KI-FALLBACK (Nur für komplexe/unbekannte Anfragen) ─────────────
