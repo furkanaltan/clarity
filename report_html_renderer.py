@@ -16,15 +16,15 @@ GENERATED_DIR = REPORT_BUNDLE_DIR / "generated"
 
 PAGE_FILES = [
     ("01-cover.html", "Clarity Report"),
-    ("02-financial-story.html", "Financial Story"),
-    ("03-dein-monat.html", "Dein Monat"),
-    ("04-clarity-score.html", "Clarity Score"),
-    ("05-wealth-journey.html", "Wealth Journey"),
-    ("06-your-goal.html", "Your Goal"),
-    ("07-money-map.html", "Money Map"),
+    ("02-financial-story.html", "Überblick"),
+    ("03-dein-monat.html", "Insight"),
+    ("04-clarity-score.html", "Financial Story"),
+    ("05-wealth-journey.html", "Money Map"),
+    ("06-your-goal.html", "Clarity Score"),
+    ("07-money-map.html", "Your Goal"),
     ("08-meilensteine.html", "Meilensteine"),
     ("09-clarity-recap.html", "Clarity Recap"),
-    ("10-closing.html", "Clarity Report"),
+    ("10-closing.html", "Plan"),
 ]
 
 
@@ -48,7 +48,9 @@ LOGO_SVG = """
 
 
 def h(value) -> str:
-    return html.escape(str(value or ""))
+    if value is None:
+        return ""
+    return html.escape(str(value))
 
 
 def humanize_text(text: str) -> str:
@@ -694,11 +696,443 @@ PAGE_RENDERERS = {
 }
 
 
+ICON_SVGS = {
+    "calendar": '<svg width="19" height="19" viewBox="0 0 16 16" fill="none" stroke="#6e6e73" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="13" height="12" rx="1.5"></rect><line x1="5" y1="1" x2="5" y2="4"></line><line x1="11" y1="1" x2="11" y2="4"></line><line x1="1.5" y1="6.5" x2="14.5" y2="6.5"></line></svg>',
+    "trend": '<svg width="19" height="19" viewBox="0 0 16 16" fill="none" stroke="#6e6e73" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 11.5l4-4 3 3 5-5.5"></path><path d="M14 5h-3M14 5v3"></path></svg>',
+    "flag": '<svg width="19" height="19" viewBox="0 0 16 16" fill="none" stroke="#6e6e73" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 14.5h13"></path><path d="M4 14.5L8.5 5.5l3.5 9"></path><path d="M8.5 5.5V2.5"></path><path d="M8.5 2.8h3l-.9 1.1.9 1.1h-3"></path></svg>',
+    "bars": '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#86868b" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 14h12"></path><rect x="2.6" y="8.5" width="2.6" height="3.5"></rect><rect x="6.7" y="5.5" width="2.6" height="6.5"></rect><rect x="10.8" y="3" width="2.6" height="9"></rect></svg>',
+    "cash": '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#86868b" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4.5" width="13" height="7" rx="1"></rect><circle cx="8" cy="8" r="1.8"></circle></svg>',
+    "bag": '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#86868b" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h8l-.7 8.4a1 1 0 0 1-1 .9H5.7a1 1 0 0 1-1-.9L4 5z"></path><path d="M6 5V3.8A2 2 0 0 1 8 1.8a2 2 0 0 1 2 2V5"></path></svg>',
+    "check": '<svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="#3d8b5b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l3.5 3.5L13 4"></path></svg>',
+    "arrow": '<svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="#3d8b5b" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg>',
+    "star": '<svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="#3d8b5b" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5l1.8 4.2 4.5.4-3.4 3 1 4.4L8 11.2 4.1 13.5l1-4.4-3.4-3 4.5-.4z"></path></svg>',
+    "target": '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#b07d35" stroke-width="1.3" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"></circle><circle cx="8" cy="8" r="3.5"></circle><circle cx="8" cy="8" r="1" fill="#b07d35" stroke="none"></circle></svg>',
+    "clock": '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#86868b" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v5l3 2"></path><circle cx="8" cy="8" r="6.2"></circle></svg>',
+}
+
+
+def icon(name: str, kind: str = "square-icon") -> str:
+    return f'<div class="{kind}">{ICON_SVGS.get(name, ICON_SVGS["trend"])}</div>'
+
+
+def footer(page_number: int) -> str:
+    return f"""
+    <div class="page-footer">
+      <div class="logo">{LOGO_SVG}CLARITY</div>
+      <div class="page-num">{page_number:02d} / 10</div>
+    </div>
+""".rstrip()
+
+
+def category_label(value: str) -> str:
+    labels = {
+        "LEBENSMITTEL": "Lebensmittel",
+        "MOBILITAET": "Mobilität",
+        "RESTAURANTS": "Restaurants",
+        "ABOS": "Abos",
+        "FREIZEIT": "Freizeit",
+        "SHOPPING": "Shopping",
+        "VERSICHERUNG": "Versicherungen",
+        "GESUNDHEIT": "Gesundheit",
+        "DROGERIE": "Drogerie",
+        "PFLEGE": "Pflege",
+        "SONSTIGES": "Sonstiges",
+    }
+    return labels.get(str(value or "").upper(), str(value or "Noch keine Daten").title())
+
+
+def category_total(data: dict, category: str) -> float:
+    for row in data["pages"]["money_map"]["categories"]:
+        if str(row.get("category", "")).upper() == category.upper():
+            return float(row.get("total") or 0)
+    return 0.0
+
+
+def strongest_category(data: dict) -> dict:
+    return data["pages"]["month"]["strongest_category"] or {"category": "Noch keine Daten", "total": 0}
+
+
+def biggest_expense(data: dict) -> dict | None:
+    return data["pages"]["month"]["biggest_expense"]
+
+
+def invested_share(data: dict) -> float:
+    net_worth = max(float(data["profile"].get("net_worth") or 0), 1.0)
+    return max(0.0, min(100.0, float(data["profile"].get("current_investments") or 0) / net_worth * 100.0))
+
+
+def cash_share(data: dict) -> float:
+    net_worth = max(float(data["profile"].get("net_worth") or 0), 1.0)
+    return max(0.0, min(100.0, float(data["profile"].get("cash_reserve") or 0) / net_worth * 100.0))
+
+
+def clean_month_title(month_label: str) -> tuple[str, str]:
+    month, year = split_month_label(month_label)
+    return month.title(), year
+
+
+def score_summary(score: dict) -> str:
+    consistency = score["parts"].get("consistency", 0)
+    budget = score["parts"].get("budget", 0)
+    if consistency < 10:
+        return "Budget und Struktur sind sichtbar. Was noch fehlt, ist Konstanz beim Tracking."
+    if budget < 15:
+        return "Deine Datenbasis wächst. Der stärkste Hebel liegt aktuell bei der Budgetkontrolle."
+    return "Du steuerst dein Geld bereits bewusst. Jetzt geht es darum, diese Struktur zu halten."
+
+
+def score_next_step(score: dict) -> str:
+    if score.get("days_to_unlock", 0) > 0:
+        return f"Noch {score['days_to_unlock']} Tage bis Score-Level {score['next_unlock_level']}+ freigeschaltet wird."
+    parts = score["parts"]
+    weakest = min(
+        [
+            ("Budget Control", parts.get("budget", 0)),
+            ("Savings Execution", parts.get("savings", 0)),
+            ("Tracking Consistency", parts.get("consistency", 0)),
+            ("Financial Structure", parts.get("structure", 0)),
+        ],
+        key=lambda item: item[1],
+    )[0]
+    return f"Dein nächster Hebel: {weakest} stärken."
+
+
+def goal_months_text(months) -> str:
+    if months is None:
+        return "Sparrate hinterlegen, damit die Prognose sichtbar wird."
+    if months <= 0:
+        return "Dein Ziel ist rechnerisch bereits erreicht."
+    return f"Bei gleicher Sparrate dauert es rund {months} Monate."
+
+
+def milestone_info(data: dict) -> dict:
+    return milestone_progress(float(data["profile"].get("net_worth") or 0))
+
+
+def build_new_money_rows(data: dict) -> str:
+    categories = data["pages"]["money_map"]["categories"][:5]
+    if not categories:
+        categories = [{"category": "Noch keine Daten", "total": 0}]
+    max_total = max(float(row.get("total") or 0) for row in categories) or 1.0
+    rows = []
+    for idx, row in enumerate(categories):
+        total = float(row.get("total") or 0)
+        pct = max(0, min(100, total / max_total * 100))
+        share = 0 if sum(float(item.get("total") or 0) for item in categories) <= 0 else total / sum(float(item.get("total") or 0) for item in categories) * 100
+        fill_class = "" if idx == 0 else (" alt" if idx == 1 else " muted")
+        rows.append(
+            '<div class="bar-row">'
+            f'<div class="bar-name">{h(category_label(row.get("category")))}</div>'
+            f'<div class="bar-track"><div class="bar-fill{fill_class}" style="width:{max(10, pct):.1f}%">{share:.0f} %</div></div>'
+            f'<div class="bar-amount">{h(fmt_money(total, 0))}</div>'
+            '</div>'
+        )
+    return "\n".join(rows)
+
+
+def build_badges_777(data: dict) -> str:
+    badges = data["pages"]["milestones"]["badges"][:3]
+    if not badges:
+        badges = [
+            {"label": data["pages"]["milestones"]["rank"]["name"], "earned_at": data["meta"]["generated_at"]},
+            {"label": "Profil aufgebaut", "earned_at": data["meta"]["generated_at"]},
+            {"label": "Report gestartet", "earned_at": data["meta"]["generated_at"]},
+        ]
+    cards = []
+    for idx, badge in enumerate(badges[:3]):
+        label = str(badge.get("label") or "Meilenstein")
+        if str(badge.get("key", "")).startswith("inv_"):
+            label = "Investment bestätigt"
+        earned = str(badge.get("earned_at") or data["meta"]["generated_at"])
+        try:
+            date_text = datetime.fromisoformat(earned.replace("Z", "+00:00")).strftime("%d.%m.%Y")
+        except Exception:
+            date_text = earned[:10]
+        cards.append(
+            '<div class="badge">'
+            f'<div class="round-icon green">{ICON_SVGS["star" if idx == 0 else "check"]}</div>'
+            f'<div class="badge-title">{h(label)}</div>'
+            f'<div class="badge-date">{h(date_text)}</div>'
+            '</div>'
+        )
+    return "\n".join(cards)
+
+
+def plan_items(data: dict) -> list[tuple[str, str, str]]:
+    month = data["pages"]["month"]
+    score = data["pages"]["score"]
+    strongest = strongest_category(data)
+    savings_plan = float(data["profile"].get("savings_plan") or 0)
+    cat_name = category_label(strongest.get("category"))
+    cat_total = float(strongest.get("total") or 0)
+    next_score = score.get("next_unlock_level") or min(100, int(score.get("clarity_score", 0)) + 5)
+    return [
+        ("Tracke an mindestens 10 Tagen.", f"Aktuell stehen {month['tracked_days']} Tracking-Tage im Report.", f"Score {next_score}+"),
+        (f"Halte {cat_name} bewusst.", f"Diese Kategorie liegt aktuell bei {fmt_money(cat_total, 0)}.", "Mehr Kontrolle"),
+        (f"Spare oder investiere mindestens {fmt_money(savings_plan, 0)}.", "Ein Dauerauftrag macht aus einem guten Monat eine Gewohnheit.", "Routine"),
+    ]
+
+
+def render_777_cover(_page_html: str, data: dict) -> str:
+    cover = data["pages"]["cover"]
+    month, year = clean_month_title(cover["period"])
+    dev = fmt_percent(cover["development_percent"], 1) if cover["development_percent"] is not None else "—"
+    dev_sub = "zum Vormonat" if cover["development_percent"] is not None else "ab Monat 2 sichtbar"
+    dev_sub_class = "kpi-sub" if cover["development_percent"] is not None else "kpi-sub small"
+    return f"""
+  <section class="page cover">
+    <div style="display:flex;justify-content:flex-end;"><div class="topline">Ausgabe 01</div></div>
+    <div class="cover-title">Clarity<br><span>Report</span></div>
+    <div class="cover-subtitle">Dein finanzieller Monatsabschluss für {h(cover["period"])} - Vermögen, Verhalten und der nächste Schritt zu deinem Ziel.</div>
+    <div class="cover-kpis">
+      <div class="card cover-kpi"><div class="kpi-head">{icon("calendar", "round-icon")}Zeitraum</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(month)}</div><div class="kpi-sub">{h(year)}</div></div></div>
+      <div class="card cover-kpi"><div class="kpi-head">{icon("flag", "round-icon")}Freiheits-Schritt</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(fmt_money(cover["freedom_step"], 0))}</div><div class="kpi-sub">näher an deinem Ziel</div></div></div>
+      <div class="card cover-kpi"><div class="kpi-head">{icon("trend", "round-icon")}Entwicklung</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(dev)}</div><div class="{dev_sub_class}">{h(dev_sub)}</div></div></div>
+    </div>
+{footer(1)}
+  </section>
+""".rstrip()
+
+
+def render_777_overview(_page_html: str, data: dict) -> str:
+    month = data["pages"]["month"]
+    biggest = biggest_expense(data)
+    strongest = strongest_category(data)
+    story = data["pages"]["financial_story"]
+    saved = data["pages"]["cover"]["freedom_step"]
+    biggest_amount = fmt_money(biggest["amount"], 0) if biggest else "—"
+    biggest_name = biggest["merchant"] if biggest else "Noch keine Ausgabe"
+    strongest_total = float(strongest.get("total") or 0)
+    summary = (
+        f"Du hast an <span class=\"green\">{month['tracked_days']} Tagen</span> aktiv getrackt "
+        f"und <span class=\"green\">{h(fmt_money(saved, 0))}</span> investiert oder zurückgelegt. "
+        f"Dein stärkster Block war <span class=\"green\">{h(category_label(strongest.get('category')))}</span> "
+        f"mit {h(fmt_money(strongest_total, 0))}."
+    )
+    return f"""
+  <section class="page">
+    <div class="display">Dein Monat auf einen Blick.</div>
+    <div class="divider"></div>
+    <div class="overview-grid">
+      <div class="card overview-tile">{icon("bars")}<div><div class="label">Nettovermögen</div><div class="tile-value">{h(fmt_money(story["net_worth"], 0))}</div></div></div>
+      <div class="card overview-tile">{icon("trend", "square-icon green")}<div><div class="label">Investments</div><div class="tile-value">{h(fmt_money(story["investments"], 0))}</div></div></div>
+      <div class="card overview-tile">{icon("cash")}<div><div class="label">Cash</div><div class="tile-value">{h(fmt_money(story["cash"], 0))}</div></div></div>
+      <div class="card overview-tile">{icon("bag")}<div><div class="label">Größte Ausgabe</div><div class="tile-value">{h(biggest_amount)}</div><div class="tile-sub">{h(biggest_name)}</div></div></div>
+      <div class="card overview-tile">{icon("trend")}<div><div class="label">Stärkste Kategorie</div><div class="tile-value">{h(fmt_money(strongest_total, 0))}</div><div class="tile-sub">{h(category_label(strongest.get("category")))}</div></div></div>
+      <div class="card overview-tile">{icon("calendar")}<div><div class="label">Tracking-Tage</div><div class="tile-value">{h(month["tracked_days"])}</div></div></div>
+    </div>
+    <div class="card story-card">{icon("bars", "square-icon")}<div><div class="label">Monatsfazit</div><div class="story-text">{summary}</div></div></div>
+{footer(2)}
+  </section>
+""".rstrip()
+
+
+def render_777_insight(_page_html: str, data: dict) -> str:
+    strongest = strongest_category(data)
+    cat_name = category_label(strongest.get("category"))
+    cat_total = float(strongest.get("total") or 0)
+    savings = float(data["pages"]["cover"]["freedom_step"] or 0)
+    ratio = cat_total / savings if savings > 0 else 0
+    half = cat_total / 2
+    annual = half * 12
+    return f"""
+  <section class="page">
+    <div class="topline green"><span style="display:inline-block;width:18px;height:1px;background:var(--green);vertical-align:middle;margin-right:10px;"></span>Insight des Monats</div>
+    <div class="insight-hero">
+      <div class="insight-headline">Dein größter Hebel liegt diesen Monat bei <em>{h(cat_name)}</em>.</div>
+      <div class="insight-sub">Für jeden gesparten Euro sind {h(fmt_money(ratio, 2))} in diese Kategorie geflossen.</div>
+    </div>
+    <div class="insight-kpis">
+      <div class="card insight-kpi"><div class="label">Gespart im Monat</div><div class="value">{h(fmt_money(savings, 0))}</div></div>
+      <div class="card insight-kpi"><div class="label">{h(cat_name)} im Monat</div><div class="value">{h(fmt_money(cat_total, 0))}</div></div>
+      <div class="card insight-kpi"><div class="label">Auf jeden gesparten €</div><div class="value">{h(fmt_money(ratio, 2))}</div></div>
+    </div>
+    <div class="insight-copy">Das ist keine Verzichtsübung - nur Bewusstsein. Würdest du diese Kategorie halbieren, blieben jeden Monat rund <strong>{h(fmt_money(half, 0))}</strong> mehr übrig.</div>
+    <div class="impact-box"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="impact-title">Was das pro Jahr bedeutet</div><div class="impact-value">+{h(fmt_money(annual, 0))} fürs Ziel</div><div class="note-body">Ganz ohne mehr zu verdienen - nur durch eine bewusstere Gewohnheit.</div></div></div>
+{footer(3)}
+  </section>
+""".rstrip()
+
+
+def render_777_financial_story(_page_html: str, data: dict) -> str:
+    story = data["pages"]["financial_story"]
+    inv_pct = invested_share(data)
+    cash_pct = cash_share(data)
+    note = humanize_text(story["text"])
+    headline = "Mehr als die Hälfte deines Vermögens arbeitet schon für dich." if inv_pct >= 50 else "Deine finanzielle Basis ist sichtbar aufgebaut."
+    return f"""
+  <section class="page">
+    <div class="topline">Financial Story · Wo du stehst</div>
+    <div class="display">{h(headline)}</div>
+    <div class="divider"></div>
+    <div class="card financial-card">
+      <div class="label">Nettovermögen · {h(data["meta"]["month_label"])}</div>
+      <div class="net-worth">{h(fmt_money(story["net_worth"], 0))}</div>
+      <div class="wealth-bar">
+        <div class="wealth-invested" style="width:{max(5, inv_pct):.1f}%">Investments · {h(fmt_percent(inv_pct, 1))}</div>
+        <div class="wealth-cash" style="width:{max(5, cash_pct):.1f}%">Cash · {h(fmt_percent(cash_pct, 1))}</div>
+      </div>
+      <div class="wealth-labels"><div><strong>{h(fmt_money(story["investments"], 0))}</strong> investiert</div><div><strong>{h(fmt_money(story["cash"], 0))}</strong> liquide</div></div>
+    </div>
+    <div class="card financial-note"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="note-title">Mit {h(fmt_percent(inv_pct, 1))} investiertem Kapital ist dein Vermögen nicht nur geparkt.</div><div class="note-body">{h(note)}</div></div></div>
+{footer(4)}
+  </section>
+""".rstrip()
+
+
+def render_777_money_map(_page_html: str, data: dict) -> str:
+    strongest = strongest_category(data)
+    cat_name = category_label(strongest.get("category"))
+    cat_total = float(strongest.get("total") or 0)
+    biggest = biggest_expense(data)
+    total_expenses = float(data["pages"]["month"].get("total_expenses") or 0)
+    biggest_line = "Noch keine Einzelbuchung sichtbar."
+    if biggest:
+        share = (float(biggest["amount"] or 0) / total_expenses * 100) if total_expenses > 0 else 0
+        biggest_line = f'{h(biggest["merchant"] or "Unbekannt")}, {h(fmt_money(biggest["amount"], 0))} - {share:.0f} % deiner getrackten Ausgaben.'
+    return f"""
+  <section class="page">
+    <div class="topline">Money Map · Dein Verhalten</div>
+    <div class="display">{h(cat_name)} ist dein<br>größter Hebel.</div>
+    <div class="divider"></div>
+    <div class="card money-card">{build_new_money_rows(data)}</div>
+    <div class="money-bottom">
+      <div class="card money-insight"><div class="label">Die eine Zahl, die zählt</div><div class="headline">{biggest_line}</div><p>Hier verändert ein kleiner Vorsatz am meisten. Nicht streichen - bewusst entscheiden.</p></div>
+      <div class="card money-insight"><div class="label" style="color:var(--green);">Beste Entscheidung</div><div class="headline">{h(humanize_text(data["pages"]["month"]["best_decision"]))}</div></div>
+    </div>
+{footer(5)}
+  </section>
+""".rstrip()
+
+
+def render_777_score(_page_html: str, data: dict) -> str:
+    score = data["pages"]["score"]
+    parts = score["parts"]
+    value = int(score["clarity_score"] or 0)
+    circumference = 540.4
+    offset = circumference - (max(0, min(100, value)) / 100 * circumference)
+    rank_width = max(3, min(100, value))
+    return f"""
+  <section class="page">
+    <div class="topline">Clarity Score · Wie bewusst du steuerst</div>
+    <div class="display">{value} von 100 - du hast dein Geld im Blick.</div>
+    <div class="divider"></div>
+    <div class="score-layout">
+      <div class="card score-card">
+        <div class="score-ring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="86" fill="none" stroke="#ececee" stroke-width="13"></circle><circle cx="100" cy="100" r="86" fill="none" stroke="#3d8b5b" stroke-width="13" stroke-linecap="round" stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}" transform="rotate(-90 100 100)"></circle></svg><div class="score-center"><div class="score-number">{value}</div><div class="score-rank">{h(score["rank_name"])}</div></div></div>
+        <div class="rank-strip"><div class="rank-labels"><span>Rookie</span><span>Controller</span><span>Manager</span><span>Elite</span></div><div class="rank-line"><div class="rank-fill" style="width:{rank_width}%"></div></div><div class="tile-sub" style="text-align:center;">{h(score["proof_days"])}d verified</div></div>
+      </div>
+      <div class="card score-parts">
+        <div class="score-row"><div class="score-name">{icon("calendar", "square-icon")}Budget Control</div><div class="score-value">{h(parts.get("budget", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
+        <div class="score-row"><div class="score-name">{icon("clock", "square-icon")}Savings Execution</div><div class="score-value">{h(parts.get("savings", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
+        <div class="score-row"><div class="score-name">{icon("target", "square-icon gold")}Tracking Consistency</div><div class="score-value gold">{h(parts.get("consistency", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
+        <div class="score-row"><div class="score-name">{icon("trend", "square-icon")}Financial Structure</div><div class="score-value">{h(parts.get("structure", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
+      </div>
+    </div>
+    <div class="card score-note"><div><div class="score-note-title">Was {h(score["rank_name"])} bedeutet</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>{h(score["share_cta"])} bleibt bewusst dezent - Status ohne Kontodaten.</p></div></div>
+{footer(6)}
+  </section>
+""".rstrip()
+
+
+def render_777_goal(_page_html: str, data: dict) -> str:
+    goal = data["pages"]["goal"]
+    target = float(goal["target_amount"] or 0)
+    current = float(data["profile"].get("net_worth") or 0)
+    remaining = max(0.0, target - current)
+    savings = float(data["profile"].get("savings_plan") or 0)
+    progress = max(0.0, min(100.0, float(goal["progress_percent"] or 0)))
+    goal_name = clean_goal_description(goal["description"])
+    return f"""
+  <section class="page">
+    <div class="topline">Your Goal · Wohin du willst</div>
+    <div class="display">{h(goal_name)} rückt mit jedem<br>Monat näher.</div>
+    <div class="divider"></div>
+    <div class="card goal-card">
+      <div>
+        <div class="goal-head"><div><div class="label">Ziel</div><div class="goal-name">{h(goal_name)}</div></div><div class="goal-percent"><div class="value">{h(fmt_percent(progress, 1))}</div><div class="tile-sub">erreicht</div></div></div>
+        <div class="progress-track"><div class="progress-fill" style="width:{progress:.1f}%"></div></div>
+        <div class="goal-kpis"><div class="goal-kpi"><div class="label">Zielbetrag</div><div class="value">{h(fmt_money(target, 0))}</div></div><div class="goal-kpi"><div class="label">Aktueller Stand</div><div class="value" style="color:var(--green);">{h(fmt_money(current, 0))}</div></div><div class="goal-kpi"><div class="label">Noch</div><div class="value">{h(fmt_money(remaining, 0))}</div></div></div>
+      </div>
+      <div class="goal-forecast"><div class="forecast-block"><div class="forecast-title">Ehrlich gesagt</div><div class="forecast-main">{h(goal_months_text(goal["months_to_goal"]))}</div><div class="forecast-copy">{h(humanize_text(goal["forecast_text"]))}</div></div><div class="forecast-block"><div class="forecast-title" style="color:var(--green);">Dein Hebel</div><div class="forecast-main">Schon +{h(fmt_money(max(50, savings * 0.15), 0))}/Monat verändert die Prognose.</div></div></div>
+    </div>
+{footer(7)}
+  </section>
+""".rstrip()
+
+
+def render_777_milestones(_page_html: str, data: dict) -> str:
+    info = milestone_info(data)
+    net_worth = float(data["profile"].get("net_worth") or 0)
+    savings = max(float(data["profile"].get("savings_plan") or 0), 1.0)
+    months = int((info["remaining"] + savings - 0.01) // savings) if info["remaining"] > 0 else 0
+    rank = data["pages"]["milestones"]["rank"]
+    return f"""
+  <section class="page">
+    <div class="topline">Meilensteine · Deine Etappen</div>
+    <div class="display">Noch {h(fmt_money(info["remaining"], 0))} bis zum<br>nächsten Meilenstein.</div>
+    <div class="divider"></div>
+    <div class="card milestone-card"><div class="milestone-top"><div class="label">Von {h(fmt_money(info["reached"], 0))} zu {h(fmt_money(info["target"], 0))}</div><div style="font-family:var(--display);font-size:18px;color:var(--green);">{h(fmt_percent(info["progress"], 0))}</div></div><div class="milestone-progress"><div class="progress-fill" style="width:{info["progress"]:.1f}%"></div></div><div class="milestone-scale"><span>{h(fmt_money(info["reached"], 0))}</span><span style="color:var(--green);font-weight:600;">{h(fmt_money(net_worth, 0))} · du bist hier</span><span>{h(fmt_money(info["target"], 0))}</span></div><div class="milestone-hint">{ICON_SVGS["arrow"]} Bei {h(fmt_money(savings, 0))}/Monat erreichst du den nächsten Meilenstein in <strong>{months} Monaten</strong>.</div></div>
+    <div class="card badge-card"><div class="label">Bereits freigeschaltet · {h(rank["name"])}</div><div class="badge-grid">{build_badges_777(data)}</div></div>
+{footer(8)}
+  </section>
+""".rstrip()
+
+
+def render_777_recap(_page_html: str, data: dict) -> str:
+    recap = data["pages"]["recap"]
+    return f"""
+  <section class="page">
+    <div class="topline">Recap · Ehrlich zusammengefasst</div>
+    <div class="display">Ein starker Start - mit einem<br>klaren nächsten Schritt.</div>
+    <div class="divider"></div>
+    <div class="recap-list">
+      <div class="card recap-item"><div class="recap-icon">✓</div><div><div class="recap-title">Was gut lief</div><div class="recap-copy">{h(humanize_text(recap["what_went_well"]))}</div></div></div>
+      <div class="card recap-item"><div class="recap-icon warn">!</div><div><div class="recap-title">Was Aufmerksamkeit braucht</div><div class="recap-copy">{h(humanize_text(recap["needs_attention"]))}</div></div></div>
+      <div class="card recap-item"><div class="recap-icon soft">{ICON_SVGS["arrow"]}</div><div><div class="recap-title">Dein größter Hebel</div><div class="recap-copy">{h(humanize_text(recap["next_lever"]))}</div></div></div>
+    </div>
+{footer(9)}
+  </section>
+""".rstrip()
+
+
+def render_777_plan(_page_html: str, data: dict) -> str:
+    next_month = next_month_label(data["meta"]["report_month"]).title()
+    items = plan_items(data)
+    rows = []
+    for idx, (title, copy, effect) in enumerate(items, start=1):
+        rows.append(
+            f'<div class="card plan-item"><div class="plan-num">{idx:02d}</div><div class="plan-main"><div class="plan-title">{h(title)}</div><div class="plan-copy">{h(copy)}</div></div><div class="plan-effect"><div class="label">Wirkung</div><div class="value">{h(effect)}</div></div></div>'
+        )
+    return f"""
+  <section class="page">
+    <div class="topline">Next Month Plan · {h(next_month)}</div>
+    <div class="display big">Dein Plan für {h(next_month)}.</div>
+    <div class="plan-intro">Drei klare Schritte. Mehr brauchst du nicht, um den nächsten Monat bewusster zu gestalten.</div>
+    <div class="divider"></div>
+    <div class="plan-list">{''.join(rows)}</div>
+    <div class="closing-line">Jeder Euro hat eine Aufgabe.</div>
+{footer(10)}
+  </section>
+""".rstrip()
+
+
+NEW_PAGE_RENDERERS = {
+    "01-cover.html": render_777_cover,
+    "02-financial-story.html": render_777_overview,
+    "03-dein-monat.html": render_777_insight,
+    "04-clarity-score.html": render_777_financial_story,
+    "05-wealth-journey.html": render_777_money_map,
+    "06-your-goal.html": render_777_score,
+    "07-money-map.html": render_777_goal,
+    "08-meilensteine.html": render_777_milestones,
+    "09-clarity-recap.html": render_777_recap,
+    "10-closing.html": render_777_plan,
+}
+
+
 def render_page(page_filename: str, data: dict) -> str:
-    page_path = PAGE_DIR / page_filename
-    page_html = page_path.read_text(encoding="utf-8")
-    main_contents = extract_main_contents(page_html)
-    return PAGE_RENDERERS[page_filename](main_contents, data)
+    return NEW_PAGE_RENDERERS[page_filename]("", data)
 
 
 def build_html_report(user_id: int, report_month: str, report_data: dict | None = None) -> Path:
