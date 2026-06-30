@@ -59,17 +59,18 @@ body {
   background: var(--page-bg);
   border-radius: 10px;
   box-shadow: 0 6px 28px rgba(0, 0, 0, 0.06);
-  padding: 60px 60px 28px;
+  padding: 60px 60px 96px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
   page-break-after: always;
   break-after: page;
 }
 
 .page.cover {
   padding-top: 72px;
-  padding-bottom: 32px;
+  padding-bottom: 96px;
 }
 
 .topline {
@@ -235,10 +236,14 @@ body {
 }
 
 .page-footer {
+  position: absolute;
+  left: 60px;
+  right: 60px;
+  bottom: 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: auto;
+  margin-top: 0;
   padding-top: 18px;
   border-top: 1px solid var(--line);
   flex-shrink: 0;
