@@ -1023,13 +1023,15 @@ def extract_merchant_name(text_input: str) -> str:
 
 
 def detect_expense_label(text_input: str, text_lower: str) -> tuple[str, str, str]:
-    for alias, (category, label) in DIRECT_CATEGORY_INPUTS.items():
-        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
-            return category, label, label
-
+    # Konkrete Händler schlagen generische Wörter wie "Essen" oder "Einkaufen".
+    # Beispiel: "11 Euro Essen Lidl" muss Lebensmittel/Lidl werden, nicht Restaurant/Essen.
     for merchant, keys in MERCHANT_KEYWORDS.items():
         if any(key in text_lower for key in keys):
             return CATEGORY_MAPPING.get(merchant, "SONSTIGES"), merchant, ""
+
+    for alias, (category, label) in DIRECT_CATEGORY_INPUTS.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+            return category, label, label
 
     for category, keywords in CATEGORY_KEYWORDS.items():
         if any(keyword in text_lower for keyword in keywords):
