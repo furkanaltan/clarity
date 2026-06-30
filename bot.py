@@ -888,6 +888,32 @@ def is_investment_outflow_request(text_lower: str) -> bool:
     return any(word in text_lower for word in outflow_words)
 
 
+def is_investment_asset_update_request(text_lower: str) -> bool:
+    explicit_update_words = [
+        "vergessen", "nachtrag", "nachtragen", "nachgetragen",
+        "bestandskorrektur", "bestand", "bestehend", "bestehendes",
+        "bereits", "schon gehabt", "hatte ich schon",
+        "zu investments", "zu meinen investments", "bei investments",
+        "zu meinem depot", "bei meinem depot", "aktuell investiertes vermögen",
+        "aktuell investiertes vermoegen",
+    ]
+    if any(word in text_lower for word in explicit_update_words):
+        return True
+
+    existing_asset_phrases = [
+        "ich habe noch", "ich hab noch", "ich besitze noch",
+        "liegt noch", "liegen noch", "bei mir sind noch",
+    ]
+    new_month_phrases = [
+        "diesen monat", "heute", "gerade", "neu gekauft",
+        "gekauft", "kauf", "nachgekauft", "sparplan",
+    ]
+    if any(phrase in text_lower for phrase in existing_asset_phrases):
+        return not any(phrase in text_lower for phrase in new_month_phrases)
+
+    return False
+
+
 def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
     if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
         return ""
@@ -3698,7 +3724,17 @@ def handle_msg(message):
             new_investments = max(0.0, current_investments - amount_val) if direction == "out" else current_investments + amount_val
             update_user_field(uid, "current_investments", new_investments)
             asset_type, asset_name = detect_investment_asset(text_lower)
-            event_type = "recurring_plan" if "sparplan" in text_lower else "one_time"
+            is_asset_update = is_investment_asset_update_request(text_lower)
+            is_correction = direction == "out" and any(
+                word in text_lower
+                for word in ["lösche", "loesche", "entferne", "streiche", "korrigiere", "rückgängig", "rueckgaengig"]
+            )
+            if is_correction:
+                event_type = "correction"
+            elif is_asset_update:
+                event_type = "asset_update"
+            else:
+                event_type = "recurring_plan" if "sparplan" in text_lower else "one_time"
             save_investment_event(
                 uid, amount_val, direction=direction, asset_type=asset_type,
                 asset_name=asset_name, event_type=event_type, source="chat",
@@ -3713,7 +3749,12 @@ def handle_msg(message):
             new_badges = check_wealth_badges(uid, u_fresh)
             cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
             total_wealth = new_investments + (u.get("current_cash") or 0)
-            verb = "Investment verkauft/entnommen" if direction == "out" else "Investment erfasst"
+            if event_type == "asset_update":
+                verb = "Bestand ergänzt"
+            elif event_type == "correction":
+                verb = "Investment korrigiert"
+            else:
+                verb = "Investment verkauft/entnommen" if direction == "out" else "Investment erfasst"
             bot.send_message(
                 uid,
                 f"📈 {verb}: *{amount_val:.2f}€*\n"
