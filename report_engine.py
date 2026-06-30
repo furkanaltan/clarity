@@ -1114,7 +1114,7 @@ def draw_cover_page(c, data):
     )
     draw_cover_card(
         c, MARGIN_X + card_w + gap, y, card_w, card_h,
-        "mountain", "Freiheits-Schritt", fmt_eur_cover(cover["freedom_step"]),
+        "mountain", "Fortschritt", fmt_eur_cover(cover["freedom_step"]),
         "näher an deinem Ziel", main_size=61, sub_size=22
     )
     draw_cover_card(

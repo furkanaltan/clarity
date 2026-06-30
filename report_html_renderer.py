@@ -886,7 +886,7 @@ def render_777_cover(_page_html: str, data: dict) -> str:
     <div class="cover-subtitle">Dein finanzieller Monatsabschluss für {h(cover["period"])} - Vermögen, Verhalten und der nächste Schritt zu deinem Ziel.</div>
     <div class="cover-kpis">
       <div class="card cover-kpi"><div class="kpi-head">{icon("calendar", "round-icon")}Zeitraum</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(month)}</div><div class="kpi-sub">{h(year)}</div></div></div>
-      <div class="card cover-kpi"><div class="kpi-head">{icon("flag", "round-icon")}Freiheits-Schritt</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(fmt_money(cover["freedom_step"], 0))}</div><div class="kpi-sub">näher an deinem Ziel</div></div></div>
+      <div class="card cover-kpi"><div class="kpi-head">{icon("flag", "round-icon")}Fortschritt</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(fmt_money(cover["freedom_step"], 0))}</div><div class="kpi-sub">näher an deinem Ziel</div></div></div>
       <div class="card cover-kpi"><div class="kpi-head">{icon("trend", "round-icon")}Entwicklung</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(dev)}</div><div class="{dev_sub_class}">{h(dev_sub)}</div></div></div>
     </div>
 {footer(1)}
