@@ -878,6 +878,16 @@ def looks_like_investment_update(text_lower: str) -> bool:
     )
 
 
+def is_investment_outflow_request(text_lower: str) -> bool:
+    outflow_words = [
+        "verkauft", "verkauf", "verkaufe", "entnommen", "entnehme",
+        "ausgezahlt", "auszahlung", "abgezogen", "abziehen",
+        "lösche", "loesche", "entferne", "streiche", "korrigiere",
+        "rückgängig", "rueckgaengig", "zurücknehmen", "zuruecknehmen",
+    ]
+    return any(word in text_lower for word in outflow_words)
+
+
 def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
     if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
         return ""
@@ -3683,7 +3693,7 @@ def handle_msg(message):
             return
 
         if any(word in text_lower for word in INVESTMENT_INPUTS):
-            direction = "out" if any(word in text_lower for word in ["verkauft", "verkauf", "entnommen", "ausgezahlt"]) else "in"
+            direction = "out" if is_investment_outflow_request(text_lower) else "in"
             current_investments = u.get("current_investments") or 0
             new_investments = max(0.0, current_investments - amount_val) if direction == "out" else current_investments + amount_val
             update_user_field(uid, "current_investments", new_investments)
@@ -3741,6 +3751,19 @@ def handle_msg(message):
                 msg += "\n" + "\n".join(new_badge_lines)
             bot.send_message(uid, msg, parse_mode="Markdown")
             return
+
+    if looks_like_investment_update(text_lower) and is_investment_outflow_request(text_lower):
+        bot.send_message(
+            uid,
+            "Sag mir kurz den Betrag, den ich aus deinen Investments herausnehmen soll.\n\n"
+            "Zum Beispiel:\n"
+            "`Lösche 10.000€ Investment Krypto`\n"
+            "`Entferne 500€ ETF`\n\n"
+            "Wenn nur der aktuelle Stand falsch ist, schreib:\n"
+            "`Depotstand 19.250€`",
+            parse_mode="Markdown"
+        )
+        return
 
     # ─── PROGNOSE (Ohne KI) ──────────────────────────────────────────────
     if any(w in text_lower for w in ["wie lange", "wann erreiche", "dauer", "prognose"]):

@@ -708,6 +708,7 @@ def get_investment_summary(user_id: int, report_month: str) -> dict:
             SELECT amount, direction, asset_type, asset_name, event_type, source, created_at
             FROM investment_events
             WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+              AND NOT (source = 'onboarding' AND event_type = 'manual_adjustment')
             ORDER BY created_at ASC, id ASC
             """,
             (user_id, start, end),
@@ -720,6 +721,7 @@ def get_investment_summary(user_id: int, report_month: str) -> dict:
             ), 0) AS total
             FROM investment_events
             WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+              AND NOT (source = 'onboarding' AND event_type = 'manual_adjustment')
             GROUP BY asset_type
             ORDER BY total DESC
             """,
