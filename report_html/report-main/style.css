@@ -59,7 +59,7 @@ body {
   background: var(--page-bg);
   border-radius: 10px;
   box-shadow: 0 6px 28px rgba(0, 0, 0, 0.06);
-  padding: 60px 60px 44px;
+  padding: 60px 60px 28px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -69,7 +69,7 @@ body {
 
 .page.cover {
   padding-top: 72px;
-  padding-bottom: 48px;
+  padding-bottom: 32px;
 }
 
 .topline {
@@ -239,7 +239,7 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-top: auto;
-  padding-top: 24px;
+  padding-top: 18px;
   border-top: 1px solid var(--line);
   flex-shrink: 0;
 }
@@ -717,8 +717,8 @@ body {
 }
 
 .goal-card {
-  flex: 1;
-  padding: 38px 46px;
+  flex: 0 0 auto;
+  padding: 34px 42px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -732,7 +732,7 @@ body {
 
 .goal-name {
   font-family: var(--display);
-  font-size: 64px;
+  font-size: 60px;
   line-height: 1;
   margin-top: 10px;
   letter-spacing: -0.02em;
@@ -750,7 +750,7 @@ body {
 }
 
 .progress-track {
-  margin-top: 26px;
+  margin-top: 22px;
   height: 14px;
   border-radius: 8px;
   background: #ececee;
@@ -786,11 +786,11 @@ body {
 }
 
 .goal-forecast {
-  margin-top: 28px;
+  margin-top: 22px;
   display: grid;
   grid-template-columns: 1fr 1fr;
   border-top: 1px solid #ececee;
-  padding-top: 24px;
+  padding-top: 22px;
 }
 
 .forecast-block {

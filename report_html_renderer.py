@@ -1029,7 +1029,7 @@ def render_777_score(_page_html: str, data: dict) -> str:
         <div class="score-row"><div class="score-name">{icon("trend", "square-icon")}Financial Structure</div><div class="score-value">{h(parts.get("structure", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
       </div>
     </div>
-    <div class="card score-note"><div><div class="score-note-title">Was {h(score["rank_name"])} bedeutet</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>{h(score["share_cta"])} bleibt bewusst dezent - Status ohne Kontodaten.</p></div></div>
+    <div class="card score-note"><div><div class="score-note-title">Was {h(score["rank_name"])} bedeutet</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>Später kannst du deinen Score teilen, ohne echte Geldbeträge zu zeigen.</p></div></div>
 {footer(6)}
   </section>
 """.rstrip()
