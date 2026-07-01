@@ -666,6 +666,17 @@ def parse_currency(text: str):
         return None
 
 
+def parse_percent(text: str):
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", "."))
+        return value if value >= 0 else None
+    except ValueError:
+        return None
+
+
 def extract_amounts(text: str, exclude_years: bool = False) -> list[float]:
     amounts = []
     for match in re.finditer(r"\b\d+(?:[.,]\d+)?\s*k\b|\b\d+(?:[.,]\d{1,2})?\b", text.lower()):
@@ -752,7 +763,7 @@ def parse_labeled_amounts(text: str, aliases: dict[str, str]) -> dict:
 
 
 def is_back_request(text_lower: str) -> bool:
-    normalized = text_lower.strip().lstrip("/")
+    normalized = text_lower.strip().lstrip("/").strip()
     return normalized in {"zurueck", "zurück", "back"} or normalized.startswith(("zurueck ", "zurück ", "back "))
 
 
@@ -1010,6 +1021,50 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         )
 
     return ""
+
+
+def maybe_apply_savings_correction(user_id: int, u: dict, text_lower: str) -> str:
+    if not any(word in text_lower for word in ["sparrate", "sparplan", "sparen"]):
+        return ""
+    if not any(word in text_lower for word in ["ändere", "aendere", "setze", "aktualisiere", "update", "korrigiere"]):
+        return ""
+
+    target = None
+    label = ""
+    if any(word in text_lower for word in ["etf", "investment", "investments", "depot", "sparplan"]):
+        target = "etf_savings"
+        label = "ETF-Sparrate"
+    elif any(word in text_lower for word in ["cash", "tagesgeld", "rücklage", "ruecklage"]):
+        target = "cash_savings"
+        label = "Cash-Sparrate"
+
+    if target is None:
+        return (
+            "Sag mir kurz, welche Sparrate ich ändern soll.\n\n"
+            "Zum Beispiel:\n"
+            "`ändere ETF-Sparrate auf 10%`\n"
+            "`ändere Cash-Sparrate auf 200€`"
+        )
+
+    percent_value = parse_percent(text_lower)
+    if percent_value is not None:
+        income_base = (u.get("income") or 0) + (u.get("other_income") or 0)
+        if income_base <= 0:
+            return "Ich brauche dafür dein Einkommen. Schreib die Sparrate bitte als Euro-Betrag."
+        value = round(income_base * percent_value / 100, 2)
+        note = f"{percent_value:g}% entsprechen {format_eur(value)} pro Monat."
+    else:
+        value = parse_currency(text_lower)
+        if value is None:
+            return ""
+        note = f"{format_eur(value)} pro Monat."
+
+    update_user_field(user_id, target, value)
+    return (
+        "Alles klar, ich habe das aktualisiert.\n\n"
+        f"{label}: {note}\n\n"
+        "Ich nutze das ab jetzt für deine Auswertung."
+    )
 
 
 def looks_like_profile_correction(text_lower: str) -> bool:
@@ -3413,6 +3468,12 @@ def handle_msg(message):
         bot.send_message(uid, build_score_info_answer(), parse_mode="Markdown")
         return
 
+    if step == STEP_NORMAL:
+        savings_reply = maybe_apply_savings_correction(uid, u, text_lower)
+        if savings_reply:
+            bot.send_message(uid, savings_reply, parse_mode="Markdown")
+            return
+
     if step == STEP_NORMAL and looks_like_profile_correction(text_lower) and not looks_like_investment_update(text_lower):
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
@@ -3484,7 +3545,17 @@ def handle_msg(message):
                 bot.send_message(uid, "Bitte beschreibe dein Ziel etwas genauer.")
             return
 
-        val = parse_currency(text_input)
+        percent_value = parse_percent(text_input)
+        percent_note = ""
+        if step in {STEP_ETF_SAVINGS, STEP_CASH_SAVINGS} and percent_value is not None:
+            income_base = (u.get("income") or 0) + (u.get("other_income") or 0)
+            if income_base <= 0:
+                bot.send_message(uid, "Ich brauche dafür zuerst dein Einkommen. Schreib die Sparrate bitte als Euro-Betrag.")
+                return
+            val = round(income_base * percent_value / 100, 2)
+            percent_note = f"{percent_value:g}% entsprechen {val:.2f}€/Monat.\n\n"
+        else:
+            val = parse_currency(text_input)
         if val is None:
             bot.send_message(uid, "⚠️ Keine gültige Zahl. _(z.B. 2500)_", parse_mode="Markdown")
             return
@@ -3511,7 +3582,7 @@ def handle_msg(message):
                     uid, u_after_cash.get("current_investments") or 0.0, val
                 )
             update_user_field(uid, "onboarding_step", next_step)
-            bot.send_message(uid, msg, parse_mode="Markdown")
+            bot.send_message(uid, percent_note + msg, parse_mode="Markdown")
 
         elif step == STEP_CASH_SAVINGS:
             update_user_field(uid, "cash_savings", val)
@@ -3523,6 +3594,7 @@ def handle_msg(message):
 
             bot.send_message(uid,
                 f"🎉 *Einrichtung abgeschlossen!*\n\n"
+                f"{percent_note}"
                 f"Sparrate: {sparrate:.2f}€/Monat\n\n"
                 "Als nächstes kannst du deine Fixkosten genauer hinterlegen.\n"
                 "Schreib dafür einfach /verfeinern.",
