@@ -208,6 +208,8 @@ CATEGORY_KEYWORDS = {
     "LEBENSMITTEL": [
         "supermarkt", "lebensmittel", "gemüse", "obst", "brot",
         "milch", "fleisch", "wurst", "käse", "einkaufen",
+        "pesto", "nudeln", "pasta", "reis", "joghurt", "quark",
+        "eier", "butter", "wasser", "saft", "kaffee", "tee",
     ],
     "PFLEGE": [
         "friseur", "frisör", "frisoer", "barber", "haarschnitt", "haare",
@@ -1490,8 +1492,9 @@ def get_month_expenses(user_id: int) -> float:
 def calculate_remaining_budget(u: dict, user_id: int) -> tuple:
     income = (u.get("income") or 0) + (u.get("other_income") or 0)
     fixed = u.get("fixed_costs") or 0
+    savings = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
     total_expenses = get_month_expenses(user_id)
-    remaining = income - fixed - total_expenses
+    remaining = income - fixed - savings - total_expenses
     return remaining, total_expenses, income, fixed
 
 
@@ -1533,7 +1536,10 @@ def detect_period_sql(text_lower: str) -> tuple:
 
 
 def maybe_answer_category_spending(user_id: int, text_lower: str) -> str:
-    asks_amount = any(w in text_lower for w in ["wie viel", "wieviel", "ausgegeben", "geld", "kosten"])
+    asks_amount = any(w in text_lower for w in [
+        "wie viel", "wieviel", "ausgegeben", "ausgaben", "geld", "kosten",
+        "summe", "gesamt", "bisher", "stand",
+    ])
     alias, categories = detect_category_alias(text_lower)
     if not asks_amount or not categories:
         return ""
@@ -1572,17 +1578,39 @@ def maybe_answer_category_spending(user_id: int, text_lower: str) -> str:
 
 
 def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
-    if "wochenbudget" not in text_lower and "wochen budget" not in text_lower:
+    if any(phrase in text_lower for phrase in [
+        "cp-limit", "cp limit", "clarity-punkt", "clarity punkt",
+        "clarity-punkte", "clarity punkte", "punkte limit", "punktelimit",
+    ]):
+        return (
+            "CP-Limit heißt nur: Du bekommst pro Tag einen Clarity-Punkt fürs Tracken.\n\n"
+            "Deine Ausgaben werden trotzdem ganz normal gespeichert.\n"
+            "Ich begrenze nur die Punkte, damit niemand den Score durch viele kleine Eingaben künstlich hochzieht."
+        )
+
+    if not any(phrase in text_lower for phrase in [
+        "wochenbudget", "wochen budget", "wochenlimit", "wochen limit",
+        "tagesbudget", "tages budget", "tageslimit", "tages limit",
+        "wie viel kann ich pro tag", "wie viel kann ich diese woche",
+    ]):
         return ""
     remaining, total_expenses, income, fixed = calculate_remaining_budget(u, user_id)
     left_days = days_left_in_month()
     daily = remaining / left_days
     weekly = daily * 7
+    intro = ""
+    if "tageslimit" in text_lower or "tages limit" in text_lower:
+        intro = (
+            "Ein festes Tageslimit ist meistens nicht besonders sinnvoll, weil Ausgaben nicht jeden Tag gleichmäßig kommen.\n"
+            "Besser ist ein Wochenbudget als Orientierung.\n\n"
+        )
     return (
-        f"Dein Restbudget diesen Monat: {remaining:.2f} EUR\n"
+        f"{intro}"
+        f"Dein freies Restbudget diesen Monat: {remaining:.2f} EUR\n"
         f"Noch {left_days} Tage im Monat.\n"
         f"Tagesbudget: ca. {daily:.2f} EUR\n"
-        f"Wochenbudget: ca. {weekly:.2f} EUR"
+        f"Wochenbudget: ca. {weekly:.2f} EUR\n\n"
+        "Ich ziehe dafür Einkommen, Fixkosten, Sparrate und bisherige Ausgaben zusammen."
     )
 
 
@@ -1622,7 +1650,7 @@ def maybe_answer_affordability(user_id: int, u: dict, text_lower: str) -> str:
     return (
         f"{verdict}\n\n"
         f"Geplante Ausgabe: {format_eur(planned)}\n"
-        f"Aktuelles Restbudget: {format_eur(remaining)}\n"
+        f"Aktuelles freies Restbudget: {format_eur(remaining)}\n"
         f"Danach übrig: {format_eur(after_purchase)}\n"
         f"Tagesbudget danach: ca. {format_eur(daily_after)}\n\n"
         f"{note}"
@@ -2132,6 +2160,21 @@ def is_help_question(text_lower: str) -> bool:
     ]
     clarity_terms = ["clarity", "bot", "dich", "hier", "das"]
     return any(phrase in text_lower for phrase in help_phrases) and any(term in text_lower for term in clarity_terms)
+
+
+def is_tageslimit_question(text_lower: str) -> bool:
+    return "tageslimit" in text_lower and any(
+        word in text_lower for word in ["was", "heißt", "heisst", "bedeutet", "warum", "?"]
+    )
+
+
+def build_tageslimit_answer() -> str:
+    return (
+        "Ein festes Tageslimit ist meistens nicht besonders sinnvoll, weil Ausgaben nicht jeden Tag gleichmäßig kommen.\n\n"
+        "Besser ist ein Wochenbudget als Orientierung.\n"
+        "Ich rechne dafür dein Einkommen minus Fixkosten, Sparrate und bisherige Ausgaben.\n\n"
+        "Frag mich einfach: `Wie hoch ist mein Wochenbudget?`"
+    )
 
 
 def build_help_answer() -> str:
@@ -3325,27 +3368,19 @@ def handle_commands(message):
         )
 
     elif cmd == '/status':
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT SUM(amount) FROM expenses WHERE user_id = ? "
-                "AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')",
-                (uid,)
-            )
-            total_exp = cursor.fetchone()[0] or 0.0
-
-        income = (u.get("income") or 0) + (u.get("other_income") or 0)
-        remaining = income - (u.get("fixed_costs") or 0) - total_exp
+        remaining, total_exp, income, fixed = calculate_remaining_budget(u, uid)
+        savings = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
         e = "🟢" if remaining > 200 else ("🟡" if remaining > 0 else "🔴")
 
         bot.send_message(uid,
             "Ich habe deinen aktuellen Stand für dich im Blick.\n\n"
             f"*Monatsstatus*\n\n"
             f"Einnahmen: {income:.2f}€\n"
-            f"Fixkosten: {u.get('fixed_costs', 0):.2f}€\n"
+            f"Fixkosten: {fixed:.2f}€\n"
+            f"Sparrate: {savings:.2f}€\n"
             f"Ausgaben: {total_exp:.2f}€\n"
             f"{'─' * 20}\n"
-            f"{e} *Restbudget: {remaining:.2f}€*\n\n"
+            f"{e} *Freies Restbudget: {remaining:.2f}€*\n\n"
             "Wenn du tiefer gehen willst, frag mich einfach nach deinem Monat.",
             parse_mode="Markdown"
         )
@@ -3886,7 +3921,7 @@ def handle_msg(message):
                 conn.commit()
 
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
             bot.send_message(
                 uid,
                 format_expense_confirmation(parsed_items, cp_str, user_id=uid),
@@ -3907,7 +3942,7 @@ def handle_msg(message):
                 source="chat", note="Manueller Depotstand"
             )
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
             total_wealth = amount_val + (u.get("current_cash") or 0)
             bot.send_message(
                 uid,
@@ -3946,7 +3981,7 @@ def handle_msg(message):
             cp_earned = handle_daily_activity(uid, bot)
             u_fresh = get_or_create_user(uid)
             new_badges = check_wealth_badges(uid, u_fresh)
-            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
             total_wealth = new_investments + (u.get("current_cash") or 0)
             if event_type == "asset_update":
                 verb = "Bestand ergänzt"
@@ -3980,7 +4015,7 @@ def handle_msg(message):
             # Badge-Checks – dezent inline, kein Extra-Message
             new_badge_lines = []
 
-            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
             headline = direct_category_label or merchant_found
             msg = format_expense_confirmation(
                 [{"amount": amount_val, "category": category_found, "merchant": headline}],
@@ -4028,20 +4063,11 @@ def handle_msg(message):
     # FIX: "rest" entfernt → fängt nicht mehr "restaurant" ab
     if any(w in text_lower for w in ["restbudget", "budget", "übrig", "wieviel habe", "wie viel habe"]):
         handle_daily_activity(uid, bot)
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT SUM(amount) FROM expenses WHERE user_id = ? "
-                "AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')",
-                (uid,)
-            )
-            total_exp = cursor.fetchone()[0] or 0.0
-
-        frei = ((u.get("income") or 0) + (u.get("other_income") or 0)
-                - (u.get("fixed_costs") or 0) - total_exp)
+        frei, total_exp, income, fixed = calculate_remaining_budget(u, uid)
         e = "🟢" if frei > 200 else ("🟡" if frei > 0 else "🔴")
         bot.send_message(uid,
-            f"💸 *Budget-Check*\n\n{e} Noch *{frei:.2f}€* zur freien Verfügung.",
+            f"💸 *Budget-Check*\n\n{e} Noch *{frei:.2f}€* frei verfügbar.\n\n"
+            "Sparrate und Fixkosten sind dabei schon abgezogen.",
             parse_mode="Markdown"
         )
         return
@@ -4062,6 +4088,17 @@ def handle_msg(message):
         bot.send_message(uid, build_unclear_amount_answer(expense_amounts), parse_mode="Markdown")
         return
 
+    if not expense_amounts:
+        label_category, label_merchant, label_direct = detect_expense_label(text_input, text_lower)
+        if label_category and label_merchant:
+            bot.send_message(
+                uid,
+                f"Welchen Betrag soll ich für {label_direct or label_merchant} erfassen?\n\n"
+                f"Zum Beispiel:\n`{label_direct or label_merchant} 12,50€`",
+                parse_mode="Markdown"
+            )
+            return
+
     # ─── KI-FALLBACK (Nur für komplexe/unbekannte Anfragen) ─────────────
     bot.send_chat_action(uid, 'typing')
     user_context = build_ai_user_context(uid, u)
@@ -4080,7 +4117,7 @@ Blocke nur Off-Topic-Fragen, z.B. Buch schreiben, Weltpolitik, Hausaufgaben, Rez
 
 Antwortformat (reines JSON):
 {{
-  "expenses": [{{"amount": 12.5, "category": "LEBENSMITTEL", "merchant": "Rewe"}}],
+  "expenses": [],
   "reply_text": "Kurze Antwort auf Deutsch"
 }}
 
@@ -4100,7 +4137,8 @@ Nutzereingabe: {text_input}"""
 
         booked = 0
         booked_items = []
-        for exp in data.get("expenses", []):
+        allow_ai_booking = bool(expense_amounts)
+        for exp in (data.get("expenses", []) if allow_ai_booking else []):
             try:
                 amt = float(exp.get("amount", 0))
                 if amt > 0:
@@ -4121,7 +4159,7 @@ Nutzereingabe: {text_input}"""
         reply = ""
         if booked > 0:
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "Tageslimit"
+            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
             reply += format_expense_confirmation(booked_items, cp_str, user_id=uid) + "\n"
 
         if data.get("reply_text") and booked == 0:
