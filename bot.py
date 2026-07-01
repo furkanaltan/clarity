@@ -784,6 +784,7 @@ def route_cross_step_fixed_cost(text_input: str, text_lower: str, nums: list, de
         "schuld": "kredit",
         "schulden": "kredit",
         "kredit": "kredit",
+        "kreditrate": "kredit",
         "kredite": "kredit",
         "darlehen": "kredit",
     })
@@ -791,6 +792,11 @@ def route_cross_step_fixed_cost(text_input: str, text_lower: str, nums: list, de
         current = details.get("kredite", {})
         if not isinstance(current, dict):
             current = {}
+        monthly_debt, total_debt = parse_debt_values(text_lower)
+        if monthly_debt is not None:
+            credit_parsed["kredit"] = monthly_debt
+        if total_debt is not None:
+            current["restschuld"] = total_debt
         current.update(credit_parsed)
         details["kredite"] = current
         return True
@@ -843,6 +849,7 @@ DETAIL_VALUE_ALIASES = {
     "kfz-versicherung": ("versicherungen", "autoversicherung", "Autoversicherung"),
     "versicherung": ("versicherungen", "sonstige", "Versicherung"),
     "kredit": ("kredite", "kredit", "Kredit"),
+    "kreditrate": ("kredite", "kredit", "Kreditrate"),
     "kredite": ("kredite", "kredit", "Kredit"),
     "schuld": ("kredite", "kredit", "Schulden"),
     "schulden": ("kredite", "kredit", "Schulden"),
@@ -875,8 +882,40 @@ def fixed_costs_total(details: dict) -> float:
         float(value)
         for section in details.values()
         if isinstance(section, dict)
-        for value in section.values()
+        for key, value in section.items()
+        if key not in {"restschuld", "gesamtbetrag", "schulden_gesamt"}
     )
+
+
+def parse_debt_values(text_lower: str) -> tuple:
+    monthly = None
+    total = None
+
+    total_patterns = [
+        r"(?:gesamtbetrag|gesamtschuld|restschuld|offene schuld|offen|gesamt)\D{0,20}(\d+(?:[.,]\d+)?\s*k?)",
+        r"(\d+(?:[.,]\d+)?\s*k?)\D{0,20}(?:gesamtbetrag|gesamtschuld|restschuld|offen)",
+    ]
+    monthly_patterns = [
+        r"(?:monatlich|jeden monat|pro monat|rate|kreditrate|kostet monatlich)\D{0,20}(\d+(?:[.,]\d+)?\s*k?)",
+        r"(\d+(?:[.,]\d+)?\s*k?)\D{0,20}(?:monatlich|jeden monat|pro monat|rate|kreditrate)",
+    ]
+
+    def parse_token(token: str):
+        return parse_currency(token)
+
+    for pattern in total_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            total = parse_token(match.group(1))
+            break
+
+    for pattern in monthly_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            monthly = parse_token(match.group(1))
+            break
+
+    return monthly, total
 
 
 def find_detail_alias_matches(text_lower: str) -> list:
@@ -1028,6 +1067,12 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         section_values = details.get(section, {})
         if not isinstance(section_values, dict):
             section_values = {}
+        if section == "kredite":
+            monthly_debt, total_debt = parse_debt_values(text_lower)
+            if monthly_debt is not None:
+                value = monthly_debt
+            if total_debt is not None:
+                section_values["restschuld"] = total_debt
         section_values[key] = value
         details[section] = section_values
 
@@ -1039,6 +1084,7 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
         return (
             "Alles klar, ich habe das aktualisiert.\n\n"
             f"{label}: {format_eur(value)} pro Monat\n"
+            f"{'Restschuld: ' + format_eur(section_values['restschuld']) + chr(10) if section == 'kredite' and section_values.get('restschuld') is not None else ''}"
             f"{recurrence_note + chr(10) if recurrence_note else ''}"
             f"Fixkosten gesamt: {format_eur(total_fixed)}\n\n"
             "Ich nutze das ab jetzt für deine Auswertung."
@@ -1727,6 +1773,9 @@ DETAIL_ITEM_LABELS = {
     "immobilie": "Immobilie",
     "hausverwalter": "Hausverwalter",
     "konsum": "Konsum",
+    "restschuld": "Restschuld",
+    "gesamtbetrag": "Gesamtbetrag",
+    "schulden_gesamt": "Schulden gesamt",
 }
 
 
@@ -1744,7 +1793,10 @@ def format_fixed_cost_breakdown(u: dict) -> str:
         lines.append(f"{emoji} *{section_label}*")
         for key, value in values.items():
             label = DETAIL_ITEM_LABELS.get(key, key.replace("_", " ").title())
-            lines.append(f"{label}: {format_eur(value)}")
+            if key in {"restschuld", "gesamtbetrag", "schulden_gesamt"}:
+                lines.append(f"{label}: {format_eur(value)} offen")
+            else:
+                lines.append(f"{label}: {format_eur(value)}")
         lines.append("")
 
     lines.append(f"*Gesamt: {format_eur(total)}*")
@@ -3773,6 +3825,7 @@ def handle_msg(message):
         elif step == STEP_ADAPT_CREDITS:
             parsed = parse_labeled_amounts(text_input, {
                 "kredit": "kredit",
+                "kreditrate": "kredit",
                 "kredite": "kredit",
                 "schuld": "kredit",
                 "schulden": "kredit",
@@ -3786,10 +3839,18 @@ def handle_msg(message):
                 "konsum": "konsum",
                 "auto": "auto",
             })
-            details["kredite"] = merge_number_defaults(parsed, nums, ["immobilie", "hausgeld", "hausverwalter"])
+            credit_values = merge_number_defaults(parsed, nums, ["immobilie", "hausgeld", "hausverwalter"])
+            monthly_debt, total_debt = parse_debt_values(text_lower)
+            if monthly_debt is not None:
+                credit_values["kredit"] = monthly_debt
+            if total_debt is not None:
+                credit_values["restschuld"] = total_debt
+            details["kredite"] = credit_values
             total_fixed = sum(
                 float(v) for cat in details.values()
-                if isinstance(cat, dict) for v in cat.values()
+                if isinstance(cat, dict)
+                for key, v in cat.items()
+                if key not in {"restschuld", "gesamtbetrag", "schulden_gesamt"}
             )
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "fixed_costs", total_fixed)
