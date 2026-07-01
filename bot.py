@@ -776,6 +776,28 @@ def merge_number_defaults(parsed: dict, nums: list, keys: list) -> dict:
     return {"gesamt": sum(nums)}
 
 
+def route_cross_step_fixed_cost(text_input: str, text_lower: str, nums: list, details: dict) -> bool:
+    if not nums:
+        return False
+
+    credit_parsed = parse_labeled_amounts(text_input, {
+        "schuld": "kredit",
+        "schulden": "kredit",
+        "kredit": "kredit",
+        "kredite": "kredit",
+        "darlehen": "kredit",
+    })
+    if credit_parsed:
+        current = details.get("kredite", {})
+        if not isinstance(current, dict):
+            current = {}
+        current.update(credit_parsed)
+        details["kredite"] = current
+        return True
+
+    return False
+
+
 DETAIL_VALUE_ALIASES = {
     "miete": ("wohnen", "miete", "Miete"),
     "kaltmiete": ("wohnen", "miete", "Miete"),
@@ -822,6 +844,8 @@ DETAIL_VALUE_ALIASES = {
     "versicherung": ("versicherungen", "sonstige", "Versicherung"),
     "kredit": ("kredite", "kredit", "Kredit"),
     "kredite": ("kredite", "kredit", "Kredit"),
+    "schuld": ("kredite", "kredit", "Schulden"),
+    "schulden": ("kredite", "kredit", "Schulden"),
     "darlehen": ("kredite", "kredit", "Kredit"),
     "immobilie": ("kredite", "immobilie", "Immobilie"),
     "immobile": ("kredite", "immobilie", "Immobilie"),
@@ -3648,6 +3672,7 @@ def handle_msg(message):
             return
 
         details = u.get("details", {})
+        routed_cross_step = route_cross_step_fixed_cost(text_input, text_lower, nums, details)
 
         if step == STEP_ADAPT_HOUSING:
             parsed = parse_labeled_amounts(text_input, {
@@ -3660,7 +3685,8 @@ def handle_msg(message):
                 "hausgeld": "hausgeld",
                 "nebenkosten": "nebenkosten",
             })
-            details["wohnen"] = merge_number_defaults(parsed, nums, ["miete", "strom", "gas"])
+            if not routed_cross_step:
+                details["wohnen"] = merge_number_defaults(parsed, nums, ["miete", "strom", "gas"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_MOBILITY)
             bot.send_message(uid, "🚗 *Teil 2: Mobilität*\nAuto, Tanken, Bahn?\n_(z.B. 250 120 49)_", parse_mode="Markdown")
@@ -3689,7 +3715,8 @@ def handle_msg(message):
                     current_insurance = {}
                 current_insurance.update(insurance_parsed)
                 details["versicherungen"] = current_insurance
-            details["mobilitaet"] = merge_number_defaults(parsed, nums, ["auto", "tanken", "bahn"])
+            if not routed_cross_step:
+                details["mobilitaet"] = merge_number_defaults(parsed, nums, ["auto", "tanken", "bahn"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_ABOS)
             bot.send_message(uid, "📺 *Teil 3: Abos*\nNetflix, Spotify, Prime, Disney?\n_(z.B. 14 10 9 8)_", parse_mode="Markdown")
@@ -3716,7 +3743,8 @@ def handle_msg(message):
                 "handy": "handy",
                 "icloud": "icloud",
             })
-            details["abos"] = merge_number_defaults(parsed, nums, ["netflix", "spotify", "prime", "disney"])
+            if not routed_cross_step:
+                details["abos"] = merge_number_defaults(parsed, nums, ["netflix", "spotify", "prime", "disney"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_INSURANCE)
             bot.send_message(uid, "🛡️ *Teil 4: Versicherungen*\nHaftpflicht, BU, Rechtsschutz?\n_(z.B. 6 45 25)_", parse_mode="Markdown")
@@ -3736,7 +3764,8 @@ def handle_msg(message):
                 "kfz-versicherung": "autoversicherung",
                 "krankenversicherung": "krankenversicherung",
             })
-            details["versicherungen"] = merge_number_defaults(parsed, nums, ["haftpflicht", "bu", "rechtsschutz", "autoversicherung"])
+            if not routed_cross_step:
+                details["versicherungen"] = merge_number_defaults(parsed, nums, ["haftpflicht", "bu", "rechtsschutz", "autoversicherung"])
             update_user_field(uid, "fixed_costs_details", json.dumps(details))
             update_user_field(uid, "onboarding_step", STEP_ADAPT_CREDITS)
             bot.send_message(uid, "💳 *Teil 5: Kredite*\nImmobilie, Auto, Konsum?\n_(Falls keine → 0)_", parse_mode="Markdown")
@@ -3745,6 +3774,8 @@ def handle_msg(message):
             parsed = parse_labeled_amounts(text_input, {
                 "kredit": "kredit",
                 "kredite": "kredit",
+                "schuld": "kredit",
+                "schulden": "kredit",
                 "darlehen": "kredit",
                 "immobilie": "immobilie",
                 "immobile": "immobilie",
