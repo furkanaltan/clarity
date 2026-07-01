@@ -1024,9 +1024,12 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
 
 
 def maybe_apply_savings_correction(user_id: int, u: dict, text_lower: str) -> str:
-    if not any(word in text_lower for word in ["sparrate", "sparplan", "sparen"]):
-        return ""
     if not any(word in text_lower for word in ["ändere", "aendere", "setze", "aktualisiere", "update", "korrigiere"]):
+        return ""
+    has_savings_context = any(word in text_lower for word in ["sparrate", "sparplan", "sparen"])
+    has_direct_etf_context = bool(re.search(r"\betf\b", text_lower)) and not looks_like_investment_update(text_lower.replace("etf", ""))
+    has_direct_cash_context = any(word in text_lower for word in ["cash", "tagesgeld", "rücklage", "ruecklage"])
+    if not (has_savings_context or has_direct_etf_context or has_direct_cash_context):
         return ""
 
     target = None
@@ -1063,6 +1066,34 @@ def maybe_apply_savings_correction(user_id: int, u: dict, text_lower: str) -> st
     return (
         "Alles klar, ich habe das aktualisiert.\n\n"
         f"{label}: {note}\n\n"
+        "Ich nutze das ab jetzt für deine Auswertung."
+    )
+
+
+def maybe_apply_income_correction(user_id: int, u: dict, text_lower: str) -> str:
+    has_income_change_word = any(word in text_lower for word in [
+        "ändere", "aendere", "setze", "aktualisiere", "update", "korrigiere",
+        "lohnerhöhung", "lohnerhoehung", "neues", "neue", "jetzt", "beträgt", "betraegt",
+    ])
+    if not has_income_change_word:
+        return ""
+    if not any(word in text_lower for word in ["gehalt", "lohn", "netto", "einkommen", "nebeneinkommen", "nebenverdienst"]):
+        return ""
+
+    value = parse_currency(text_lower)
+    if value is None:
+        return ""
+
+    if any(word in text_lower for word in ["nebeneinkommen", "nebenverdienst", "nebenjob"]):
+        update_user_field(user_id, "other_income", value)
+        label = "Nebeneinkommen"
+    else:
+        update_user_field(user_id, "income", value)
+        label = "Nettoeinkommen"
+
+    return (
+        "Alles klar, ich habe das aktualisiert.\n\n"
+        f"{label}: {format_eur(value)} pro Monat\n\n"
         "Ich nutze das ab jetzt für deine Auswertung."
     )
 
@@ -2080,7 +2111,7 @@ def build_start_intro() -> str:
         "Danach kannst du mich einfach im Alltag nutzen.\n\n"
         "*Schritt 1 von 8:* Wie hoch ist dein monatliches Nettoeinkommen?\n"
         "_(z.B. 2500)_\n\n"
-        "_Schreib zurück oder nutze /zurueck, um einen Schritt zurückzugehen._"
+        "_Schreib zurück oder nutze den Menüpunkt Zurück, um einen Schritt zurückzugehen._"
     )
 
 
@@ -3315,7 +3346,7 @@ def handle_commands(message):
             uid,
             "Du richtest dein Basisprofil jetzt neu ein.\n\n"
             "*Schritt 1 von 8:* Nettoeinkommen?\n\n"
-            "_Mit /zurueck oder 'zurück' gehst du einen Schritt zurück._",
+            "_Mit zurück oder dem Menüpunkt Zurück gehst du einen Schritt zurück._",
             parse_mode="Markdown"
         )
 
@@ -3472,6 +3503,10 @@ def handle_msg(message):
         savings_reply = maybe_apply_savings_correction(uid, u, text_lower)
         if savings_reply:
             bot.send_message(uid, savings_reply, parse_mode="Markdown")
+            return
+        income_reply = maybe_apply_income_correction(uid, u, text_lower)
+        if income_reply:
+            bot.send_message(uid, income_reply, parse_mode="Markdown")
             return
 
     if step == STEP_NORMAL and looks_like_profile_correction(text_lower) and not looks_like_investment_update(text_lower):
