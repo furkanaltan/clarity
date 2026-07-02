@@ -84,6 +84,7 @@ RESET_USER_TABLES = [
     "investment_events",
     "portfolio_snapshots",
     "report_jobs",
+    "category_budgets",
     "users",
 ]
 
@@ -422,6 +423,22 @@ def init_db():
 
         conn.execute('''CREATE INDEX IF NOT EXISTS idx_user_access_status
             ON user_access(status, requested_at)
+        ''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS category_budgets (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL,
+            category      TEXT    NOT NULL,
+            monthly_limit REAL    NOT NULL,
+            source        TEXT    NOT NULL DEFAULT 'manual',
+            active_month  TEXT    NOT NULL,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, category, active_month),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_category_budgets_user_month
+            ON category_budgets(user_id, active_month)
         ''')
 
         conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
@@ -1589,6 +1606,370 @@ def maybe_answer_category_spending(user_id: int, text_lower: str) -> str:
     return "\n".join(lines)
 
 
+BUDGET_CORE_CATEGORIES = ["LEBENSMITTEL", "RESTAURANTS", "FREIZEIT", "SHOPPING", "MOBILITAET"]
+
+
+def current_budget_month() -> str:
+    return date.today().strftime("%Y-%m")
+
+
+def budget_marker_key(action: str) -> str:
+    month_key = date.today().strftime("%Y_%m")
+    return f"budget_{action}_{month_key}"
+
+
+def remember_budget_marker(user_id: int, action: str) -> bool:
+    marker = budget_marker_key(action)
+    with get_db() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO user_badges (user_id, badge_key) VALUES (?, ?)",
+                (user_id, marker)
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def has_budget_marker(user_id: int, action: str) -> bool:
+    return has_badge(user_id, budget_marker_key(action))
+
+
+def normalize_budget_categories(text_lower: str) -> list:
+    alias, categories = detect_category_alias(text_lower)
+    if categories:
+        return categories
+
+    direct_map = {
+        "lebensmittel": "LEBENSMITTEL",
+        "restaurants": "RESTAURANTS",
+        "restaurant": "RESTAURANTS",
+        "freizeit": "FREIZEIT",
+        "shopping": "SHOPPING",
+        "mobilität": "MOBILITAET",
+        "mobilitaet": "MOBILITAET",
+        "tanken": "MOBILITAET",
+        "drogerie": "DROGERIE",
+        "pflege": "PFLEGE",
+        "gesundheit": "GESUNDHEIT",
+        "abos": "ABOS",
+    }
+    for key, category in direct_map.items():
+        if key in text_lower:
+            return [category]
+    return []
+
+
+def save_category_budget(user_id: int, category: str, monthly_limit: float, source: str = "manual") -> None:
+    month = current_budget_month()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO category_budgets
+               (user_id, category, monthly_limit, source, active_month)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, category, active_month)
+               DO UPDATE SET monthly_limit = excluded.monthly_limit,
+                             source = excluded.source,
+                             created_at = CURRENT_TIMESTAMP""",
+            (user_id, category, monthly_limit, source, month)
+        )
+        conn.commit()
+
+
+def get_category_budgets(user_id: int, month: str = None) -> list:
+    month = month or current_budget_month()
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT category, monthly_limit, source
+               FROM category_budgets
+               WHERE user_id = ? AND active_month = ?
+               ORDER BY category""",
+            (user_id, month)
+        ).fetchall()
+
+
+def delete_category_budgets(user_id: int, categories: list = None, month: str = None) -> int:
+    month = month or current_budget_month()
+    with get_db() as conn:
+        if categories:
+            placeholders = ",".join("?" for _ in categories)
+            cursor = conn.execute(
+                f"""DELETE FROM category_budgets
+                    WHERE user_id = ? AND active_month = ? AND category IN ({placeholders})""",
+                (user_id, month, *categories)
+            )
+        else:
+            cursor = conn.execute(
+                """DELETE FROM category_budgets
+                   WHERE user_id = ? AND active_month = ?""",
+                (user_id, month)
+            )
+        conn.commit()
+        return cursor.rowcount or 0
+
+
+def has_active_budgets(user_id: int) -> bool:
+    return bool(get_category_budgets(user_id))
+
+
+def get_category_spending(user_id: int, categories: list, month: str = None) -> dict:
+    if not categories:
+        return {}
+    month = month or current_budget_month()
+    placeholders = ",".join("?" for _ in categories)
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT category, SUM(amount) AS total
+                FROM expenses
+                WHERE user_id = ?
+                  AND category IN ({placeholders})
+                  AND strftime('%Y-%m', created_at) = ?
+                GROUP BY category""",
+            (user_id, *categories, month)
+        ).fetchall()
+    return {row["category"]: float(row["total"] or 0) for row in rows}
+
+
+def build_budget_invite_message() -> str:
+    return (
+        "Du hast jetzt 7 aktive Tracking-Tage mit Rov.E gesammelt.\n\n"
+        "Ich kann daraus einen ersten Budgetrahmen für deinen Monat ableiten.\n"
+        "Nicht als harte Grenze, sondern als Frühwarnsystem.\n\n"
+        "Wenn du möchtest, schlage ich dir Budgets für die wichtigsten Bereiche vor:\n"
+        "Lebensmittel, Restaurants, Freizeit, Shopping und Mobilität.\n\n"
+        "Schreib einfach:\n"
+        "`Ja` - wenn Rov.E dir einen Vorschlag machen soll\n"
+        "`Selbst` - wenn du deine Budgets selbst setzen willst\n"
+        "`Nein` - wenn du erstmal ohne Budgets weitermachen willst"
+    )
+
+
+def maybe_send_budget_invite(user_id: int, bot_instance) -> None:
+    if has_budget_marker(user_id, "invite_sent") or has_budget_marker(user_id, "resolved"):
+        return
+    if has_active_budgets(user_id):
+        remember_budget_marker(user_id, "resolved")
+        return
+    if get_tracking_days_90(user_id) < 7:
+        return
+    if remember_budget_marker(user_id, "invite_sent"):
+        bot_instance.send_message(user_id, build_budget_invite_message(), parse_mode="Markdown")
+
+
+def parse_budget_setup_intent(text_lower: str) -> str:
+    if any(phrase in text_lower for phrase in [
+        "selbst", "selber", "eigene budget", "eigene budgets", "ich setze",
+        "ich mach", "ich mache", "manuell",
+    ]):
+        return "self"
+    if any(phrase in text_lower for phrase in [
+        "nein", "nee", "ne ", "erstmal nicht", "nicht jetzt", "später",
+        "spaeter", "kein budget", "ohne budget",
+    ]):
+        return "no"
+    if any(phrase in text_lower for phrase in [
+        "ja", "ja bitte", "ja klar", "mach mal", "schlag vor",
+        "vorschlag", "setz du", "erstell", "mach du", "rov.e soll",
+        "du kannst", "gerne",
+    ]):
+        return "yes"
+    return ""
+
+
+def calculate_suggested_budgets(u: dict) -> tuple:
+    income = (u.get("income") or 0) + (u.get("other_income") or 0)
+    fixed = u.get("fixed_costs") or 0
+    savings = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
+    free_month = max(0.0, income - fixed - savings)
+    allocatable = free_month * 0.85
+    weights = {
+        "LEBENSMITTEL": 0.38,
+        "RESTAURANTS": 0.18,
+        "FREIZEIT": 0.15,
+        "SHOPPING": 0.17,
+        "MOBILITAET": 0.12,
+    }
+    budgets = {}
+    for category, weight in weights.items():
+        budgets[category] = round((allocatable * weight) / 10) * 10
+    buffer_amount = max(0.0, free_month - sum(budgets.values()))
+    return budgets, free_month, buffer_amount
+
+
+def apply_suggested_budgets(user_id: int, u: dict) -> str:
+    budgets, free_month, buffer_amount = calculate_suggested_budgets(u)
+    if free_month <= 0:
+        remember_budget_marker(user_id, "resolved")
+        return (
+            "Ich kann dir gerade keinen sauberen Budgetrahmen vorschlagen, weil dein freies Monatsbudget rechnerisch bei 0€ oder darunter liegt.\n\n"
+            "Frag mich am besten zuerst nach deinem Restbudget oder prüfe deine Fixkosten und Sparrate."
+        )
+
+    for category, amount in budgets.items():
+        if amount > 0:
+            save_category_budget(user_id, category, amount, source="suggested")
+    remember_budget_marker(user_id, "resolved")
+
+    lines = [
+        "Ich habe dir einen ersten Budgetrahmen gesetzt.",
+        "",
+        "Ich rechne dafür:",
+        "Einkommen - Fixkosten - Sparrate = freies Monatsbudget",
+        "",
+        f"Freies Monatsbudget: {format_eur(free_month)}",
+        "",
+        "Mein Vorschlag:",
+    ]
+    for category in BUDGET_CORE_CATEGORIES:
+        emoji = CATEGORY_EMOJIS.get(category, "")
+        lines.append(f"{emoji} {category}: {format_eur(budgets.get(category, 0))}")
+    lines.extend([
+        f"Reservierter Puffer: {format_eur(buffer_amount)}",
+        "",
+        "Das ist kein starres Limit.",
+        "Es ist ein Frühwarnsystem für deinen Monat.",
+        "",
+        "Wenn sich eine Kategorie falsch anfühlt, pass sie einfach an.",
+        "Du musst nicht alles übernehmen.",
+        "",
+        "Du kannst jederzeit schreiben:",
+        "`Setz Restaurants auf 150€`",
+        "`Shopping lieber 200€`",
+        "`Wie viel Budget habe ich noch für Essen?`",
+    ])
+    return "\n".join(lines)
+
+
+def build_manual_budget_help() -> str:
+    return (
+        "Alles klar. Du kannst deine Budgets selbst setzen.\n\n"
+        "Schreib zum Beispiel:\n"
+        "`Setz Lebensmittel auf 300€`\n"
+        "`Setz Restaurants auf 150€`\n"
+        "`Setz Freizeit auf 100€`\n\n"
+        "Danach kannst du jederzeit fragen:\n"
+        "`Wie viel Budget habe ich noch für Essen?`\n"
+        "`Zeig meine Budgets`"
+    )
+
+
+def maybe_handle_budget_setup_response(user_id: int, u: dict, text_lower: str) -> str:
+    if not has_budget_marker(user_id, "invite_sent") or has_budget_marker(user_id, "resolved"):
+        return ""
+
+    intent = parse_budget_setup_intent(text_lower)
+    if intent == "yes":
+        return apply_suggested_budgets(user_id, u)
+    if intent == "self":
+        remember_budget_marker(user_id, "resolved")
+        return build_manual_budget_help()
+    if intent == "no":
+        remember_budget_marker(user_id, "resolved")
+        return "Alles klar. Dann laufen wir erstmal ohne feste Budgets weiter."
+    return ""
+
+
+def maybe_apply_manual_budget(user_id: int, text_lower: str) -> str:
+    budget_adjust_words = [
+        "budget", "setz", "setze", "lieber", "bitte", "auf",
+        "mach", "ändere", "aendere", "erhöhe", "erhoehe", "senk", "reduzier",
+    ]
+    if not any(word in text_lower for word in budget_adjust_words):
+        return ""
+    amount = parse_currency(text_lower)
+    if amount is None or amount <= 0:
+        return ""
+    categories = normalize_budget_categories(text_lower)
+    if not categories:
+        return ""
+
+    for category in categories:
+        save_category_budget(user_id, category, amount, source="manual")
+    remember_budget_marker(user_id, "resolved")
+
+    if len(categories) == 1:
+        emoji = CATEGORY_EMOJIS.get(categories[0], "")
+        return f"Alles klar. {emoji} {categories[0]} ist jetzt auf {format_eur(amount)} pro Monat gesetzt."
+
+    return f"Alles klar. Ich habe das Essensbudget auf {format_eur(amount)} pro Monat gesetzt."
+
+
+def maybe_delete_budget(user_id: int, text_lower: str) -> str:
+    if "budget" not in text_lower and "budgets" not in text_lower:
+        return ""
+    delete_words = [
+        "lösch", "loesch", "lösche", "loesche", "entfern", "streiche",
+        "weg", "kein", "keine", "nicht mehr", "doch kein",
+    ]
+    if not any(word in text_lower for word in delete_words):
+        return ""
+
+    categories = normalize_budget_categories(text_lower)
+    if categories:
+        deleted = delete_category_budgets(user_id, categories)
+        if deleted <= 0:
+            return "Für diese Kategorie war kein Budget gesetzt."
+        if len(categories) == 1:
+            emoji = CATEGORY_EMOJIS.get(categories[0], "")
+            return f"Alles klar. Ich habe das Budget für {emoji} {categories[0]} entfernt."
+        return "Alles klar. Ich habe die ausgewählten Budgets entfernt."
+
+    deleted = delete_category_budgets(user_id)
+    if deleted <= 0:
+        return "Du hast aktuell keine Budgets für diesen Monat gesetzt."
+    return (
+        "Alles klar. Ich habe deine Budgets für diesen Monat entfernt.\n\n"
+        "Wir laufen erstmal ohne feste Budgetrahmen weiter."
+    )
+
+
+def maybe_answer_budget_status(user_id: int, text_lower: str) -> str:
+    asks_budget = "budget" in text_lower or "budgets" in text_lower
+    if not asks_budget:
+        return ""
+
+    budgets = get_category_budgets(user_id)
+    if not budgets:
+        return (
+            "Du hast noch keine Kategorie-Budgets gesetzt.\n\n"
+            "Du kannst zum Beispiel schreiben:\n"
+            "`Setz Lebensmittel auf 300€`\n"
+            "`Setz Restaurants auf 150€`"
+        )
+
+    categories = normalize_budget_categories(text_lower)
+    if categories:
+        relevant = [row for row in budgets if row["category"] in categories]
+        if not relevant:
+            return "Für diese Kategorie hast du noch kein Budget gesetzt."
+        spending = get_category_spending(user_id, [row["category"] for row in relevant])
+        limit = sum(float(row["monthly_limit"] or 0) for row in relevant)
+        used = sum(spending.get(row["category"], 0.0) for row in relevant)
+        left = limit - used
+        label = "Essen" if len(categories) > 1 else categories[0]
+        return (
+            f"{label}: {format_eur(left)} übrig\n\n"
+            f"Budget: {format_eur(limit)}\n"
+            f"Bisher genutzt: {format_eur(used)}"
+        )
+
+    if any(phrase in text_lower for phrase in ["zeig", "zeige", "übersicht", "uebersicht", "meine budgets", "alle budgets"]):
+        all_categories = [row["category"] for row in budgets]
+        spending = get_category_spending(user_id, all_categories)
+        lines = ["Deine Budgets diesen Monat:", ""]
+        for row in budgets:
+            category = row["category"]
+            limit = float(row["monthly_limit"] or 0)
+            used = spending.get(category, 0.0)
+            left = limit - used
+            emoji = CATEGORY_EMOJIS.get(category, "")
+            lines.append(f"{emoji} {category}: {format_eur(left)} übrig von {format_eur(limit)}")
+        return "\n".join(lines)
+
+    return ""
+
+
 def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
     if any(phrase in text_lower for phrase in [
         "cp-limit", "cp limit", "clarity-punkt", "clarity punkt",
@@ -2662,6 +3043,7 @@ def handle_daily_activity(user_id: int, bot_instance) -> int:
         bot_instance.send_message(user_id, f"{streak}-Tage Streak · +5 CP")
 
     record_score_history_if_needed(user_id)
+    maybe_send_budget_invite(user_id, bot_instance)
     return 1
 
 def handle_month_transition(user_id: int, u: dict, bot_instance):
@@ -3622,6 +4004,12 @@ def handle_msg(message):
     if step == STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
         return
 
+    if step == STEP_NORMAL:
+        budget_setup_reply = maybe_handle_budget_setup_response(uid, u, text_lower)
+        if budget_setup_reply:
+            bot.send_message(uid, budget_setup_reply, parse_mode="Markdown")
+            return
+
     if step == STEP_START:
         bot.send_message(uid, "Schreib /start, dann richten wir Clarity in Ruhe ein.")
         return
@@ -3673,6 +4061,21 @@ def handle_msg(message):
         correction_reply = "" if looks_like_investment_update(text_lower) else maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
+            return
+
+        delete_budget_reply = maybe_delete_budget(uid, text_lower)
+        if delete_budget_reply:
+            bot.send_message(uid, delete_budget_reply, parse_mode="Markdown")
+            return
+
+        manual_budget_reply = maybe_apply_manual_budget(uid, text_lower)
+        if manual_budget_reply:
+            bot.send_message(uid, manual_budget_reply, parse_mode="Markdown")
+            return
+
+        budget_status_reply = maybe_answer_budget_status(uid, text_lower)
+        if budget_status_reply:
+            bot.send_message(uid, budget_status_reply, parse_mode="Markdown")
             return
 
         weekly_reply = maybe_answer_weekly_budget(uid, u, text_lower)
