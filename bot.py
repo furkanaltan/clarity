@@ -107,6 +107,7 @@ MERCHANT_KEYWORDS = {
     "Netflix":    ["netflix"],
     "Spotify":    ["spotify"],
     "Disney+":    ["disney+", "disneyplus"],
+    "Hostinger":  ["hostinger"],
     "Zalando":    ["zalando"],
     "DM":         ["dm", "dm drogerie", "dm-drogerie"],
     "Rossmann":   ["rossmann"],
@@ -120,6 +121,7 @@ CATEGORY_MAPPING = {
     "Agip": "MOBILITAET", "Esso": "MOBILITAET", "McDonalds": "RESTAURANTS",
     "Burger King": "RESTAURANTS", "Subway": "RESTAURANTS", "Amazon": "SHOPPING",
     "Zalando": "SHOPPING", "Netflix": "ABOS", "Spotify": "ABOS", "Disney+": "ABOS",
+    "Hostinger": "SONSTIGES",
     "DM": "DROGERIE", "Rossmann": "DROGERIE", "Müller": "DROGERIE",
 }
 
@@ -139,6 +141,9 @@ DIRECT_CATEGORY_INPUTS = {
     "tankstelle": ("MOBILITAET", "Tankstelle"),
     "tankstellen": ("MOBILITAET", "Tankstelle"),
     "shopping": ("SHOPPING", "Shopping"),
+    "online einkauf": ("SHOPPING", "Online-Einkauf"),
+    "internet einkauf": ("SHOPPING", "Online-Einkauf"),
+    "einkauf im internet": ("SHOPPING", "Online-Einkauf"),
     "pflege": ("PFLEGE", "Pflege"),
     "friseur": ("PFLEGE", "Friseur"),
     "frisör": ("PFLEGE", "Friseur"),
@@ -203,7 +208,8 @@ CATEGORY_KEYWORDS = {
     "SHOPPING": [
         "klamotten", "kleidung", "schuhe", "mode", "kaufhaus", "primark",
         "zara", "h&m", "outlet", "flohmarkt", "elektronik", "handy",
-        "laptop", "kopfhörer", "gadget",
+        "laptop", "kopfhörer", "gadget", "online einkauf", "internet einkauf",
+        "einkauf im internet", "onlinekauf", "internetkauf", "onlineshop",
     ],
     "LEBENSMITTEL": [
         "supermarkt", "lebensmittel", "gemüse", "obst", "brot",
@@ -219,6 +225,9 @@ CATEGORY_KEYWORDS = {
     "ABOS": [
         "abo", "abonnement", "mitgliedschaft", "gym", "fitnessstudio",
         "studio", "mcfit", "clever fit", "planet fitness",
+    ],
+    "SONSTIGES": [
+        "hostinger", "hosting", "webhosting", "domain", "server", "internet",
     ],
 }
 
@@ -1292,13 +1301,16 @@ def looks_like_unclear_expense_attempt(text_lower: str, amounts: list[float]) ->
     if text_lower.startswith(("wie ", "was ", "warum ", "wann ", "wo ", "wer ", "kannst du")):
         return False
     words = re.findall(r"[a-zA-ZäöüÄÖÜß]+", text_lower)
-    return (
-        "€" in text_lower
-        or "eur" in text_lower
-        or "euro" in text_lower
-        or any(word in text_lower for word in ["ausgabe", "bezahlt", "gekauft"])
-        or len(words) <= 2
-    )
+    filler_words = {
+        "euro", "eur", "ausgabe", "ausgaben", "bezahlt", "gekauft",
+        "für", "fuer", "bei", "im", "in", "am", "an", "der", "die", "das",
+        "ich", "habe", "hab", "eine", "einen", "ein", "und",
+    }
+    meaningful_words = [word for word in words if word not in filler_words]
+
+    # Nur echte Betragsfetzen blocken. Sobald ein sinnvoller Begriff dabei ist,
+    # darf die KI später als Kategorisierer helfen.
+    return len(meaningful_words) == 0
 
 
 def get_actor_id(message) -> int:
@@ -1728,6 +1740,10 @@ def build_smart_spending_hint(user_id: int, items: list) -> str:
     return ""
 
 
+def build_tracking_note(cp_earned: int) -> str:
+    return "Tracking-Tag gesichert." if cp_earned > 0 else ""
+
+
 def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) -> str:
     expense_count = get_month_expense_count(user_id) if user_id else 0
     confirmation = get_micro_confirmation(expense_count)
@@ -1740,10 +1756,13 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
         merchant = item["merchant"]
         if merchant.lower() == "unbekannt":
             merchant = item["category"].title()
+        category_line = f"{emoji} {item['category']}"
+        if cp_text:
+            category_line += f" - {cp_text}"
         return (
             f"{confirmation}\n\n"
             f"{item['amount']:.2f} EUR - {merchant}\n"
-            f"{emoji} {item['category']} - {cp_text}"
+            f"{category_line}"
             f"{report_moment}"
             f"{smart_hint}"
         )
@@ -1755,8 +1774,9 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
         if merchant.lower() == "unbekannt":
             merchant = item["category"].title()
         lines.append(f"{emoji} {merchant} - {item['category']} - {item['amount']:.2f} EUR")
-    lines.append("")
-    lines.append(cp_text)
+    if cp_text:
+        lines.append("")
+        lines.append(cp_text)
     if report_moment:
         lines.append(report_moment.strip())
     if smart_hint:
@@ -3235,12 +3255,12 @@ def handle_commands(message):
             uid,
             f"📊 *Clarity Score: {score_data['total']}/100*\n"
             f"{score_data['rank_emoji']} *{score_data['rank_name']}*\n"
-            f"Status: {score_data['phase']} · Datenbasis: {score_data['proof_days']}/90 Tage"
+            f"Status: {score_data['phase']} · Proof: {score_data['proof_days']}/90 Tage"
             f"{unlock_line}\n\n"
             f"*Breakdown*\n"
             f"├ Budget Control:       {score_data['budget']}/25\n"
             f"├ Savings Execution:    {score_data['savings']}/25\n"
-            f"├ Tracking Consistency: {score_data['consistency']}/25\n"
+            f"├ Tracking Consistency: {score_data['tracking_days_90']} aktive Tage · {score_data['consistency']}/25\n"
             f"└ Financial Structure:  {score_data['structure']}/25\n\n"
             f"*Nächster Hebel:*\n{confirm_hint}\n\n"
             f"{cp_rank_emoji} CP-Level: *{cp_rank_name}* · {cp} CP\n"
@@ -3921,7 +3941,7 @@ def handle_msg(message):
                 conn.commit()
 
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
+            cp_str = build_tracking_note(cp_earned)
             bot.send_message(
                 uid,
                 format_expense_confirmation(parsed_items, cp_str, user_id=uid),
@@ -3942,12 +3962,13 @@ def handle_msg(message):
                 source="chat", note="Manueller Depotstand"
             )
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
+            cp_str = build_tracking_note(cp_earned)
+            cp_suffix = f" · {cp_str}" if cp_str else ""
             total_wealth = amount_val + (u.get("current_cash") or 0)
             bot.send_message(
                 uid,
                 f"📊 Depotstand aktualisiert: *{amount_val:.2f}€*\n"
-                f"Nettovermögen: *{total_wealth:.2f}€* · {cp_str}",
+                f"Nettovermögen: *{total_wealth:.2f}€*{cp_suffix}",
                 parse_mode="Markdown"
             )
             return
@@ -3981,7 +4002,8 @@ def handle_msg(message):
             cp_earned = handle_daily_activity(uid, bot)
             u_fresh = get_or_create_user(uid)
             new_badges = check_wealth_badges(uid, u_fresh)
-            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
+            cp_str = build_tracking_note(cp_earned)
+            cp_suffix = f" · {cp_str}" if cp_str else ""
             total_wealth = new_investments + (u.get("current_cash") or 0)
             if event_type == "asset_update":
                 verb = "Bestand ergänzt"
@@ -3993,7 +4015,7 @@ def handle_msg(message):
                 uid,
                 f"📈 {verb}: *{amount_val:.2f}€*\n"
                 f"Investments: {new_investments:.2f}€\n"
-                f"Nettovermögen: *{total_wealth:.2f}€* · {cp_str}",
+                f"Nettovermögen: *{total_wealth:.2f}€*{cp_suffix}",
                 parse_mode="Markdown"
             )
             send_badge_summary(bot, uid, new_badges)
@@ -4015,7 +4037,7 @@ def handle_msg(message):
             # Badge-Checks – dezent inline, kein Extra-Message
             new_badge_lines = []
 
-            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
+            cp_str = build_tracking_note(cp_earned)
             headline = direct_category_label or merchant_found
             msg = format_expense_confirmation(
                 [{"amount": amount_val, "category": category_found, "merchant": headline}],
@@ -4115,6 +4137,20 @@ ETF- und Finanzbildungsfragen sind erlaubt. Erklaere ruhig, klar und hilfreich.
 Keine Panik-Disclaimer. Keine konkreten Kauf-/Verkaufsempfehlungen für einzelne Produkte.
 Blocke nur Off-Topic-Fragen, z.B. Buch schreiben, Weltpolitik, Hausaufgaben, Rezepte oder allgemeines Gelaber ohne Finanzbezug.
 
+Wenn die Nutzereingabe wie eine Ausgabe aussieht und einen Betrag enthält, kategorisiere sie.
+Beispiele für unbekannte Händler oder Aktivitäten:
+- Paddelbootfahren -> FREIZEIT
+- Kletterhalle -> FREIZEIT
+- Copyshop -> SONSTIGES
+- Hostinger oder Domain -> SONSTIGES
+- Online-Einkauf -> SHOPPING
+- Pesto, Brot, Nudeln -> LEBENSMITTEL
+
+Wichtig:
+- Nutze nur Beträge, die exakt in der Nutzereingabe vorkommen.
+- Buche niemals Ausgaben, wenn der Nutzer nur eine Frage stellt, z.B. "Kann ich mir 100€ leisten?"
+- Wenn du unsicher bist, nutze SONSTIGES und einen kurzen Händlernamen aus der Eingabe.
+
 Antwortformat (reines JSON):
 {{
   "expenses": [],
@@ -4137,13 +4173,26 @@ Nutzereingabe: {text_input}"""
 
         booked = 0
         booked_items = []
-        allow_ai_booking = bool(expense_amounts)
+        allowed_categories = {
+            "LEBENSMITTEL", "MOBILITAET", "RESTAURANTS", "ABOS", "FREIZEIT",
+            "SHOPPING", "VERSICHERUNG", "MIETE", "GESUNDHEIT", "DROGERIE",
+            "PFLEGE", "SONSTIGES"
+        }
+        question_like_input = text_lower.startswith((
+            "wie ", "was ", "warum ", "wann ", "wo ", "wer ",
+            "kann ", "kannst ", "könnte ", "koennte ", "soll "
+        ))
+        allow_ai_booking = bool(expense_amounts) and not question_like_input
         for exp in (data.get("expenses", []) if allow_ai_booking else []):
             try:
                 amt = float(exp.get("amount", 0))
-                if amt > 0:
-                    category = exp.get("category", "SONSTIGES") or "SONSTIGES"
+                if amt > 0 and any(abs(amt - known_amount) <= 0.01 for known_amount in expense_amounts):
+                    category = (exp.get("category", "SONSTIGES") or "SONSTIGES").upper()
+                    if category not in allowed_categories:
+                        category = "SONSTIGES"
                     merchant = exp.get("merchant", "Unbekannt") or "Unbekannt"
+                    if str(merchant).strip().lower() == "unbekannt":
+                        merchant = extract_merchant_name(text_input)
                     with get_db() as conn:
                         conn.execute(
                             "INSERT INTO expenses (user_id, amount, category, merchant, description) "
@@ -4159,7 +4208,7 @@ Nutzereingabe: {text_input}"""
         reply = ""
         if booked > 0:
             cp_earned = handle_daily_activity(uid, bot)
-            cp_str = "+1 CP" if cp_earned > 0 else "CP-Limit heute erreicht"
+            cp_str = build_tracking_note(cp_earned)
             reply += format_expense_confirmation(booked_items, cp_str, user_id=uid) + "\n"
 
         if data.get("reply_text") and booked == 0:
