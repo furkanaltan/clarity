@@ -2238,7 +2238,17 @@ def build_first_expense_moment(user_id: int, expense_count: int) -> str:
     if expense_count == 1 and remember_monthly_moment(user_id, "first_expense"):
         return (
             "\n\nDas ist dein erster Baustein für deinen Monatsreport.\n"
-            "Ab jetzt entsteht Schritt für Schritt dein Monatsbild."
+            "Ab jetzt entsteht Schritt für Schritt dein echtes Monatsbild."
+        )
+    return ""
+
+
+def build_early_pattern_moment(user_id: int, expense_count: int) -> str:
+    if expense_count == 3 and remember_monthly_moment(user_id, "early_pattern"):
+        return (
+            "\n\nDu hast jetzt 3 Ausgaben eingetragen.\n"
+            "Noch zu früh für ein Urteil - aber ich erkenne bereits die ersten Muster.\n"
+            "Tracke weiter, dann entsteht daraus dein erster echter Überblick."
         )
     return ""
 
@@ -2273,6 +2283,7 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
     expense_count = get_month_expense_count(user_id) if user_id else 0
     confirmation = get_micro_confirmation(expense_count)
     first_expense_moment = build_first_expense_moment(user_id, expense_count) if user_id else ""
+    early_pattern_moment = build_early_pattern_moment(user_id, expense_count) if user_id else ""
     report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
     smart_hint = build_smart_spending_hint(user_id, items) if user_id else ""
 
@@ -2290,6 +2301,7 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
             f"{item['amount']:.2f} EUR - {merchant}\n"
             f"{category_line}"
             f"{first_expense_moment}"
+            f"{early_pattern_moment}"
             f"{report_moment}"
             f"{smart_hint}"
         )
@@ -2306,6 +2318,8 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
         lines.append(cp_text)
     if first_expense_moment:
         lines.append(first_expense_moment.strip())
+    if early_pattern_moment:
+        lines.append(early_pattern_moment.strip())
     if report_moment:
         lines.append(report_moment.strip())
     if smart_hint:
