@@ -2228,8 +2228,9 @@ def get_micro_confirmation(expense_count: int = 0) -> str:
 def build_report_seed_moment(user_id: int, expense_count: int) -> str:
     if expense_count >= 5 and remember_monthly_moment(user_id, "report_seed"):
         return (
-            "\n\nIch sehe langsam dein Monatsbild.\n"
-            "Du musst nicht alles perfekt eintragen - ein paar ehrliche Einträge reichen schon, damit dein Report klarer wird."
+            "\n\nStark - 5 Ausgaben sind drin.\n\n"
+            "Jetzt entsteht langsam dein erster Rov.E Snapshot.\n\n"
+            "Wenn du bis Sonntag weitertrackst, kann ich dir zeigen, wo dein Geld diese Woche hingegangen ist."
         )
     return ""
 
