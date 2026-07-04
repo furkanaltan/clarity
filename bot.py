@@ -1397,8 +1397,23 @@ def get_actor_id(message) -> int:
 
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
-    "/health", "/reportjobs", "/backupnow", "/testreport",
+    "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive",
 }
+
+BETA_NUDGE_TEXT = (
+    "Kurzer Beta-Check 🙏\n\n"
+    "Viele lesen am Anfang nicht alles, deshalb ganz kurz:\n\n"
+    "Du musst nicht perfekt tracken.\n"
+    "Schreib Rov.E einfach 2–3 Ausgaben am Tag, z.B.:\n\n"
+    "Lidl 12€\n"
+    "Tanken 40€\n"
+    "Döner 8€\n\n"
+    "Das reicht schon, damit der Monatsreport später Sinn ergibt.\n\n"
+    "Meine Bitte:\n"
+    "Teste Rov.E heute einmal mit 2 echten Ausgaben.\n\n"
+    "Wenn irgendwas nervt oder unklar ist, schick mir einfach Screenshot.\n"
+    "Genau dafür ist die Beta da."
+)
 
 
 def is_admin_id(user_id: int) -> bool:
@@ -3269,6 +3284,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("health",     "Bot-Status prüfen"),
         telebot.types.BotCommand("reportjobs", "Report-Jobs prüfen"),
         telebot.types.BotCommand("backupnow",  "Datenbank sichern"),
+        telebot.types.BotCommand("nudge_inactive", "Inaktive Beta-Tester erinnern"),
     ]
     for admin_id in ADMIN_USER_IDS:
         try:
@@ -3584,6 +3600,53 @@ def build_health_report() -> str:
     )
 
 
+def get_inactive_nudge_candidates() -> list:
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT u.user_id,
+                      a.display_name,
+                      a.username,
+                      u.last_activity_date,
+                      (SELECT COUNT(*) FROM expenses e WHERE e.user_id = u.user_id) AS expenses_count
+               FROM users u
+               LEFT JOIN user_access a ON a.user_id = u.user_id
+               WHERE COALESCE(a.status, 'approved') = 'approved'
+                 AND u.onboarding_step = ?
+                 AND (
+                    (SELECT COUNT(*) FROM expenses e WHERE e.user_id = u.user_id) = 0
+                    OR COALESCE(u.last_activity_date, '') = ''
+                    OR DATE(u.last_activity_date) <= DATE('now', '-2 days', 'localtime')
+                 )
+               ORDER BY u.last_activity_date ASC, u.user_id ASC
+               LIMIT 50""",
+            (STEP_NORMAL,)
+        ).fetchall()
+
+
+def build_nudge_preview(rows: list) -> str:
+    if not rows:
+        return "Keine passenden inaktiven Tester gefunden."
+    lines = [
+        f"Ich würde {len(rows)} Tester anschreiben:",
+        "",
+    ]
+    for row in rows[:20]:
+        identity = format_admin_identity(row)
+        last_activity = row["last_activity_date"] or "-"
+        lines.append(
+            f"{identity}\n"
+            f"ID: {row['user_id']} · Buchungen: {row['expenses_count']} · Aktivität: {last_activity}"
+        )
+    if len(rows) > 20:
+        lines.append(f"... und {len(rows) - 20} weitere.")
+    lines.extend([
+        "",
+        "Zum Senden:",
+        "/nudge_inactive send",
+    ])
+    return "\n".join(lines)
+
+
 def handle_admin_command(message, cmd: str) -> bool:
     uid = message.chat.id
     actor_id = get_actor_id(message)
@@ -3603,6 +3666,8 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/health – Bot, DB und Reports prüfen\n"
             "/reportjobs – Report-Versandstatus\n"
             "/backupnow – Datenbank sichern\n"
+            "/nudge_inactive – inaktive Tester anzeigen\n"
+            "/nudge_inactive send – Beta-Check senden\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
         )
@@ -3691,6 +3756,35 @@ def handle_admin_command(message, cmd: str) -> bool:
         bot.send_message(uid, text)
         return True
 
+    if cmd == "/nudge_inactive":
+        rows = get_inactive_nudge_candidates()
+        parts = message.text.split(maxsplit=1)
+        should_send = len(parts) > 1 and parts[1].strip().lower() == "send"
+
+        if not should_send:
+            bot.send_message(uid, build_nudge_preview(rows))
+            return True
+
+        if not rows:
+            bot.send_message(uid, "Keine passenden inaktiven Tester gefunden. Es wurde nichts gesendet.")
+            return True
+
+        sent = 0
+        failed = 0
+        for row in rows:
+            try:
+                bot.send_message(row["user_id"], BETA_NUDGE_TEXT)
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.info(f"Beta-Nudge an {row['user_id']} nicht gesendet: {e}")
+
+        bot.send_message(
+            uid,
+            f"Beta-Check versendet.\n\nGesendet: {sent}\nFehlgeschlagen: {failed}"
+        )
+        return True
+
     if cmd == "/health":
         bot.send_message(uid, build_health_report(), parse_mode="Markdown")
         return True
@@ -3731,7 +3825,8 @@ def handle_admin_command(message, cmd: str) -> bool:
 @bot.message_handler(commands=[
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
-    'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow'
+    'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
+    'nudge_inactive'
 ])
 def handle_commands(message):
     uid = message.chat.id
