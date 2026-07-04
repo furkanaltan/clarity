@@ -1397,7 +1397,7 @@ def get_actor_id(message) -> int:
 
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
-    "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive",
+    "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
 }
 
 BETA_NUDGE_TEXT = (
@@ -3672,6 +3672,7 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/backupnow – Datenbank sichern\n"
             "/nudge_inactive – inaktive Tester anzeigen\n"
             "/nudge_inactive send – Beta-Check senden\n"
+            "/testrecap – Abend-Recap an dich testen\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
         )
@@ -3789,6 +3790,17 @@ def handle_admin_command(message, cmd: str) -> bool:
         )
         return True
 
+    if cmd == "/testrecap":
+        text = build_evening_recap(actor_id)
+        if not text:
+            bot.send_message(
+                uid,
+                "Für heute gibt es noch keinen Abend-Recap. Trage kurz eine Ausgabe ein und teste dann nochmal."
+            )
+            return True
+        bot.send_message(uid, text, parse_mode="Markdown")
+        return True
+
     if cmd == "/health":
         bot.send_message(uid, build_health_report(), parse_mode="Markdown")
         return True
@@ -3830,7 +3842,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive', 'ruhe'
+    'nudge_inactive', 'testrecap', 'ruhe'
 ])
 def handle_commands(message):
     uid = message.chat.id
@@ -5242,8 +5254,7 @@ def send_evening_recaps():
                 sent += 1
         except Exception as e:
             logger.warning(f"Abend-Recap an {uid} fehlgeschlagen: {e}")
-    if sent:
-        logger.info(f"Abend-Recap an {sent} User gesendet.")
+    logger.info(f"Abend-Recap: {sent} gesendet, {len(candidates)} Kandidaten.")
 
 
 def setup_monthly_report_scheduler():
@@ -5255,7 +5266,7 @@ def setup_monthly_report_scheduler():
     scheduler = BackgroundScheduler(timezone="Europe/Berlin")
     scheduler.add_job(
         create_monthly_report_jobs,
-        trigger=CronTrigger(day=1, hour=7, minute=55),
+        trigger=CronTrigger(day=1, hour=7, minute=55, timezone="Europe/Berlin"),
         id="create_monthly_report_jobs",
         replace_existing=True,
         misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
@@ -5273,7 +5284,7 @@ def setup_monthly_report_scheduler():
     )
     scheduler.add_job(
         ensure_monthly_report_jobs,
-        trigger=CronTrigger(day="1-2", minute=5),
+        trigger=CronTrigger(day="1-2", minute=5, timezone="Europe/Berlin"),
         id="ensure_monthly_report_jobs",
         replace_existing=True,
         misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
@@ -5282,7 +5293,7 @@ def setup_monthly_report_scheduler():
     )
     scheduler.add_job(
         send_evening_recaps,
-        trigger=CronTrigger(hour=20, minute=30),
+        trigger=CronTrigger(hour=20, minute=30, timezone="Europe/Berlin"),
         id="send_evening_recaps",
         replace_existing=True,
         misfire_grace_time=1800,
