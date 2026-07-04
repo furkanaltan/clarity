@@ -2282,7 +2282,6 @@ def build_tracking_note(cp_earned: int) -> str:
 
 def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) -> str:
     expense_count = get_month_expense_count(user_id) if user_id else 0
-    confirmation = get_micro_confirmation(expense_count)
     first_expense_moment = build_first_expense_moment(user_id, expense_count) if user_id else ""
     early_pattern_moment = build_early_pattern_moment(user_id, expense_count) if user_id else ""
     report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
@@ -2290,30 +2289,31 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
 
     if len(items) == 1:
         item = items[0]
-        emoji = CATEGORY_EMOJIS.get(item["category"], "")
+        category = item["category"]
         merchant = item["merchant"]
         if merchant.lower() == "unbekannt":
-            merchant = item["category"].title()
-        category_line = f"{emoji} {item['category']}"
-        if cp_text:
-            category_line += f" - {cp_text}"
-        return (
-            f"{confirmation}\n\n"
-            f"{item['amount']:.2f} EUR - {merchant}\n"
-            f"{category_line}"
-            f"{first_expense_moment}"
-            f"{early_pattern_moment}"
-            f"{report_moment}"
-            f"{smart_hint}"
-        )
+            merchant = category_label(category)
 
-    lines = [f"{confirmation} {len(items)} Ausgaben sind festgehalten:", ""]
+        lines = [f"Gespeichert: {merchant} {item['amount']:.2f}€ · {category_label(category)}."]
+        if cp_text:
+            lines.append(cp_text)
+        if first_expense_moment:
+            lines.append(first_expense_moment.strip())
+        if early_pattern_moment:
+            lines.append(early_pattern_moment.strip())
+        if report_moment:
+            lines.append(report_moment.strip())
+        if smart_hint:
+            lines.append(smart_hint.strip())
+        return "\n\n".join(lines)
+
+    lines = [f"Gespeichert: {len(items)} Ausgaben.", ""]
     for item in items:
-        emoji = CATEGORY_EMOJIS.get(item["category"], "")
+        category = item["category"]
         merchant = item["merchant"]
         if merchant.lower() == "unbekannt":
-            merchant = item["category"].title()
-        lines.append(f"{emoji} {merchant} - {item['category']} - {item['amount']:.2f} EUR")
+            merchant = category_label(category)
+        lines.append(f"{merchant} {item['amount']:.2f}€ · {category_label(category)}")
     if cp_text:
         lines.append("")
         lines.append(cp_text)
