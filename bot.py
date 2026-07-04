@@ -2234,6 +2234,15 @@ def build_report_seed_moment(user_id: int, expense_count: int) -> str:
     return ""
 
 
+def build_first_expense_moment(user_id: int, expense_count: int) -> str:
+    if expense_count == 1 and remember_monthly_moment(user_id, "first_expense"):
+        return (
+            "\n\nDas ist dein erster Baustein für deinen Monatsreport.\n"
+            "Ab jetzt entsteht Schritt für Schritt dein Monatsbild."
+        )
+    return ""
+
+
 def build_smart_spending_hint(user_id: int, items: list) -> str:
     if not user_id or not any(item.get("category") == "RESTAURANTS" for item in items):
         return ""
@@ -2263,6 +2272,7 @@ def build_tracking_note(cp_earned: int) -> str:
 def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) -> str:
     expense_count = get_month_expense_count(user_id) if user_id else 0
     confirmation = get_micro_confirmation(expense_count)
+    first_expense_moment = build_first_expense_moment(user_id, expense_count) if user_id else ""
     report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
     smart_hint = build_smart_spending_hint(user_id, items) if user_id else ""
 
@@ -2279,6 +2289,7 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
             f"{confirmation}\n\n"
             f"{item['amount']:.2f} EUR - {merchant}\n"
             f"{category_line}"
+            f"{first_expense_moment}"
             f"{report_moment}"
             f"{smart_hint}"
         )
@@ -2293,6 +2304,8 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
     if cp_text:
         lines.append("")
         lines.append(cp_text)
+    if first_expense_moment:
+        lines.append(first_expense_moment.strip())
     if report_moment:
         lines.append(report_moment.strip())
     if smart_hint:
@@ -3352,6 +3365,22 @@ def ask_refinement_after_onboarding(user_id: int):
     )
 
 
+def ask_first_expense_after_onboarding(user_id: int):
+    user_pending_actions[user_id] = {"type": "first_expense_after_onboarding"}
+    bot.send_message(
+        user_id,
+        "Ein letzter kleiner Schritt, damit du direkt spürst, wie Rov.E funktioniert.\n\n"
+        "Schreib mir jetzt deine letzte echte Ausgabe.\n\n"
+        "Zum Beispiel:\n"
+        "`Lidl 12€`\n"
+        "`Tanken 40€`\n"
+        "`Döner 8€`\n\n"
+        "Wenn du zuerst deine Fixkosten genauer hinterlegen willst, schreib `Verfeinern`.\n"
+        "Wenn du später starten willst, schreib `Später`.",
+        parse_mode="Markdown"
+    )
+
+
 def is_refinement_text_request(text_lower: str) -> bool:
     normalized = text_lower.strip().lstrip("/")
     direct = {
@@ -3387,6 +3416,39 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
     action = user_pending_actions.get(user_id)
     if not action:
         return False
+
+    if action.get("type") == "first_expense_after_onboarding":
+        if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
+            user_pending_actions.pop(user_id, None)
+            bot.send_message(
+                user_id,
+                "Alles klar.\n\n"
+                "Du kannst jederzeit einfach eine Ausgabe schreiben, z.B. `Lidl 12€`.\n"
+                "Wenn du dein Profil genauer machen willst, schreib `Verfeinern`.",
+                parse_mode="Markdown"
+            )
+            return True
+
+        if is_refinement_text_request(text_lower):
+            user_pending_actions.pop(user_id, None)
+            start_refinement_flow(user_id)
+            return True
+
+        amounts = extract_amounts(text_lower, exclude_years=True)
+        if len(amounts) == 1 and abs(amounts[0]) > 0.01:
+            user_pending_actions.pop(user_id, None)
+            return False
+
+        bot.send_message(
+            user_id,
+            "Fast.\n\n"
+            "Schreib bitte eine echte Ausgabe mit Betrag, zum Beispiel:\n"
+            "`Lidl 12€`\n"
+            "`Tanken 40€`\n\n"
+            "Oder schreib `Verfeinern`, wenn du zuerst deine Fixkosten eintragen willst.",
+            parse_mode="Markdown"
+        )
+        return True
 
     if action.get("type") == "refine_after_onboarding":
         if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
@@ -4496,13 +4558,14 @@ def handle_msg(message):
             bot.send_message(uid,
                 f"🎉 *Einrichtung abgeschlossen!*\n\n"
                 f"{percent_note}"
-                f"Sparrate: {sparrate:.2f}€/Monat",
+                f"Sparrate: {sparrate:.2f}€/Monat\n\n"
+                "Dein Profil steht. Jetzt machen wir direkt den ersten echten Test.",
                 parse_mode="Markdown"
             )
             # Badges dezent als separate Zeilen falls vorhanden
             if new_badges:
                 send_badge_summary(bot, uid, new_badges)
-            ask_refinement_after_onboarding(uid)
+            ask_first_expense_after_onboarding(uid)
         return
 
     # ─── VERFEINERN-FLOW ────────────────────────────────────────────────
