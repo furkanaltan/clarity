@@ -2186,6 +2186,10 @@ MICRO_CONFIRMATIONS = [
     "Hab ich notiert.",
     "Erfasst.",
     "Ich hab's im Blick.",
+    "✓ Notiert.",
+    "Steht drin.",
+    "Passt, ist gespeichert.",
+    "✓ Läuft.",
 ]
 
 
@@ -3826,7 +3830,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive'
+    'nudge_inactive', 'ruhe'
 ])
 def handle_commands(message):
     uid = message.chat.id
@@ -3871,6 +3875,21 @@ def handle_commands(message):
 
     elif cmd == '/help':
         bot.send_message(uid, build_help_answer(), parse_mode="Markdown")
+
+    elif cmd == '/ruhe':
+        now_off = toggle_recap_muted(uid)
+        if now_off:
+            bot.send_message(
+                uid,
+                "Alles klar — kein Abend-Update mehr.\n\n"
+                "Wieder einschalten: /ruhe"
+            )
+        else:
+            bot.send_message(
+                uid,
+                "Abend-Update ist wieder an.\n"
+                "Du bekommst abends eine kurze Zusammenfassung, wenn du getrackt hast."
+            )
 
     elif cmd == '/score':
         with get_db() as conn:
@@ -4239,6 +4258,25 @@ def handle_msg(message):
                 bot.send_message(uid, "Abgebrochen.")
                 return
             bot.send_message(uid, "Bitte bestätige mit „Ja, alles löschen“ oder brich mit „Abbrechen“ ab.")
+            return
+
+    # ─── ALLTAGSSPRACHE: Befehle ohne Slash verstehen ────────────────────
+    if step >= STEP_NORMAL:
+        COMMAND_ALIASES = {
+            "hilfe": "/help", "help": "/help", "was kannst du": "/help",
+            "score": "/score", "mein score": "/score", "punkte": "/score",
+            "status": "/status", "monatsstatus": "/status",
+            "stats": "/stats", "statistik": "/stats",
+            "undo": "/undo", "rückgängig": "/undo", "ruckgangig": "/undo",
+            "letzte löschen": "/undo",
+            "badges": "/badges", "erfolge": "/badges",
+            "ziel": "/goal", "mein ziel": "/goal", "sparziel": "/goal",
+            "ruhe": "/ruhe",
+        }
+        alias_cmd = COMMAND_ALIASES.get(text_lower.rstrip("!?."))
+        if alias_cmd:
+            message.text = alias_cmd
+            handle_commands(message)
             return
 
     if is_back_request(text_lower):
@@ -5094,6 +5132,120 @@ def process_due_report_jobs():
 # ====================== REPORT SCHEDULER ======================
 REPORT_SCHEDULER = None
 
+# ====================== ABEND-RECAP ======================
+RECAP_OFF_BADGE = "setting_recap_off"
+
+
+def is_recap_muted(user_id: int) -> bool:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
+            (user_id, RECAP_OFF_BADGE)
+        ).fetchone()
+    return row is not None
+
+
+def toggle_recap_muted(user_id: int) -> bool:
+    """Schaltet den Abend-Recap um. Gibt True zurueck, wenn er jetzt AUS ist."""
+    with get_db() as conn:
+        if conn.execute(
+            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
+            (user_id, RECAP_OFF_BADGE)
+        ).fetchone():
+            conn.execute(
+                "DELETE FROM user_badges WHERE user_id = ? AND badge_key = ?",
+                (user_id, RECAP_OFF_BADGE)
+            )
+            conn.commit()
+            return False
+        conn.execute(
+            "INSERT INTO user_badges (user_id, badge_key) VALUES (?, ?)",
+            (user_id, RECAP_OFF_BADGE)
+        )
+        conn.commit()
+        return True
+
+
+def get_evening_recap_candidates() -> list:
+    """Nur User, die HEUTE getrackt haben. Inaktive werden bewusst nicht angeschrieben."""
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT u.user_id
+               FROM users u
+               LEFT JOIN user_access a ON a.user_id = u.user_id
+               WHERE COALESCE(a.status, 'approved') = 'approved'
+                 AND u.onboarding_step >= ?
+                 AND EXISTS (
+                    SELECT 1 FROM expenses e
+                    WHERE e.user_id = u.user_id
+                      AND DATE(e.created_at) = DATE('now', 'localtime')
+                 )
+                 AND NOT EXISTS (
+                    SELECT 1 FROM user_badges b
+                    WHERE b.user_id = u.user_id AND b.badge_key = ?
+                 )""",
+            (STEP_NORMAL, RECAP_OFF_BADGE)
+        ).fetchall()
+
+
+def build_evening_recap(user_id: int) -> str:
+    with get_db() as conn:
+        today_rows = conn.execute(
+            """SELECT category, COUNT(*) AS cnt, SUM(amount) AS total
+               FROM expenses
+               WHERE user_id = ? AND DATE(created_at) = DATE('now', 'localtime')
+               GROUP BY category ORDER BY total DESC""",
+            (user_id,)
+        ).fetchall()
+        week_row = conn.execute(
+            """SELECT COALESCE(SUM(amount), 0) AS total
+               FROM expenses
+               WHERE user_id = ?
+                 AND DATE(created_at) >= DATE('now', 'localtime', 'weekday 0', '-6 days')""",
+            (user_id,)
+        ).fetchone()
+        user_row = conn.execute(
+            "SELECT streak_days FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+    if not today_rows:
+        return ""
+
+    day_total = sum(r["total"] or 0 for r in today_rows)
+    day_count = sum(r["cnt"] or 0 for r in today_rows)
+    top = today_rows[0]
+    top_emoji = CATEGORY_EMOJIS.get(top["category"], "")
+    week_total = week_row["total"] or 0
+    streak = (user_row["streak_days"] or 0) if user_row else 0
+
+    lines = [
+        f"*Dein Tag:* {day_count} {'Ausgabe' if day_count == 1 else 'Ausgaben'} · {day_total:.2f}€"
+    ]
+    if len(today_rows) > 1:
+        lines.append(f"Größter Posten: {top_emoji} {top['category'].title()} ({top['total']:.2f}€)")
+    lines.append(f"Diese Woche: {week_total:.2f}€")
+    if streak >= 2:
+        lines.append(f"Streak: {streak} Tage 🔥")
+    lines.append("_(Abend-Update abschaltbar mit /ruhe)_")
+    return "\n".join(lines)
+
+
+def send_evening_recaps():
+    candidates = get_evening_recap_candidates()
+    sent = 0
+    for row in candidates:
+        uid = row["user_id"]
+        try:
+            text = build_evening_recap(uid)
+            if text:
+                bot.send_message(uid, text, parse_mode="Markdown")
+                sent += 1
+        except Exception as e:
+            logger.warning(f"Abend-Recap an {uid} fehlgeschlagen: {e}")
+    if sent:
+        logger.info(f"Abend-Recap an {sent} User gesendet.")
+
+
 def setup_monthly_report_scheduler():
     """Startet Queue-Erzeugung und Worker fuer Monatsreports."""
     if BackgroundScheduler is None or CronTrigger is None:
@@ -5125,6 +5277,15 @@ def setup_monthly_report_scheduler():
         id="ensure_monthly_report_jobs",
         replace_existing=True,
         misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        send_evening_recaps,
+        trigger=CronTrigger(hour=20, minute=30),
+        id="send_evening_recaps",
+        replace_existing=True,
+        misfire_grace_time=1800,
         coalesce=True,
         max_instances=1,
     )
