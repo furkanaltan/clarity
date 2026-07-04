@@ -240,6 +240,23 @@ CATEGORY_EMOJIS = {
     "FIXKOSTEN": "🏠",
 }
 
+CATEGORY_LABELS = {
+    "LEBENSMITTEL": "Lebensmittel",
+    "MOBILITAET": "Mobilität",
+    "RESTAURANTS": "Restaurants",
+    "ABOS": "Abos",
+    "SHOPPING": "Shopping",
+    "FREIZEIT": "Freizeit",
+    "DROGERIE": "Drogerie",
+    "GESUNDHEIT": "Gesundheit",
+    "SONSTIGES": "Sonstiges",
+    "PFLEGE": "Pflege",
+}
+
+
+def category_label(category: str) -> str:
+    return CATEGORY_LABELS.get(category, category.title())
+
 # ====================== GAMIFICATION CONSTANTS ======================
 RANKS = [
     (0,    "Rookie",           "🥚"),
@@ -1777,6 +1794,49 @@ def get_category_spending(user_id: int, categories: list, month: str = None) -> 
     return {row["category"]: float(row["total"] or 0) for row in rows}
 
 
+def build_budget_frame(user_id: int, u: dict = None) -> dict:
+    u = u or get_or_create_user(user_id)
+    budgets = get_category_budgets(user_id)
+    categories = [row["category"] for row in budgets]
+    spending = get_category_spending(user_id, categories)
+    free_month = (
+        (u.get("income") or 0)
+        + (u.get("other_income") or 0)
+        - (u.get("fixed_costs") or 0)
+        - (u.get("etf_savings") or 0)
+        - (u.get("cash_savings") or 0)
+    )
+    total_expenses = get_month_expenses(user_id)
+    free_remaining = free_month - total_expenses
+
+    items = []
+    allocated_open = 0.0
+    total_limits = 0.0
+    for row in budgets:
+        category = row["category"]
+        limit = float(row["monthly_limit"] or 0)
+        used = spending.get(category, 0.0)
+        left = limit - used
+        allocated_open += max(0.0, left)
+        total_limits += limit
+        items.append({
+            "category": category,
+            "limit": limit,
+            "used": used,
+            "left": left,
+        })
+
+    planned_buffer = free_month - total_limits
+    current_buffer = free_remaining - allocated_open
+    return {
+        "items": items,
+        "free_month": free_month,
+        "free_remaining": free_remaining,
+        "planned_buffer": planned_buffer,
+        "current_buffer": current_buffer,
+    }
+
+
 def build_budget_invite_message() -> str:
     return (
         "Du hast jetzt 7 aktive Tracking-Tage mit Rov.E gesammelt.\n\n"
@@ -1970,13 +2030,13 @@ def maybe_delete_budget(user_id: int, text_lower: str) -> str:
     )
 
 
-def maybe_answer_budget_status(user_id: int, text_lower: str) -> str:
+def maybe_answer_budget_status(user_id: int, text_lower: str, u: dict = None) -> str:
     asks_budget = "budget" in text_lower or "budgets" in text_lower
     if not asks_budget:
         return ""
 
-    budgets = get_category_budgets(user_id)
-    if not budgets:
+    frame = build_budget_frame(user_id, u)
+    if not frame["items"]:
         return (
             "Du hast noch keine Kategorie-Budgets gesetzt.\n\n"
             "Du kannst zum Beispiel schreiben:\n"
@@ -1984,33 +2044,43 @@ def maybe_answer_budget_status(user_id: int, text_lower: str) -> str:
             "`Setz Restaurants auf 150€`"
         )
 
+    if "puffer" in text_lower:
+        buffer_value = frame["current_buffer"]
+        return (
+            f"Dein Budget-Puffer liegt aktuell bei *{format_eur(buffer_value)}*.\n\n"
+            "Das ist der Teil deines freien Monatsbudgets, der nicht fest an eine Kategorie gebunden ist.\n\n"
+            "Wenn du z.B. Lebensmittel von 520€ auf 400€ senkst, wandert die Differenz automatisch in diesen Puffer."
+        )
+
     categories = normalize_budget_categories(text_lower)
     if categories:
-        relevant = [row for row in budgets if row["category"] in categories]
+        relevant = [item for item in frame["items"] if item["category"] in categories]
         if not relevant:
             return "Für diese Kategorie hast du noch kein Budget gesetzt."
-        spending = get_category_spending(user_id, [row["category"] for row in relevant])
-        limit = sum(float(row["monthly_limit"] or 0) for row in relevant)
-        used = sum(spending.get(row["category"], 0.0) for row in relevant)
+        limit = sum(item["limit"] for item in relevant)
+        used = sum(item["used"] for item in relevant)
         left = limit - used
-        label = "Essen" if len(categories) > 1 else categories[0]
+        label = "Essen" if len(categories) > 1 else category_label(categories[0])
         return (
-            f"{label}: {format_eur(left)} übrig\n\n"
-            f"Budget: {format_eur(limit)}\n"
+            f"{label}\n\n"
+            f"Frei: *{format_eur(left)}*\n"
+            f"Rahmen: {format_eur(limit)}\n"
             f"Bisher genutzt: {format_eur(used)}"
         )
 
     if any(phrase in text_lower for phrase in ["zeig", "zeige", "übersicht", "uebersicht", "meine budgets", "alle budgets"]):
-        all_categories = [row["category"] for row in budgets]
-        spending = get_category_spending(user_id, all_categories)
-        lines = ["Deine Budgets diesen Monat:", ""]
-        for row in budgets:
-            category = row["category"]
-            limit = float(row["monthly_limit"] or 0)
-            used = spending.get(category, 0.0)
-            left = limit - used
+        lines = ["*Deine Budgetrahmen diesen Monat*", ""]
+        for item in frame["items"]:
+            category = item["category"]
             emoji = CATEGORY_EMOJIS.get(category, "")
-            lines.append(f"{emoji} {category}: {format_eur(left)} übrig von {format_eur(limit)}")
+            lines.append(f"{emoji} *{category_label(category)}*")
+            lines.append(f"Frei: {format_eur(item['left'])} · Rahmen: {format_eur(item['limit'])}")
+            if item["used"] > 0:
+                lines.append(f"Genutzt: {format_eur(item['used'])}")
+            lines.append("")
+        lines.append(f"Freier Puffer: *{format_eur(frame['current_buffer'])}*")
+        lines.append("")
+        lines.append("Der Puffer ist nicht fest verplant. Wenn du eine Kategorie senkst, wird dieser Puffer größer.")
         return "\n".join(lines)
 
     return ""
@@ -4122,7 +4192,7 @@ def handle_msg(message):
             bot.send_message(uid, manual_budget_reply, parse_mode="Markdown")
             return
 
-        budget_status_reply = maybe_answer_budget_status(uid, text_lower)
+        budget_status_reply = maybe_answer_budget_status(uid, text_lower, u)
         if budget_status_reply:
             bot.send_message(uid, budget_status_reply, parse_mode="Markdown")
             return
@@ -4190,7 +4260,7 @@ def handle_msg(message):
             bot.send_message(uid, manual_budget_reply, parse_mode="Markdown")
             return
 
-        budget_status_reply = maybe_answer_budget_status(uid, text_lower)
+        budget_status_reply = maybe_answer_budget_status(uid, text_lower, u)
         if budget_status_reply:
             bot.send_message(uid, budget_status_reply, parse_mode="Markdown")
             return
