@@ -1121,8 +1121,41 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
     return ""
 
 
+def detect_future_effective_month(text_lower: str) -> str:
+    if any(word in text_lower for word in ["ab jetzt", "sofort", "direkt", "ab sofort"]):
+        return ""
+
+    relative_patterns = [
+        "nächsten monat", "naechsten monat", "nächste monat", "naechste monat",
+        "kommenden monat", "naechste monat", "ab nächsten", "ab naechsten",
+    ]
+    if any(pattern in text_lower for pattern in relative_patterns):
+        return "nächsten Monat"
+
+    month_aliases = {
+        "januar": "Januar",
+        "februar": "Februar",
+        "märz": "März",
+        "maerz": "März",
+        "april": "April",
+        "mai": "Mai",
+        "juni": "Juni",
+        "juli": "Juli",
+        "august": "August",
+        "september": "September",
+        "oktober": "Oktober",
+        "november": "November",
+        "dezember": "Dezember",
+    }
+    for token, label in month_aliases.items():
+        if re.search(rf"\b(ab|für|fuer|zum|ab dem)\s+{token}\b", text_lower):
+            return label
+
+    return ""
+
+
 def maybe_apply_savings_correction(user_id: int, u: dict, text_lower: str) -> str:
-    if not any(word in text_lower for word in ["ändere", "aendere", "setze", "aktualisiere", "update", "korrigiere"]):
+    if not any(word in text_lower for word in ["ändere", "aendere", "setze", "aktualisiere", "update", "korrigiere", "jetzt"]):
         return ""
     has_savings_context = any(word in text_lower for word in ["sparrate", "sparplan", "sparen"])
     has_direct_etf_context = bool(re.search(r"\betf\b", text_lower)) and not looks_like_investment_update(text_lower.replace("etf", ""))
@@ -1145,6 +1178,16 @@ def maybe_apply_savings_correction(user_id: int, u: dict, text_lower: str) -> st
             "Zum Beispiel:\n"
             "`ändere ETF-Sparrate auf 10%`\n"
             "`ändere Cash-Sparrate auf 200€`"
+        )
+
+    future_month = detect_future_effective_month(text_lower)
+    if future_month:
+        return (
+            f"Ich habe verstanden: {label} ab {future_month}.\n\n"
+            "Wichtig: Zukunftsänderungen merke ich aktuell noch nicht automatisch vor.\n"
+            "Deshalb ändere ich deinen aktuellen Monat nicht heimlich.\n\n"
+            "Wenn es wirklich ab jetzt gelten soll, schreib zum Beispiel:\n"
+            f"`{label} ab jetzt 300€`"
         )
 
     percent_value = parse_percent(text_lower)
@@ -1643,8 +1686,11 @@ def normalize_budget_categories(text_lower: str) -> list:
 
     direct_map = {
         "lebensmittel": "LEBENSMITTEL",
+        "essen": "LEBENSMITTEL",
         "restaurants": "RESTAURANTS",
         "restaurant": "RESTAURANTS",
+        "resturants": "RESTAURANTS",
+        "resturant": "RESTAURANTS",
         "freizeit": "FREIZEIT",
         "shopping": "SHOPPING",
         "mobilität": "MOBILITAET",
@@ -3123,6 +3169,9 @@ user_last_message: dict = {}
 user_pending_actions: dict = {}
 user_reset_pending: dict = {}
 
+YES_WORDS = {"ja", "yes", "jap", "jo", "klar", "gerne", "ja bitte", "mach", "mach mal", "start", "starte"}
+NO_WORDS = {"nein", "no", "nee", "später", "spaeter", "nicht jetzt", "überspringen", "ueberspringen", "skip"}
+
 def setup_bot_menu():
     commands = [
         telebot.types.BotCommand("start",      "🚀 Start & Profil anlegen"),
@@ -3191,6 +3240,39 @@ def start_edit_last_flow(user_id: int):
     )
 
 
+def start_refinement_flow(user_id: int):
+    update_user_field(user_id, "onboarding_step", STEP_ADAPT_HOUSING)
+    bot.send_message(
+        user_id,
+        "⚙️ *Profil verfeinern – Teil 1: Wohnen*\n\nMiete, Strom, Gas?\n_(z.B. 800 60 40)_",
+        parse_mode="Markdown"
+    )
+
+
+def ask_refinement_after_onboarding(user_id: int):
+    user_pending_actions[user_id] = {"type": "refine_after_onboarding"}
+    bot.send_message(
+        user_id,
+        "Möchtest du deine Fixkosten jetzt genauer hinterlegen?\n\n"
+        "Das hilft mir, dein Monatsbild sauberer zu berechnen.\n\n"
+        "Schreib einfach:\n"
+        "`Ja` - wir machen es direkt zusammen\n"
+        "`Nein` - du kannst später starten",
+        parse_mode="Markdown"
+    )
+
+
+def is_refinement_text_request(text_lower: str) -> bool:
+    normalized = text_lower.strip().lstrip("/")
+    direct = {
+        "verfeinern", "profil verfeinern", "fixkosten verfeinern",
+        "profil bearbeiten", "fixkosten bearbeiten"
+    }
+    if normalized in direct:
+        return True
+    return "verfeinern" in normalized and len(normalized) <= 40
+
+
 def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3216,12 +3298,37 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
     if not action:
         return False
 
-    if text_lower in {"abbrechen", "stop", "cancel"}:
-        user_pending_actions.pop(user_id, None)
-        bot.send_message(user_id, "Alles klar, die letzte Ausgabe bleibt unverändert.")
+    if action.get("type") == "refine_after_onboarding":
+        if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
+            user_pending_actions.pop(user_id, None)
+            bot.send_message(
+                user_id,
+                "Alles klar.\n\n"
+                "Du kannst jederzeit später `Verfeinern` schreiben, wenn du deine Fixkosten genauer hinterlegen willst.",
+                parse_mode="Markdown"
+            )
+            return True
+
+        if text_lower in YES_WORDS or is_refinement_text_request(text_lower):
+            user_pending_actions.pop(user_id, None)
+            start_refinement_flow(user_id)
+            return True
+
+        bot.send_message(
+            user_id,
+            "Kurz eine Entscheidung, damit nichts durcheinandergerät:\n\n"
+            "`Ja` - Fixkosten jetzt genauer hinterlegen\n"
+            "`Nein` - erstmal überspringen",
+            parse_mode="Markdown"
+        )
         return True
 
     if action.get("type") == "edit_last_expense":
+        if text_lower in {"abbrechen", "stop", "cancel"}:
+            user_pending_actions.pop(user_id, None)
+            bot.send_message(user_id, "Alles klar, die letzte Ausgabe bleibt unverändert.")
+            return True
+
         new_amount = parse_currency(text_input)
         if new_amount is None:
             bot.send_message(
@@ -3341,15 +3448,11 @@ def handle_callbacks(call):
 
     elif data == "start_refine":
         get_or_create_user(uid)
-        update_user_field(uid, "onboarding_step", STEP_ADAPT_HOUSING)
         try:
             bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
         except Exception:
             pass
-        bot.send_message(uid,
-            "⚙️ *Profil verfeinern – Teil 1: Wohnen*\n\nMiete, Strom, Gas?\n_(z.B. 800 60 40)_",
-            parse_mode="Markdown"
-        )
+        start_refinement_flow(uid)
 
     elif data == "skip_refine":
         bot.edit_message_text(
@@ -3846,12 +3949,7 @@ def handle_commands(message):
             report_engine.MIN_TRACKING_DAYS = old_min_days
 
     elif cmd == '/verfeinern':
-        update_user_field(uid, "onboarding_step", STEP_ADAPT_HOUSING)
-        bot.send_message(
-            uid,
-            "⚙️ *Profil verfeinern – Teil 1: Wohnen*\n\nMiete, Strom, Gas?\n_(z.B. 800 60 40)_",
-            parse_mode="Markdown"
-        )
+        start_refinement_flow(uid)
 
     elif cmd == '/settings':
         update_user_field(uid, "onboarding_step", STEP_INCOME)
@@ -4004,10 +4102,29 @@ def handle_msg(message):
     if step == STEP_NORMAL and handle_pending_action(uid, text_input, text_lower):
         return
 
+    if step == STEP_NORMAL and is_refinement_text_request(text_lower):
+        start_refinement_flow(uid)
+        return
+
     if step == STEP_NORMAL:
         budget_setup_reply = maybe_handle_budget_setup_response(uid, u, text_lower)
         if budget_setup_reply:
             bot.send_message(uid, budget_setup_reply, parse_mode="Markdown")
+            return
+
+        delete_budget_reply = maybe_delete_budget(uid, text_lower)
+        if delete_budget_reply:
+            bot.send_message(uid, delete_budget_reply, parse_mode="Markdown")
+            return
+
+        manual_budget_reply = maybe_apply_manual_budget(uid, text_lower)
+        if manual_budget_reply:
+            bot.send_message(uid, manual_budget_reply, parse_mode="Markdown")
+            return
+
+        budget_status_reply = maybe_answer_budget_status(uid, text_lower)
+        if budget_status_reply:
+            bot.send_message(uid, budget_status_reply, parse_mode="Markdown")
             return
 
     if step == STEP_START:
@@ -4164,14 +4281,13 @@ def handle_msg(message):
             bot.send_message(uid,
                 f"🎉 *Einrichtung abgeschlossen!*\n\n"
                 f"{percent_note}"
-                f"Sparrate: {sparrate:.2f}€/Monat\n\n"
-                "Als nächstes kannst du deine Fixkosten genauer hinterlegen.\n"
-                "Schreib dafür einfach /verfeinern.",
+                f"Sparrate: {sparrate:.2f}€/Monat",
                 parse_mode="Markdown"
             )
             # Badges dezent als separate Zeilen falls vorhanden
             if new_badges:
                 send_badge_summary(bot, uid, new_badges)
+            ask_refinement_after_onboarding(uid)
         return
 
     # ─── VERFEINERN-FLOW ────────────────────────────────────────────────
@@ -4330,6 +4446,16 @@ def handle_msg(message):
 
     # ─── HYBRID-TRACKER ──────────────────────────────────────────────────
     expense_amounts = extract_amounts(text_lower, exclude_years=True)
+
+    if step == STEP_NORMAL and len(expense_amounts) == 1 and abs(expense_amounts[0]) < 0.01:
+        bot.send_message(
+            uid,
+            "0€ speichere ich nicht als Ausgabe.\n\n"
+            "Wenn du etwas überspringen willst, schreib einfach `Nein` oder `Abbrechen`.\n"
+            "Wenn du Fixkosten hinterlegen willst, schreib `Verfeinern`.",
+            parse_mode="Markdown"
+        )
+        return
 
     if len(expense_amounts) > 1 and not looks_like_investment_update(text_lower) and not is_portfolio_snapshot_input(text_lower):
         parsed_items = parse_hybrid_expense_items(text_input, expense_amounts)
