@@ -771,6 +771,49 @@ def clean_month_title(month_label: str) -> tuple[str, str]:
     return month.title(), year
 
 
+def monthly_investment_summary(data: dict) -> dict:
+    return data["pages"]["wealth_journey"].get("investment_summary") or {}
+
+
+def actual_month_progress(data: dict) -> float:
+    summary = monthly_investment_summary(data)
+    return float(summary.get("net_contributions") or 0)
+
+
+def displayed_progress_amount(data: dict) -> float:
+    actual = actual_month_progress(data)
+    if abs(actual) > 0.005:
+        return actual
+    return float(data["profile"].get("savings_plan") or 0)
+
+
+def has_actual_month_progress(data: dict) -> bool:
+    return abs(actual_month_progress(data)) > 0.005
+
+
+def progress_label(data: dict) -> str:
+    return "Monatsfortschritt" if has_actual_month_progress(data) else "Geplante Sparrate"
+
+
+def progress_subline(data: dict) -> str:
+    if has_actual_month_progress(data):
+        return "neu investiert oder zurückgelegt"
+    if displayed_progress_amount(data) > 0:
+        return "monatlich geplant"
+    return "noch nicht hinterlegt"
+
+
+def has_behavior_data(data: dict, min_days: int = 3) -> bool:
+    month = data["pages"]["month"]
+    categories = data["pages"]["money_map"].get("categories") or []
+    return month.get("tracked_days", 0) >= min_days and float(month.get("total_expenses") or 0) > 0 and bool(categories)
+
+
+def has_strong_behavior_data(data: dict) -> bool:
+    categories = data["pages"]["money_map"].get("categories") or []
+    return has_behavior_data(data, min_days=7) and len(categories) >= 2
+
+
 def score_summary(score: dict) -> str:
     consistency = score["parts"].get("consistency", 0)
     budget = score["parts"].get("budget", 0)
@@ -866,11 +909,18 @@ def plan_items(data: dict) -> list[tuple[str, str, str]]:
     cat_name = category_label(strongest.get("category"))
     cat_total = float(strongest.get("total") or 0)
     next_score = score.get("next_unlock_level") or min(100, int(score.get("clarity_score", 0)) + 5)
-    return [
+    items = [
         ("Tracke an mindestens 10 Tagen.", f"Aktuell stehen {month['tracked_days']} Tracking-Tage im Report.", f"Score {next_score}+"),
-        (f"Halte {cat_name} bewusst.", f"Diese Kategorie liegt aktuell bei {fmt_money(cat_total, 0)}.", "Mehr Kontrolle"),
-        (f"Spare oder investiere mindestens {fmt_money(savings_plan, 0)}.", "Ein Dauerauftrag macht aus einem guten Monat eine Gewohnheit.", "Routine"),
     ]
+    if has_behavior_data(data):
+        items.append((f"Halte {cat_name} bewusst.", f"Diese Kategorie liegt aktuell bei {fmt_money(cat_total, 0)}.", "Mehr Kontrolle"))
+    else:
+        items.append(("Tracke 2-3 echte Ausgaben pro Tag.", "Dann wird deine Money Map im nächsten Report deutlich präziser.", "Klarere Muster"))
+    if savings_plan > 0:
+        items.append((f"Halte deine Sparrate von {fmt_money(savings_plan, 0)}.", "Ein Dauerauftrag macht aus einem guten Monat eine Gewohnheit.", "Routine"))
+    else:
+        items.append(("Hinterlege deine monatliche Sparrate.", "Dann kann Rov.E deine Zielprognose sauber berechnen.", "Bessere Prognose"))
+    return items
 
 
 def render_777_cover(_page_html: str, data: dict) -> str:
@@ -879,6 +929,7 @@ def render_777_cover(_page_html: str, data: dict) -> str:
     dev = fmt_percent(cover["development_percent"], 1) if cover["development_percent"] is not None else "—"
     dev_sub = "zum Vormonat" if cover["development_percent"] is not None else "ab Monat 2 sichtbar"
     dev_sub_class = "kpi-sub" if cover["development_percent"] is not None else "kpi-sub small"
+    progress = displayed_progress_amount(data)
     return f"""
   <section class="page cover">
     <div style="display:flex;justify-content:flex-end;"><div class="topline">Ausgabe 01</div></div>
@@ -886,7 +937,7 @@ def render_777_cover(_page_html: str, data: dict) -> str:
     <div class="cover-subtitle">Dein finanzieller Monatsabschluss für {h(cover["period"])} - Vermögen, Verhalten und der nächste Schritt zu deinem Ziel.</div>
     <div class="cover-kpis">
       <div class="card cover-kpi"><div class="kpi-head">{icon("calendar", "round-icon")}Zeitraum</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(month)}</div><div class="kpi-sub">{h(year)}</div></div></div>
-      <div class="card cover-kpi"><div class="kpi-head">{icon("flag", "round-icon")}Fortschritt</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(fmt_money(cover["freedom_step"], 0))}</div><div class="kpi-sub">näher an deinem Ziel</div></div></div>
+      <div class="card cover-kpi"><div class="kpi-head">{icon("flag", "round-icon")}{h(progress_label(data))}</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(fmt_money(progress, 0))}</div><div class="kpi-sub">{h(progress_subline(data))}</div></div></div>
       <div class="card cover-kpi"><div class="kpi-head">{icon("trend", "round-icon")}Entwicklung</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(dev)}</div><div class="{dev_sub_class}">{h(dev_sub)}</div></div></div>
     </div>
 {footer(1)}
@@ -899,16 +950,23 @@ def render_777_overview(_page_html: str, data: dict) -> str:
     biggest = biggest_expense(data)
     strongest = strongest_category(data)
     story = data["pages"]["financial_story"]
-    saved = data["pages"]["cover"]["freedom_step"]
+    progress = displayed_progress_amount(data)
     biggest_amount = fmt_money(biggest["amount"], 0) if biggest else "—"
     biggest_name = biggest["merchant"] if biggest else "Noch keine Ausgabe"
     strongest_total = float(strongest.get("total") or 0)
-    summary = (
-        f"Du hast an <span class=\"green\">{month['tracked_days']} Tagen</span> aktiv getrackt "
-        f"und <span class=\"green\">{h(fmt_money(saved, 0))}</span> investiert oder zurückgelegt. "
-        f"Dein stärkster Block war <span class=\"green\">{h(category_label(strongest.get('category')))}</span> "
-        f"mit {h(fmt_money(strongest_total, 0))}."
+    tracking_part = f"Du hast an <span class=\"green\">{month['tracked_days']} Tagen</span> aktiv getrackt." if month["tracked_days"] else "Für diesen Monat entsteht gerade erst deine Datenbasis."
+    progress_part = (
+        f"<span class=\"green\">{h(fmt_money(progress, 0))}</span> wurden neu investiert oder zurückgelegt."
+        if has_actual_month_progress(data)
+        else f"Deine geplante Sparrate liegt bei <span class=\"green\">{h(fmt_money(progress, 0))}</span>."
+        if progress > 0
+        else "Eine monatliche Sparrate ist noch nicht sauber hinterlegt."
     )
+    if has_behavior_data(data):
+        category_part = f"Der stärkste sichtbare Block war <span class=\"green\">{h(category_label(strongest.get('category')))}</span> mit {h(fmt_money(strongest_total, 0))}."
+    else:
+        category_part = "Mit mehr echten Buchungen wird sichtbar, welche Kategorie wirklich dominiert."
+    summary = f"{tracking_part} {progress_part} {category_part}"
     return f"""
   <section class="page">
     <div class="display">Dein Monat auf einen Blick.</div>
@@ -931,7 +989,28 @@ def render_777_insight(_page_html: str, data: dict) -> str:
     strongest = strongest_category(data)
     cat_name = category_label(strongest.get("category"))
     cat_total = float(strongest.get("total") or 0)
-    savings = float(data["pages"]["cover"]["freedom_step"] or 0)
+    savings = displayed_progress_amount(data)
+    progress_word = "gesparten" if has_actual_month_progress(data) else "geplanten"
+    if not has_behavior_data(data):
+        tracked_days = int(data["pages"]["month"].get("tracked_days") or 0)
+        total_expenses = float(data["pages"]["month"].get("total_expenses") or 0)
+        return f"""
+  <section class="page">
+    <div class="topline green"><span style="display:inline-block;width:18px;height:1px;background:var(--green);vertical-align:middle;margin-right:10px;"></span>Insight des Monats</div>
+    <div class="insight-hero">
+      <div class="insight-headline">Deine ersten Muster entstehen gerade.</div>
+      <div class="insight-sub">Noch zu früh für ein finales Urteil - aber genau daraus entsteht dein Monatsbild.</div>
+    </div>
+    <div class="insight-kpis">
+      <div class="card insight-kpi"><div class="label">Tracking-Tage</div><div class="value">{h(tracked_days)}</div></div>
+      <div class="card insight-kpi"><div class="label">Getrackte Ausgaben</div><div class="value">{h(fmt_money(total_expenses, 0))}</div></div>
+      <div class="card insight-kpi"><div class="label">{h(progress_label(data))}</div><div class="value">{h(fmt_money(savings, 0))}</div></div>
+    </div>
+    <div class="insight-copy">Rov.E bewertet diesen Monat noch vorsichtig. Tracke weiter echte Ausgaben - dann wird sichtbar, welche Kategorie wirklich dein größter Hebel ist.</div>
+    <div class="impact-box"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="impact-title">Was jetzt zählt</div><div class="impact-value">Mehr echte Daten</div><div class="note-body">Schon 7 bis 10 Tracking-Tage machen den nächsten Report deutlich präziser.</div></div></div>
+{footer(3)}
+  </section>
+""".rstrip()
     ratio = cat_total / savings if savings > 0 else 0
     half = cat_total / 2
     annual = half * 12
@@ -940,12 +1019,12 @@ def render_777_insight(_page_html: str, data: dict) -> str:
     <div class="topline green"><span style="display:inline-block;width:18px;height:1px;background:var(--green);vertical-align:middle;margin-right:10px;"></span>Insight des Monats</div>
     <div class="insight-hero">
       <div class="insight-headline">Dein größter Hebel liegt diesen Monat bei <em>{h(cat_name)}</em>.</div>
-      <div class="insight-sub">Für jeden gesparten Euro sind {h(fmt_money(ratio, 2))} in diese Kategorie geflossen.</div>
+      <div class="insight-sub">Für jeden {h(progress_word)} Euro sind {h(fmt_money(ratio, 2))} in diese Kategorie geflossen.</div>
     </div>
     <div class="insight-kpis">
-      <div class="card insight-kpi"><div class="label">Gespart im Monat</div><div class="value">{h(fmt_money(savings, 0))}</div></div>
+      <div class="card insight-kpi"><div class="label">{h(progress_label(data))}</div><div class="value">{h(fmt_money(savings, 0))}</div></div>
       <div class="card insight-kpi"><div class="label">{h(cat_name)} im Monat</div><div class="value">{h(fmt_money(cat_total, 0))}</div></div>
-      <div class="card insight-kpi"><div class="label">Auf jeden gesparten €</div><div class="value">{h(fmt_money(ratio, 2))}</div></div>
+      <div class="card insight-kpi"><div class="label">Auf jeden {h(progress_word)} €</div><div class="value">{h(fmt_money(ratio, 2))}</div></div>
     </div>
     <div class="insight-copy">Das ist keine Verzichtsübung - nur Bewusstsein. Würdest du diese Kategorie halbieren, blieben jeden Monat rund <strong>{h(fmt_money(half, 0))}</strong> mehr übrig.</div>
     <div class="impact-box"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="impact-title">Was das pro Jahr bedeutet</div><div class="impact-value">+{h(fmt_money(annual, 0))} fürs Ziel</div><div class="note-body">Ganz ohne mehr zu verdienen - nur durch eine bewusstere Gewohnheit.</div></div></div>
@@ -990,10 +1069,13 @@ def render_777_money_map(_page_html: str, data: dict) -> str:
     if biggest:
         share = (float(biggest["amount"] or 0) / total_expenses * 100) if total_expenses > 0 else 0
         biggest_line = f'{h(biggest["merchant"] or "Unbekannt")}, {h(fmt_money(biggest["amount"], 0))} - {share:.0f} % deiner getrackten Ausgaben.'
+    display_title = f"{h(cat_name)} ist dein<br>größter Hebel." if has_behavior_data(data) else "Deine Money Map<br>entsteht gerade."
+    if not has_behavior_data(data):
+        biggest_line = "Noch zu wenige Buchungen für eine belastbare Kategorie-Aussage."
     return f"""
   <section class="page">
     <div class="topline">Money Map · Dein Verhalten</div>
-    <div class="display">{h(cat_name)} ist dein<br>größter Hebel.</div>
+    <div class="display">{display_title}</div>
     <div class="divider"></div>
     <div class="card money-card">{build_new_money_rows(data)}</div>
     <div class="money-bottom">
@@ -1043,6 +1125,23 @@ def render_777_goal(_page_html: str, data: dict) -> str:
     savings = float(data["profile"].get("savings_plan") or 0)
     progress = max(0.0, min(100.0, float(goal["progress_percent"] or 0)))
     goal_name = clean_goal_description(goal["description"])
+    if target <= 0:
+        return f"""
+  <section class="page">
+    <div class="topline">Your Goal · Wohin du willst</div>
+    <div class="display">Dein Ziel wird sichtbar,<br>sobald ein Zielbetrag steht.</div>
+    <div class="divider"></div>
+    <div class="card goal-card">
+      <div>
+        <div class="goal-head"><div><div class="label">Ziel</div><div class="goal-name">{h(goal_name)}</div></div><div class="goal-percent"><div class="value">—</div><div class="tile-sub">offen</div></div></div>
+        <div class="progress-track"><div class="progress-fill" style="width:0%"></div></div>
+        <div class="goal-kpis"><div class="goal-kpi"><div class="label">Zielbetrag</div><div class="value">Noch offen</div></div><div class="goal-kpi"><div class="label">Aktueller Stand</div><div class="value" style="color:var(--green);">{h(fmt_money(current, 0))}</div></div><div class="goal-kpi"><div class="label">Nächster Schritt</div><div class="value">Zielbetrag setzen</div></div></div>
+      </div>
+      <div class="goal-forecast"><div class="forecast-block"><div class="forecast-title">Ehrlich gesagt</div><div class="forecast-main">Ohne Zielbetrag gibt es noch keine saubere Prognose.</div><div class="forecast-copy">Sobald Zielbetrag und Sparrate stehen, berechnet Rov.E den realistischen Weg dorthin.</div></div><div class="forecast-block"><div class="forecast-title" style="color:var(--green);">Dein Hebel</div><div class="forecast-main">Ein klares Ziel macht Fortschritt messbar.</div></div></div>
+    </div>
+{footer(7)}
+  </section>
+""".rstrip()
     return f"""
   <section class="page">
     <div class="topline">Your Goal · Wohin du willst</div>
@@ -1064,16 +1163,21 @@ def render_777_goal(_page_html: str, data: dict) -> str:
 def render_777_milestones(_page_html: str, data: dict) -> str:
     info = milestone_info(data)
     net_worth = float(data["profile"].get("net_worth") or 0)
-    savings = max(float(data["profile"].get("savings_plan") or 0), 1.0)
-    months = int((info["remaining"] + savings - 0.01) // savings) if info["remaining"] > 0 else 0
+    savings = float(data["profile"].get("savings_plan") or 0)
+    months = int((info["remaining"] + savings - 0.01) // savings) if info["remaining"] > 0 and savings > 0 else 0
+    hint = (
+        f'{ICON_SVGS["arrow"]} Bei {h(fmt_money(savings, 0))}/Monat erreichst du den nächsten Meilenstein in <strong>{months} Monaten</strong>.'
+        if savings > 0 and info["remaining"] > 0
+        else f'{ICON_SVGS["arrow"]} Hinterlege eine Sparrate, damit Rov.E den nächsten Meilenstein zeitlich einordnen kann.'
+    )
     rank = data["pages"]["milestones"]["rank"]
     return f"""
   <section class="page">
     <div class="topline">Meilensteine · Deine Etappen</div>
     <div class="display">Noch {h(fmt_money(info["remaining"], 0))} bis zum<br>nächsten Meilenstein.</div>
     <div class="divider"></div>
-    <div class="card milestone-card"><div class="milestone-top"><div class="label">Von {h(fmt_money(info["reached"], 0))} zu {h(fmt_money(info["target"], 0))}</div><div style="font-family:var(--display);font-size:18px;color:var(--green);">{h(fmt_percent(info["progress"], 0))}</div></div><div class="milestone-progress"><div class="progress-fill" style="width:{info["progress"]:.1f}%"></div></div><div class="milestone-scale"><span>{h(fmt_money(info["reached"], 0))}</span><span style="color:var(--green);font-weight:600;">{h(fmt_money(net_worth, 0))} · du bist hier</span><span>{h(fmt_money(info["target"], 0))}</span></div><div class="milestone-hint">{ICON_SVGS["arrow"]} Bei {h(fmt_money(savings, 0))}/Monat erreichst du den nächsten Meilenstein in <strong>{months} Monaten</strong>.</div></div>
-    <div class="card badge-card"><div class="label">Bereits freigeschaltet · {h(rank["name"])}</div><div class="badge-grid">{build_badges_777(data)}</div></div>
+    <div class="card milestone-card"><div class="milestone-top"><div class="label">Von {h(fmt_money(info["reached"], 0))} zu {h(fmt_money(info["target"], 0))}</div><div style="font-family:var(--display);font-size:18px;color:var(--green);">{h(fmt_percent(info["progress"], 0))}</div></div><div class="milestone-progress"><div class="progress-fill" style="width:{info["progress"]:.1f}%"></div></div><div class="milestone-scale"><span>{h(fmt_money(info["reached"], 0))}</span><span style="color:var(--green);font-weight:600;">{h(fmt_money(net_worth, 0))} · du bist hier</span><span>{h(fmt_money(info["target"], 0))}</span></div><div class="milestone-hint">{hint}</div></div>
+    <div class="card badge-card"><div class="label">Vermögenslevel · {h(rank["name"])}</div><div class="badge-grid">{build_badges_777(data)}</div></div>
 {footer(8)}
   </section>
 """.rstrip()
@@ -1081,10 +1185,15 @@ def render_777_milestones(_page_html: str, data: dict) -> str:
 
 def render_777_recap(_page_html: str, data: dict) -> str:
     recap = data["pages"]["recap"]
+    display = (
+        "Ein ehrlicher Zwischenstand -<br>deine Datenbasis wächst."
+        if not has_behavior_data(data)
+        else "Ein starker Start - mit einem<br>klaren nächsten Schritt."
+    )
     return f"""
   <section class="page">
     <div class="topline">Recap · Ehrlich zusammengefasst</div>
-    <div class="display">Ein starker Start - mit einem<br>klaren nächsten Schritt.</div>
+    <div class="display">{display}</div>
     <div class="divider"></div>
     <div class="recap-list">
       <div class="card recap-item"><div class="recap-icon">✓</div><div><div class="recap-title">Was gut lief</div><div class="recap-copy">{h(humanize_text(recap["what_went_well"]))}</div></div></div>

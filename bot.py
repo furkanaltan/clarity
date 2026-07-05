@@ -1033,6 +1033,86 @@ def is_investment_asset_update_request(text_lower: str) -> bool:
     return False
 
 
+def is_clear_new_investment_request(text_lower: str) -> bool:
+    new_month_phrases = [
+        "diesen monat", "heute", "gerade", "neu gekauft", "gekauft",
+        "nachgekauft", "kauf", "sparplan", "rate", "monatlich",
+    ]
+    return any(phrase in text_lower for phrase in new_month_phrases)
+
+
+def should_confirm_investment_classification(text_lower: str, amount: float, direction: str) -> bool:
+    if direction != "in" or amount < 1000:
+        return False
+    if is_investment_asset_update_request(text_lower) or is_clear_new_investment_request(text_lower):
+        return False
+    return True
+
+
+def investment_classification_choice(text_lower: str):
+    existing_words = [
+        "bestand", "bestehend", "bestehendes", "nachtrag", "nachgetragen",
+        "vergessen", "korrektur", "startwert", "hatte ich schon", "schon gehabt",
+        "nur erfassen", "nur nachtragen",
+    ]
+    new_words = [
+        "neu", "monatsfortschritt", "diesen monat", "gekauft", "nachgekauft",
+        "investiert", "kauf", "frisch",
+    ]
+    if any(word in text_lower for word in existing_words):
+        return "asset_update"
+    if any(word in text_lower for word in new_words):
+        return "one_time"
+    return None
+
+
+def apply_investment_change(uid: int, u: dict, amount_val: float, text_lower: str,
+                            direction: str, event_type=None):
+    current_investments = u.get("current_investments") or 0
+    new_investments = max(0.0, current_investments - amount_val) if direction == "out" else current_investments + amount_val
+    update_user_field(uid, "current_investments", new_investments)
+    asset_type, asset_name = detect_investment_asset(text_lower)
+    if event_type is None:
+        is_asset_update = is_investment_asset_update_request(text_lower)
+        is_correction = direction == "out" and any(
+            word in text_lower
+            for word in ["lösche", "loesche", "entferne", "streiche", "korrigiere", "rückgängig", "rueckgaengig"]
+        )
+        if is_correction:
+            event_type = "correction"
+        elif is_asset_update:
+            event_type = "asset_update"
+        else:
+            event_type = "recurring_plan" if "sparplan" in text_lower else "one_time"
+    save_investment_event(
+        uid, amount_val, direction=direction, asset_type=asset_type,
+        asset_name=asset_name, event_type=event_type, source="chat",
+        note="Investment aus Chat erkannt"
+    )
+    save_portfolio_snapshot(
+        uid, new_investments, scope="investments",
+        source="chat", note="Stand nach Investment-Ereignis"
+    )
+    cp_earned = handle_daily_activity(uid, bot)
+    u_fresh = get_or_create_user(uid)
+    new_badges = check_wealth_badges(uid, u_fresh)
+    cp_str = build_tracking_note(cp_earned)
+    cp_suffix = f" · {cp_str}" if cp_str else ""
+    total_wealth = new_investments + (u.get("current_cash") or 0)
+    if event_type == "asset_update":
+        verb = "Bestand ergänzt"
+    elif event_type == "correction":
+        verb = "Investment korrigiert"
+    else:
+        verb = "Investment verkauft/entnommen" if direction == "out" else "Investment erfasst"
+    message = (
+        f"📈 {verb}: *{amount_val:.2f}€*\n"
+        f"Investments: {new_investments:.2f}€\n"
+        f"Nettovermögen: *{total_wealth:.2f}€*{cp_suffix}"
+    )
+    return message, new_badges
+
+
 def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
     if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
         return ""
@@ -3490,6 +3570,38 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
         )
         return True
 
+    if action.get("type") == "confirm_investment_classification":
+        if text_lower in {"abbrechen", "stop", "cancel"}:
+            user_pending_actions.pop(user_id, None)
+            bot.send_message(user_id, "Alles klar, ich habe daran nichts geändert.")
+            return True
+
+        event_type = investment_classification_choice(text_lower)
+        if event_type is None:
+            bot.send_message(
+                user_id,
+                "Kurz zur Einordnung:\n\n"
+                "`Neu` - zählt als Monatsfortschritt im Report\n"
+                "`Bestand` - war schon da und wird nur nachgetragen\n\n"
+                "Schreib einfach `Neu` oder `Bestand`.",
+                parse_mode="Markdown"
+            )
+            return True
+
+        user_pending_actions.pop(user_id, None)
+        u = get_or_create_user(user_id)
+        message, new_badges = apply_investment_change(
+            user_id,
+            u,
+            float(action["amount"]),
+            action["text_lower"],
+            action.get("direction", "in"),
+            event_type=event_type,
+        )
+        bot.send_message(user_id, message, parse_mode="Markdown")
+        send_badge_summary(bot, user_id, new_badges)
+        return True
+
     if action.get("type") == "edit_last_expense":
         if text_lower in {"abbrechen", "stop", "cancel"}:
             user_pending_actions.pop(user_id, None)
@@ -4797,49 +4909,28 @@ def handle_msg(message):
 
         if any(word in text_lower for word in INVESTMENT_INPUTS):
             direction = "out" if is_investment_outflow_request(text_lower) else "in"
-            current_investments = u.get("current_investments") or 0
-            new_investments = max(0.0, current_investments - amount_val) if direction == "out" else current_investments + amount_val
-            update_user_field(uid, "current_investments", new_investments)
-            asset_type, asset_name = detect_investment_asset(text_lower)
-            is_asset_update = is_investment_asset_update_request(text_lower)
-            is_correction = direction == "out" and any(
-                word in text_lower
-                for word in ["lösche", "loesche", "entferne", "streiche", "korrigiere", "rückgängig", "rueckgaengig"]
+            if should_confirm_investment_classification(text_lower, amount_val, direction):
+                user_pending_actions[uid] = {
+                    "type": "confirm_investment_classification",
+                    "amount": amount_val,
+                    "direction": direction,
+                    "text_lower": text_lower,
+                }
+                bot.send_message(
+                    uid,
+                    "Kurze Rückfrage, damit dein Report sauber bleibt:\n\n"
+                    f"Sind die *{amount_val:.2f}€* neu in diesem Monat investiert worden "
+                    "oder war das Vermögen schon da und du trägst es nur nach?\n\n"
+                    "`Neu` - zählt als Monatsfortschritt\n"
+                    "`Bestand` - erhöht dein Vermögen, zählt aber nicht als Monatsleistung",
+                    parse_mode="Markdown"
+                )
+                return
+
+            message, new_badges = apply_investment_change(
+                uid, u, amount_val, text_lower, direction
             )
-            if is_correction:
-                event_type = "correction"
-            elif is_asset_update:
-                event_type = "asset_update"
-            else:
-                event_type = "recurring_plan" if "sparplan" in text_lower else "one_time"
-            save_investment_event(
-                uid, amount_val, direction=direction, asset_type=asset_type,
-                asset_name=asset_name, event_type=event_type, source="chat",
-                note="Investment aus Chat erkannt"
-            )
-            save_portfolio_snapshot(
-                uid, new_investments, scope="investments",
-                source="chat", note="Stand nach Investment-Ereignis"
-            )
-            cp_earned = handle_daily_activity(uid, bot)
-            u_fresh = get_or_create_user(uid)
-            new_badges = check_wealth_badges(uid, u_fresh)
-            cp_str = build_tracking_note(cp_earned)
-            cp_suffix = f" · {cp_str}" if cp_str else ""
-            total_wealth = new_investments + (u.get("current_cash") or 0)
-            if event_type == "asset_update":
-                verb = "Bestand ergänzt"
-            elif event_type == "correction":
-                verb = "Investment korrigiert"
-            else:
-                verb = "Investment verkauft/entnommen" if direction == "out" else "Investment erfasst"
-            bot.send_message(
-                uid,
-                f"📈 {verb}: *{amount_val:.2f}€*\n"
-                f"Investments: {new_investments:.2f}€\n"
-                f"Nettovermögen: *{total_wealth:.2f}€*{cp_suffix}",
-                parse_mode="Markdown"
-            )
+            bot.send_message(uid, message, parse_mode="Markdown")
             send_badge_summary(bot, uid, new_badges)
             return
 
