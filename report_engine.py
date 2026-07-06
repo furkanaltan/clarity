@@ -1311,7 +1311,7 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
-    from rove_web_report_renderer import build_pdf_report
+    from rove_pdf_report_renderer import build_pdf_report
 
     build_pdf_report(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
