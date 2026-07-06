@@ -428,6 +428,22 @@ def init_db():
             ON report_jobs(status, scheduled_at)
         ''')
 
+        conn.execute('''CREATE TABLE IF NOT EXISTS report_links (
+            token        TEXT PRIMARY KEY,
+            user_id      INTEGER NOT NULL,
+            report_month TEXT    NOT NULL,
+            html_path    TEXT    NOT NULL,
+            public_url   TEXT    DEFAULT '',
+            expires_at   TEXT    NOT NULL,
+            created_at   TEXT    DEFAULT CURRENT_TIMESTAMP,
+            status       TEXT    NOT NULL DEFAULT 'active',
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_report_links_expiry
+            ON report_links(status, expires_at)
+        ''')
+
         conn.execute('''CREATE TABLE IF NOT EXISTS user_access (
             user_id      INTEGER PRIMARY KEY,
             status       TEXT    NOT NULL DEFAULT 'pending',
@@ -5341,6 +5357,16 @@ def process_due_report_jobs():
     for job in jobs:
         process_report_job(job)
 
+
+def cleanup_expired_web_reports():
+    try:
+        import rove_web_report_renderer
+        removed = rove_web_report_renderer.cleanup_expired_reports()
+        if removed:
+            logger.info(f"Abgelaufene Web-Reports entfernt: {removed}")
+    except Exception as e:
+        logger.warning(f"Web-Report-Cleanup fehlgeschlagen: {e}")
+
 # ====================== REPORT SCHEDULER ======================
 REPORT_SCHEDULER = None
 
@@ -5497,6 +5523,15 @@ def setup_monthly_report_scheduler():
         id="send_evening_recaps",
         replace_existing=True,
         misfire_grace_time=1800,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        cleanup_expired_web_reports,
+        trigger=CronTrigger(hour=3, minute=10, timezone="Europe/Berlin"),
+        id="cleanup_expired_web_reports",
+        replace_existing=True,
+        misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
     )

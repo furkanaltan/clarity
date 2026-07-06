@@ -2,6 +2,7 @@ import os
 import sqlite3
 import calendar
 import json
+import logging
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 APP_DIR = Path(__file__).resolve().parent
@@ -1307,7 +1309,7 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     report_data = report_data or build_report_data(user_id, report_month)
-    file_path = REPORTS_DIR / f"clarity_report_{user_id}_{report_month}.pdf"
+    file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
     from report_html_renderer import build_pdf_report
 
@@ -1322,6 +1324,29 @@ def send_report_to_user(user_id: int, report_month: str, bot):
     if MIN_TRACKING_DAYS > 0 and tracked_days < MIN_TRACKING_DAYS:
         raise ReportSkipped(f"Zu wenig Tracking-Tage: {tracked_days}/{MIN_TRACKING_DAYS}")
 
+    web_report = None
+    try:
+        import rove_web_report_renderer
+        web_report = rove_web_report_renderer.build_web_report(
+            user_id,
+            report_month,
+            report_data=report_data,
+        )
+    except Exception as e:
+        logger.warning("Rov.E Web-Report konnte nicht erzeugt werden: %s", e)
+
+    if web_report and web_report.get("url"):
+        expires_label = web_report["expires_at"].strftime("%d.%m.%Y")
+        bot.send_message(
+            user_id,
+            (
+                "Dein Rov.E Web-Report ist bereit.\n\n"
+                f"{web_report['url']}\n\n"
+                f"Der Link ist bis zum {expires_label} aktiv. "
+                "Das PDF bekommst du zusätzlich für deine Unterlagen."
+            )
+        )
+
     file_path, tracked_days = build_pdf(user_id, report_month, report_data=report_data)
     with open(file_path, "rb") as f:
         bot.send_document(
@@ -1329,7 +1354,7 @@ def send_report_to_user(user_id: int, report_month: str, bot):
             f,
             visible_file_name=file_path.name,
             caption=(
-                "Dein Clarity Report ist fertig.\n\n"
+                "Dein Rov.E Report ist fertig.\n\n"
                 "Er zeigt dir, was in diesem Monat wirklich passiert ist - "
                 "klar, ruhig und ohne unnötige Zahlen.\n\n"
                 "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
