@@ -16,7 +16,8 @@ from reportlab.pdfgen import canvas
 load_dotenv()
 
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
-REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", "reports"))
+APP_DIR = Path(__file__).resolve().parent
+REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", str(APP_DIR / "reports")))
 MIN_TRACKING_DAYS = int(os.getenv("MIN_TRACKING_DAYS", "14"))
 
 
@@ -629,6 +630,20 @@ def calculate_goal_projection(goal_amount: float, current_value: float, monthly_
     return int((remaining + monthly_savings - 0.01) // monthly_savings)
 
 
+def format_month_duration(months) -> str:
+    months = int(months or 0)
+    if months <= 0:
+        return "0 Monate"
+    if months < 12:
+        return f"{months} Monat" if months == 1 else f"{months} Monate"
+    years, rest = divmod(months, 12)
+    year_text = f"{years} Jahr" if years == 1 else f"{years} Jahre"
+    if rest == 0:
+        return year_text
+    month_text = f"{rest} Monat" if rest == 1 else f"{rest} Monate"
+    return f"{year_text} und {month_text}"
+
+
 def get_expense_stats(user_id: int, report_month: str):
     start, end, _ = month_bounds(report_month)
     with get_db() as conn:
@@ -989,7 +1004,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     if months_to_goal is None:
         next_lever = "Eine monatliche Sparrate hinterlegen, damit die Zielprognose sichtbar wird."
     elif months_to_goal > 0:
-        next_lever = f"Bei gleicher Sparrate erreichst du dein Ziel in etwa {months_to_goal} Monat(en)."
+        next_lever = f"Bei gleicher Sparrate erreichst du dein Ziel in etwa {format_month_duration(months_to_goal)}."
 
     return {
         "meta": {
@@ -1320,4 +1335,8 @@ def send_report_to_user(user_id: int, report_month: str, bot):
                 "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
             )
         )
+    try:
+        file_path.unlink(missing_ok=True)
+    except Exception:
+        pass
     return True

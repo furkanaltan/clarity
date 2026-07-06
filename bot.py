@@ -33,6 +33,7 @@ if not TOKEN or not OPENAI_API_KEY:
 
 openai.api_key = OPENAI_API_KEY
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
+APP_DIR = Path(__file__).resolve().parent
 ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS") or os.getenv("ADMIN_USER_ID") or ""
 ADMIN_USER_IDS = {
     int(x.strip()) for x in ADMIN_USER_IDS_RAW.split(",")
@@ -1374,8 +1375,21 @@ def calculate_time_to_goal(goal_amount: float, etf_monthly: float, cash_monthly:
         months += 1
         if months > 1200:
             return "Über 100 Jahre – erhöhe deine Sparrate."
-    jahre, monate = divmod(months, 12)
-    return f"{jahre} Jahre und {monate} Monate" if jahre > 0 else f"{monate} Monate"
+    return format_month_duration(months)
+
+
+def format_month_duration(months: int) -> str:
+    months = int(months or 0)
+    if months <= 0:
+        return "0 Monate"
+    if months < 12:
+        return "1 Monat" if months == 1 else f"{months} Monate"
+    years, rest = divmod(months, 12)
+    year_text = "1 Jahr" if years == 1 else f"{years} Jahre"
+    if rest == 0:
+        return year_text
+    month_text = "1 Monat" if rest == 1 else f"{rest} Monate"
+    return f"{year_text} und {month_text}"
 
 def extract_merchant_name(text_input: str) -> str:
     """Extrahiert den ersten sinnvollen Begriff als Händlernamen."""
@@ -4022,10 +4036,13 @@ def handle_admin_command(message, cmd: str) -> bool:
         return True
 
     if cmd == "/backupnow":
-        backups_dir = Path("backups")
+        db_path = Path(DB_NAME)
+        if not db_path.is_absolute():
+            db_path = APP_DIR / db_path
+        backups_dir = APP_DIR / "backups"
         backups_dir.mkdir(exist_ok=True)
         backup_path = backups_dir / f"clarity_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        with sqlite3.connect(DB_NAME) as source, sqlite3.connect(backup_path) as target:
+        with sqlite3.connect(db_path) as source, sqlite3.connect(backup_path) as target:
             source.backup(target)
         bot.send_message(uid, f"Backup erstellt:\n{backup_path.resolve()}")
         return True
