@@ -151,6 +151,165 @@ def inject_report_css(template: str) -> str:
     return template.replace("</head>", f"{css}\n</head>", 1)
 
 
+def pdf_css() -> str:
+    return """
+    <style>
+      @page { size: 1440px 900px; margin: 0; }
+      html,
+      body {
+        width: 1440px;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #08090B !important;
+      }
+      body {
+        overflow: hidden !important;
+        color: #F4F1EA;
+        -webkit-font-smoothing: antialiased;
+      }
+      section {
+        width: 1440px !important;
+        height: 900px !important;
+        min-height: 900px !important;
+        max-height: 900px !important;
+        box-sizing: border-box !important;
+        overflow: hidden !important;
+        break-after: page !important;
+        page-break-after: always !important;
+      }
+      section:last-of-type {
+        break-after: auto !important;
+        page-break-after: auto !important;
+      }
+      .pdf-page-inner {
+        position: absolute !important;
+        top: 0 !important;
+        left: 0 !important;
+        height: 1286px !important;
+        overflow: hidden !important;
+        transform: scale(0.70);
+        transform-origin: top left;
+        width: 142.86% !important;
+        margin-left: 0 !important;
+      }
+      [data-screen-label="01 Cover"] .pdf-page-inner {
+        transform: none !important;
+        width: 100% !important;
+        height: 900px !important;
+        margin-left: 0 !important;
+      }
+      [data-progressbar],
+      .rove-cover-cameo,
+      .rove-report-assistant {
+        display: none !important;
+      }
+      [data-reveal],
+      [data-grow],
+      [data-ring],
+      [data-count],
+      [data-glow] {
+        opacity: 1 !important;
+        transition: none !important;
+        animation: none !important;
+      }
+      [data-reveal],
+      [data-grow],
+      [data-ring],
+      [data-count],
+      [data-glow] {
+        transform: none !important;
+      }
+      [data-grow] {
+        width: attr(data-grow) !important;
+      }
+      section:not([data-screen-label="01 Cover"]) {
+        padding-top: 76px !important;
+        padding-bottom: 58px !important;
+      }
+      [data-screen-label="06 Rov.E Score"] > div,
+      [data-screen-label="07 Dein Ziel"] > div,
+      [data-screen-label="08 Meilensteine"] > div,
+      [data-screen-label="09 Recap"] > div,
+      [data-screen-label="10 Plan für Juli"] > div {
+        max-width: 1040px !important;
+      }
+      [data-screen-label="06 Rov.E Score"] [style*="grid-template-columns: repeat(auto-fit"] {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+      }
+      [data-screen-label="06 Rov.E Score"] [style*="padding: 44px 36px"] {
+        padding: 34px 30px !important;
+      }
+      [data-screen-label="06 Rov.E Score"] [style*="padding: 38px 42px"] {
+        padding: 26px 34px !important;
+      }
+      [data-screen-label="06 Rov.E Score"] [style*="font-size: 16px; color: #9EA4A0; line-height: 1.65"] {
+        font-size: 14px !important;
+        line-height: 1.48 !important;
+      }
+      [data-screen-label="06 Rov.E Score"] [style*="font-size: 26px; line-height: 1.3"] {
+        font-size: 23px !important;
+        line-height: 1.2 !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="padding: 52px 54px"] {
+        padding: 34px 42px !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="font-size: 80px"] {
+        font-size: 66px !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="font-size: 30px"] {
+        font-size: 26px !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="margin-top: 44px"] {
+        margin-top: 30px !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="padding-top: 36px"] {
+        padding-top: 26px !important;
+      }
+      [data-screen-label="07 Dein Ziel"] [style*="font-size: 24px"] {
+        font-size: 21px !important;
+        line-height: 1.32 !important;
+      }
+      [data-screen-label="10 Plan für Juli"] {
+        padding-bottom: 70px !important;
+      }
+    </style>
+    """
+
+
+def build_static_pdf_html(rendered_doc: str) -> str:
+    """Create a fixed 10-page PDF document from the interactive web report."""
+    helmet_match = re.search(r"<helmet>([\s\S]*?)</helmet>", rendered_doc)
+    helmet = helmet_match.group(1) if helmet_match else ""
+    sections = re.findall(r"<section\b[\s\S]*?</section>", rendered_doc)
+
+    if not sections:
+        return rendered_doc.replace("</head>", f"{pdf_css()}\n</head>", 1)
+
+    wrapped_sections = [
+        re.sub(
+            r"(<section\b[^>]*>)([\s\S]*)(</section>)",
+            r'\1<div class="pdf-page-inner">\2</div>\3',
+            section,
+            count=1,
+        )
+        for section in sections
+    ]
+
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=1440, initial-scale=1">\n'
+        f"{helmet}\n"
+        f"{pdf_css()}\n"
+        "</head>\n"
+        "<body>\n"
+        + "\n".join(wrapped_sections)
+        + "\n</body>\n</html>\n"
+    )
+
+
 def inject_expiry_meta(template: str, expires_at: datetime) -> str:
     expiry_iso = expires_at.isoformat(timespec="seconds")
     meta = (
@@ -535,6 +694,7 @@ def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     doc = render_template(template, report_data)
+    doc = build_static_pdf_html(doc)
 
     with TemporaryDirectory() as tmp_dir:
         html_path = Path(tmp_dir) / "rove_report.html"
