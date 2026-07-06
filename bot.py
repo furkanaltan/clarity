@@ -1131,8 +1131,20 @@ def apply_investment_change(uid: int, u: dict, amount_val: float, text_lower: st
     return message, new_badges
 
 
+def is_profile_info_question(text_lower: str) -> bool:
+    """Erkennt kurze Alltagsfragen zum Profil, bevor sie als Änderung landen."""
+    normalized = re.sub(r"\s+", " ", text_lower.strip())
+    question_markers = [
+        "wie viel", "wieviel", "wie hoch", "was ist", "was zahle",
+        "was zahl", "wieviel zahle", "wieviel zahl", "wie viel zahle",
+        "wie viel zahl", "was kostet", "kosten meine", "zahle ich",
+        "zahl ich", "bezahle ich", "wv ", "wv.", "w v ",
+    ]
+    return any(marker in normalized for marker in question_markers)
+
+
 def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> str:
-    if any(question in text_lower for question in ["wie viel", "wieviel", "wie hoch", "was ist"]):
+    if is_profile_info_question(text_lower):
         return ""
     correction_words = [
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
@@ -1355,6 +1367,8 @@ def maybe_apply_income_correction(user_id: int, u: dict, text_lower: str) -> str
 
 
 def looks_like_profile_correction(text_lower: str) -> bool:
+    if is_profile_info_question(text_lower):
+        return False
     correction_words = {
         "ändere", "aendere", "änder", "aender", "korrigiere", "korrektur",
         "setze", "setz", "aktualisiere", "update", "füge", "fuege",
@@ -2514,6 +2528,34 @@ def format_fixed_cost_breakdown(u: dict) -> str:
     return "\n".join(lines)
 
 
+def format_fixed_cost_section(u: dict, section: str, title: str) -> str:
+    details = u.get("details", {})
+    if not isinstance(details, dict):
+        return f"{title}: noch nicht hinterlegt."
+    section_data = details.get(section, {})
+    if not isinstance(section_data, dict) or not section_data:
+        return f"{title}: noch nicht hinterlegt."
+
+    total = 0.0
+    lines = [f"*{title}*", ""]
+    for key, value in section_data.items():
+        if key in {"restschuld", "gesamtbetrag", "schulden_gesamt"}:
+            continue
+        try:
+            amount = float(value or 0)
+        except (TypeError, ValueError):
+            continue
+        total += amount
+        label = DETAIL_ITEM_LABELS.get(key, key.replace("_", " ").title())
+        lines.append(f"{label}: {format_eur(amount)}")
+
+    if not lines[2:]:
+        return f"{title}: noch nicht hinterlegt."
+    lines.append("")
+    lines.append(f"*Gesamt: {format_eur(total)} pro Monat*")
+    return "\n".join(lines)
+
+
 def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
     def eur(value: float) -> str:
         return f"{value:.2f} EUR"
@@ -2541,6 +2583,17 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
     )
     if asks_fixed_breakdown:
         return format_fixed_cost_breakdown(u)
+
+    asks_abo_breakdown = (
+        any(word in text_lower for word in ["abo", "abos", "abonnement", "abonnements"])
+        and is_profile_info_question(text_lower)
+    )
+    if asks_abo_breakdown:
+        return format_fixed_cost_section(u, "abos", "Deine Abos")
+
+    has_amount = bool(extract_amounts(text_lower, exclude_years=True))
+    if has_amount and not is_profile_info_question(text_lower):
+        return ""
 
     detail_questions = [
         (["miete"], "wohnen", "miete", "Miete"),
