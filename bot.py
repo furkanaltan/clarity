@@ -95,6 +95,7 @@ MERCHANT_KEYWORDS = {
     "Aldi":       ["aldi"],
     "Edeka":      ["edeka"],
     "Kaufland":   ["kaufland"],
+    "Globus":     ["globus"],
     "Penny":      ["penny"],
     "Netto":      ["netto"],
     "Aral":       ["aral"],
@@ -117,7 +118,7 @@ MERCHANT_KEYWORDS = {
 
 CATEGORY_MAPPING = {
     "Lidl": "LEBENSMITTEL", "Rewe": "LEBENSMITTEL", "Aldi": "LEBENSMITTEL",
-    "Edeka": "LEBENSMITTEL", "Kaufland": "LEBENSMITTEL", "Penny": "LEBENSMITTEL",
+    "Edeka": "LEBENSMITTEL", "Kaufland": "LEBENSMITTEL", "Globus": "LEBENSMITTEL", "Penny": "LEBENSMITTEL",
     "Netto": "LEBENSMITTEL", "Aral": "MOBILITAET", "Shell": "MOBILITAET",
     "Agip": "MOBILITAET", "Esso": "MOBILITAET", "McDonalds": "RESTAURANTS",
     "Burger King": "RESTAURANTS", "Subway": "RESTAURANTS", "Amazon": "SHOPPING",
@@ -213,7 +214,7 @@ CATEGORY_KEYWORDS = {
         "einkauf im internet", "onlinekauf", "internetkauf", "onlineshop",
     ],
     "LEBENSMITTEL": [
-        "supermarkt", "lebensmittel", "gemüse", "obst", "brot",
+        "supermarkt", "globus", "lebensmittel", "gemüse", "obst", "brot",
         "milch", "fleisch", "wurst", "käse", "einkaufen",
         "pesto", "nudeln", "pasta", "reis", "joghurt", "quark",
         "eier", "butter", "wasser", "saft", "kaffee", "tee",
@@ -1398,6 +1399,14 @@ def detect_expense_label(text_input: str, text_lower: str) -> tuple[str, str, st
             return category, extract_merchant_name(text_input), ""
 
     return "", "", ""
+
+
+def looks_like_known_expense(text_input: str, text_lower: str) -> bool:
+    amounts = extract_amounts(text_lower, exclude_years=True)
+    if len(amounts) != 1:
+        return False
+    category, merchant, _direct_label = detect_expense_label(text_input, text_lower)
+    return bool(category and merchant)
 
 
 def parse_hybrid_expense_items(text_input: str, amounts: list[float]) -> list[dict]:
@@ -4549,7 +4558,12 @@ def handle_msg(message):
             bot.send_message(uid, income_reply, parse_mode="Markdown")
             return
 
-    if step == STEP_NORMAL and looks_like_profile_correction(text_lower) and not looks_like_investment_update(text_lower):
+    if (
+        step == STEP_NORMAL
+        and looks_like_profile_correction(text_lower)
+        and not looks_like_investment_update(text_lower)
+        and not looks_like_known_expense(text_input, text_lower)
+    ):
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
