@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from dotenv import load_dotenv
 
@@ -106,6 +107,50 @@ def strip_dc_runtime(template: str) -> str:
     return template
 
 
+def inject_report_css(template: str) -> str:
+    css = """
+    <style>
+      [data-screen-label="06 Rov.E Score"] * { box-sizing: border-box; }
+      [data-screen-label="06 Rov.E Score"] div,
+      [data-screen-label="07 Ziel"] div { overflow-wrap: anywhere; }
+      @media (max-width: 760px) {
+        [data-screen-label="06 Rov.E Score"] {
+          padding-left: 20px !important;
+          padding-right: 20px !important;
+        }
+        [data-screen-label="06 Rov.E Score"] [style*="minmax(320px"] {
+          grid-template-columns: minmax(0, 1fr) !important;
+        }
+        [data-screen-label="06 Rov.E Score"] [style*="padding: 38px 42px"] {
+          padding: 28px 24px !important;
+        }
+        [data-screen-label="07 Ziel"] [style*="padding: 52px 54px"] {
+          padding: 36px 28px !important;
+        }
+        [data-screen-label="07 Ziel"] [style*="font-size: 24px"] {
+          font-size: 21px !important;
+          line-height: 1.45 !important;
+        }
+      }
+      @media print {
+        body { background: #08090B !important; }
+        section {
+          min-height: 100vh !important;
+          break-after: page;
+          page-break-after: always;
+        }
+        section:last-of-type {
+          break-after: auto;
+          page-break-after: auto;
+        }
+        .rove-cover-cameo,
+        .rove-report-assistant { display: none !important; }
+      }
+    </style>
+    """
+    return template.replace("</head>", f"{css}\n</head>", 1)
+
+
 def inject_expiry_meta(template: str, expires_at: datetime) -> str:
     expiry_iso = expires_at.isoformat(timespec="seconds")
     meta = (
@@ -171,6 +216,8 @@ def standalone_script() -> str:
     rings.forEach(el => {
       el._target = el.getAttribute('data-ring');
       el.style.transition = 'stroke-dashoffset 1.6s ' + ease;
+      el.style.strokeDasharray = '540.4';
+      el.style.strokeDashoffset = '540.4';
       el.setAttribute('stroke-dashoffset', '540.4');
     });
 
@@ -200,7 +247,10 @@ def standalone_script() -> str:
           el.style.transform = 'translateY(0)';
         }
         if (el.hasAttribute('data-grow')) el.style.width = el._target;
-        if (el.hasAttribute('data-ring')) el.style.strokeDashoffset = el._target;
+        if (el.hasAttribute('data-ring')) {
+          el.style.strokeDashoffset = el._target;
+          el.setAttribute('stroke-dashoffset', el._target);
+        }
         if (el.hasAttribute('data-count') && !el._done) {
           el._done = true;
           runCount(el);
@@ -210,6 +260,14 @@ def standalone_script() -> str:
     }, { threshold: 0.2 });
 
     reveals.concat(bars, rings, counts).forEach(el => io.observe(el));
+    window.setTimeout(() => {
+      rings.forEach(el => {
+        if (el._target) {
+          el.style.strokeDashoffset = el._target;
+          el.setAttribute('stroke-dashoffset', el._target);
+        }
+      });
+    }, 1200);
 
     const assistant = document.querySelector('[data-rove-assistant]');
     const planSection = document.querySelector('[data-screen-label="10 Plan für Juli"]');
@@ -297,6 +355,8 @@ def render_template(template: str, data: dict) -> str:
 
     html_doc = template
     html_doc = strip_dc_runtime(html_doc)
+    html_doc = inject_report_css(html_doc)
+    monthly_amount = money_text(investment_total or savings_plan)
     html_doc = replace_all(html_doc, {
         "Mai 2026": h(month_label),
         "MAI": h(month_label.split(" ", 1)[0].upper()),
@@ -316,7 +376,6 @@ def render_template(template: str, data: dict) -> str:
         "Restaurants": h(strongest_name),
         "2 Tagen": f"{meta.get('tracked_days', 0)} Tagen",
         "2 Tage": f"{meta.get('tracked_days', 0)} Tage",
-        "750 €": money_text(investment_total or savings_plan),
         "58": str(score_value),
         "Controller": h(score.get("rank_name") or "Rookie"),
         "Haus": h(goal_desc),
@@ -341,6 +400,26 @@ def render_template(template: str, data: dict) -> str:
         data_count_span(net_worth),
         html_doc,
         count=1,
+    )
+    html_doc = replace_once(
+        html_doc,
+        "750 € bewusst zur Seite gelegt.",
+        f"{monthly_amount} bewusst zur Seite gelegt.",
+    )
+    html_doc = replace_once(
+        html_doc,
+        "Bei 750 €/Monat erreichst du den nächsten Meilenstein",
+        f"Bei {money_text(savings_plan)}/Monat erreichst du den nächsten Meilenstein",
+    )
+    html_doc = replace_once(
+        html_doc,
+        "Du hast 750 € konsequent zur Seite gelegt",
+        f"Du hast {monthly_amount} konsequent zur Seite gelegt",
+    )
+    html_doc = replace_once(
+        html_doc,
+        "Spare oder investiere mindestens 750 €.",
+        f"Spare oder investiere mindestens {money_text(max(savings_plan, investment_total))}.",
     )
     html_doc = re.sub(
         r'<span data-count="9350">[^<]+</span>',
@@ -437,6 +516,32 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
         "url": public_url,
         "expires_at": expires_at,
     }
+
+
+def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_data: dict | None = None) -> Path:
+    """Render the Rov.E web design into a PDF archive copy."""
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Rov.E Web-Report-Template fehlt: {TEMPLATE_PATH}")
+
+    try:
+        from weasyprint import HTML
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "WeasyPrint fehlt. Installiere es mit: python3 -m pip install weasyprint"
+        ) from exc
+
+    report_data = report_data or build_report_data(user_id, report_month)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    doc = render_template(template, report_data)
+
+    with TemporaryDirectory() as tmp_dir:
+        html_path = Path(tmp_dir) / "rove_report.html"
+        html_path.write_text(doc, encoding="utf-8")
+        HTML(filename=str(html_path), base_url=str(TEMPLATE_PATH.parent)).write_pdf(str(output_path))
+
+    return output_path
 
 
 def cleanup_expired_reports(now: datetime | None = None) -> int:
