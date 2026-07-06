@@ -893,6 +893,9 @@ DETAIL_VALUE_ALIASES = {
     "fintesstudio": ("abos", "gym", "Fitnessstudio"),
     "fitnessabo": ("abos", "gym", "Fitnessstudio"),
     "handy": ("abos", "handy", "Handy"),
+    "handyvertrag": ("abos", "handyvertrag", "Handyvertrag"),
+    "handyvertag": ("abos", "handyvertrag", "Handyvertrag"),
+    "mobilfunkvertrag": ("abos", "handyvertrag", "Handyvertrag"),
     "icloud": ("abos", "icloud", "iCloud"),
     "abo": ("abos", "abo", "Abo"),
     "abos": ("abos", "abo", "Abo"),
@@ -987,6 +990,39 @@ def find_detail_alias_matches(text_lower: str) -> list:
         if re.search(rf"\b{re.escape(alias)}\b", text_lower):
             matches.append((len(alias), section, key, label))
     return matches
+
+
+def unique_detail_key(existing: dict, base_key: str) -> str:
+    if base_key not in existing:
+        return base_key
+    index = 2
+    while f"{base_key}_{index}" in existing:
+        index += 1
+    return f"{base_key}_{index}"
+
+
+def derive_generic_abo_key_label(text_lower: str, existing: dict) -> tuple[str, str]:
+    """Macht aus 'Anthropic 20€ als Abo' einen eigenen Abo-Eintrag."""
+    cleaned = re.sub(r"\d+(?:[.,]\d+)?\s*(?:€|eur|euro)?", " ", text_lower)
+    stop_words = {
+        "füge", "fuege", "hinzu", "noch", "neue", "neuer", "neues", "neu",
+        "ergänze", "ergaenze", "nimm", "auf", "setze", "setz",
+        "im", "in", "pro", "monat", "monatlich", "als", "zu", "meinen",
+        "mein", "meine", "abo", "abos", "abonnement", "jahresabo",
+        "vertrag", "abgeschlossen", "kostet",
+    }
+    words = [
+        word for word in re.findall(r"[a-zäöüßA-ZÄÖÜ0-9]+", cleaned)
+        if word.lower() not in stop_words and len(word) > 1
+    ]
+    if not words:
+        return unique_detail_key(existing, "abo"), "Abo"
+
+    raw_name = "_".join(words[:3]).lower()
+    key = re.sub(r"[^a-z0-9äöüß_]+", "", raw_name).strip("_") or "abo"
+    label = " ".join(words[:3]).strip().title()
+    label = label.replace("Handyvertag", "Handyvertrag")
+    return unique_detail_key(existing, key), label
 
 
 def is_profile_removal_request(text_lower: str) -> bool:
@@ -1228,6 +1264,8 @@ def maybe_apply_profile_correction(user_id: int, u: dict, text_lower: str) -> st
                 value = monthly_debt
             if total_debt is not None:
                 section_values["restschuld"] = total_debt
+        if section == "abos" and key == "abo":
+            key, label = derive_generic_abo_key_label(text_lower, section_values)
         section_values[key] = value
         details[section] = section_values
 
@@ -2586,7 +2624,13 @@ def maybe_answer_profile_finance(user_id: int, u: dict, text_lower: str) -> str:
 
     asks_abo_breakdown = (
         any(word in text_lower for word in ["abo", "abos", "abonnement", "abonnements"])
-        and is_profile_info_question(text_lower)
+        and (
+            is_profile_info_question(text_lower)
+            or any(word in text_lower for word in [
+                "zeig", "zeige", "liste", "auflisten", "übersicht", "uebersicht",
+                "überblick", "ueberblick", "aufstellung", "anzeigen",
+            ])
+        )
     )
     if asks_abo_breakdown:
         return format_fixed_cost_section(u, "abos", "Deine Abos")
