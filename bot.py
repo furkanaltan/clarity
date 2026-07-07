@@ -1170,11 +1170,14 @@ def apply_investment_change(uid: int, u: dict, amount_val: float, text_lower: st
 def is_profile_info_question(text_lower: str) -> bool:
     """Erkennt kurze Alltagsfragen zum Profil, bevor sie als Änderung landen."""
     normalized = re.sub(r"\s+", " ", text_lower.strip())
+    if re.search(r"\b(wv|wieviel|wie viel|wieviele|wie viele)\b", normalized):
+        return True
     question_markers = [
-        "wie viel", "wieviel", "wie hoch", "was ist", "was zahle",
+        "wie viel", "wieviel", "wie viele", "wieviele", "wie hoch", "was ist", "was zahle",
         "was zahl", "wieviel zahle", "wieviel zahl", "wie viel zahle",
         "wie viel zahl", "was kostet", "kosten meine", "zahle ich",
-        "zahl ich", "bezahle ich", "wv ", "wv.", "w v ",
+        "zahl ich", "bezahle ich", "was habe ich", "habe ich",
+        "wv ", "wv.", "wv?", "w v ",
     ]
     return any(marker in normalized for marker in question_markers)
 
@@ -4753,14 +4756,14 @@ def handle_msg(message):
             bot.send_message(uid, affordability_reply, parse_mode="Markdown")
             return
 
-        category_reply = maybe_answer_category_spending(uid, text_lower)
-        if category_reply:
-            bot.send_message(uid, category_reply, parse_mode="Markdown")
-            return
-
         profile_reply = maybe_answer_profile_finance(uid, u, text_lower)
         if profile_reply:
             bot.send_message(uid, profile_reply, parse_mode="Markdown")
+            return
+
+        category_reply = maybe_answer_category_spending(uid, text_lower)
+        if category_reply:
+            bot.send_message(uid, category_reply, parse_mode="Markdown")
             return
 
 
