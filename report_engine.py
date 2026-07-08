@@ -74,23 +74,6 @@ BADGE_LABELS = {
     "no_fastfood_30": "30 Tage ohne Fast Food",
 }
 
-BADGE_MONTH_NAMES = {
-    1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
-    7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
-}
-
-
-def badge_label(badge_key: str) -> str:
-    """Menschenlesbares Label fuer einen badge_key, inkl. dynamischer Monats-Investment-Badges (inv_YYYY_MM)."""
-    if badge_key.startswith("inv_"):
-        parts = badge_key[len("inv_"):].split("_")
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            year, month = int(parts[0]), int(parts[1])
-            month_name = BADGE_MONTH_NAMES.get(month)
-            if month_name:
-                return f"Investment {month_name} {year}"
-    return BADGE_LABELS.get(badge_key, badge_key)
-
 PAGE_W, PAGE_H = landscape(A4)
 MARGIN_X = 50
 INK = HexColor("#111111")
@@ -846,23 +829,27 @@ def get_wealth_history(user_id: int, report_month: str, limit: int = 12) -> list
 
 
 def get_user_badges(user_id: int, limit: int = 8) -> list:
+    """Nur echte Errungenschaften (BADGE_LABELS-Keys) — user_badges enthaelt daneben auch
+    interne Dedup-Marker (moment_*, budget_invite_sent_*, budget_resolved_*, inv_YYYY_MM),
+    die bot.py's eigener /badges-Befehl ebenfalls ausblendet."""
     with get_db() as conn:
         if not table_exists(conn, "user_badges"):
             return []
+        placeholders = ",".join("?" for _ in BADGE_LABELS)
         rows = conn.execute(
-            """
+            f"""
             SELECT badge_key, earned_at
             FROM user_badges
-            WHERE user_id = ?
+            WHERE user_id = ? AND badge_key IN ({placeholders})
             ORDER BY earned_at DESC, id DESC
             LIMIT ?
             """,
-            (user_id, limit),
+            (user_id, *BADGE_LABELS.keys(), limit),
         ).fetchall()
     return [
         {
             "key": row["badge_key"],
-            "label": badge_label(row["badge_key"]),
+            "label": BADGE_LABELS[row["badge_key"]],
             "earned_at": row["earned_at"],
         }
         for row in rows
@@ -1328,7 +1315,7 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
-    from rove_web_report_renderer import build_pdf_report
+    from rove_pdf_report_renderer import build_pdf_report
 
     build_pdf_report(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
