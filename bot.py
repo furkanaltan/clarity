@@ -86,6 +86,7 @@ RESET_USER_TABLES = [
     "portfolio_snapshots",
     "report_jobs",
     "category_budgets",
+    "user_category_rules",
     "users",
 ]
 
@@ -258,6 +259,155 @@ CATEGORY_LABELS = {
 
 def category_label(category: str) -> str:
     return CATEGORY_LABELS.get(category, category.title())
+
+
+CATEGORY_NAME_ALIASES = {
+    "lebensmittel": "LEBENSMITTEL",
+    "supermarkt": "LEBENSMITTEL",
+    "essen zuhause": "LEBENSMITTEL",
+    "restaurants": "RESTAURANTS",
+    "restaurant": "RESTAURANTS",
+    "resturants": "RESTAURANTS",
+    "resturant": "RESTAURANTS",
+    "essen gehen": "RESTAURANTS",
+    "freizeit": "FREIZEIT",
+    "shopping": "SHOPPING",
+    "mobilität": "MOBILITAET",
+    "mobilitaet": "MOBILITAET",
+    "tanken": "MOBILITAET",
+    "drogerie": "DROGERIE",
+    "pflege": "PFLEGE",
+    "gesundheit": "GESUNDHEIT",
+    "abos": "ABOS",
+    "abo": "ABOS",
+    "sonstiges": "SONSTIGES",
+}
+
+
+def normalize_category_name(text_lower: str) -> str:
+    for alias, category in CATEGORY_NAME_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text_lower):
+            return category
+    return ""
+
+
+def normalize_rule_alias(alias: str) -> str:
+    alias = alias.lower().strip()
+    alias = re.sub(r"\b(das|der|die|den|dem|mein|meine|meinen|meiner|bitte|künftig|kuenftig|zukünftig|zukunftig)\b", " ", alias)
+    alias = re.sub(r"[^a-z0-9äöüß ]+", " ", alias)
+    alias = re.sub(r"\s+", " ", alias).strip()
+    return alias[:80]
+
+
+def save_user_category_rule(user_id: int, alias: str, category: str, label: str = "") -> None:
+    alias = normalize_rule_alias(alias)
+    if not alias or category not in CATEGORY_EMOJIS:
+        return
+    label = (label or alias.title()).strip()[:80]
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO user_category_rules
+               (user_id, alias, category, label, usage_count, updated_at)
+               VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, alias)
+               DO UPDATE SET category = excluded.category,
+                             label = excluded.label,
+                             updated_at = CURRENT_TIMESTAMP""",
+            (user_id, alias, category, label)
+        )
+        conn.commit()
+
+
+def find_user_category_rule(user_id: int, text_lower: str):
+    if not user_id:
+        return None
+    normalized = normalize_rule_alias(text_lower)
+    if not normalized:
+        return None
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT alias, category, label
+               FROM user_category_rules
+               WHERE user_id = ?
+               ORDER BY LENGTH(alias) DESC""",
+            (user_id,)
+        ).fetchall()
+        for row in rows:
+            alias = row["alias"]
+            if re.search(rf"\b{re.escape(alias)}\b", normalized):
+                conn.execute(
+                    """UPDATE user_category_rules
+                       SET usage_count = usage_count + 1,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE user_id = ? AND alias = ?""",
+                    (user_id, alias)
+                )
+                conn.commit()
+                return row["category"], row["label"] or alias.title(), alias
+    return None
+
+
+def update_latest_expense_for_rule(user_id: int, alias: str, category: str) -> bool:
+    alias = normalize_rule_alias(alias)
+    if not alias:
+        return False
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT id FROM expenses
+               WHERE user_id = ?
+                 AND LOWER(COALESCE(merchant, '')) LIKE ?
+               ORDER BY id DESC
+               LIMIT 1""",
+            (user_id, f"%{alias}%")
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE expenses SET category = ? WHERE id = ? AND user_id = ?",
+            (category, row["id"], user_id)
+        )
+        conn.commit()
+        return True
+
+
+def maybe_apply_category_rule(user_id: int, text_lower: str) -> str:
+    if extract_amounts(text_lower, exclude_years=True):
+        return ""
+
+    category = normalize_category_name(text_lower)
+    if not category:
+        return ""
+
+    patterns = [
+        r"^(.+?)\s+(?:ist|sind|war|waren|gehört zu|gehoert zu|zählt zu|zaehlt zu)\s+(.+)$",
+        r"^(.+?)\s+(?:als|zu)\s+(.+?)\s+(?:speichern|merken|einordnen|kategorisieren)$",
+        r"^(?:speicher|merk|ordne)\s+(.+?)\s+(?:als|zu)\s+(.+)$",
+    ]
+    alias = ""
+    for pattern in patterns:
+        match = re.search(pattern, text_lower)
+        if not match:
+            continue
+        left, right = match.group(1), match.group(2)
+        if normalize_category_name(right) == category:
+            alias = left
+            break
+
+    if not alias:
+        return ""
+
+    alias = normalize_rule_alias(alias)
+    if not alias or len(alias) < 2:
+        return ""
+
+    label = alias.title()
+    save_user_category_rule(user_id, alias, category, label)
+    updated = update_latest_expense_for_rule(user_id, alias, category)
+    emoji = CATEGORY_EMOJIS.get(category, "")
+    reply = f"Alles klar. Ich merke mir: *{label}* → {emoji} *{category_label(category)}*."
+    if updated:
+        reply += "\n\nDie letzte passende Ausgabe habe ich direkt aktualisiert."
+    return reply
 
 # ====================== GAMIFICATION CONSTANTS ======================
 RANKS = [
@@ -474,6 +624,23 @@ def init_db():
 
         conn.execute('''CREATE INDEX IF NOT EXISTS idx_category_budgets_user_month
             ON category_budgets(user_id, active_month)
+        ''')
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS user_category_rules (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            alias       TEXT    NOT NULL,
+            category    TEXT    NOT NULL,
+            label       TEXT    DEFAULT '',
+            usage_count INTEGER DEFAULT 0,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, alias),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_user_category_rules_user
+            ON user_category_rules(user_id, alias)
         ''')
 
         conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
@@ -1468,7 +1635,12 @@ def extract_merchant_name(text_input: str) -> str:
     return words[0].capitalize() if words else "Unbekannt"
 
 
-def detect_expense_label(text_input: str, text_lower: str) -> tuple[str, str, str]:
+def detect_expense_label(text_input: str, text_lower: str, user_id: int = None) -> tuple[str, str, str]:
+    personal_rule = find_user_category_rule(user_id, text_lower) if user_id else None
+    if personal_rule:
+        category, label, _alias = personal_rule
+        return category, label, ""
+
     # Konkrete Händler schlagen generische Wörter wie "Essen" oder "Einkaufen".
     # Beispiel: "11 Euro Essen Lidl" muss Lebensmittel/Lidl werden, nicht Restaurant/Essen.
     for merchant, keys in MERCHANT_KEYWORDS.items():
@@ -1486,15 +1658,15 @@ def detect_expense_label(text_input: str, text_lower: str) -> tuple[str, str, st
     return "", "", ""
 
 
-def looks_like_known_expense(text_input: str, text_lower: str) -> bool:
+def looks_like_known_expense(text_input: str, text_lower: str, user_id: int = None) -> bool:
     amounts = extract_amounts(text_lower, exclude_years=True)
     if len(amounts) != 1:
         return False
-    category, merchant, _direct_label = detect_expense_label(text_input, text_lower)
+    category, merchant, _direct_label = detect_expense_label(text_input, text_lower, user_id=user_id)
     return bool(category and merchant)
 
 
-def parse_hybrid_expense_items(text_input: str, amounts: list[float]) -> list[dict]:
+def parse_hybrid_expense_items(text_input: str, amounts: list[float], user_id: int = None) -> list[dict]:
     if not amounts:
         return []
 
@@ -1515,7 +1687,7 @@ def parse_hybrid_expense_items(text_input: str, amounts: list[float]) -> list[di
         for start, end, context in context_options:
             if not context or (start, end) in used_context_spans:
                 continue
-            category, merchant, direct_label = detect_expense_label(context, context.lower())
+            category, merchant, direct_label = detect_expense_label(context, context.lower(), user_id=user_id)
             if category and merchant:
                 selected = (start, end, category, merchant, direct_label)
                 break
@@ -1890,26 +2062,9 @@ def normalize_budget_categories(text_lower: str) -> list:
     if categories:
         return categories
 
-    direct_map = {
-        "lebensmittel": "LEBENSMITTEL",
-        "essen": "LEBENSMITTEL",
-        "restaurants": "RESTAURANTS",
-        "restaurant": "RESTAURANTS",
-        "resturants": "RESTAURANTS",
-        "resturant": "RESTAURANTS",
-        "freizeit": "FREIZEIT",
-        "shopping": "SHOPPING",
-        "mobilität": "MOBILITAET",
-        "mobilitaet": "MOBILITAET",
-        "tanken": "MOBILITAET",
-        "drogerie": "DROGERIE",
-        "pflege": "PFLEGE",
-        "gesundheit": "GESUNDHEIT",
-        "abos": "ABOS",
-    }
-    for key, category in direct_map.items():
-        if key in text_lower:
-            return [category]
+    category = normalize_category_name(text_lower)
+    if category:
+        return [category]
     return []
 
 
@@ -2454,12 +2609,27 @@ def build_tracking_note(cp_earned: int) -> str:
     return "Tracking-Tag gesichert." if cp_earned > 0 else ""
 
 
+def build_category_learning_hint(items: list) -> str:
+    for item in items:
+        if item.get("category") == "SONSTIGES":
+            merchant = str(item.get("merchant") or "").strip()
+            if not merchant or merchant.lower() == "unbekannt":
+                merchant = "das"
+            return (
+                "Wenn die Kategorie nicht passt, schreib kurz:\n"
+                f"`{merchant} ist Lebensmittel`\n"
+                "Dann merke ich mir das für dich."
+            )
+    return ""
+
+
 def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) -> str:
     expense_count = get_month_expense_count(user_id) if user_id else 0
     first_expense_moment = build_first_expense_moment(user_id, expense_count) if user_id else ""
     early_pattern_moment = build_early_pattern_moment(user_id, expense_count) if user_id else ""
     report_moment = build_report_seed_moment(user_id, expense_count) if user_id else ""
     smart_hint = build_smart_spending_hint(user_id, items) if user_id else ""
+    learning_hint = build_category_learning_hint(items)
 
     if len(items) == 1:
         item = items[0]
@@ -2479,6 +2649,8 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
             lines.append(report_moment.strip())
         if smart_hint:
             lines.append(smart_hint.strip())
+        if learning_hint:
+            lines.append(learning_hint.strip())
         return "\n\n".join(lines)
 
     lines = [f"Gespeichert: {len(items)} Ausgaben.", ""]
@@ -2499,6 +2671,8 @@ def format_expense_confirmation(items: list, cp_text: str, user_id: int = None) 
         lines.append(report_moment.strip())
     if smart_hint:
         lines.append(smart_hint.strip())
+    if learning_hint:
+        lines.append(learning_hint.strip())
     return "\n".join(lines)
 
 
@@ -4695,7 +4869,7 @@ def handle_msg(message):
         step == STEP_NORMAL
         and looks_like_profile_correction(text_lower)
         and not looks_like_investment_update(text_lower)
-        and not looks_like_known_expense(text_input, text_lower)
+        and not looks_like_known_expense(text_input, text_lower, user_id=uid)
     ):
         correction_reply = maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
@@ -4729,6 +4903,11 @@ def handle_msg(message):
         correction_reply = "" if looks_like_investment_update(text_lower) else maybe_apply_profile_correction(uid, u, text_lower)
         if correction_reply:
             bot.send_message(uid, correction_reply, parse_mode="Markdown")
+            return
+
+        category_rule_reply = maybe_apply_category_rule(uid, text_lower)
+        if category_rule_reply:
+            bot.send_message(uid, category_rule_reply, parse_mode="Markdown")
             return
 
         delete_budget_reply = maybe_delete_budget(uid, text_lower)
@@ -5010,7 +5189,7 @@ def handle_msg(message):
         return
 
     if len(expense_amounts) > 1 and not looks_like_investment_update(text_lower) and not is_portfolio_snapshot_input(text_lower):
-        parsed_items = parse_hybrid_expense_items(text_input, expense_amounts)
+        parsed_items = parse_hybrid_expense_items(text_input, expense_amounts, user_id=uid)
         if parsed_items:
             with get_db() as conn:
                 for item in parsed_items:
@@ -5081,7 +5260,7 @@ def handle_msg(message):
             send_badge_summary(bot, uid, new_badges)
             return
 
-        category_found, merchant_found, direct_category_label = detect_expense_label(text_input, text_lower)
+        category_found, merchant_found, direct_category_label = detect_expense_label(text_input, text_lower, user_id=uid)
 
         if merchant_found and category_found:
             with get_db() as conn:
@@ -5171,7 +5350,7 @@ def handle_msg(message):
         return
 
     if not expense_amounts:
-        label_category, label_merchant, label_direct = detect_expense_label(text_input, text_lower)
+        label_category, label_merchant, label_direct = detect_expense_label(text_input, text_lower, user_id=uid)
         if label_category and label_merchant:
             bot.send_message(
                 uid,
