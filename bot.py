@@ -4160,7 +4160,7 @@ def build_announce_rename_preview(rows: list) -> str:
         f"Ich würde {len(rows)} freigegebene Nutzer anschreiben mit:\n\n"
         f"{RENAME_ANNOUNCEMENT_TEXT}\n\n"
         "Zum Senden:\n"
-        "/announce_rename send"
+        "`/announce_rename send`"
     )
 
 
