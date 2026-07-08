@@ -17,6 +17,17 @@ PAGE_W = 1080
 PAGE_H = 675
 MARGIN = 54
 
+GERMAN_MONTHS = {
+    1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
+    7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
+}
+
+
+def next_month_name(report_month: str) -> str:
+    year, month = map(int, report_month.split("-"))
+    next_month = 1 if month == 12 else month + 1
+    return GERMAN_MONTHS.get(next_month, "")
+
 BG = colors.HexColor("#08090B")
 CARD = colors.HexColor("#111318")
 CARD_SOFT = colors.HexColor("#0D171D")
@@ -41,8 +52,11 @@ def register_fonts() -> None:
             pdfmetrics.registerFont(TTFont(name, str(path)))
 
 
+CORE_FONTS = {"Times-Roman", "Helvetica", "Helvetica-Bold", "Times-Bold"}
+
+
 def font(name: str) -> str:
-    if name in pdfmetrics.getRegisteredFontNames():
+    if name in CORE_FONTS or name in pdfmetrics.getRegisteredFontNames():
         return name
     return {
         "RoveSans": "Helvetica",
@@ -132,12 +146,9 @@ def begin_page(c, section: str, title: str, page_no: int) -> None:
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
     draw_glow(c, PAGE_W - 170, PAGE_H - 120, 210, colors.Color(0.09, 0.35, 0.50, alpha=0.18))
     draw_glow(c, 130, 90, 240, colors.Color(0.06, 0.26, 0.34, alpha=0.12))
-    c.setStrokeColor(BLUE)
-    c.setLineWidth(1.2)
-    c.line(MARGIN, PAGE_H - 76, MARGIN + 20, PAGE_H - 76)
     c.setFont(font("RoveSans-Bold"), 9)
     c.setFillColor(BLUE)
-    c.drawString(MARGIN + 30, PAGE_H - 80, section.upper())
+    c.drawString(MARGIN, PAGE_H - 80, section.upper())
     c.setFont("Times-Roman", 38)
     c.setFillColor(TEXT)
     c.drawString(MARGIN, PAGE_H - 126, title)
@@ -168,7 +179,8 @@ def draw_glow(c, x: float, y: float, radius: float, color) -> None:
 
 
 def draw_card(c, x: float, y: float, w: float, h: float, label: str, value: str,
-              sub: str | None = None, accent: bool = False, value_size: float = 28) -> None:
+              sub: str | None = None, accent: bool = False, value_size: float = 28,
+              wrap_value: bool = False) -> None:
     c.setFillColor(CARD_SOFT if accent else CARD)
     c.setStrokeColor(colors.Color(BLUE.red, BLUE.green, BLUE.blue, alpha=0.35) if accent else LINE)
     c.setLineWidth(1.0)
@@ -178,7 +190,12 @@ def draw_card(c, x: float, y: float, w: float, h: float, label: str, value: str,
     c.drawString(x + 22, y - 28, label.upper())
     c.setFont("Times-Roman", value_size)
     c.setFillColor(BLUE if accent else TEXT)
-    c.drawString(x + 22, y - 67, clean_text(value))
+    if wrap_value:
+        draw_wrapped(c, clean_text(value), x + 22, y - 52, w - 44, size=value_size,
+                     leading=value_size * 1.25, color=BLUE if accent else TEXT,
+                     font_name="Times-Roman", max_lines=3)
+    else:
+        c.drawString(x + 22, y - 67, clean_text(value))
     if sub:
         draw_wrapped(c, sub, x + 22, y - 91, w - 44, size=9.5, leading=13, color=MUTED, max_lines=2)
 
@@ -382,7 +399,7 @@ def draw_goal(c, data):
     draw_card(c, 95, 250, 280, 92, "Zielbetrag", money(target), value_size=25)
     draw_card(c, 400, 250, 280, 92, "Aktueller Stand", money(current), accent=True, value_size=25)
     draw_card(c, 705, 250, 280, 92, "Noch", money(remaining), value_size=25)
-    draw_card(c, 95, 118, 890, 90, "Ehrlich gesagt", clean_text(goal.get("forecast_text")), value_size=18)
+    draw_card(c, 95, 138, 890, 110, "Ehrlich gesagt", clean_text(goal.get("forecast_text")), value_size=16, wrap_value=True)
     end_page(c, 7)
 
 
@@ -413,8 +430,8 @@ def draw_recap(c, data):
 
 def draw_closing(c, data):
     closing = data["pages"]["closing"]
-    month = data["meta"]["month_label"].split(" ", 1)[0]
-    begin_page(c, f"Plan für den nächsten Monat", f"Dein Plan nach {month}.", 10)
+    month = next_month_name(data["meta"]["report_month"])
+    begin_page(c, f"Plan für den nächsten Monat", f"Dein Plan für {month}.", 10)
     steps = [
         ("01", "Tracke an mindestens 10 Tagen.", "Damit wird dein Monatsbild deutlich klarer."),
         ("02", "Halte deine stärkste Kategorie bewusst im Blick.", "Nicht verzichten - nur früher erkennen."),
