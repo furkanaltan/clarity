@@ -48,7 +48,7 @@ RANKS = [
     (500, "Investor", "🧱"),
     (1000, "Manager", "🏗️"),
     (2500, "Kapitalist", "🏛️"),
-    (5000, "Clarity Elite", "💎"),
+    (5000, "Rov.E Elite", "💎"),
 ]
 
 SCORE_RANKS = [
@@ -58,7 +58,7 @@ SCORE_RANKS = [
     (65, 74, "Investor", "🧱"),
     (75, 84, "Manager", "🏗️"),
     (85, 92, "Kapitalist", "🏛️"),
-    (93, 100, "Clarity Elite", "💎"),
+    (93, 100, "Rov.E Elite", "💎"),
 ]
 
 BADGE_LABELS = {
@@ -167,7 +167,7 @@ def draw_clarity_mark(c, x, y, scale=1.0, color=MUTED):
 def draw_clarity_logo(c, x, y, scale=1.0):
     c.setFillColor(MUTED)
     draw_clarity_mark(c, x, y, scale, MUTED)
-    draw_spaced_text(c, x + 29 * scale, y - 4.2 * scale, "CLARITY", spacing=6.8 * scale, size=10.5 * scale)
+    draw_spaced_text(c, x + 29 * scale, y - 4.2 * scale, "ROV.E", spacing=6.8 * scale, size=10.5 * scale)
 
 
 def draw_footer(c, page_number=1):
@@ -180,7 +180,7 @@ def draw_footer(c, page_number=1):
     c.line(MARGIN_X + 118, y - 2, MARGIN_X + 118, y + 22)
     c.setFont(FONT_TEXT, 9)
     c.setFillColor(MUTED)
-    c.drawString(MARGIN_X + 138, y + 6, "Clarity Report")
+    c.drawString(MARGIN_X + 138, y + 6, "Rov.E Report")
     c.drawRightString(PAGE_W - MARGIN_X, y + 6, f"{page_number} / 10")
 
 
@@ -1119,7 +1119,7 @@ def draw_cover_page(c, data):
 
     c.setFont(FONT_DISPLAY, 72)
     c.setFillColor(INK)
-    c.drawString(MARGIN_X, PAGE_H - 165, "Clarity Report")
+    c.drawString(MARGIN_X, PAGE_H - 165, "Rov.E Report")
 
     y = PAGE_H - 225
     card_w = 236
@@ -1178,7 +1178,7 @@ def draw_month_page(c, data):
 def draw_score_page(c, data):
     score = data["pages"]["score"]
     parts = score["parts"]
-    begin_page(c, "Clarity Score")
+    begin_page(c, "Rov.E Score")
     draw_score_circle(c, PAGE_W / 2, PAGE_H - 220, 70, score["clarity_score"])
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(INK)
@@ -1264,7 +1264,7 @@ def draw_milestones_page(c, data):
     begin_page(c, "Meilensteine")
     draw_label(c, MARGIN_X, PAGE_H - 140, "Level")
     draw_value(c, MARGIN_X, PAGE_H - 180, rank["name"], 30)
-    draw_card(c, MARGIN_X, PAGE_H - 245, 230, 95, "Clarity Points", str(milestones["clarity_points"]), value_size=24)
+    draw_card(c, MARGIN_X, PAGE_H - 245, 230, 95, "Rov.E Points", str(milestones["clarity_points"]), value_size=24)
     draw_card(c, MARGIN_X + 260, PAGE_H - 245, 230, 95, "Bis naechstes Level", str(rank["points_to_next"]), value_size=24)
 
     y = PAGE_H - 395
@@ -1284,7 +1284,7 @@ def draw_milestones_page(c, data):
 
 def draw_recap_page(c, data):
     recap = data["pages"]["recap"]
-    begin_page(c, "Clarity Recap")
+    begin_page(c, "Rov.E Recap")
     y = PAGE_H - 145
     draw_card(c, MARGIN_X, y, PAGE_W - 2 * MARGIN_X, 95, "Was gut lief", recap["what_went_well"], value_size=13)
     y -= 125

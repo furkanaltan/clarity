@@ -15,15 +15,15 @@ PAGE_DIR = REPORT_BUNDLE_DIR / "pages"
 GENERATED_DIR = REPORT_BUNDLE_DIR / "generated"
 
 PAGE_FILES = [
-    ("01-cover.html", "Clarity Report"),
+    ("01-cover.html", "Rov.E Report"),
     ("02-financial-story.html", "Überblick"),
     ("03-dein-monat.html", "Insight"),
     ("04-clarity-score.html", "Financial Story"),
     ("05-wealth-journey.html", "Money Map"),
-    ("06-your-goal.html", "Clarity Score"),
+    ("06-your-goal.html", "Rov.E Score"),
     ("07-money-map.html", "Your Goal"),
     ("08-meilensteine.html", "Meilensteine"),
-    ("09-clarity-recap.html", "Clarity Recap"),
+    ("09-clarity-recap.html", "Rov.E Recap"),
     ("10-closing.html", "Plan"),
 ]
 
@@ -158,7 +158,7 @@ def build_footer(page_number: int, title: str = "") -> str:
         <div class="page-footer">
           <div class="logo">
             {LOGO_SVG}
-            CLARITY
+            ROV.E
           </div>
           <div class="footer-title"></div>
           <div class="page-num">{page_number} / 10</div>
@@ -342,7 +342,7 @@ def build_badge_tiles(data: dict) -> str:
             '<rect x="11.5" y="2" width="3" height="12" rx="0.5" /></svg>'
             "<div>"
             f'<div class="b-name">{h(rank)}</div>'
-            '<div class="b-desc">Dein aktueller Rang im Clarity System</div>'
+            '<div class="b-desc">Dein aktueller Rang im Rov.E System</div>'
             "</div>"
             '<div class="badge-check">○</div>'
             "</div>"
@@ -718,7 +718,7 @@ def icon(name: str, kind: str = "square-icon") -> str:
 def footer(page_number: int) -> str:
     return f"""
     <div class="page-footer">
-      <div class="logo">{LOGO_SVG}CLARITY</div>
+      <div class="logo">{LOGO_SVG}ROV.E</div>
       <div class="page-num">{page_number:02d} / 10</div>
     </div>
 """.rstrip()
@@ -845,7 +845,21 @@ def goal_months_text(months) -> str:
         return "Sparrate hinterlegen, damit die Prognose sichtbar wird."
     if months <= 0:
         return "Dein Ziel ist rechnerisch bereits erreicht."
-    return f"Bei gleicher Sparrate dauert es rund {months} Monate."
+    return f"Bei gleicher Sparrate liegt dein Ziel noch rund {format_month_duration(months)} entfernt."
+
+
+def format_month_duration(months) -> str:
+    months = int(months or 0)
+    if months <= 0:
+        return "0 Monate"
+    if months < 12:
+        return f"{months} Monat" if months == 1 else f"{months} Monate"
+    years, rest = divmod(months, 12)
+    year_text = f"{years} Jahr" if years == 1 else f"{years} Jahre"
+    if rest == 0:
+        return year_text
+    month_text = f"{rest} Monat" if rest == 1 else f"{rest} Monate"
+    return f"{year_text} und {month_text}"
 
 
 def milestone_info(data: dict) -> dict:
@@ -933,7 +947,7 @@ def render_777_cover(_page_html: str, data: dict) -> str:
     return f"""
   <section class="page cover">
     <div style="display:flex;justify-content:flex-end;"><div class="topline">Ausgabe 01</div></div>
-    <div class="cover-title">Clarity<br><span>Report</span></div>
+    <div class="cover-title">Rov.E<br><span>Report</span></div>
     <div class="cover-subtitle">Dein finanzieller Monatsabschluss für {h(cover["period"])} - Vermögen, Verhalten und der nächste Schritt zu deinem Ziel.</div>
     <div class="cover-kpis">
       <div class="card cover-kpi"><div class="kpi-head">{icon("calendar", "round-icon")}Zeitraum</div><div class="kpi-line"></div><div class="kpi-bottom"><div class="kpi-value">{h(month)}</div><div class="kpi-sub">{h(year)}</div></div></div>
@@ -1096,7 +1110,7 @@ def render_777_score(_page_html: str, data: dict) -> str:
     rank_width = max(3, min(100, value))
     return f"""
   <section class="page">
-    <div class="topline">Clarity Score · Wie bewusst du steuerst</div>
+    <div class="topline">Rov.E Score · Wie bewusst du steuerst</div>
     <div class="display">{value} von 100 - du hast dein Geld im Blick.</div>
     <div class="divider"></div>
     <div class="score-layout">
@@ -1262,11 +1276,11 @@ def build_html_document(pages: list[str]) -> str:
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Clarity Report</title>
+    <title>Rov.E Report</title>
     <link rel="stylesheet" href="../style.css" />
   </head>
   <body>
-    <main class="report" aria-label="Clarity Monatsreport">
+    <main class="report" aria-label="Rov.E Monatsreport">
 {pages}
     </main>
   </body>

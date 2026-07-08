@@ -15,7 +15,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clarity Bot Control Panel</title>
+    <title>Rov.E Bot Control Panel</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a1a; color: #ffffff; text-align: center; padding: 50px; }
         .container { max-width: 600px; margin: 0 auto; background: #2a2a2a; padding: 30px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
@@ -33,7 +33,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>🔮 Clarity Bot Control Panel</h1>
+        <h1>🔮 Rov.E Bot Control Panel</h1>
         <p>Steuere deinen Telegram-Bot bequem über den Browser.</p>
         
         <div class="status {{ 'online' if is_running else 'offline' }}">

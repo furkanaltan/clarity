@@ -49,6 +49,8 @@ REPORT_MAX_ATTEMPTS = int(os.getenv("REPORT_MAX_ATTEMPTS", "3"))
 REPORT_RETRY_DELAY_MINUTES = int(os.getenv("REPORT_RETRY_DELAY_MINUTES", "15"))
 REPORT_CREATION_MISFIRE_GRACE_SECONDS = int(os.getenv("REPORT_CREATION_MISFIRE_GRACE_SECONDS", "21600"))
 BOT_LOCK_FILE = os.getenv("CLARITY_BOT_LOCK_FILE", "clarity_bot.lock")
+APP_DISPLAY_NAME = "Rov.E"
+SCORE_DISPLAY_NAME = "Rov.E Score"
 
 # ====================== LOGGING ======================
 logging.basicConfig(
@@ -417,7 +419,7 @@ RANKS = [
     (500,  "Investor",         "🧱"),
     (1000, "Manager",          "🏗️"),
     (2500, "Kapitalist",       "🏛️"),
-    (5000, "Clarity Elite",    "💎"),
+    (5000, "Rov.E Elite",       "💎"),
 ]
 
 SCORE_RANKS = [
@@ -427,7 +429,7 @@ SCORE_RANKS = [
     (65, 74, "Investor", "🧱"),
     (75, 84, "Manager", "🏗️"),
     (85, 92, "Kapitalist", "🏛️"),
-    (93, 100, "Clarity Elite", "💎"),
+    (93, 100, "Rov.E Elite",    "💎"),
 ]
 
 BADGES = {
@@ -1744,6 +1746,7 @@ def get_actor_id(message) -> int:
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
     "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
+    "/announce_rename",
 }
 
 BETA_NUDGE_TEXT = (
@@ -1759,6 +1762,14 @@ BETA_NUDGE_TEXT = (
     "Teste Rov.E heute einmal mit 2 echten Ausgaben.\n\n"
     "Wenn irgendwas nervt oder unklar ist, schick mir einfach Screenshot.\n"
     "Genau dafür ist die Beta da."
+)
+
+RENAME_ANNOUNCEMENT_TEXT = (
+    "Kurze Info:\n\n"
+    "Clarity heißt ab jetzt *Rov.E*.\n\n"
+    "Für dich ändert sich nichts an der Nutzung.\n"
+    "Du kannst weiter wie gewohnt Ausgaben schreiben, Fragen stellen und deinen Report bekommen.\n\n"
+    "Nur Name und Profilbild werden Schritt für Schritt angepasst."
 )
 
 
@@ -1849,7 +1860,7 @@ def ensure_access_record(user_id: int, display_name: str = "", username: str = "
         conn.commit()
 
     notify_admins(
-        "Neue Clarity-Freigabe wartet:\n\n"
+        "Neue Rov.E-Freigabe wartet:\n\n"
         f"Name: {display_name or 'Unbekannt'}\n"
         f"Username: {username or '-'}\n"
         f"ID: {user_id}\n\n"
@@ -1878,14 +1889,14 @@ def ensure_user_approved(message) -> bool:
     if status == "revoked":
         bot.send_message(
             message.chat.id,
-            "Dein Zugang zu Clarity ist aktuell nicht freigeschaltet. Bitte wende dich an den Support."
+            "Dein Zugang zu Rov.E ist aktuell nicht freigeschaltet. Bitte wende dich an den Support."
         )
         return False
 
     bot.send_message(
         message.chat.id,
         "Dein Zugang ist angefragt.\n\n"
-        "Clarity ist aktuell im Testlauf. Sobald du freigegeben bist, kannst du direkt starten."
+        "Rov.E ist aktuell im Testlauf. Sobald du freigegeben bist, kannst du direkt starten."
     )
     return False
 
@@ -2433,10 +2444,12 @@ def maybe_answer_budget_status(user_id: int, text_lower: str, u: dict = None) ->
 def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
     if any(phrase in text_lower for phrase in [
         "cp-limit", "cp limit", "clarity-punkt", "clarity punkt",
-        "clarity-punkte", "clarity punkte", "punkte limit", "punktelimit",
+        "clarity-punkte", "clarity punkte", "rov.e-punkt", "rov.e punkt",
+        "rov.e-punkte", "rov.e punkte", "rove-punkt", "rove punkt",
+        "rove-punkte", "rove punkte", "punkte limit", "punktelimit",
     ]):
         return (
-            "CP-Limit heißt nur: Du bekommst pro Tag einen Clarity-Punkt fürs Tracken.\n\n"
+            "CP-Limit heißt nur: Du bekommst pro Tag einen Rov.E-Punkt fürs Tracken.\n\n"
             "Deine Ausgaben werden trotzdem ganz normal gespeichert.\n"
             "Ich begrenze nur die Punkte, damit niemand den Score durch viele kleine Eingaben künstlich hochzieht."
         )
@@ -2978,7 +2991,7 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
     remaining, total_expenses, _, _ = calculate_remaining_budget(u, user_id)
 
     lines = [
-        "Nutzerprofil aus der Clarity-Datenbank:",
+        "Nutzerprofil aus der Rov.E-Datenbank:",
         f"- Monatliches Nettoeinkommen: {eur(u.get('income'))}",
         f"- Weitere monatliche Einkommen: {eur(u.get('other_income'))}",
         f"- Monatliche Fixkosten gesamt: {eur(u.get('fixed_costs'))}",
@@ -3115,7 +3128,7 @@ def is_help_question(text_lower: str) -> bool:
         "wie funktioniert", "wie geht", "was mache ich", "was kann der bot",
         "was kannst du", "hilfe", "erklär", "erklaer", "anleitung",
     ]
-    clarity_terms = ["clarity", "bot", "dich", "hier", "das"]
+    clarity_terms = ["rov.e", "rove", "clarity", "bot", "dich", "hier", "das"]
     return any(phrase in text_lower for phrase in help_phrases) and any(term in text_lower for term in clarity_terms)
 
 
@@ -3177,7 +3190,7 @@ def build_not_understood_answer() -> str:
 
 def build_start_intro() -> str:
     return (
-        "Hi, ich bin Clarity.\n"
+        "Hi, ich bin Rov.E.\n"
         "Schön, dass du da bist.\n\n"
         "Ich halte dein Geld für dich im Blick.\n"
         "Wir gehen das Schritt für Schritt zusammen durch.\n\n"
@@ -3203,7 +3216,7 @@ def is_score_info_question(text_lower: str) -> bool:
 
 def build_score_info_answer() -> str:
     return (
-        "Der *Clarity Score* zeigt, wie stabil dein finanzielles Verhalten gerade ist.\n\n"
+        "Der *Rov.E Score* zeigt, wie stabil dein finanzielles Verhalten gerade ist.\n\n"
         "*Er besteht aus 4 Bereichen:*\n"
         "1. Budget Control - wie viel freies Monatsbudget übrig bleibt.\n"
         "2. Savings Execution - ob du deine Sparrate wirklich umsetzt.\n"
@@ -3665,7 +3678,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
     bot_instance.send_message(
         user_id,
         f"*{stored_month} - Monatsabschluss*\n\n"
-        f"Clarity Score: *{score_data['total']}/100*\n"
+        f"Rov.E Score: *{score_data['total']}/100*\n"
         f"Ausgaben: {old_expenses:.2f} EUR\n"
         f"Nettovermögen: {net_worth:.2f} EUR\n"
         f"{chr(10).join(bonus_lines)}\n\n"
@@ -3687,8 +3700,8 @@ def setup_bot_menu():
         telebot.types.BotCommand("start",      "🚀 Start & Profil anlegen"),
         telebot.types.BotCommand("status",     "📊 Restbudget checken"),
         telebot.types.BotCommand("stats",      "📈 Ausgaben nach Kategorien"),
-        telebot.types.BotCommand("score",      "🌟 Clarity Score & Rang"),
-        telebot.types.BotCommand("scoreinfo",  "Clarity Score erklärt"),
+        telebot.types.BotCommand("score",      "🌟 Rov.E Score & Rang"),
+        telebot.types.BotCommand("scoreinfo",  "Rov.E Score erklärt"),
         telebot.types.BotCommand("badges",     "🏆 Errungenschaften"),
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
@@ -3976,12 +3989,12 @@ def handle_callbacks(call):
         if action == "admin_approve":
             approve_user_access(target_id, actor_id)
             admin_text = f"Nutzer freigegeben:\nID: {target_id}"
-            user_text = "Du bist für Clarity freigeschaltet. Sende /start und leg los."
+            user_text = "Du bist für Rov.E freigeschaltet. Sende /start und leg los."
             callback_text = "Freigegeben."
         else:
             revoke_user_access(target_id, actor_id)
             admin_text = f"Nutzer abgelehnt/gesperrt:\nID: {target_id}"
-            user_text = "Dein Zugang zu Clarity wurde aktuell nicht freigeschaltet."
+            user_text = "Dein Zugang zu Rov.E wurde aktuell nicht freigeschaltet."
             callback_text = "Abgelehnt."
 
         try:
@@ -4094,7 +4107,7 @@ def build_health_report() -> str:
         )
 
     return (
-        "*Clarity Health*\n\n"
+        "*Rov.E Health*\n\n"
         f"Bot: läuft\n"
         f"Scheduler: {scheduler_state}\n"
         f"User: {users_total}\n"
@@ -4127,6 +4140,28 @@ def get_inactive_nudge_candidates() -> list:
                LIMIT 50""",
             (STEP_NORMAL,)
         ).fetchall()
+
+
+def get_approved_users_for_announcement() -> list:
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT u.user_id, a.display_name, a.username
+               FROM users u
+               LEFT JOIN user_access a ON a.user_id = u.user_id
+               WHERE COALESCE(a.status, 'approved') = 'approved'
+               ORDER BY u.user_id ASC"""
+        ).fetchall()
+
+
+def build_announce_rename_preview(rows: list) -> str:
+    if not rows:
+        return "Keine freigegebenen Nutzer gefunden. Es würde niemand angeschrieben."
+    return (
+        f"Ich würde {len(rows)} freigegebene Nutzer anschreiben mit:\n\n"
+        f"{RENAME_ANNOUNCEMENT_TEXT}\n\n"
+        "Zum Senden:\n"
+        "/announce_rename send"
+    )
 
 
 def build_nudge_preview(rows: list) -> str:
@@ -4174,6 +4209,8 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/backupnow – Datenbank sichern\n"
             "/nudge_inactive – inaktive Tester anzeigen\n"
             "/nudge_inactive send – Beta-Check senden\n"
+            "/announce_rename – Vorschau der Rov.E-Ankündigung\n"
+            "/announce_rename send – Ankündigung an alle freigegebenen Nutzer senden\n"
             "/testrecap – Abend-Recap an dich testen\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
@@ -4212,7 +4249,7 @@ def handle_admin_command(message, cmd: str) -> bool:
         approve_user_access(target_id, actor_id)
         bot.send_message(uid, f"Nutzer {target_id} ist freigegeben.")
         try:
-            bot.send_message(target_id, "Du bist für Clarity freigeschaltet. Sende /start und leg los.")
+            bot.send_message(target_id, "Du bist für Rov.E freigeschaltet. Sende /start und leg los.")
         except Exception as e:
             logger.info(f"Freigabe-Nachricht an {target_id} nicht gesendet: {e}")
         return True
@@ -4292,6 +4329,35 @@ def handle_admin_command(message, cmd: str) -> bool:
         )
         return True
 
+    if cmd == "/announce_rename":
+        rows = get_approved_users_for_announcement()
+        parts = message.text.split(maxsplit=1)
+        should_send = len(parts) > 1 and parts[1].strip().lower() == "send"
+
+        if not should_send:
+            bot.send_message(uid, build_announce_rename_preview(rows), parse_mode="Markdown")
+            return True
+
+        if not rows:
+            bot.send_message(uid, "Keine freigegebenen Nutzer gefunden. Es wurde nichts gesendet.")
+            return True
+
+        sent = 0
+        failed = 0
+        for row in rows:
+            try:
+                bot.send_message(row["user_id"], RENAME_ANNOUNCEMENT_TEXT, parse_mode="Markdown")
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.info(f"Rename-Ankündigung an {row['user_id']} nicht gesendet: {e}")
+
+        bot.send_message(
+            uid,
+            f"Rename-Ankündigung versendet.\n\nGesendet: {sent}\nFehlgeschlagen: {failed}"
+        )
+        return True
+
     if cmd == "/testrecap":
         text = build_evening_recap(actor_id)
         if not text:
@@ -4347,7 +4413,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive', 'testrecap', 'ruhe'
+    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename'
 ])
 def handle_commands(message):
     uid = message.chat.id
@@ -4374,7 +4440,7 @@ def handle_commands(message):
             e = "🟢" if remaining > 200 else ("🟡" if remaining > 0 else "🔴")
             bot.send_message(
                 uid,
-                "*Clarity ist bereit.*\n\n"
+                "*Rov.E ist bereit.*\n\n"
                 "Ich habe deinen aktuellen Stand für dich im Blick.\n\n"
                 f"Einnahmen: {income:.2f}€\n"
                 f"Fixkosten: {fixed:.2f}€\n"
@@ -4439,7 +4505,7 @@ def handle_commands(message):
 
         bot.send_message(
             uid,
-            f"📊 *Clarity Score: {score_data['total']}/100*\n"
+            f"📊 *Rov.E Score: {score_data['total']}/100*\n"
             f"{score_data['rank_emoji']} *{score_data['rank_name']}*\n"
             f"Status: {score_data['phase']} · Proof: {score_data['proof_days']}/90 Tage"
             f"{unlock_line}\n\n"
@@ -4848,7 +4914,7 @@ def handle_msg(message):
             return
 
     if step == STEP_START:
-        bot.send_message(uid, "Schreib /start, dann richten wir Clarity in Ruhe ein.")
+        bot.send_message(uid, "Schreib /start, dann richten wir Rov.E in Ruhe ein.")
         return
 
     if is_score_info_question(text_lower):
@@ -5363,7 +5429,7 @@ def handle_msg(message):
     # ─── KI-FALLBACK (Nur für komplexe/unbekannte Anfragen) ─────────────
     bot.send_chat_action(uid, 'typing')
     user_context = build_ai_user_context(uid, u)
-    prompt = f"""Du bist Clarity, ein Finanz-Assistent. Antworte auf Deutsch.
+    prompt = f"""Du bist Rov.E, ein Finanz-Assistent. Antworte auf Deutsch.
 Datum: {date.today().isoformat()}
 Kategorien: LEBENSMITTEL, MOBILITAET, RESTAURANTS, ABOS, FREIZEIT, SHOPPING, VERSICHERUNG, MIETE, GESUNDHEIT, DROGERIE, PFLEGE, SONSTIGES
 
