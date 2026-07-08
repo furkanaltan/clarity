@@ -150,7 +150,7 @@ def inject_report_css(template: str) -> str:
     <style>
       [data-screen-label="06 Rov.E Score"] * { box-sizing: border-box; }
       [data-screen-label="06 Rov.E Score"] div,
-      [data-screen-label="07 Ziel"] div { overflow-wrap: anywhere; }
+      [data-screen-label="07 Dein Ziel"] div { overflow-wrap: anywhere; }
       @media (max-width: 760px) {
         [data-screen-label="06 Rov.E Score"] {
           padding-left: 20px !important;
@@ -162,10 +162,10 @@ def inject_report_css(template: str) -> str:
         [data-screen-label="06 Rov.E Score"] [style*="padding: 38px 42px"] {
           padding: 28px 24px !important;
         }
-        [data-screen-label="07 Ziel"] [style*="padding: 52px 54px"] {
+        [data-screen-label="07 Dein Ziel"] [style*="padding: 52px 54px"] {
           padding: 36px 28px !important;
         }
-        [data-screen-label="07 Ziel"] [style*="font-size: 24px"] {
+        [data-screen-label="07 Dein Ziel"] [style*="font-size: 24px"] {
           font-size: 21px !important;
           line-height: 1.45 !important;
         }

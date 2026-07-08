@@ -394,12 +394,12 @@ def draw_goal(c, data):
     progress = safe_float(goal.get("progress_percent")) / 100
     remaining = max(0, safe_float(target) - safe_float(current))
     begin_page(c, "Dein Ziel", f"Dein {goal.get('description', 'Ziel')} rückt näher.", 7)
-    draw_card(c, 95, 455, 890, 120, "Ziel", clean_text(goal.get("description") or "Dein Ziel"), f"{percent(goal.get('progress_percent'), 1, '0,0 %')} erreicht", True, 42)
-    draw_bar(c, 120, 290, 830, 14, progress, BLUE)
-    draw_card(c, 95, 250, 280, 92, "Zielbetrag", money(target), value_size=25)
-    draw_card(c, 400, 250, 280, 92, "Aktueller Stand", money(current), accent=True, value_size=25)
-    draw_card(c, 705, 250, 280, 92, "Noch", money(remaining), value_size=25)
-    draw_card(c, 95, 138, 890, 110, "Ehrlich gesagt", clean_text(goal.get("forecast_text")), value_size=16, wrap_value=True)
+    draw_card(c, 95, 460, 890, 115, "Ziel", clean_text(goal.get("description") or "Dein Ziel"), f"{percent(goal.get('progress_percent'), 1, '0,0 %')} erreicht", True, 42)
+    draw_bar(c, 120, 300, 830, 14, progress, BLUE)
+    draw_card(c, 95, 272, 280, 92, "Zielbetrag", money(target), value_size=25)
+    draw_card(c, 400, 272, 280, 92, "Aktueller Stand", money(current), accent=True, value_size=25)
+    draw_card(c, 705, 272, 280, 92, "Noch", money(remaining), value_size=25)
+    draw_card(c, 95, 160, 890, 105, "Ehrlich gesagt", clean_text(goal.get("forecast_text")), value_size=16, wrap_value=True)
     end_page(c, 7)
 
 
@@ -408,14 +408,14 @@ def draw_milestones(c, data):
     rank = milestones.get("rank", {})
     badges = milestones.get("badges", [])[:4]
     begin_page(c, "Meilensteine", "Was du dir bereits aufgebaut hast.", 8)
-    draw_card(c, 100, 460, 400, 120, "RP-Level", clean_text(rank.get("name", "Rookie")), f"{milestones.get('clarity_points', 0)} RP", accent=True, value_size=34)
-    draw_card(c, 540, 460, 400, 120, "Bis nächstes Level", str(rank.get("points_to_next", 0)), value_size=34)
-    y = 290
+    draw_card(c, 100, 470, 400, 120, "RP-Level", clean_text(rank.get("name", "Rookie")), f"{milestones.get('clarity_points', 0)} RP", accent=True, value_size=34)
+    draw_card(c, 540, 470, 400, 120, "Bis nächstes Level", str(rank.get("points_to_next", 0)), value_size=34)
+    y = 322
     if not badges:
         badges = [{"label": "Erste Datenbasis entsteht"}, {"label": "Monatsreport freigeschaltet"}]
-    for badge in badges:
-        draw_card(c, 140, y, 800, 70, "Erfolg", badge_label(badge.get("label", badge)), value_size=20)
-        y -= 86
+    for badge in badges[:3]:
+        draw_card(c, 100, y, 840, 78, "Erfolg", badge_label(badge.get("label", badge)), value_size=20)
+        y -= 92
     end_page(c, 8)
 
 

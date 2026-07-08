@@ -218,7 +218,7 @@
       <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Überblick</div>
       <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.05; margin-top: 22px; max-width: 700px;">Dein Monat auf einen Blick.</div>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 56px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; margin-top: 56px;">
         <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
           <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Nettovermögen</div>
           <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ net_worth_span }} €</div>
@@ -343,7 +343,7 @@
         {% endfor %}
       </div>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 16px;">
         <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 40px;">
           <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Die eine Zahl, die zählt</div>
           <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.4; margin-top: 16px;">Eine einzige Buchung — <span style="color: #3BA7FF;">{{ biggest_name }}, {{ biggest_amount }}</span> — macht {{ biggest_share_pct }} % deiner getrackten Ausgaben aus.</div>
@@ -366,7 +366,7 @@
       <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Rov.E Score · Wie bewusst du steuerst</div>
       <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">{{ score_value }} von 100 — {{ score_headline_suffix }}</div>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 56px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 56px;">
         <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 44px 36px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
           <div style="position: relative; width: 210px; height: 210px;">
             <div data-reveal="1" data-delay="1500" style="position: absolute; inset: -34px; border-radius: 50%; background: radial-gradient(circle, rgba(59,167,255,0.22) 0%, rgba(59,167,255,0) 62%); pointer-events: none;"></div>
@@ -401,7 +401,7 @@
         </div>
       </div>
 
-      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 36px;">
+      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 36px;">
         <div>
           <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Was „{{ rank_name }}“ bedeutet</div>
           <div style="font-size: 16px; color: #9EA4A0; line-height: 1.65; margin-top: 14px;">{{ rank_blurb }}</div>
@@ -434,13 +434,13 @@
           </div>
         </div>
         <div style="margin-top: 32px; height: 14px; border-radius: 8px; background: rgba(255,255,255,0.06); overflow: hidden;"><div data-grow="{{ goal_pct_raw }}%" style="width: {{ goal_pct_raw }}%; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #2D7FCC, #3BA7FF); box-shadow: 0 0 16px rgba(42,171,238,0.6);"></div></div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 36px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 16px; margin-top: 36px;">
           <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #9EA4A0;">Zielbetrag</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; font-variant-numeric: tabular-nums;">{{ goal_target_amount }}</div></div>
           <div style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #3BA7FF;">Aktueller Stand</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; color: #3BA7FF; font-variant-numeric: tabular-nums;">{{ net_worth_amount }}</div></div>
           <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #9EA4A0;">Noch</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; font-variant-numeric: tabular-nums;">{{ goal_remaining_amount }}</div></div>
         </div>
 
-        <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 36px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 36px;">
+        <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 36px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 36px;">
           <div>
             <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Ehrlich gesagt</div>
             <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_honest_text }}</div>
