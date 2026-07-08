@@ -391,7 +391,7 @@ def draw_milestones(c, data):
     rank = milestones.get("rank", {})
     badges = milestones.get("badges", [])[:4]
     begin_page(c, "Meilensteine", "Was du dir bereits aufgebaut hast.", 8)
-    draw_card(c, 100, 460, 400, 120, "CP-Level", clean_text(rank.get("name", "Rookie")), f"{milestones.get('clarity_points', 0)} CP", accent=True, value_size=34)
+    draw_card(c, 100, 460, 400, 120, "RP-Level", clean_text(rank.get("name", "Rookie")), f"{milestones.get('clarity_points', 0)} RP", accent=True, value_size=34)
     draw_card(c, 540, 460, 400, 120, "Bis nächstes Level", str(rank.get("points_to_next", 0)), value_size=34)
     y = 290
     if not badges:

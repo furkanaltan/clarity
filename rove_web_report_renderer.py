@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import jinja2
 from dotenv import load_dotenv
 
-from report_engine import build_report_data, format_month_duration
+from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
 
 
@@ -82,6 +83,43 @@ def data_count_span(value, decimals: int = 0) -> str:
     label = de_number(value, decimals)
     extra = f' data-decimals="{decimals}"' if decimals else ""
     return f'<span data-count="{raw}"{extra}>{label}</span>'
+
+
+RANK_BLURBS = {
+    "Rookie": "Du baust gerade die Grundlage auf. Jede getrackte Ausgabe macht das Bild klarer.",
+    "Stratege": "Die ersten Muster stehen. Jetzt geht es darum, sie zur Gewohnheit zu machen.",
+    "Controller": "Budget und Struktur stimmen, Sparen läuft. Der nächste Hebel ist Konstanz.",
+    "Investor": "Du sparst nicht nur, du baust Vermögen auf. Bleib bei der Konsequenz.",
+    "Manager": "Struktur, Sparen und Tracking greifen ineinander. Das ist kein Zufall mehr.",
+    "Kapitalist": "Dein System läuft nahezu rund. Feinschliff bringt dich in die Spitze.",
+    "Rov.E Elite": "Budget, Sparen, Tracking und Struktur sind auf Top-Niveau. Halte das Tempo.",
+}
+
+
+def rank_band(score_value: int) -> dict:
+    names = [r[2] for r in SCORE_RANKS]
+    current_index = 0
+    for idx, (low, high, _name, _icon) in enumerate(SCORE_RANKS):
+        if low <= score_value <= high:
+            current_index = idx
+            break
+    low, high, name, _icon = SCORE_RANKS[current_index]
+    prev_name = names[current_index - 1] if current_index > 0 else None
+    next_name = names[current_index + 1] if current_index < len(names) - 1 else None
+    return {
+        "prev_name": prev_name,
+        "current_name": name,
+        "next_name": next_name,
+        "low": low,
+        "high": high,
+    }
+
+
+def milestone_band(net_worth: float, step: int = 5000) -> dict:
+    current = int(net_worth // step) * step
+    nxt = current + step
+    pct = ((net_worth - current) / step * 100) if step else 0
+    return {"from_amount": current, "to_amount": nxt, "pct": max(0.0, min(100.0, pct))}
 
 
 def replace_once(text: str, old: str, new: str) -> str:
@@ -459,6 +497,7 @@ def render_template(template: str, data: dict) -> str:
     pages = data["pages"]
     month_label, next_label = month_names(meta["report_month"])
     next_month_name = next_label.split(" ", 1)[0]
+    month_short = month_label.split(" ", 1)[0]
 
     cover = pages["cover"]
     story = pages["financial_story"]
@@ -468,171 +507,256 @@ def render_template(template: str, data: dict) -> str:
     money_map = pages["money_map"]
     milestones = pages["milestones"]
     recap = pages["recap"]
-    wealth = pages["wealth_journey"]
 
     strongest = month.get("strongest_category") or {"category": "Noch offen", "total": 0}
     biggest = month.get("biggest_expense") or {"merchant": "Noch offen", "amount": 0}
     strongest_name = category_label(strongest.get("category"))
+    strongest_amount = float(strongest.get("total") or 0)
     biggest_name = biggest.get("merchant") or "Noch offen"
+    biggest_amount = float(biggest.get("amount") or 0)
+
     score_value = int(score.get("clarity_score") or 0)
     score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1)
+    rank_name = score.get("rank_name") or "Rookie"
+    parts = score.get("parts") or {}
+    band = rank_band(score_value)
+    band_span = max(1, band["high"] - band["low"])
+    rank_band_low = round(band["low"] / 100 * 100, 1)
+    rank_band_high = round((band["high"] + 1) / 100 * 100, 1)
+
     goal_desc = goal.get("description") or "Dein Ziel"
     months_to_goal = goal.get("months_to_goal")
     goal_duration = format_month_duration(months_to_goal) if months_to_goal else "noch nicht berechenbar"
     savings_plan = profile.get("savings_plan") or 0
-    goal_gap = max((goal.get("target_amount") or 0) - (profile.get("net_worth") or 0), 0)
+    goal_target = goal.get("target_amount") or 0
+    goal_pct = round(min(100.0, goal.get("progress_percent") or 0), 1)
 
     net_worth = story.get("net_worth") or profile.get("net_worth") or 0
     investments = story.get("investments") or profile.get("current_investments") or 0
     cash = story.get("cash") or profile.get("cash_reserve") or 0
     total_expenses = month.get("total_expenses") or 0
-    recurring_in = wealth.get("investment_summary", {}).get("recurring_in", 0)
-    one_time_in = wealth.get("investment_summary", {}).get("one_time_in", 0)
-    investment_total = wealth.get("investment_summary", {}).get("net_contributions", 0)
+    invest_total = investments + cash
+    investments_pct = round((investments / invest_total * 100) if invest_total > 0 else 0, 1)
+    cash_pct = round(100 - investments_pct, 1) if invest_total > 0 else 0
 
-    story_text = humanize_text(story.get("text") or "")
-    if not story_text:
-        story_text = "Dieser Report baut deine erste echte Datenbasis auf."
+    investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
+    investment_total = investment_summary.get("net_contributions", 0)
+    invested_amount_raw = investment_total or savings_plan
 
-    insight_line = (
-        f"Dein größter Hebel liegt diesen Monat bei {strongest_name}."
-        if strongest.get("total", 0) else
-        "Deine ersten Muster werden mit jedem Tracking-Tag klarer."
+    # "Hebel"-Berechnung: Kategorie halbieren, freigesetzten Betrag hochrechnen
+    half_target = strongest_amount / 2
+    freed_up_monthly = max(0.0, strongest_amount - half_target)
+    freed_up_yearly = freed_up_monthly * 12
+
+    ratio_to_savings = (strongest_amount / invested_amount_raw) if invested_amount_raw > 0 else 0
+
+    categories = money_map.get("categories") or []
+    max_cat = max((c.get("total") or 0 for c in categories), default=0) or 1
+    palette = [
+        {"bar_color": "linear-gradient(90deg, #2D7FCC 0%, #3BA7FF 100%)", "text_color": "#111318"},
+        {"bar_color": "rgba(42,171,238,0.4)", "text_color": "#F4F1EA"},
+        {"bar_color": "rgba(255,255,255,0.18)", "text_color": "#F4F1EA"},
+    ]
+    money_map_categories = []
+    for idx, cat in enumerate(categories):
+        total = float(cat.get("total") or 0)
+        colors = palette[min(idx, len(palette) - 1)]
+        money_map_categories.append({
+            "name": h(category_label(cat.get("category"))),
+            "bar_pct": round((total / max_cat * 100) if max_cat else 0, 1),
+            "pct_text": int(round((total / total_expenses * 100) if total_expenses else 0)),
+            "amount_text": money_text(total),
+            "bar_color": colors["bar_color"],
+            "text_color": colors["text_color"],
+        })
+    biggest_share_pct = int(round((biggest_amount / total_expenses * 100) if total_expenses else 0))
+
+    if invested_amount_raw >= strongest_amount * 2 and strongest_amount > 0:
+        invest_vs_strongest_text = f"Mehr als doppelt so viel, wie du in {h(strongest_name)} ausgegeben hast."
+    elif invested_amount_raw > strongest_amount:
+        invest_vs_strongest_text = f"Mehr, als du in {h(strongest_name)} ausgegeben hast."
+    else:
+        invest_vs_strongest_text = f"Ein wichtiger Baustein neben deinen Ausgaben in {h(strongest_name)}."
+
+    if investments_pct >= 50:
+        invest_story_headline = f"Mit {fmt_percent(investments_pct, 1)} investiertem Kapital bist du keiner, der nur spart — du baust auf."
+    elif investments_pct > 0:
+        invest_story_headline = f"Mit {fmt_percent(investments_pct, 1)} investiertem Kapital hast du einen soliden Grundstein gelegt."
+    else:
+        invest_story_headline = "Dein Vermögen liegt aktuell als Cash bereit — der nächste Schritt ist, es arbeiten zu lassen."
+    invest_story_sub = (
+        f"Deine {money_text(cash)} Liquidität decken Unerwartetes, ohne dein Wachstum zu bremsen. "
+        f"Dieser Monat ist dein Startpunkt — ab {h(next_month_name)} wird die Entwicklung sichtbar."
     )
-    insight_headline = h(insight_line)
-    if strongest.get("total", 0):
-        insight_headline = insight_headline.replace(
-            h(strongest_name),
-            f'<span style="font-style: italic; color: #3BA7FF;">{h(strongest_name)}</span>',
-            1,
+
+    score_headline_suffix = (
+        "du hast dein Geld fest im Griff." if score_value >= 70
+        else "du hast dein Geld im Griff." if score_value >= 45
+        else "dein Bild wird mit jedem Tracking-Tag klarer."
+    )
+    rank_blurb = h(RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"]))
+
+    lowest_key, lowest_label = min(
+        [("consistency", "Tracking Consistency"), ("budget", "Budget Control"),
+         ("savings", "Savings Execution"), ("structure", "Financial Structure")],
+        key=lambda pair: parts.get(pair[0], 0),
+    )
+    score_parts = [
+        {"label": "Budget Control", "value": parts.get("budget", 0), "max": 25, "warn": lowest_key == "budget"},
+        {"label": "Savings Execution", "value": parts.get("savings", 0), "max": 25, "warn": lowest_key == "savings"},
+        {"label": "Tracking Consistency", "value": parts.get("consistency", 0), "max": 25, "warn": lowest_key == "consistency"},
+        {"label": "Financial Structure", "value": parts.get("structure", 0), "max": 25, "warn": lowest_key == "structure"},
+    ]
+    if lowest_key == "consistency":
+        next_step_headline = f"Tracke an mindestens 10 Tagen im {h(next_month_name)}."
+    elif lowest_key == "budget":
+        next_step_headline = "Halte dein Budget diesen Monat konsequent ein."
+    elif lowest_key == "savings":
+        next_step_headline = "Setze deine Sparrate diesen Monat verlässlich um."
+    else:
+        next_step_headline = "Baue deinen Cash-Puffer und deine Sparquote weiter aus."
+    next_step_sub = (
+        f"Das allein hebt dich in Richtung {h(band['next_name'])}-Status."
+        if band["next_name"] else
+        f"Das hält dich stabil im {h(rank_name)}-Status."
+    )
+
+    goal_gap = max(goal_target - net_worth, 0)
+    if savings_plan > 0 and months_to_goal:
+        goal_honest_text = f"Bei {money_text(savings_plan)}/Monat liegt dein {h(goal_desc)} noch rund {h(goal_duration)} entfernt."
+    else:
+        goal_honest_text = "Sobald deine Sparrate sauber steht, wird die Zielprognose sichtbar."
+    if freed_up_monthly > 0 and savings_plan > 0 and months_to_goal:
+        boosted_months = calculate_goal_projection(goal_target, net_worth, savings_plan + freed_up_monthly)
+        years_saved = None
+        if boosted_months is not None and months_to_goal:
+            years_saved = round(max(0, months_to_goal - boosted_months) / 12, 1)
+        if years_saved and years_saved >= 0.5:
+            goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich rund {de_number(years_saved, 1)} Jahre früher ans Ziel."
+        else:
+            goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich spürbar früher ans Ziel."
+    else:
+        goal_lever_text = "Sobald deine Sparrate steht, wird dein persönlicher Hebel sichtbar."
+
+    mband = milestone_band(net_worth)
+    milestone_remaining = max(mband["to_amount"] - net_worth, 0)
+    milestone_headline = f"Noch {money_text(milestone_remaining)} bis zum nächsten Meilenstein."
+    if savings_plan > 0:
+        milestone_months = max(1, int(-(-milestone_remaining // savings_plan))) if milestone_remaining > 0 else 0
+        milestone_eta_text = (
+            f"Bei {money_text(savings_plan)}/Monat erreichst du den nächsten Meilenstein in "
+            f"rund {milestone_months} {'Monat' if milestone_months == 1 else 'Monaten'}."
         )
-    insight_subline = (
-        f"{strongest_name} liegt aktuell bei {money_text(strongest.get('total', 0))}."
-        if strongest.get("total", 0) else
-        "Noch ist es zu früh für ein finales Urteil."
-    )
+    else:
+        milestone_months = None
+        milestone_eta_text = "Sobald deine Sparrate steht, wird deine Meilenstein-Prognose sichtbar."
+
+    badges_raw = milestones.get("badges") or []
+    badges = []
+    for badge in badges_raw[:3]:
+        earned_at = badge.get("earned_at") or ""
+        date_text = earned_at
+        try:
+            date_text = datetime.fromisoformat(str(earned_at)).strftime("%d.%m.%Y")
+        except Exception:
+            pass
+        badges.append({"label": h(badge.get("label") or badge.get("key") or ""), "date": h(date_text)})
+
+    plan_step2_target_amount = max(50, round(strongest_amount * 0.8 / 50) * 50) if strongest_amount else 100
+    plan_step3_target_amount = max(50, savings_plan or 50)
+
+    context = {
+        "month_label": h(month_label),
+        "next_label": h(next_label),
+        "next_month_name": h(next_month_name),
+        "month_short": h(month_short),
+        "freedom_step_text": money_text(cover.get("freedom_step") or 0, 0) if (cover.get("freedom_step") or 0) < 0 else f"+{money_text(cover.get('freedom_step') or 0)}",
+        "development_percent_text": (
+            fmt_percent(cover.get("development_percent"), 1)
+            if cover.get("development_percent") is not None else "ab Monat 2"
+        ),
+        "net_worth_span": data_count_span(net_worth),
+        "investments_span": data_count_span(investments),
+        "cash_span": data_count_span(cash),
+        "biggest_amount_span": data_count_span(biggest_amount),
+        "biggest_name": h(biggest_name),
+        "strongest_amount_span": data_count_span(strongest_amount),
+        "strongest_name": h(strongest_name),
+        "tracked_days": meta.get("tracked_days", 0),
+        "invested_amount": money_text(invested_amount_raw),
+        "strongest_amount": money_text(strongest_amount),
+        "ratio_sentence": h(
+            f"Für jeden gesparten Euro sind {round(ratio_to_savings * 100)} Cent in {strongest_name} geflossen."
+            if invested_amount_raw > 0 and strongest_amount > 0
+            else "Deine ersten Muster werden mit jedem Tracking-Tag klarer."
+        ),
+        "invested_span": data_count_span(invested_amount_raw),
+        "ratio_span": data_count_span(ratio_to_savings, 2),
+        "halve_sentence": h(
+            f"Das ist keine Verzichtsübung — nur Bewusstsein. Würdest du diese Kategorie auf "
+            f"~{money_text(half_target)} halbieren, blieben jeden Monat rund {money_text(freed_up_monthly)} mehr übrig."
+            if strongest_amount > 0 else
+            "Das ist keine Verzichtsübung — nur Bewusstsein für dein Verhalten."
+        ),
+        "yearly_span": data_count_span(freed_up_yearly),
+        "goal_desc": h(goal_desc),
+        "investments_pct_raw": investments_pct,
+        "investments_pct_text": fmt_percent(investments_pct, 1),
+        "cash_pct_text": fmt_percent(cash_pct, 1),
+        "investments_amount": money_text(investments),
+        "cash_amount": money_text(cash),
+        "invest_story_headline": invest_story_headline,
+        "invest_story_sub": invest_story_sub,
+        "money_map_categories": money_map_categories,
+        "biggest_amount": money_text(biggest_amount),
+        "biggest_share_pct": biggest_share_pct,
+        "invest_vs_strongest_text": invest_vs_strongest_text,
+        "score_value": score_value,
+        "score_span": data_count_span(score_value),
+        "score_headline_suffix": score_headline_suffix,
+        "score_dash": score_dash,
+        "rank_name": h(rank_name),
+        "prev_rank_name": h(band["prev_name"]) if band["prev_name"] else "",
+        "next_rank_name": h(band["next_name"]) if band["next_name"] else "",
+        "rank_band_low": rank_band_low,
+        "rank_band_high": rank_band_high,
+        "rank_band_text": f"{band['low']}–{band['high']}",
+        "score_parts": score_parts,
+        "rank_blurb": rank_blurb,
+        "next_step_headline": next_step_headline,
+        "next_step_sub": next_step_sub,
+        "goal_pct_span": data_count_span(goal_pct, 1),
+        "goal_pct_raw": goal_pct,
+        "goal_target_amount": money_text(goal_target),
+        "net_worth_amount": money_text(net_worth),
+        "goal_remaining_amount": money_text(goal_gap),
+        "goal_honest_text": goal_honest_text,
+        "goal_lever_text": goal_lever_text,
+        "milestone_headline": milestone_headline,
+        "milestone_from": money_text(mband["from_amount"]),
+        "milestone_to": money_text(mband["to_amount"]),
+        "milestone_pct_text": int(round(mband["pct"])),
+        "milestone_pct_raw": round(mband["pct"], 1),
+        "milestone_eta_text": milestone_eta_text,
+        "badges": badges,
+        "recap_good_text": h(humanize_text(recap.get("what_went_well") or "")),
+        "recap_attention_text": h(humanize_text(recap.get("needs_attention") or "")),
+        "recap_lever_text": h(humanize_text(recap.get("next_lever") or "")),
+        "plan_step1_sub": f"Das allein hebt deinen Rov.E Score über {band['high'] + 1} — in den {h(band['next_name'] or rank_name)}-Status.",
+        "plan_step1_impact": f"Score {band['high'] + 1}+",
+        "plan_step2_target": money_text(plan_step2_target_amount),
+        "plan_step2_sub": f"Rund {money_text(freed_up_monthly)} mehr pro Monat fürs {h(goal_desc)} — ohne auf alles zu verzichten.",
+        "plan_step2_impact": f"+{money_text(freed_up_yearly)}/Jahr",
+        "plan_step3_target": money_text(plan_step3_target_amount),
+        "plan_step3_impact": (
+            f"Meilenstein in {milestone_months} Mt." if milestone_months else "Meilenstein-Boost"
+        ),
+    }
 
     html_doc = template
     html_doc = strip_dc_runtime(html_doc)
     html_doc = inject_report_css(html_doc)
-    monthly_amount = money_text(investment_total or savings_plan)
-    html_doc = replace_all(html_doc, {
-        "Mai 2026": h(month_label),
-        "MAI": h(month_label.split(" ", 1)[0].upper()),
-        "2026": h(month_label.split(" ", 1)[1]),
-        "Juli 2026": h(next_label),
-        "JULI": h(next_month_name.upper()),
-        "Plan für den nächsten Monat · Juli 2026": f"Plan für den nächsten Monat · {h(next_label)}",
-        "Dein Plan für Juli.": f"Dein Plan für {h(next_month_name)}.",
-        "+420 €": money_text(cover.get("freedom_step") or 0),
-        "+3,4 %": fmt_percent(cover.get("development_percent"), 1) if cover.get("development_percent") is not None else "ab Monat 2",
-        "15.450": de_number(net_worth),
-        "9.350": de_number(investments),
-        "6.100": de_number(cash),
-        "207": de_number(biggest.get("amount", 0)),
-        "McDonald’s": h(biggest_name),
-        "257": de_number(strongest.get("total", 0)),
-        "Restaurants": h(strongest_name),
-        "2 Tagen": f"{meta.get('tracked_days', 0)} Tagen",
-        "2 Tage": f"{meta.get('tracked_days', 0)} Tage",
-        "58": str(score_value),
-        "Controller": h(score.get("rank_name") or "Rookie"),
-        "Haus": h(goal_desc),
-        "450.000 €": money_text(goal.get("target_amount") or 0),
-        "434.550 €": money_text(goal_gap),
-        "3,4 %": fmt_percent(goal.get("progress_percent") or 0, 1),
-        "580 Monate": h(goal_duration),
-        "48 Jahre und 4 Monate": h(goal_duration),
-        "Bei 750 €/Monat liegt dein Haus noch rund 48 Jahre und 4 Monate entfernt.": (
-            f"Bei {money_text(savings_plan)}/Monat liegt dein {h(goal_desc)} noch rund {h(goal_duration)} entfernt."
-            if savings_plan > 0 and months_to_goal else
-            "Sobald deine Sparrate sauber steht, wird die Zielprognose sichtbar."
-        ),
-        "Dein größter Hebel liegt diesen Monat bei <span style=\"font-style: italic; color: #3BA7FF;\">Restaurants</span>.": (
-            insight_headline
-        ),
-        "Für jeden gesparten Euro sind 34 Cent in Restaurants geflossen.": h(insight_subline),
-    })
-
-    html_doc = re.sub(
-        r'<span data-count="15450">[^<]+</span>',
-        data_count_span(net_worth),
-        html_doc,
-        count=1,
-    )
-    html_doc = replace_once(
-        html_doc,
-        "750 € bewusst zur Seite gelegt.",
-        f"{monthly_amount} bewusst zur Seite gelegt.",
-    )
-    html_doc = replace_once(
-        html_doc,
-        "Bei 750 €/Monat erreichst du den nächsten Meilenstein",
-        f"Bei {money_text(savings_plan)}/Monat erreichst du den nächsten Meilenstein",
-    )
-    html_doc = replace_once(
-        html_doc,
-        "Du hast 750 € konsequent zur Seite gelegt",
-        f"Du hast {monthly_amount} konsequent zur Seite gelegt",
-    )
-    html_doc = replace_once(
-        html_doc,
-        "Spare oder investiere mindestens 750 €.",
-        f"Spare oder investiere mindestens {money_text(max(savings_plan, investment_total))}.",
-    )
-    html_doc = re.sub(
-        r'<span data-count="9350">[^<]+</span>',
-        data_count_span(investments),
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'<span data-count="6100">[^<]+</span>',
-        data_count_span(cash),
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'<span data-count="207">[^<]+</span>',
-        data_count_span(biggest.get("amount", 0)),
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'<span data-count="257">[^<]+</span>',
-        data_count_span(strongest.get("total", 0)),
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'<span data-count="58">[^<]+</span>',
-        data_count_span(score_value),
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'data-ring="226\.9"',
-        f'data-ring="{score_dash}"',
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'stroke-dashoffset="226\.9"',
-        f'stroke-dashoffset="{score_dash}"',
-        html_doc,
-        count=1,
-    )
-    html_doc = re.sub(
-        r'<div style="font-size: 10\.5px; font-weight: 600; letter-spacing: 0\.18em; text-transform: uppercase; color: #9EA4A0;">Monatsfazit</div>\s*<div[\s\S]*?</div>',
-        (
-            '<div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Monatsfazit</div>\n'
-            f'        <div style="font-family: \'Newsreader\', serif; font-size: 26px; line-height: 1.55; margin-top: 14px; color: #F4F1EA;">{h(story_text)}</div>'
-        ),
-        html_doc,
-        count=1,
-    )
-
-    return html_doc
+    return jinja2.Template(html_doc).render(**context)
 
 
 def build_web_report(user_id: int, report_month: str, report_data: dict | None = None) -> dict:
