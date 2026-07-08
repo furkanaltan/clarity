@@ -2443,13 +2443,13 @@ def maybe_answer_budget_status(user_id: int, text_lower: str, u: dict = None) ->
 
 def maybe_answer_weekly_budget(user_id: int, u: dict, text_lower: str) -> str:
     if any(phrase in text_lower for phrase in [
-        "cp-limit", "cp limit", "clarity-punkt", "clarity punkt",
+        "cp-limit", "cp limit", "rp-limit", "rp limit", "clarity-punkt", "clarity punkt",
         "clarity-punkte", "clarity punkte", "rov.e-punkt", "rov.e punkt",
         "rov.e-punkte", "rov.e punkte", "rove-punkt", "rove punkt",
         "rove-punkte", "rove punkte", "punkte limit", "punktelimit",
     ]):
         return (
-            "CP-Limit heißt nur: Du bekommst pro Tag einen Rov.E-Punkt fürs Tracken.\n\n"
+            "RP-Limit heißt nur: Du bekommst pro Tag einen Rov.E-Punkt fürs Tracken.\n\n"
             "Deine Ausgaben werden trotzdem ganz normal gespeichert.\n"
             "Ich begrenze nur die Punkte, damit niemand den Score durch viele kleine Eingaben künstlich hochzieht."
         )
@@ -3597,19 +3597,19 @@ def handle_daily_activity(user_id: int, bot_instance) -> int:
         if award_badge(user_id, "streak_7"):
             new_pts = add_cp(user_id, 10)
             bot_instance.send_message(user_id,
-                f"7-Tage Streak · +10 CP · Gesamt: {new_pts} CP\n∙ ⚡ Erste Woche",
+                f"7-Tage Streak · +10 RP · Gesamt: {new_pts} RP\n∙ ⚡ Erste Woche",
                 parse_mode="Markdown"
             )
     elif streak == 30:
         if award_badge(user_id, "streak_30"):
             new_pts = add_cp(user_id, 30)
             bot_instance.send_message(user_id,
-                f"30-Tage Streak · +30 CP · Gesamt: {new_pts} CP\n∙ 🔥 Eiserner Monat",
+                f"30-Tage Streak · +30 RP · Gesamt: {new_pts} RP\n∙ 🔥 Eiserner Monat",
                 parse_mode="Markdown"
             )
     elif streak > 7 and streak % 7 == 0:
         new_pts = add_cp(user_id, 5)
-        bot_instance.send_message(user_id, f"{streak}-Tage Streak · +5 CP")
+        bot_instance.send_message(user_id, f"{streak}-Tage Streak · +5 RP")
 
     record_score_history_if_needed(user_id)
     maybe_send_budget_invite(user_id, bot_instance)
@@ -3651,7 +3651,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
         if award_badge(user_id, "month_win"):
             bonus_lines.append("Monats-Sieg freigeschaltet")
         latest_points = add_cp(user_id, 50)
-        bonus_lines.append(f"Budget eingehalten - +50 CP - Gesamt: {latest_points} CP")
+        bonus_lines.append(f"Budget eingehalten - +50 RP - Gesamt: {latest_points} RP")
     else:
         bonus_lines.append("Budget überschritten - kein Monats-Bonus.")
 
@@ -3704,7 +3704,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("scoreinfo",  "Rov.E Score erklärt"),
         telebot.types.BotCommand("badges",     "🏆 Errungenschaften"),
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
-        telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 CP)"),
+        telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 RP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Fixkosten & Profil bearbeiten"),
         telebot.types.BotCommand("zurueck",    "Nur Onboarding: Schritt zurück"),
         telebot.types.BotCommand("undo",       "Letzte Ausgabe löschen"),
@@ -4489,8 +4489,8 @@ def handle_commands(message):
         record_score_history_if_needed(uid, u)
         cp = u.get("clarity_points") or 0
         cp_rank_name, cp_rank_emoji, pts_needed = get_rank(cp)
-        cp_rank_line = (f"Noch *{pts_needed} CP* bis zum nächsten CP-Rang."
-                        if pts_needed > 0 else "Höchster CP-Rang erreicht.")
+        cp_rank_line = (f"Noch *{pts_needed} RP* bis zum nächsten RP-Rang."
+                        if pts_needed > 0 else "Höchster RP-Rang erreicht.")
         unlock_line = ""
         if score_data["days_to_unlock"] > 0:
             unlock_line = (
@@ -4515,7 +4515,7 @@ def handle_commands(message):
             f"├ Tracking Consistency: {score_data['tracking_days_90']} aktive Tage · {score_data['consistency']}/25\n"
             f"└ Financial Structure:  {score_data['structure']}/25\n\n"
             f"*Nächster Hebel:*\n{confirm_hint}\n\n"
-            f"{cp_rank_emoji} CP-Level: *{cp_rank_name}* · {cp} CP\n"
+            f"{cp_rank_emoji} RP-Level: *{cp_rank_name}* · {cp} RP\n"
             f"{cp_rank_line}"
             f"\n\nDas ist dein aktueller Stand.\n"
             f"Wichtig ist, dass du dranbleibst.\n\n"
@@ -4612,7 +4612,7 @@ def handle_commands(message):
 
         bot.send_message(
             uid,
-            f"Sparrate bestätigt - *+20 CP* - Gesamt: {new_pts} CP\n"
+            f"Sparrate bestätigt - *+20 RP* - Gesamt: {new_pts} RP\n"
             f"ETF/Investments: +{etf_savings:.2f} EUR\n"
             f"Cash: +{cash_savings:.2f} EUR\n"
             f"Nettovermögen: *{total_wealth:.2f} EUR*",
