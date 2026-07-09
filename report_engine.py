@@ -888,6 +888,64 @@ def get_prev_snapshot(user_id: int, report_month: str):
     return row
 
 
+def get_budget_frame(user_id: int, report_month: str) -> dict:
+    """
+    Liest die fuer report_month gemeinsam gesetzten Kategorie-Budgets (Tabelle
+    category_budgets, gepflegt vom Bot) und stellt sie den tatsaechlichen Ausgaben
+    des Monats gegenueber. Kein Import aus bot.py (Kreis-Import) - direkte Query.
+
+    Rueckgabe immer sicher: fehlt die Tabelle oder gibt es keine Budgets fuer den
+    Monat, kommt {"has_budgets": False, ...} zurueck.
+    """
+    empty = {"has_budgets": False, "items": [], "total_limit": 0.0,
+             "total_used": 0.0, "adherence_pct": None, "on_track": None}
+    start, end, _ = month_bounds(report_month)
+    try:
+        with get_db() as conn:
+            budgets = conn.execute(
+                "SELECT category, monthly_limit FROM category_budgets "
+                "WHERE user_id = ? AND active_month = ?",
+                (user_id, report_month),
+            ).fetchall()
+            if not budgets:
+                return empty
+            items = []
+            total_limit = 0.0
+            total_used = 0.0
+            for b in budgets:
+                category = b["category"]
+                limit = float(b["monthly_limit"] or 0)
+                used = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) AS s FROM expenses "
+                    "WHERE user_id = ? AND category = ? "
+                    "AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)",
+                    (user_id, category, start, end),
+                ).fetchone()["s"]
+                used = float(used or 0)
+                total_limit += limit
+                total_used += used
+                items.append({
+                    "category": category,
+                    "limit": limit,
+                    "used": used,
+                    "left": limit - used,
+                    "pct_used": round(used / limit * 100, 1) if limit > 0 else None,
+                    "over": used > limit,
+                })
+    except Exception as e:
+        logger.warning("Budget-Frame konnte nicht geladen werden: %s", e)
+        return empty
+
+    return {
+        "has_budgets": True,
+        "items": items,
+        "total_limit": total_limit,
+        "total_used": total_used,
+        "adherence_pct": round(total_used / total_limit * 100, 1) if total_limit > 0 else None,
+        "on_track": total_used <= total_limit,
+    }
+
+
 def build_report_data(user_id: int, report_month: str) -> dict:
     ensure_net_worth_column()
 
@@ -952,6 +1010,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     badges = get_user_badges(user_id)
     rank = get_rank(clarity_points)
     details = parse_details(user)
+    budget_frame = get_budget_frame(user_id, report_month)
 
     if net_worth_delta is None:
         development_text = "Der erste Referenzmonat ist aufgebaut. Ab Monat 2 wird die Entwicklung sichtbar."
@@ -1091,6 +1150,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "categories": top_categories,
                 "insights": money_map_insights,
             },
+            "budget": budget_frame,
             "milestones": {
                 "clarity_points": clarity_points,
                 "rank": rank,

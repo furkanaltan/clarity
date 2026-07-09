@@ -117,6 +117,28 @@ def _build_signals(data: dict) -> str:
         f"Ziel: {goal.get('description', 'kein Ziel')} ueber {_eur(goal.get('target_amount'))}, "
         f"{round(goal.get('progress_percent') or 0)}% erreicht, {goal_eta}",
     ]
+
+    budget = pages.get("budget") or {}
+    if budget.get("has_budgets"):
+        lines.append("Gemeinsam gesetzte Monatsbudgets (Limit vs. tatsaechlich ausgegeben):")
+        for it in budget.get("items", []):
+            pct = it.get("pct_used")
+            pct_txt = f"{round(pct)}%" if pct is not None else "-"
+            state = "UEBERZOGEN" if it.get("over") else "im Rahmen"
+            lines.append(
+                f"  - {it.get('category')}: Budget {_eur(it.get('limit'))}, "
+                f"ausgegeben {_eur(it.get('used'))} ({pct_txt} genutzt, {state})"
+            )
+        adh = budget.get("adherence_pct")
+        adh_txt = f"{round(adh)}%" if adh is not None else "-"
+        state = "im Plan" if budget.get("on_track") else "ueber Plan"
+        lines.append(
+            f"Budget-Treue gesamt: {_eur(budget.get('total_used'))} von "
+            f"{_eur(budget.get('total_limit'))} ({adh_txt}) -> {state}"
+        )
+    else:
+        lines.append("Noch keine gemeinsam gesetzten Budgets aktiv.")
+
     return "\n".join(lines)
 
 
@@ -139,6 +161,12 @@ Wichtige Regeln:
 - Sei konkret und ehrlich. Wenn eine Zahl zeigt, wie weit oder nah etwas ist
   (z.B. eine sehr lange Zeitspanne bis zum Ziel), nenne sie ruhig - beschoenige nichts,
   bleib aber sachlich und nie entmutigend.
+- BUDGETS: Wenn gemeinsam gesetzte Budgets aktiv sind, beziehe dich konkret darauf -
+  haelt der Nutzer die gemeinsam gesetzten Budgets ein (folgt er dem Plan) oder nicht?
+  Nutze die Budget-Treue statt allgemeiner Ausgaben-Tipps.
+- Erfinde NIEMALS Budget-Grenzen (z.B. "Halte Lebensmittel unter 100 EUR"). Nenne nur
+  Budgets, die in der Datenlage stehen. Sind KEINE Budgets aktiv, gib keine erfundenen
+  Budget-Grenzen aus - beziehe dich dann auf das reale Ausgabeverhalten.
 - Jedes Feld: 1-2 kurze Saetze, hoechstens ca. 140 Zeichen.
 - "focus" besonders knapp halten: ein kurzer Satz, hoechstens ca. 75 Zeichen.
 
