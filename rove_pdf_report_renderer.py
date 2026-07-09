@@ -195,7 +195,20 @@ def draw_card(c, x: float, y: float, w: float, h: float, label: str, value: str,
                      leading=value_size * 1.25, color=BLUE if accent else TEXT,
                      font_name="Times-Roman", max_lines=3)
     else:
-        c.drawString(x + 22, y - 67, clean_text(value))
+        text = clean_text(value)
+        avail = w - 44
+        if pdfmetrics.stringWidth(text, "Times-Roman", value_size) <= avail:
+            c.drawString(x + 22, y - 67, text)
+        else:
+            # Zu lang fuer eine Zeile (z.B. laengerer KI-Text): umbrechen + verkleinern,
+            # damit nichts ueber den Kartenrand laeuft. Kurze Formel-Texte bleiben
+            # unveraendert einzeilig -> keine Regression fuer bestehende Reports.
+            wsize = min(value_size, 15.5)
+            leading = wsize * 1.24
+            max_lines = max(2, int((h - 42) / leading))
+            draw_wrapped(c, text, x + 22, y - 50, avail, size=wsize,
+                         leading=leading, color=BLUE if accent else TEXT,
+                         font_name="Times-Roman", max_lines=max_lines)
     if sub:
         draw_wrapped(c, sub, x + 22, y - 91, w - 44, size=9.5, leading=13, color=MUTED, max_lines=2)
 

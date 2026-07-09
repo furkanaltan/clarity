@@ -507,6 +507,7 @@ def render_template(template: str, data: dict) -> str:
     money_map = pages["money_map"]
     milestones = pages["milestones"]
     recap = pages["recap"]
+    ai = data.get("ai_narratives") or {}
 
     strongest = month.get("strongest_category") or {"category": "Noch offen", "total": 0}
     biggest = month.get("biggest_expense") or {"merchant": "Noch offen", "amount": 0}
@@ -637,6 +638,13 @@ def render_template(template: str, data: dict) -> str:
             goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich spürbar früher ans Ziel."
     else:
         goal_lever_text = "Sobald deine Sparrate steht, wird dein persönlicher Hebel sichtbar."
+
+    # KI-Texte haben Vorrang; ohne KI bleiben die Formel-Texte oben.
+    # h() escaped den KI-Output fuers HTML (Schutz vor stray < / &).
+    if ai.get("goal_honest"):
+        goal_honest_text = h(ai["goal_honest"])
+    if ai.get("goal_lever"):
+        goal_lever_text = h(ai["goal_lever"])
 
     mband = milestone_band(net_worth)
     milestone_remaining = max(mband["to_amount"] - net_worth, 0)

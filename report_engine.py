@@ -1012,7 +1012,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     elif months_to_goal > 0:
         next_lever = f"Bei gleicher Sparrate erreichst du dein Ziel in etwa {format_month_duration(months_to_goal)}."
 
-    return {
+    data = {
         "meta": {
             "user_id": user_id,
             "report_month": report_month,
@@ -1108,6 +1108,37 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             },
         },
     }
+
+    # --- KI-personalisierte Texte (mit Fallback auf die Formel-Texte oben) ---
+    # generate_ai_narratives liefert bei fehlendem Key/Fehler/deaktivierter KI ein
+    # leeres Dict; dann bleibt jedes Feld auf seinem Formel-Text -> altes Verhalten.
+    try:
+        from report_ai_text import generate_ai_narratives
+        ai = generate_ai_narratives(data)
+    except Exception as e:
+        logger.warning("KI-Report-Texte konnten nicht erzeugt werden: %s", e)
+        ai = {}
+
+    data["ai_narratives"] = ai
+    p = data["pages"]
+    if ai.get("development"):
+        p["cover"]["development_text"] = ai["development"]
+        p["financial_story"]["text"] = ai["development"]
+    if ai.get("best_decision"):
+        p["month"]["best_decision"] = ai["best_decision"]
+    if ai.get("focus"):
+        p["month"]["focus"] = ai["focus"]
+    if ai.get("goal_honest"):
+        # PDF-Karte "Ehrlich gesagt" liest goal.forecast_text
+        p["goal"]["forecast_text"] = ai["goal_honest"]
+    if ai.get("recap_good"):
+        p["recap"]["what_went_well"] = ai["recap_good"]
+    if ai.get("recap_attention"):
+        p["recap"]["needs_attention"] = ai["recap_attention"]
+    if ai.get("recap_lever"):
+        p["recap"]["next_lever"] = ai["recap_lever"]
+
+    return data
 
 
 def draw_cover_page(c, data):
