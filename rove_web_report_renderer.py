@@ -757,7 +757,8 @@ def render_template(template: str, data: dict) -> str:
         "plan_step2_impact": f"+{money_text(freed_up_yearly)}/Jahr",
         "plan_step3_target": money_text(plan_step3_target_amount),
         "plan_step3_impact": (
-            f"Meilenstein in {milestone_months} Mt." if milestone_months else "Meilenstein-Boost"
+            f"Meilenstein: {milestone_months} {'Monat' if milestone_months == 1 else 'Monate'}"
+            if milestone_months else "Meilenstein-Boost"
         ),
     }
 

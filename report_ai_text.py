@@ -95,7 +95,16 @@ def _build_signals(data: dict) -> str:
         dev_line = f"Nettovermoegen -{_eur(abs(delta))} ggü. Vormonat"
 
     months_to_goal = goal.get("months_to_goal")
-    goal_eta = f"~{int(months_to_goal)} Monate bei aktueller Sparrate" if months_to_goal else "noch nicht berechenbar (keine/zu kleine Sparrate)"
+    if months_to_goal:
+        # Jahres-Formatierung nutzen (z.B. "52 Jahre und 5 Monate"), NICHT rohe Monate.
+        try:
+            from report_engine import format_month_duration
+            dur = format_month_duration(months_to_goal)
+        except Exception:
+            dur = f"{int(months_to_goal)} Monate"
+        goal_eta = f"noch etwa {dur} bei aktueller Sparrate"
+    else:
+        goal_eta = "noch nicht berechenbar (keine/zu kleine Sparrate)"
 
     weakest = _weakest_score_part(score.get("parts") or {})
 
@@ -158,6 +167,9 @@ Wichtige Regeln:
   Zwei Nutzer mit unterschiedlichem Verhalten muessen klar unterschiedliche Texte bekommen.
 - Erfinde KEINE Zahlen. Nutze nur Werte aus der Datenlage. Fehlt ein Wert oder ist 0,
   formuliere ohne ihn (nie "0 EUR" o. ae. erwaehnen).
+- Zeitspannen IMMER in Jahren und Monaten angeben, genau wie in der Datenlage
+  (z.B. "rund 52 Jahre" oder "3 Jahre und 2 Monate"). NIEMALS in reine Monate
+  umrechnen (also nicht "629 Monate").
 - Sei konkret und ehrlich. Wenn eine Zahl zeigt, wie weit oder nah etwas ist
   (z.B. eine sehr lange Zeitspanne bis zum Ziel), nenne sie ruhig - beschoenige nichts,
   bleib aber sachlich und nie entmutigend.
