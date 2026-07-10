@@ -5712,6 +5712,17 @@ def cleanup_expired_web_reports():
     except Exception as e:
         logger.warning(f"Web-Report-Cleanup fehlgeschlagen: {e}")
 
+
+def archive_old_pdf_reports():
+    """Komprimiert alte PDF-Reports (reports/archive/*.pdf.gz), loescht nichts inhaltlich."""
+    try:
+        import report_engine
+        archived = report_engine.archive_old_reports()
+        if archived:
+            logger.info(f"PDF-Reports archiviert: {archived}")
+    except Exception as e:
+        logger.warning(f"PDF-Report-Archivierung fehlgeschlagen: {e}")
+
 # ====================== REPORT SCHEDULER ======================
 REPORT_SCHEDULER = None
 
@@ -5875,6 +5886,15 @@ def setup_monthly_report_scheduler():
         cleanup_expired_web_reports,
         trigger=CronTrigger(hour=3, minute=10, timezone="Europe/Berlin"),
         id="cleanup_expired_web_reports",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        archive_old_pdf_reports,
+        trigger=CronTrigger(hour=3, minute=20, timezone="Europe/Berlin"),
+        id="archive_old_pdf_reports",
         replace_existing=True,
         misfire_grace_time=3600,
         coalesce=True,

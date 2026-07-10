@@ -2,6 +2,8 @@ import os
 import sqlite3
 import calendar
 import json
+import gzip
+import shutil
 import logging
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta
@@ -1410,6 +1412,36 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
 
     build_pdf_report(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
+
+
+REPORTS_ARCHIVE_DIR = REPORTS_DIR / "archive"
+REPORT_ARCHIVE_AFTER_DAYS = int(os.getenv("CLARITY_REPORT_ARCHIVE_DAYS", "60"))
+
+
+def archive_old_reports(days: int = REPORT_ARCHIVE_AFTER_DAYS) -> int:
+    """Komprimiert PDFs, die aelter als `days` Tage sind, nach reports/archive/ (gzip).
+
+    Loescht dabei nichts inhaltlich - jede Datei bleibt vollstaendig als .pdf.gz erhalten
+    (wichtig fuer den geplanten Jahresreport, der alle Monate zurueckreichen braucht).
+    Nur die unkomprimierte Kopie im Hauptordner verschwindet, um Plattenplatz zu sparen.
+    """
+    if not REPORTS_DIR.exists():
+        return 0
+    cutoff = datetime.now().timestamp() - days * 86400
+    archived = 0
+    for pdf_path in REPORTS_DIR.glob("*.pdf"):
+        if not pdf_path.is_file() or pdf_path.stat().st_mtime > cutoff:
+            continue
+        REPORTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        target = REPORTS_ARCHIVE_DIR / f"{pdf_path.name}.gz"
+        if target.exists():
+            pdf_path.unlink()
+            continue
+        with open(pdf_path, "rb") as f_in, gzip.open(target, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        pdf_path.unlink()
+        archived += 1
+    return archived
 
 
 def send_report_to_user(user_id: int, report_month: str, bot):
