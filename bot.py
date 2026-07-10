@@ -1668,6 +1668,64 @@ def looks_like_known_expense(text_input: str, text_lower: str, user_id: int = No
     return bool(category and merchant)
 
 
+def find_deletable_expense_match(user_id: int, amount: float, category: str):
+    """Sucht eine kuerzlich geloggte Ausgabe, die zu einem Loesch-Wunsch passt.
+    Bevorzugt einen Treffer mit passender Kategorie, sonst den juengsten Betrags-Treffer."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, amount, category, merchant FROM expenses "
+            "WHERE user_id = ? AND amount = ? ORDER BY id DESC LIMIT 5",
+            (user_id, amount)
+        )
+        candidates = cursor.fetchall()
+    if not candidates:
+        return None
+    for row in candidates:
+        if category and row["category"] == category:
+            return row
+    return candidates[0]
+
+
+def maybe_delete_logged_expense(user_id: int, text_input: str, text_lower: str) -> str:
+    """Erkennt 'lösche <Ausgabe> <Betrag>€' und entfernt die passende Buchung.
+
+    Greift bewusst NICHT, wenn ein echter Fixkosten-/Abo-Treffer (find_detail_alias_matches),
+    eine Investment-Aktion oder eine Budget-Aenderung gemeint ist - diese haben eigene,
+    bestehende Wege und muessen Vorrang behalten."""
+    delete_words = ["lösche", "loesche", "entferne", "streiche", "storniere", "stornier"]
+    if not any(word in text_lower for word in delete_words):
+        return ""
+    if "budget" in text_lower or "budgets" in text_lower:
+        return ""
+    if find_detail_alias_matches(text_lower):
+        return ""
+    if looks_like_investment_update(text_lower):
+        return ""
+
+    amounts = extract_amounts(text_lower, exclude_years=True)
+    if len(amounts) != 1:
+        return ""
+    amount = float(amounts[0])
+
+    category, merchant, _direct_label = detect_expense_label(text_input, text_lower, user_id=user_id)
+    if not (category and merchant):
+        return ""
+
+    match = find_deletable_expense_match(user_id, amount, category)
+    if not match:
+        return (
+            "Ich konnte keine passende Ausgabe zum Löschen finden.\n\n"
+            "Nutze `/undo` für deine letzte Ausgabe, oder nenne Betrag und Händler genauer."
+        )
+
+    with get_db() as conn:
+        conn.execute("DELETE FROM expenses WHERE id = ?", (match["id"],))
+        conn.commit()
+
+    return f"🗑️ Gelöscht: {match['merchant']} {match['amount']:.2f}€ · {match['category']}."
+
+
 def parse_hybrid_expense_items(text_input: str, amounts: list[float], user_id: int = None) -> list[dict]:
     if not amounts:
         return []
@@ -5240,6 +5298,12 @@ def handle_msg(message):
                 parse_mode="Markdown"
             )
         return
+
+    if step == STEP_NORMAL:
+        delete_expense_reply = maybe_delete_logged_expense(uid, text_input, text_lower)
+        if delete_expense_reply:
+            bot.send_message(uid, delete_expense_reply, parse_mode="Markdown")
+            return
 
     # ─── HYBRID-TRACKER ──────────────────────────────────────────────────
     expense_amounts = extract_amounts(text_lower, exclude_years=True)
