@@ -645,6 +645,24 @@ def init_db():
             ON user_category_rules(user_id, alias)
         ''')
 
+        conn.execute('''CREATE TABLE IF NOT EXISTS portfolio_holdings (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            instrument_key      TEXT    NOT NULL,
+            instrument_label    TEXT    NOT NULL,
+            isin                TEXT    NOT NULL,
+            monthly_contribution REAL   NOT NULL DEFAULT 0.0,
+            started_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, instrument_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )''')
+
+        conn.execute('''CREATE INDEX IF NOT EXISTS idx_portfolio_holdings_user
+            ON portfolio_holdings(user_id)
+        ''')
+
         conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
             SELECT user_id, 'approved', CURRENT_TIMESTAMP, 'Bestehender Nutzer vor Freigabesystem'
             FROM users
@@ -3764,6 +3782,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 RP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Fixkosten & Profil bearbeiten"),
+        telebot.types.BotCommand("portfolio",  "📈 ETF/Aktie täglich tracken lassen"),
         telebot.types.BotCommand("zurueck",    "Nur Onboarding: Schritt zurück"),
         telebot.types.BotCommand("undo",       "Letzte Ausgabe löschen"),
         telebot.types.BotCommand("editlast",   "Letzte Ausgabe ändern"),
@@ -3871,6 +3890,163 @@ def is_refinement_text_request(text_lower: str) -> bool:
     return "verfeinern" in normalized and len(normalized) <= 40
 
 
+# ====================== PORTFOLIO-TRACKING (eigenständig, ohne Onboarding/Verfeinern anzufassen) ======================
+# WICHTIG: Diese Funktionen duerfen NIE etf_savings, current_investments oder fixed_costs
+# beschreiben - das waere die Dopplung, die explizit vermieden werden soll. Portfolio-Holdings
+# sind eine rein informative Zusatz-Ebene fuer Kurs-/Wertentwicklung einzelner Instrumente.
+
+CURATED_INSTRUMENTS = {
+    "msci world": ("msci_world", "MSCI World", "IE00B4L5Y983"),
+    "msci": ("msci_world", "MSCI World", "IE00B4L5Y983"),
+    "s&p 500": ("sp500", "S&P 500", "IE00B5BMR087"),
+    "sp500": ("sp500", "S&P 500", "IE00B5BMR087"),
+    "s&p500": ("sp500", "S&P 500", "IE00B5BMR087"),
+    "dax": ("dax", "DAX", "DE0005933931"),
+    "nasdaq 100": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
+    "nasdaq100": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
+    "nasdaq": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
+}
+
+
+def is_portfolio_tracking_request(text_lower: str) -> bool:
+    normalized = text_lower.strip().lstrip("/")
+    direct = {
+        "portfolio", "portfolio tracken", "etf tracken", "aktie tracken",
+        "etf tracking", "portfolio einrichten", "investment tracken",
+    }
+    if normalized in direct:
+        return True
+    return len(normalized) <= 40 and any(
+        word in normalized for word in ("portfolio tracken", "etf tracken", "aktie tracken")
+    )
+
+
+def build_portfolio_curated_list_message() -> str:
+    return (
+        "📈 *Portfolio-Tracking*\n\n"
+        "Welches Investment soll ich für dich verfolgen?\n\n"
+        "MSCI World · S&P 500 · DAX · Nasdaq 100\n\n"
+        "Schreib z.B.: `MSCI World 200€ im Monat`\n\n"
+        "Hast du etwas anderes? Schreib die ISIN direkt dazu, "
+        "z.B. `IE00B4L5Y983 200€ im Monat`.\n\n"
+        "_Ich aktualisiere den Kurs einmal täglich - kein Live-Ticker._"
+    )
+
+
+def start_portfolio_tracking_flow(user_id: int):
+    user_pending_actions[user_id] = {"type": "portfolio_setup"}
+    bot.send_message(user_id, build_portfolio_curated_list_message(), parse_mode="Markdown")
+
+
+def parse_portfolio_registration(text_input: str, text_lower: str):
+    """Erkennt '<Instrument> <Betrag>€' und liefert (instrument_key, label, isin, amount) oder None.
+
+    Wichtig: Manche Instrumentnamen enthalten selbst Zahlen (S&P "500", Nasdaq "100").
+    Deshalb wird der Instrument-Alias ZUERST erkannt und aus dem Text entfernt, bevor
+    nach dem eigentlichen Euro-Betrag gesucht wird - sonst wuerde z.B. "500" aus
+    "S&P 500" faelschlich als Betrag statt als Teil des Namens erkannt."""
+    matched_alias, matched = None, None
+    for alias, (key, label, isin) in CURATED_INSTRUMENTS.items():
+        if alias in text_lower and (matched_alias is None or len(alias) > len(matched_alias)):
+            matched_alias, matched = alias, (key, label, isin)
+
+    remainder = text_lower.replace(matched_alias, " ", 1) if matched_alias else text_lower
+
+    amounts = extract_amounts(remainder, exclude_years=True)
+    if len(amounts) != 1:
+        return None
+    amount = float(amounts[0])
+    if amount <= 0:
+        return None
+
+    if matched:
+        key, label, isin = matched
+        return key, label, isin, amount
+
+    isin_match = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b", text_input.upper())
+    if isin_match:
+        isin = isin_match.group(1)
+        return isin.lower(), isin, isin, amount
+
+    return None
+
+
+def save_portfolio_holding(user_id: int, instrument_key: str, label: str, isin: str, amount: float) -> dict:
+    """Legt ein Holding an oder aktualisiert es (UNIQUE-Constraint verhindert Dopplung).
+    Gibt zurueck, ob es neu war und was der vorherige Beitrag war (fuer die Bestaetigungs-Nachricht)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT monthly_contribution FROM portfolio_holdings WHERE user_id = ? AND instrument_key = ?",
+            (user_id, instrument_key)
+        )
+        existing = cursor.fetchone()
+        was_new = existing is None
+        old_amount = existing["monthly_contribution"] if existing else None
+
+        conn.execute(
+            """INSERT INTO portfolio_holdings (user_id, instrument_key, instrument_label, isin, monthly_contribution)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, instrument_key) DO UPDATE SET
+                   monthly_contribution = excluded.monthly_contribution,
+                   instrument_label = excluded.instrument_label,
+                   isin = excluded.isin,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, instrument_key, label, isin, amount)
+        )
+        conn.commit()
+
+    return {"was_new": was_new, "old_amount": old_amount}
+
+
+def get_portfolio_holdings(user_id: int) -> list:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT instrument_key, instrument_label, isin, monthly_contribution, started_at "
+            "FROM portfolio_holdings WHERE user_id = ? ORDER BY id ASC",
+            (user_id,)
+        )
+        return cursor.fetchall()
+
+
+def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str) -> bool:
+    if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
+        user_pending_actions.pop(user_id, None)
+        bot.send_message(user_id, "Alles klar, kein Problem. Du kannst jederzeit `Portfolio` schreiben.")
+        return True
+
+    parsed = parse_portfolio_registration(text_input, text_lower)
+    if not parsed:
+        bot.send_message(
+            user_id,
+            "Das konnte ich noch nicht zuordnen.\n\n" + build_portfolio_curated_list_message(),
+            parse_mode="Markdown"
+        )
+        return True
+
+    key, label, isin, amount = parsed
+    result = save_portfolio_holding(user_id, key, label, isin, amount)
+    user_pending_actions.pop(user_id, None)
+
+    if result["was_new"]:
+        bot.send_message(
+            user_id,
+            f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n"
+            "Ich verfolge den Kurs ab jetzt einmal täglich. Frag mich jederzeit "
+            f"„wie läuft mein {label}?", parse_mode="Markdown"
+        )
+    else:
+        old = result["old_amount"] or 0.0
+        bot.send_message(
+            user_id,
+            f"🔄 Aktualisiert: *{label}* {old:.2f}€ → {amount:.2f}€/Monat.\n\n"
+            "Kein doppelter Eintrag - dein bestehendes Holding wurde angepasst.",
+            parse_mode="Markdown"
+        )
+    return True
+
+
 def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3911,6 +4087,11 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
         if is_refinement_text_request(text_lower):
             user_pending_actions.pop(user_id, None)
             start_refinement_flow(user_id)
+            return True
+
+        if is_portfolio_tracking_request(text_lower):
+            user_pending_actions.pop(user_id, None)
+            start_portfolio_tracking_flow(user_id)
             return True
 
         amounts = extract_amounts(text_lower, exclude_years=True)
@@ -4014,6 +4195,9 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
             f"{format_eur(old_expense['amount'])} → {format_eur(new_amount)}"
         )
         return True
+
+    if action.get("type") == "portfolio_setup":
+        return handle_portfolio_setup_reply(user_id, text_input, text_lower)
 
     return False
 
@@ -4468,7 +4652,7 @@ def handle_admin_command(message, cmd: str) -> bool:
 
 
 @bot.message_handler(commands=[
-    'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'undo', 'editlast', 'id',
+    'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'portfolio', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
     'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename'
@@ -4776,6 +4960,9 @@ def handle_commands(message):
     elif cmd == '/verfeinern':
         start_refinement_flow(uid)
 
+    elif cmd == '/portfolio':
+        start_portfolio_tracking_flow(uid)
+
     elif cmd == '/settings':
         update_user_field(uid, "onboarding_step", STEP_INCOME)
         bot.send_message(
@@ -4948,6 +5135,10 @@ def handle_msg(message):
 
     if step == STEP_NORMAL and is_refinement_text_request(text_lower):
         start_refinement_flow(uid)
+        return
+
+    if step == STEP_NORMAL and is_portfolio_tracking_request(text_lower):
+        start_portfolio_tracking_flow(uid)
         return
 
     if step == STEP_NORMAL:
@@ -5136,7 +5327,8 @@ def handle_msg(message):
                 f"🎉 *Einrichtung abgeschlossen!*\n\n"
                 f"{percent_note}"
                 f"Sparrate: {sparrate:.2f}€/Monat\n\n"
-                "Dein Profil steht. Jetzt machen wir direkt den ersten echten Test.",
+                "Dein Profil steht. Jetzt machen wir direkt den ersten echten Test.\n\n"
+                "_Übrigens: Sparst du in ETFs? Schreib jederzeit `Portfolio`, dann tracke ich den Kurs für dich mit._",
                 parse_mode="Markdown"
             )
             # Badges dezent als separate Zeilen falls vorhanden
