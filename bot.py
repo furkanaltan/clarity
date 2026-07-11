@@ -3801,7 +3801,7 @@ def setup_bot_menu():
         telebot.types.BotCommand("goal",       "🎯 Sparziel & Prognose"),
         telebot.types.BotCommand("investiert", "💰 Sparrate bestätigen (+20 RP)"),
         telebot.types.BotCommand("verfeinern", "⚙️ Fixkosten & Profil bearbeiten"),
-        telebot.types.BotCommand("portfolio",  "📈 ETF/Aktie täglich tracken lassen"),
+        telebot.types.BotCommand("portfolio",  "📈 ETF täglich tracken lassen"),
         telebot.types.BotCommand("zurueck",    "Nur Onboarding: Schritt zurück"),
         telebot.types.BotCommand("undo",       "Letzte Ausgabe löschen"),
         telebot.types.BotCommand("editlast",   "Letzte Ausgabe ändern"),
@@ -3945,11 +3945,12 @@ def is_portfolio_tracking_request(text_lower: str) -> bool:
 
 def build_portfolio_curated_list_message() -> str:
     return (
-        "📈 *Portfolio-Tracking*\n\n"
-        "Welches Investment soll ich für dich verfolgen?\n\n"
+        "📈 *ETF-Tracking*\n\n"
+        "Welchen ETF soll ich für dich verfolgen?\n\n"
         "MSCI World · S&P 500 · Nasdaq 100\n\n"
         "Schreib z.B.: `MSCI World 200€ im Monat`\n\n"
-        "Hast du etwas anderes? Schreib die ISIN direkt dazu, "
+        "_Bitte ein ETF pro Nachricht - hast du mehrere, schreib einfach danach nochmal `Portfolio`._\n\n"
+        "Hast du einen anderen ETF? Schreib die ISIN direkt dazu, "
         "z.B. `IE00B4L5Y983 200€ im Monat` - ich speichere es, aktuell kann ich dafür "
         "aber noch keine Kursdaten abrufen (nur für die drei oben).\n\n"
         "_Ich aktualisiere den Kurs einmal täglich - kein Live-Ticker._"
@@ -4175,7 +4176,11 @@ def maybe_update_portfolio_total(user_id: int, text_lower: str) -> str:
         return ""
     label = existing[key]["instrument_label"]
     save_portfolio_total_invested(user_id, key, amount)
-    return f"✅ Notiert: {format_eur(amount)} im {label}.\n\nFrag mich jederzeit „wie läuft mein {label}?"
+    return (
+        f"✅ Notiert: {format_eur(amount)} im {label}.\n\n"
+        f"Frag mich jederzeit „wie läuft mein {label}?\n\n"
+        "_Noch ein ETF? Schreib einfach nochmal `Portfolio`._"
+    )
 
 
 def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str) -> bool:
@@ -4212,7 +4217,8 @@ def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str)
             bot.send_message(
                 user_id,
                 f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n"
-                "Für dieses Instrument kann ich aktuell noch keine Kursdaten abrufen - der Beitrag ist aber gespeichert.",
+                "Für dieses Instrument kann ich aktuell noch keine Kursdaten abrufen - der Beitrag ist aber gespeichert.\n\n"
+                "_Noch ein ETF? Schreib einfach nochmal `Portfolio`._",
                 parse_mode="Markdown"
             )
     else:
@@ -4231,7 +4237,11 @@ def handle_portfolio_total_amount_reply(user_id: int, action: dict, text_lower: 
     label = action.get("label", "dein Investment")
     if text_lower in {"überspringen", "ueberspringen", "skip", "weiß nicht", "weiss nicht", "keine ahnung"} or text_lower in NO_WORDS:
         user_pending_actions.pop(user_id, None)
-        bot.send_message(user_id, f"Kein Problem, ich zeig dir dann nur die reine {label}-Entwicklung in Prozent.")
+        bot.send_message(
+            user_id,
+            f"Kein Problem, ich zeig dir dann nur die reine {label}-Entwicklung in Prozent.\n\n"
+            "_Noch ein ETF? Schreib einfach nochmal `Portfolio`._"
+        )
         return True
 
     amounts = extract_amounts(text_lower, exclude_years=True)
@@ -4247,7 +4257,8 @@ def handle_portfolio_total_amount_reply(user_id: int, action: dict, text_lower: 
     bot.send_message(
         user_id,
         f"✅ Notiert: {format_eur(amounts[0])} im {label}.\n\n"
-        f"Frag mich jederzeit „wie läuft mein {label}?" ,
+        f"Frag mich jederzeit „wie läuft mein {label}?\n\n"
+        "_Noch ein ETF? Schreib einfach nochmal `Portfolio`._",
     )
     return True
 
