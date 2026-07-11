@@ -9,6 +9,7 @@ import re
 import random
 import calendar
 import fcntl
+import urllib.request
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager
 from pathlib import Path
@@ -651,7 +652,11 @@ def init_db():
             instrument_key      TEXT    NOT NULL,
             instrument_label    TEXT    NOT NULL,
             isin                TEXT    NOT NULL,
+            price_symbol        TEXT,
             monthly_contribution REAL   NOT NULL DEFAULT 0.0,
+            start_price         REAL,
+            last_price          REAL,
+            last_checked_at     DATETIME,
             started_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
             created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -662,6 +667,18 @@ def init_db():
         conn.execute('''CREATE INDEX IF NOT EXISTS idx_portfolio_holdings_user
             ON portfolio_holdings(user_id)
         ''')
+
+        # Migration fuer bereits bestehende portfolio_holdings-Tabellen (falls schon deployed
+        # ohne diese Spalten) - sicher/idempotent, ueberspringt bereits vorhandene Spalten.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_holdings)").fetchall()}
+        for col, ddl in [
+            ("price_symbol", "ALTER TABLE portfolio_holdings ADD COLUMN price_symbol TEXT"),
+            ("start_price", "ALTER TABLE portfolio_holdings ADD COLUMN start_price REAL"),
+            ("last_price", "ALTER TABLE portfolio_holdings ADD COLUMN last_price REAL"),
+            ("last_checked_at", "ALTER TABLE portfolio_holdings ADD COLUMN last_checked_at DATETIME"),
+        ]:
+            if col not in existing_cols:
+                conn.execute(ddl)
 
         conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
             SELECT user_id, 'approved', CURRENT_TIMESTAMP, 'Bestehender Nutzer vor Freigabesystem'
@@ -3895,16 +3912,19 @@ def is_refinement_text_request(text_lower: str) -> bool:
 # beschreiben - das waere die Dopplung, die explizit vermieden werden soll. Portfolio-Holdings
 # sind eine rein informative Zusatz-Ebene fuer Kurs-/Wertentwicklung einzelner Instrumente.
 
+# (key, label, isin, price_symbol) - price_symbol ist ein US-gelisteter Index-Proxy,
+# weil europaeische Boersenplaetze (Xetra/LSE) im kostenlosen Twelve-Data-Tarif gesperrt
+# sind. Gleicher Index, nur in USD statt EUR notiert (kleine FX-Abweichung moeglich,
+# fuer eine grobe Performance-Anzeige aber voellig ausreichend).
 CURATED_INSTRUMENTS = {
-    "msci world": ("msci_world", "MSCI World", "IE00B4L5Y983"),
-    "msci": ("msci_world", "MSCI World", "IE00B4L5Y983"),
-    "s&p 500": ("sp500", "S&P 500", "IE00B5BMR087"),
-    "sp500": ("sp500", "S&P 500", "IE00B5BMR087"),
-    "s&p500": ("sp500", "S&P 500", "IE00B5BMR087"),
-    "dax": ("dax", "DAX", "DE0005933931"),
-    "nasdaq 100": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
-    "nasdaq100": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
-    "nasdaq": ("nasdaq100", "Nasdaq 100", "IE0032077012"),
+    "msci world": ("msci_world", "MSCI World", "IE00B4L5Y983", "URTH"),
+    "msci": ("msci_world", "MSCI World", "IE00B4L5Y983", "URTH"),
+    "s&p 500": ("sp500", "S&P 500", "IE00B5BMR087", "SPY"),
+    "sp500": ("sp500", "S&P 500", "IE00B5BMR087", "SPY"),
+    "s&p500": ("sp500", "S&P 500", "IE00B5BMR087", "SPY"),
+    "nasdaq 100": ("nasdaq100", "Nasdaq 100", "IE0032077012", "QQQ"),
+    "nasdaq100": ("nasdaq100", "Nasdaq 100", "IE0032077012", "QQQ"),
+    "nasdaq": ("nasdaq100", "Nasdaq 100", "IE0032077012", "QQQ"),
 }
 
 
@@ -3925,10 +3945,11 @@ def build_portfolio_curated_list_message() -> str:
     return (
         "📈 *Portfolio-Tracking*\n\n"
         "Welches Investment soll ich für dich verfolgen?\n\n"
-        "MSCI World · S&P 500 · DAX · Nasdaq 100\n\n"
+        "MSCI World · S&P 500 · Nasdaq 100\n\n"
         "Schreib z.B.: `MSCI World 200€ im Monat`\n\n"
         "Hast du etwas anderes? Schreib die ISIN direkt dazu, "
-        "z.B. `IE00B4L5Y983 200€ im Monat`.\n\n"
+        "z.B. `IE00B4L5Y983 200€ im Monat` - ich speichere es, aktuell kann ich dafür "
+        "aber noch keine Kursdaten abrufen (nur für die drei oben).\n\n"
         "_Ich aktualisiere den Kurs einmal täglich - kein Live-Ticker._"
     )
 
@@ -3939,16 +3960,17 @@ def start_portfolio_tracking_flow(user_id: int):
 
 
 def parse_portfolio_registration(text_input: str, text_lower: str):
-    """Erkennt '<Instrument> <Betrag>€' und liefert (instrument_key, label, isin, amount) oder None.
+    """Erkennt '<Instrument> <Betrag>€' und liefert (instrument_key, label, isin, price_symbol, amount) oder None.
+    price_symbol ist None, wenn nur eine rohe ISIN erkannt wurde (dafuer gibt es aktuell keine Kursdaten).
 
     Wichtig: Manche Instrumentnamen enthalten selbst Zahlen (S&P "500", Nasdaq "100").
     Deshalb wird der Instrument-Alias ZUERST erkannt und aus dem Text entfernt, bevor
     nach dem eigentlichen Euro-Betrag gesucht wird - sonst wuerde z.B. "500" aus
     "S&P 500" faelschlich als Betrag statt als Teil des Namens erkannt."""
     matched_alias, matched = None, None
-    for alias, (key, label, isin) in CURATED_INSTRUMENTS.items():
+    for alias, (key, label, isin, price_symbol) in CURATED_INSTRUMENTS.items():
         if alias in text_lower and (matched_alias is None or len(alias) > len(matched_alias)):
-            matched_alias, matched = alias, (key, label, isin)
+            matched_alias, matched = alias, (key, label, isin, price_symbol)
 
     remainder = text_lower.replace(matched_alias, " ", 1) if matched_alias else text_lower
 
@@ -3960,19 +3982,40 @@ def parse_portfolio_registration(text_input: str, text_lower: str):
         return None
 
     if matched:
-        key, label, isin = matched
-        return key, label, isin, amount
+        key, label, isin, price_symbol = matched
+        return key, label, isin, price_symbol, amount
 
     isin_match = re.search(r"\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b", text_input.upper())
     if isin_match:
         isin = isin_match.group(1)
-        return isin.lower(), isin, isin, amount
+        return isin.lower(), isin, isin, None, amount
 
     return None
 
 
-def save_portfolio_holding(user_id: int, instrument_key: str, label: str, isin: str, amount: float) -> dict:
+def fetch_price_quote(symbol: str):
+    """Holt einen aktuellen Kurs von Twelve Data. Gibt None zurueck bei jedem Fehler
+    (fehlender Key, Netzwerkproblem, ungueltiges Symbol) - darf den Bot nie zum Absturz bringen."""
+    api_key = os.getenv("TWELVE_DATA_API_KEY")
+    if not api_key:
+        return None
+    try:
+        url = f"https://api.twelvedata.com/quote?symbol={symbol}&apikey={api_key}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read())
+        close = data.get("close")
+        if close is None:
+            return None
+        return {"close": float(close), "percent_change": float(data.get("percent_change") or 0.0)}
+    except Exception as e:
+        logger.warning(f"Twelve-Data-Abfrage fehlgeschlagen fuer {symbol}: {e}")
+        return None
+
+
+def save_portfolio_holding(user_id: int, instrument_key: str, label: str, isin: str,
+                          price_symbol, amount: float) -> dict:
     """Legt ein Holding an oder aktualisiert es (UNIQUE-Constraint verhindert Dopplung).
+    Bei Neuanlage wird sofort ein Startkurs geholt (falls Kursdaten verfuegbar sind).
     Gibt zurueck, ob es neu war und was der vorherige Beitrag war (fuer die Bestaetigungs-Nachricht)."""
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3984,30 +4027,100 @@ def save_portfolio_holding(user_id: int, instrument_key: str, label: str, isin: 
         was_new = existing is None
         old_amount = existing["monthly_contribution"] if existing else None
 
+        start_price = None
+        if was_new and price_symbol:
+            quote = fetch_price_quote(price_symbol)
+            if quote:
+                start_price = quote["close"]
+
         conn.execute(
-            """INSERT INTO portfolio_holdings (user_id, instrument_key, instrument_label, isin, monthly_contribution)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO portfolio_holdings
+                   (user_id, instrument_key, instrument_label, isin, price_symbol,
+                    monthly_contribution, start_price, last_price, last_checked_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(user_id, instrument_key) DO UPDATE SET
                    monthly_contribution = excluded.monthly_contribution,
                    instrument_label = excluded.instrument_label,
                    isin = excluded.isin,
+                   price_symbol = excluded.price_symbol,
                    updated_at = CURRENT_TIMESTAMP""",
-            (user_id, instrument_key, label, isin, amount)
+            (user_id, instrument_key, label, isin, price_symbol, amount, start_price, start_price)
         )
         conn.commit()
 
-    return {"was_new": was_new, "old_amount": old_amount}
+    return {"was_new": was_new, "old_amount": old_amount, "has_price_data": start_price is not None}
 
 
 def get_portfolio_holdings(user_id: int) -> list:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT instrument_key, instrument_label, isin, monthly_contribution, started_at "
+            "SELECT instrument_key, instrument_label, isin, price_symbol, monthly_contribution, "
+            "start_price, last_price, last_checked_at, started_at "
             "FROM portfolio_holdings WHERE user_id = ? ORDER BY id ASC",
             (user_id,)
         )
         return cursor.fetchall()
+
+
+def update_all_portfolio_prices() -> int:
+    """Taeglicher Job: holt fuer jedes Holding mit price_symbol den aktuellen Kurs.
+    Ueberspringt Holdings ohne price_symbol (z.B. rohe ISIN-Eintraege) stillschweigend."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, price_symbol FROM portfolio_holdings WHERE price_symbol IS NOT NULL"
+        )
+        rows = cursor.fetchall()
+
+    updated = 0
+    for row in rows:
+        quote = fetch_price_quote(row["price_symbol"])
+        if not quote:
+            continue
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE portfolio_holdings SET last_price = ?, last_checked_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (quote["close"], row["id"])
+            )
+            conn.commit()
+        updated += 1
+    return updated
+
+
+def build_portfolio_performance_answer(user_id: int) -> str:
+    holdings = get_portfolio_holdings(user_id)
+    if not holdings:
+        return (
+            "Du trackst aktuell kein Investment.\n\n"
+            "Schreib `Portfolio`, um eins einzurichten."
+        )
+
+    lines = ["📈 *Dein Portfolio*\n"]
+    for h in holdings:
+        label = h["instrument_label"]
+        contribution = h["monthly_contribution"]
+        if h["price_symbol"] is None:
+            lines.append(f"*{label}* - {contribution:.2f}€/Monat _(noch keine Kursdaten verfügbar)_")
+            continue
+        if h["last_price"] is None or h["start_price"] is None:
+            lines.append(f"*{label}* - {contribution:.2f}€/Monat _(Kurs wird beim nächsten täglichen Update abgerufen)_")
+            continue
+        change_pct = (h["last_price"] - h["start_price"]) / h["start_price"] * 100
+        arrow = "📈" if change_pct >= 0 else "📉"
+        lines.append(
+            f"{arrow} *{label}* - {contribution:.2f}€/Monat\n"
+            f"   Seit Einrichtung: {change_pct:+.1f}%"
+        )
+    return "\n".join(lines)
+
+
+def is_portfolio_performance_question(text_lower: str) -> bool:
+    triggers = [
+        "wie läuft mein", "wie laeuft mein", "wie läuft meine", "wie laeuft meine",
+        "wie steht mein etf", "wie steht meine aktie", "mein portfolio",
+    ]
+    return any(t in text_lower for t in triggers)
 
 
 def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str) -> bool:
@@ -4025,16 +4138,19 @@ def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str)
         )
         return True
 
-    key, label, isin, amount = parsed
-    result = save_portfolio_holding(user_id, key, label, isin, amount)
+    key, label, isin, price_symbol, amount = parsed
+    result = save_portfolio_holding(user_id, key, label, isin, price_symbol, amount)
     user_pending_actions.pop(user_id, None)
 
     if result["was_new"]:
+        if result["has_price_data"]:
+            note = "Ich verfolge den Kurs ab jetzt einmal täglich. Frag mich jederzeit " f"„wie läuft mein {label}?"
+        else:
+            note = "Für dieses Instrument kann ich aktuell noch keine Kursdaten abrufen - der Beitrag ist aber gespeichert."
         bot.send_message(
             user_id,
-            f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n"
-            "Ich verfolge den Kurs ab jetzt einmal täglich. Frag mich jederzeit "
-            f"„wie läuft mein {label}?", parse_mode="Markdown"
+            f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n{note}",
+            parse_mode="Markdown"
         )
     else:
         old = result["old_amount"] or 0.0
@@ -5260,6 +5376,10 @@ def handle_msg(message):
             bot.send_message(uid, category_reply, parse_mode="Markdown")
             return
 
+        if is_portfolio_performance_question(text_lower):
+            bot.send_message(uid, build_portfolio_performance_answer(uid), parse_mode="Markdown")
+            return
+
 
     # ─── ONBOARDING ─────────────────────────────────────────────────────
     if 0 < step < STEP_NORMAL:
@@ -5979,6 +6099,17 @@ def archive_old_pdf_reports():
     except Exception as e:
         logger.warning(f"PDF-Report-Archivierung fehlgeschlagen: {e}")
 
+
+def update_portfolio_prices_job():
+    """Taeglicher Kurs-Update fuer alle Portfolio-Holdings. Voll fallback-gesichert -
+    ein Fehler hier darf niemals den Bot oder andere Scheduler-Jobs beeintraechtigen."""
+    try:
+        updated = update_all_portfolio_prices()
+        if updated:
+            logger.info(f"Portfolio-Kurse aktualisiert: {updated}")
+    except Exception as e:
+        logger.warning(f"Portfolio-Kurs-Update fehlgeschlagen: {e}")
+
 # ====================== REPORT SCHEDULER ======================
 REPORT_SCHEDULER = None
 
@@ -6151,6 +6282,15 @@ def setup_monthly_report_scheduler():
         archive_old_pdf_reports,
         trigger=CronTrigger(hour=3, minute=20, timezone="Europe/Berlin"),
         id="archive_old_pdf_reports",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        update_portfolio_prices_job,
+        trigger=CronTrigger(hour=22, minute=30, timezone="Europe/Berlin"),
+        id="update_portfolio_prices",
         replace_existing=True,
         misfire_grace_time=3600,
         coalesce=True,
