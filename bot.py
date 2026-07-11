@@ -654,6 +654,7 @@ def init_db():
             isin                TEXT    NOT NULL,
             price_symbol        TEXT,
             monthly_contribution REAL   NOT NULL DEFAULT 0.0,
+            total_invested      REAL,
             start_price         REAL,
             last_price          REAL,
             last_checked_at     DATETIME,
@@ -676,6 +677,7 @@ def init_db():
             ("start_price", "ALTER TABLE portfolio_holdings ADD COLUMN start_price REAL"),
             ("last_price", "ALTER TABLE portfolio_holdings ADD COLUMN last_price REAL"),
             ("last_checked_at", "ALTER TABLE portfolio_holdings ADD COLUMN last_checked_at DATETIME"),
+            ("total_invested", "ALTER TABLE portfolio_holdings ADD COLUMN total_invested REAL"),
         ]:
             if col not in existing_cols:
                 conn.execute(ddl)
@@ -4056,11 +4058,21 @@ def get_portfolio_holdings(user_id: int) -> list:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT instrument_key, instrument_label, isin, price_symbol, monthly_contribution, "
-            "start_price, last_price, last_checked_at, started_at "
+            "total_invested, start_price, last_price, last_checked_at, started_at "
             "FROM portfolio_holdings WHERE user_id = ? ORDER BY id ASC",
             (user_id,)
         )
         return cursor.fetchall()
+
+
+def save_portfolio_total_invested(user_id: int, instrument_key: str, amount: float):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE portfolio_holdings SET total_invested = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE user_id = ? AND instrument_key = ?",
+            (amount, user_id, instrument_key)
+        )
+        conn.commit()
 
 
 def update_all_portfolio_prices() -> int:
@@ -4108,10 +4120,18 @@ def build_portfolio_performance_answer(user_id: int) -> str:
             continue
         change_pct = (h["last_price"] - h["start_price"]) / h["start_price"] * 100
         arrow = "📈" if change_pct >= 0 else "📉"
-        lines.append(
-            f"{arrow} *{label}* - {contribution:.2f}€/Monat\n"
-            f"   Seit Einrichtung: {change_pct:+.1f}%"
-        )
+        total = h["total_invested"]
+        if total:
+            estimated_value = total * (1 + change_pct / 100)
+            lines.append(
+                f"{arrow} *{label}* - {contribution:.2f}€/Monat\n"
+                f"   {format_eur(total)} → ca. {format_eur(estimated_value)} ({change_pct:+.1f}% seit Einrichtung)"
+            )
+        else:
+            lines.append(
+                f"{arrow} *{label}* - {contribution:.2f}€/Monat\n"
+                f"   Seit Einrichtung: {change_pct:+.1f}%"
+            )
     return "\n".join(lines)
 
 
@@ -4140,19 +4160,28 @@ def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str)
 
     key, label, isin, price_symbol, amount = parsed
     result = save_portfolio_holding(user_id, key, label, isin, price_symbol, amount)
-    user_pending_actions.pop(user_id, None)
 
     if result["was_new"]:
         if result["has_price_data"]:
-            note = "Ich verfolge den Kurs ab jetzt einmal täglich. Frag mich jederzeit " f"„wie läuft mein {label}?"
+            user_pending_actions[user_id] = {"type": "portfolio_total_amount", "instrument_key": key, "label": label}
+            bot.send_message(
+                user_id,
+                f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n"
+                f"Wie hoch ist deine aktuelle Position im {label}? (z.B. `9000€`)\n"
+                "Dann rechne ich die Entwicklung ab jetzt für dich in Euro um.\n\n"
+                "_Weißt du es nicht genau? Schreib `überspringen`._",
+                parse_mode="Markdown"
+            )
         else:
-            note = "Für dieses Instrument kann ich aktuell noch keine Kursdaten abrufen - der Beitrag ist aber gespeichert."
-        bot.send_message(
-            user_id,
-            f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n{note}",
-            parse_mode="Markdown"
-        )
+            user_pending_actions.pop(user_id, None)
+            bot.send_message(
+                user_id,
+                f"✅ Eingerichtet: *{label}*, {amount:.2f}€/Monat.\n\n"
+                "Für dieses Instrument kann ich aktuell noch keine Kursdaten abrufen - der Beitrag ist aber gespeichert.",
+                parse_mode="Markdown"
+            )
     else:
+        user_pending_actions.pop(user_id, None)
         old = result["old_amount"] or 0.0
         bot.send_message(
             user_id,
@@ -4160,6 +4189,31 @@ def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str)
             "Kein doppelter Eintrag - dein bestehendes Holding wurde angepasst.",
             parse_mode="Markdown"
         )
+    return True
+
+
+def handle_portfolio_total_amount_reply(user_id: int, action: dict, text_lower: str) -> bool:
+    label = action.get("label", "dein Investment")
+    if text_lower in {"überspringen", "ueberspringen", "skip", "weiß nicht", "weiss nicht", "keine ahnung"} or text_lower in NO_WORDS:
+        user_pending_actions.pop(user_id, None)
+        bot.send_message(user_id, f"Kein Problem, ich zeig dir dann nur die reine {label}-Entwicklung in Prozent.")
+        return True
+
+    amounts = extract_amounts(text_lower, exclude_years=True)
+    if len(amounts) != 1 or amounts[0] <= 0:
+        bot.send_message(
+            user_id,
+            f"Das konnte ich nicht als Betrag lesen. Schreib z.B. `9000€`, oder `überspringen`."
+        )
+        return True
+
+    save_portfolio_total_invested(user_id, action["instrument_key"], float(amounts[0]))
+    user_pending_actions.pop(user_id, None)
+    bot.send_message(
+        user_id,
+        f"✅ Notiert: {format_eur(amounts[0])} im {label}.\n\n"
+        f"Frag mich jederzeit „wie läuft mein {label}?" ,
+    )
     return True
 
 
@@ -4314,6 +4368,9 @@ def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> boo
 
     if action.get("type") == "portfolio_setup":
         return handle_portfolio_setup_reply(user_id, text_input, text_lower)
+
+    if action.get("type") == "portfolio_total_amount":
+        return handle_portfolio_total_amount_reply(user_id, action, text_lower)
 
     return False
 
