@@ -4183,6 +4183,41 @@ def maybe_update_portfolio_total(user_id: int, text_lower: str) -> str:
     )
 
 
+def maybe_delete_portfolio_holding(user_id: int, text_lower: str) -> str:
+    """Erkennt 'lösche <ETF>' fuer ein BEREITS getracktes Portfolio-Holding und entfernt es.
+
+    Bewusst NICHT durch looks_like_investment_update() blockiert: ETF-Vokabular
+    (etf/sparplan/msci/world/...) ueberschneidet sich mit INVESTMENT_INPUTS, das eigentlich
+    fuer die current_investments-Korrektur gedacht ist. Das praezisere, sicherere Signal
+    hier ist: existiert ueberhaupt ein passendes portfolio_holdings-Holding? Wenn nein,
+    ist diese Funktion nicht zustaendig und andere Pfade uebernehmen unveraendert."""
+    delete_words = ["lösche", "loesche", "entferne", "streiche", "storniere", "stornier"]
+    if not any(word in text_lower for word in delete_words):
+        return ""
+    if find_detail_alias_matches(text_lower):
+        return ""  # echter Fixkosten-/Abo-Treffer hat Vorrang
+
+    matched_alias, matched_key = None, None
+    for alias, (key, label, isin, price_symbol) in CURATED_INSTRUMENTS.items():
+        if alias in text_lower and (matched_alias is None or len(alias) > len(matched_alias)):
+            matched_alias, matched_key = alias, key
+    if not matched_key:
+        return ""
+
+    existing = {h["instrument_key"]: h for h in get_portfolio_holdings(user_id)}
+    if matched_key not in existing:
+        return ""  # kein getracktes Holding fuer dieses Instrument -> nicht zustaendig
+
+    label = existing[matched_key]["instrument_label"]
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM portfolio_holdings WHERE user_id = ? AND instrument_key = ?",
+            (user_id, matched_key)
+        )
+        conn.commit()
+    return f"🗑️ *{label}* wird nicht mehr getrackt.\n\nSchreib `Portfolio`, um es (oder ein anderes ETF) wieder einzurichten."
+
+
 def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str) -> bool:
     if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
         user_pending_actions.pop(user_id, None)
@@ -5486,6 +5521,11 @@ def handle_msg(message):
         portfolio_total_reply = maybe_update_portfolio_total(uid, text_lower)
         if portfolio_total_reply:
             bot.send_message(uid, portfolio_total_reply, parse_mode="Markdown")
+            return
+
+        portfolio_delete_reply = maybe_delete_portfolio_holding(uid, text_lower)
+        if portfolio_delete_reply:
+            bot.send_message(uid, portfolio_delete_reply, parse_mode="Markdown")
             return
 
 
