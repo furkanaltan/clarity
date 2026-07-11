@@ -4143,6 +4143,41 @@ def is_portfolio_performance_question(text_lower: str) -> bool:
     return any(t in text_lower for t in triggers)
 
 
+def parse_portfolio_total_update(text_lower: str):
+    """Erkennt '<kuratiertes Instrument> <Betrag>€ gesamt/investiert' - zum Nachtragen
+    der Gesamtsumme bei einem BEREITS bestehenden Holding (z.B. vor Einfuehrung dieser
+    Frage registriert). Erfordert das Wort 'gesamt' oder 'investiert' zur Abgrenzung
+    von '<Instrument> <Betrag>€ im Monat' (monatlicher Beitrag)."""
+    if not any(w in text_lower for w in ("gesamt", "investiert")):
+        return None
+    matched_alias, matched_key = None, None
+    for alias, (key, label, isin, price_symbol) in CURATED_INSTRUMENTS.items():
+        if alias in text_lower and (matched_alias is None or len(alias) > len(matched_alias)):
+            matched_alias, matched_key = alias, key
+    if not matched_key:
+        return None
+    remainder = text_lower.replace(matched_alias, " ", 1)
+    amounts = extract_amounts(remainder, exclude_years=True)
+    if len(amounts) != 1 or amounts[0] <= 0:
+        return None
+    return matched_key, float(amounts[0])
+
+
+def maybe_update_portfolio_total(user_id: int, text_lower: str) -> str:
+    """Traegt eine Gesamtsumme fuer ein BEREITS bestehendes Holding nach. Gibt '' zurueck,
+    wenn nichts passt oder kein passendes Holding existiert - dann uebernehmen andere Pfade."""
+    parsed = parse_portfolio_total_update(text_lower)
+    if not parsed:
+        return ""
+    key, amount = parsed
+    existing = {h["instrument_key"]: h for h in get_portfolio_holdings(user_id)}
+    if key not in existing:
+        return ""
+    label = existing[key]["instrument_label"]
+    save_portfolio_total_invested(user_id, key, amount)
+    return f"✅ Notiert: {format_eur(amount)} im {label}.\n\nFrag mich jederzeit „wie läuft mein {label}?"
+
+
 def handle_portfolio_setup_reply(user_id: int, text_input: str, text_lower: str) -> bool:
     if text_lower in NO_WORDS or text_lower in {"abbrechen", "stop", "cancel"}:
         user_pending_actions.pop(user_id, None)
@@ -5435,6 +5470,11 @@ def handle_msg(message):
 
         if is_portfolio_performance_question(text_lower):
             bot.send_message(uid, build_portfolio_performance_answer(uid), parse_mode="Markdown")
+            return
+
+        portfolio_total_reply = maybe_update_portfolio_total(uid, text_lower)
+        if portfolio_total_reply:
+            bot.send_message(uid, portfolio_total_reply, parse_mode="Markdown")
             return
 
 
