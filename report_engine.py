@@ -1408,9 +1408,16 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
-    from rove_pdf_report_renderer import build_pdf_report
-
-    build_pdf_report(user_id, report_month, file_path, report_data=report_data)
+    # Neues helles PDF (WeasyPrint, gleiche Datenquelle wie der Weblink).
+    # Faellt bei jedem Fehler (z.B. WeasyPrint fehlt) automatisch auf den
+    # alten, stabilen ReportLab-Renderer zurueck -> Bot bleibt funktionsfaehig.
+    try:
+        from rove_pdf_light_renderer import build_pdf_report
+        build_pdf_report(user_id, report_month, file_path, report_data=report_data)
+    except Exception:
+        logger.exception("Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer")
+        from rove_pdf_report_renderer import build_pdf_report as build_pdf_legacy
+        build_pdf_legacy(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
 
 

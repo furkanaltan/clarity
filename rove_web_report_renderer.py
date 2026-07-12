@@ -491,7 +491,7 @@ def month_names(report_month: str) -> tuple[str, str]:
     return f"{names[month]} {year}", f"{names[next_month]} {next_year}"
 
 
-def render_template(template: str, data: dict) -> str:
+def build_render_context(data: dict) -> dict:
     meta = data["meta"]
     profile = data["profile"]
     pages = data["pages"]
@@ -762,8 +762,12 @@ def render_template(template: str, data: dict) -> str:
         ),
     }
 
-    html_doc = template
-    html_doc = strip_dc_runtime(html_doc)
+    return context
+
+
+def render_template(template: str, data: dict) -> str:
+    context = build_render_context(data)
+    html_doc = strip_dc_runtime(template)
     html_doc = inject_report_css(html_doc)
     return jinja2.Template(html_doc).render(**context)
 
