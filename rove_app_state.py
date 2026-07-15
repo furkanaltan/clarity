@@ -40,8 +40,18 @@ PUBLIC_APP_STATE_DIR = Path(
 PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstrip("/")
 APP_STATE_LINK_TTL_DAYS = int(os.getenv("ROVE_APP_STATE_LINK_TTL_DAYS", "30"))
 
+# 1:1-Kopie von bot.py CATEGORY_LABELS (reine Daten, keine Funktion — sicher zu duplizieren,
+# siehe Modul-Docstring warum wir nicht aus bot.py importieren). Per Live-Test gefunden: die
+# ursprüngliche eigene .title()-Regel hier machte aus "MOBILITAET" fälschlich "Mobilitaet"
+# (ohne Umlaut) statt "Mobilität" — Kategorie landete dadurch in der falschen Farbe/Sonstiges-
+# Sammelkategorie statt bei Mobilität.
+BOT_CATEGORY_LABELS = {
+    "LEBENSMITTEL": "Lebensmittel", "MOBILITAET": "Mobilität", "RESTAURANTS": "Restaurants",
+    "ABOS": "Abos", "SHOPPING": "Shopping", "FREIZEIT": "Freizeit", "DROGERIE": "Drogerie",
+    "GESUNDHEIT": "Gesundheit", "SONSTIGES": "Sonstiges", "PFLEGE": "Pflege",
+}
 # Bot nennt die Kategorie "Restaurants" (Plural), die App "Restaurant" (Singular) — sonst
-# identische Namen (siehe bot.py CATEGORY_LABELS / rove-app CATS).
+# identische Namen.
 CATEGORY_LABEL_FIX = {"Restaurants": "Restaurant"}
 
 CATEGORY_COLORS = {
@@ -90,10 +100,9 @@ def ensure_app_state_links_table() -> None:
 
 
 def _category_label(raw: str) -> str:
-    label = (raw or "").strip()
-    if label.isupper():
-        label = label.title()
-    label = label or "Sonstiges"
+    stripped = (raw or "").strip()
+    mapped = BOT_CATEGORY_LABELS.get(stripped.upper())
+    label = mapped or (stripped.title() if stripped else "Sonstiges")
     return CATEGORY_LABEL_FIX.get(label, label)
 
 
