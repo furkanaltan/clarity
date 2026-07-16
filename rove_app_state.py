@@ -304,6 +304,9 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         net_worth = cash + investments
         sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
         fixed_costs = float(u.get("fixed_costs") or 0)
+        # Monatliches Einkommen — die App braucht es als Basis fuer "frei pro Monat"
+        # (freeBudget = income - fixed - savings - expenses, exakt calculate_remaining_budget).
+        income_total = float(u.get("income") or 0) + float(u.get("other_income") or 0)
 
         # Krypto aus der Investment-Summe herauslösen (siehe _crypto_holdings_value). Nie mehr
         # als der Gesamtbetrag herausschneiden, damit ETF-Rest nicht negativ wird.
@@ -349,6 +352,7 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 "konto": round(cash, 2),
                 "fixRest": round(fixed_costs, 2),
                 "sparraten": round(sparraten, 2),
+                "income": round(income_total, 2),
             },
             "vertraege": vertraege,
             "goals": ([{
