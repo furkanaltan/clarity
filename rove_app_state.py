@@ -65,9 +65,12 @@ CATEGORY_COLORS = {
 DETAIL_LABELS = {
     "wohnen": {"miete": "Miete", "strom": "Strom", "gas": "Gas"},
     "mobilitaet": {"auto": "Auto", "tanken": "Tanken", "bahn": "Bahn/ÖPNV"},
-    "abos": {"netflix": "Netflix", "spotify": "Spotify", "prime": "Amazon Prime", "disney": "Disney+"},
+    "abos": {"netflix": "Netflix", "spotify": "Spotify", "prime": "Amazon Prime", "disney": "Disney+",
+             "gym": "Fitnessstudio", "handy": "Handy", "handyvertrag": "Handyvertrag",
+             "icloud": "iCloud", "abo": "Abo"},
     "versicherungen": {"haftpflicht": "Haftpflicht", "bu": "Berufsunfähigkeit",
-                        "rechtsschutz": "Rechtsschutz", "autoversicherung": "Autoversicherung"},
+                        "rechtsschutz": "Rechtsschutz", "autoversicherung": "Autoversicherung",
+                        "hausrat": "Hausrat", "krankenversicherung": "Krankenversicherung"},
     "kredite": {"immobilie": "Immobilienkredit", "hausgeld": "Hausgeld",
                 "hausverwalter": "Hausverwaltung", "kredit": "Kredit"},
 }
@@ -77,6 +80,24 @@ SECTION_LABELS = {
 }
 SECTION_ICONS = {"wohnen": "house", "mobilitaet": "bolt", "abos": "film",
                   "versicherungen": "shield", "kredite": "house"}
+
+# Icon pro einzelnem Posten (statt nur pro Sektion) — sonst kriegen z.B. Netflix UND
+# Fitnessstudio dasselbe "abos"-Sektions-Icon (Live-Bug, per App-Bridge-Test 16.07. gefunden:
+# beide zeigten das Film-Quadrat). Fällt auf SECTION_ICONS zurück, wenn ein Key hier fehlt.
+DETAIL_ICONS = {
+    "netflix": "film", "prime": "film", "disney": "film",
+    "spotify": "music",
+    "gym": "gym",
+    "strom": "bolt", "gas": "bolt",
+    "haftpflicht": "shield", "bu": "shield", "rechtsschutz": "shield",
+    "autoversicherung": "shield", "hausrat": "shield", "krankenversicherung": "cross",
+}
+
+# Welche Sektionen enthalten grundsätzlich kündbare Posten (Abos, Versicherungen) statt
+# Basis-Verträge (Miete/Strom/Immobilienkredit)? Live-Bug (16.07.): _build_vertraege setzte
+# "cancel": False fest für JEDEN Posten, dadurch zeigte die App auch Spotify/Fitnessstudio
+# fälschlich als "Basis-Vertrag" statt kündbar.
+CANCELABLE_SECTIONS = {"abos", "versicherungen"}
 
 # Bestandsgrößen innerhalb einer Sektion, keine monatlichen Fixkosten-Zeilen.
 DETAIL_SKIP_KEYS = {"restschuld", "gesamtbetrag", "schulden_gesamt"}
@@ -153,12 +174,12 @@ def _build_vertraege(details: dict) -> list:
                 continue
             items.append({
                 "n": labels.get(key, key.replace("_", " ").title()),
-                "icon": SECTION_ICONS.get(section, "euro"),
+                "icon": DETAIL_ICONS.get(key, SECTION_ICONS.get(section, "euro")),
                 # Bot speichert keinen Abbuchungstag pro Posten (offener Migrationspunkt,
                 # siehe DATENMODELL.md) — "1." ist eine bewusste, dokumentierte Näherung.
                 "date": "1.",
                 "a": round(amount, 2),
-                "cancel": False,
+                "cancel": section in CANCELABLE_SECTIONS,
             })
         if items:
             groups.append({"cat": SECTION_LABELS.get(section, section.title()), "items": items})
