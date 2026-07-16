@@ -200,6 +200,32 @@ def _build_vertraege(details: dict) -> list:
     return groups
 
 
+def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
+    """Netto-Krypto-Wert (Zugänge minus Abgänge) aus investment_events.
+
+    Der Bot wirft ETF/Krypto/Aktien alle in EINE Summe (users.current_investments), merkt sich
+    den Asset-Typ aber pro Ereignis in investment_events (asset_type='crypto' bei Bitcoin/
+    Ethereum/Crypto, siehe bot.py detect_investment_asset). Live-Bug (16.07.): die App zeigte
+    deshalb nur „ETF & Investments" und nie Krypto separat, obwohl im Bot eingetragen.
+
+    Wir carven NUR die Krypto-Summe heraus und lassen den Rest als ETF stehen — dadurch bleibt
+    ETF + Krypto == current_investments exakt erhalten (keine Doppelzählung, kein Drift). Fehlt
+    die Tabelle (alte DB) oder gibt es keine Krypto-Events, kommt 0 zurück (Fallback = altes
+    Verhalten, alles unter ETF)."""
+    try:
+        row = conn.execute(
+            """SELECT
+                   COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+               FROM investment_events
+               WHERE user_id = ? AND asset_type = 'crypto'""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0.0
+    net = float(row["net"] if row and row["net"] is not None else 0.0)
+    return max(0.0, net)
+
+
 def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—") -> dict:
     """Baut das App-State-JSON für user_id und schreibt es nach public/app-state/<token>.json.
     score_total/score_label kommen vom Aufrufer (bot.py hat calculate_clarity_score() schon im
@@ -225,6 +251,11 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
         fixed_costs = float(u.get("fixed_costs") or 0)
 
+        # Krypto aus der Investment-Summe herauslösen (siehe _crypto_holdings_value). Nie mehr
+        # als der Gesamtbetrag herausschneiden, damit ETF-Rest nicht negativ wird.
+        crypto = min(investments, _crypto_holdings_value(conn, user_id))
+        etf = investments - crypto
+
         tx = _build_tx(conn, user_id)
         vertraege = _build_vertraege(details)
 
@@ -245,7 +276,9 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 {"name": "Girokonto", "icon": "bank", "tint": "#2AABEE",
                  "value": round(cash, 2), "sub": "aus dem Bot"} if cash else None,
                 {"name": "ETF & Investments", "icon": "chart", "tint": "#8B7DF5",
-                 "value": round(investments, 2), "sub": "aus dem Bot"} if investments else None,
+                 "value": round(etf, 2), "sub": "aus dem Bot"} if etf else None,
+                {"name": "Krypto", "icon": "bitcoin", "tint": "#F7931A",
+                 "value": round(crypto, 2), "sub": "aus dem Bot"} if crypto else None,
             ) if a],
             "tx": tx,
             "sts": {
