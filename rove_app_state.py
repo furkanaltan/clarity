@@ -226,6 +226,34 @@ def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
     return max(0.0, net)
 
 
+def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
+    """Krypto-Positionen pro Coin (Bitcoin/Ethereum/Solana/XRP …) als [{n, v}], netto Zu-/Abgänge.
+
+    Gruppiert investment_events nach asset_name für asset_type='crypto'. Kein „chg"-Feld: der Bot
+    trackt für Krypto keinen Kurs (nur die drei CURATED-ETFs haben Kursdaten) — die App zeigt ohne
+    chg sauber nur den Wert (index.html openAssetDetail). Positionen mit Netto <= 0 (komplett wieder
+    verkauft) fallen raus. Nach Wert absteigend sortiert."""
+    try:
+        rows = conn.execute(
+            """SELECT
+                   COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name,
+                   COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+               FROM investment_events
+               WHERE user_id = ? AND asset_type = 'crypto'
+               GROUP BY name""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    positions = [
+        {"n": r["name"], "v": round(float(r["net"]), 2)}
+        for r in rows
+        if r["net"] is not None and float(r["net"]) > 0
+    ]
+    positions.sort(key=lambda p: p["v"], reverse=True)
+    return positions
+
+
 def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—") -> dict:
     """Baut das App-State-JSON für user_id und schreibt es nach public/app-state/<token>.json.
     score_total/score_label kommen vom Aufrufer (bot.py hat calculate_clarity_score() schon im
@@ -255,6 +283,9 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         # als der Gesamtbetrag herausschneiden, damit ETF-Rest nicht negativ wird.
         crypto = min(investments, _crypto_holdings_value(conn, user_id))
         etf = investments - crypto
+        crypto_positions = _crypto_positions(conn, user_id) if crypto else []
+        crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
+                      if crypto_positions else "aus dem Bot")
 
         tx = _build_tx(conn, user_id)
         vertraege = _build_vertraege(details)
@@ -278,7 +309,8 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 {"name": "ETF & Investments", "icon": "chart", "tint": "#8B7DF5",
                  "value": round(etf, 2), "sub": "aus dem Bot"} if etf else None,
                 {"name": "Krypto", "icon": "bitcoin", "tint": "#F7931A",
-                 "value": round(crypto, 2), "sub": "aus dem Bot"} if crypto else None,
+                 "value": round(crypto, 2), "sub": crypto_sub,
+                 "positions": crypto_positions} if crypto else None,
             ) if a],
             "tx": tx,
             "sts": {
