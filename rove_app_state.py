@@ -254,6 +254,32 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
     return positions
 
 
+def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
+    """ETF-Positionen aus portfolio_holdings (reine Anzeige-Schublade, wird nirgends mit
+    current_investments verrechnet — Kernanforderung des Features, siehe bot.py).
+    v = total_invested (eingezahlte Summe), chg = Kursentwicklung seit Start (nur wenn beide
+    Kurse da sind; sonst zeigt die App ehrlich nur den Betrag). Fehlende Tabelle → []."""
+    try:
+        rows = conn.execute(
+            """SELECT instrument_label, total_invested, start_price, last_price
+               FROM portfolio_holdings
+               WHERE user_id = ?
+               ORDER BY COALESCE(total_invested, 0) DESC, instrument_label""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out = []
+    for r in rows:
+        pos = {"n": r["instrument_label"], "v": round(float(r["total_invested"] or 0), 2)}
+        sp, lp = r["start_price"], r["last_price"]
+        if sp and lp:
+            pct = (float(lp) - float(sp)) / float(sp) * 100.0
+            pos["chg"] = f"{'+' if pct >= 0 else '−'}{abs(pct):.1f} %".replace(".", ",")
+        out.append(pos)
+    return out
+
+
 def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—") -> dict:
     """Baut das App-State-JSON für user_id und schreibt es nach public/app-state/<token>.json.
     score_total/score_label kommen vom Aufrufer (bot.py hat calculate_clarity_score() schon im
@@ -286,6 +312,9 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         crypto_positions = _crypto_positions(conn, user_id) if crypto else []
         crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
                       if crypto_positions else "aus dem Bot")
+        etf_positions = _etf_positions(conn, user_id) if etf else []
+        etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
+                   if etf_positions else "aus dem Bot")
 
         tx = _build_tx(conn, user_id)
         vertraege = _build_vertraege(details)
@@ -307,10 +336,13 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 {"name": "Girokonto", "icon": "bank", "tint": "#2AABEE",
                  "value": round(cash, 2), "sub": "aus dem Bot"} if cash else None,
                 {"name": "ETF & Investments", "icon": "chart", "tint": "#8B7DF5",
-                 "value": round(etf, 2), "sub": "aus dem Bot"} if etf else None,
+                 "value": round(etf, 2), "sub": etf_sub,
+                 # positions nur setzen, wenn vorhanden — ein leeres [] würde in der App das
+                 # Detail-Sheet als leere Liste rendern statt auf die Standard-Zeile zu fallen
+                 **({"positions": etf_positions} if etf_positions else {})} if etf else None,
                 {"name": "Krypto", "icon": "bitcoin", "tint": "#F7931A",
                  "value": round(crypto, 2), "sub": crypto_sub,
-                 "positions": crypto_positions} if crypto else None,
+                 **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
             ) if a],
             "tx": tx,
             "sts": {

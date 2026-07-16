@@ -162,12 +162,32 @@ DIRECT_CATEGORY_INPUTS = {
     "fixkosten": ("FIXKOSTEN", "Fixkosten"),
 }
 
+# Krypto-Coins, die der Bot namentlich erkennt (Reihenfolge in detect_investment_asset:
+# spezifische Coins zuerst, dann der generische "crypto"/"krypto"-Fallback). Aliase sind
+# Substring-Treffer (gleiche lockere Logik, die bisher schon fuer btc/eth galt) — bewusst nur
+# einigermassen eindeutige Tokens, keine riskanten 2-3-Buchstaben-Kuerzel wie "ada"/"dot", die
+# in Alltagswoertern vorkommen koennten. So kann die Rov.E-App die Coins einzeln aufschluesseln.
+CRYPTO_COINS = [
+    ("Bitcoin",   ["bitcoin", "btc"]),
+    ("Ethereum",  ["ethereum", "eth"]),
+    ("Solana",    ["solana", "sol"]),
+    ("XRP",       ["xrp", "ripple"]),
+    ("Cardano",   ["cardano"]),
+    ("Dogecoin",  ["dogecoin", "doge"]),
+    ("Polkadot",  ["polkadot"]),
+    ("Litecoin",  ["litecoin", "ltc"]),
+    ("Avalanche", ["avalanche", "avax"]),
+    ("Polygon",   ["polygon", "matic"]),
+]
+CRYPTO_ALIASES = [alias for _name, aliases in CRYPTO_COINS for alias in aliases]
+
 INVESTMENT_INPUTS = {
     "etf", "etfs", "investment", "investments", "investieren",
     "sparplan", "depot", "aktien", "aktie", "stock", "stocks",
-    "bitcoin", "btc", "ethereum", "eth", "crypto", "krypto",
+    "crypto", "krypto",
     "fonds", "fond", "msci", "s&p", "sp500", "s&p500", "nasdaq",
     "world", "anlage", "wertpapier", "wertpapiere",
+    *CRYPTO_ALIASES,
 }
 
 PORTFOLIO_SNAPSHOT_INPUTS = [
@@ -839,10 +859,9 @@ def replace_onboarding_portfolio_snapshots(user_id: int, investments: float, cas
 
 
 def detect_investment_asset(text_lower: str) -> tuple[str, str]:
-    if any(word in text_lower for word in ["bitcoin", "btc"]):
-        return "crypto", "Bitcoin"
-    if any(word in text_lower for word in ["ethereum", "eth"]):
-        return "crypto", "Ethereum"
+    for coin_name, aliases in CRYPTO_COINS:
+        if any(alias in text_lower for alias in aliases):
+            return "crypto", coin_name
     if any(word in text_lower for word in ["crypto", "krypto"]):
         return "crypto", "Crypto"
     if any(word in text_lower for word in ["aktie", "aktien", "stock", "stocks"]):
