@@ -93,6 +93,19 @@ DETAIL_ICONS = {
     "autoversicherung": "shield", "hausrat": "shield", "krankenversicherung": "cross",
 }
 
+# Farbe pro Sektion als Fallback, wenn ein Posten nicht in DETAIL_TINTS steht. Ohne "tint"
+# fällt die App auf ihr Standard-Blaugrau zurück (index.html: v.tint||'#8FA8BC') — genau das
+# fehlte hier komplett (Live-Bug 16.07., zweiter Teil desselben Berichts: Icons stimmten schon,
+# aber jeder Posten sah trotzdem gleich blaugrau eingefärbt aus).
+SECTION_TINTS = {"wohnen": "#5B6675", "mobilitaet": "#5B6675", "abos": "#8B7DF5",
+                  "versicherungen": "#5B6675", "kredite": "#5B6675"}
+DETAIL_TINTS = {
+    "strom": "#FFD000", "gas": "#FFD000",
+    "netflix": "#E50914", "spotify": "#1DB954", "prime": "#00A8E1", "disney": "#113CCF",
+    "gym": "#E8622C",
+    "krankenversicherung": "#3E9C8F",
+}
+
 # Welche Sektionen enthalten grundsätzlich kündbare Posten (Abos, Versicherungen) statt
 # Basis-Verträge (Miete/Strom/Immobilienkredit)? Live-Bug (16.07.): _build_vertraege setzte
 # "cancel": False fest für JEDEN Posten, dadurch zeigte die App auch Spotify/Fitnessstudio
@@ -175,6 +188,7 @@ def _build_vertraege(details: dict) -> list:
             items.append({
                 "n": labels.get(key, key.replace("_", " ").title()),
                 "icon": DETAIL_ICONS.get(key, SECTION_ICONS.get(section, "euro")),
+                "tint": DETAIL_TINTS.get(key, SECTION_TINTS.get(section, "#8FA8BC")),
                 # Bot speichert keinen Abbuchungstag pro Posten (offener Migrationspunkt,
                 # siehe DATENMODELL.md) — "1." ist eine bewusste, dokumentierte Näherung.
                 "date": "1.",
