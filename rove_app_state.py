@@ -87,23 +87,28 @@ SECTION_ICONS = {"wohnen": "house", "mobilitaet": "bolt", "abos": "film",
 DETAIL_ICONS = {
     "netflix": "film", "prime": "film", "disney": "film",
     "spotify": "music",
-    "gym": "gym",
+    "gym": "gym", "handy": "doc", "handyvertrag": "doc", "icloud": "doc", "abo": "doc",
     "strom": "bolt", "gas": "bolt",
-    "haftpflicht": "shield", "bu": "shield", "rechtsschutz": "shield",
-    "autoversicherung": "shield", "hausrat": "shield", "krankenversicherung": "cross",
+    "auto": "car", "tanken": "car", "bahn": "bolt",
+    "haftpflicht": "shield", "bu": "shield", "rechtsschutz": "doc",
+    "autoversicherung": "car", "hausrat": "house", "krankenversicherung": "cross",
+    "immobilie": "house", "hausgeld": "coins", "hausverwalter": "doc", "kredit": "bank",
 }
 
 # Farbe pro Sektion als Fallback, wenn ein Posten nicht in DETAIL_TINTS steht. Ohne "tint"
 # fällt die App auf ihr Standard-Blaugrau zurück (index.html: v.tint||'#8FA8BC') — genau das
 # fehlte hier komplett (Live-Bug 16.07., zweiter Teil desselben Berichts: Icons stimmten schon,
 # aber jeder Posten sah trotzdem gleich blaugrau eingefärbt aus).
-SECTION_TINTS = {"wohnen": "#5B6675", "mobilitaet": "#5B6675", "abos": "#8B7DF5",
-                  "versicherungen": "#5B6675", "kredite": "#5B6675"}
+SECTION_TINTS = {"wohnen": "#5B6675", "mobilitaet": "#D07D00", "abos": "#8B7DF5",
+                  "versicherungen": "#3E9C8F", "kredite": "#D8B66A"}
 DETAIL_TINTS = {
     "strom": "#FFD000", "gas": "#FFD000",
     "netflix": "#E50914", "spotify": "#1DB954", "prime": "#00A8E1", "disney": "#113CCF",
-    "gym": "#E8622C",
-    "krankenversicherung": "#3E9C8F",
+    "gym": "#E8622C", "handy": "#8B7DF5", "handyvertrag": "#8B7DF5", "icloud": "#2AABEE",
+    "auto": "#D07D00", "tanken": "#D07D00", "bahn": "#2AABEE",
+    "haftpflicht": "#35D07F", "bu": "#8B7DF5", "rechtsschutz": "#2AABEE",
+    "autoversicherung": "#3E9C8F", "hausrat": "#D8B66A", "krankenversicherung": "#3E9C8F",
+    "immobilie": "#D8B66A", "hausgeld": "#D8B66A", "hausverwalter": "#8FA8BC", "kredit": "#D8B66A",
 }
 
 # Welche Sektionen enthalten grundsätzlich kündbare Posten (Abos, Versicherungen) statt
@@ -304,9 +309,6 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         net_worth = cash + investments
         sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
         fixed_costs = float(u.get("fixed_costs") or 0)
-        # Monatliches Einkommen — die App braucht es als Basis fuer "frei pro Monat"
-        # (freeBudget = income - fixed - savings - expenses, exakt calculate_remaining_budget).
-        income_total = float(u.get("income") or 0) + float(u.get("other_income") or 0)
 
         # Krypto aus der Investment-Summe herauslösen (siehe _crypto_holdings_value). Nie mehr
         # als der Gesamtbetrag herausschneiden, damit ETF-Rest nicht negativ wird.
@@ -352,7 +354,6 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 "konto": round(cash, 2),
                 "fixRest": round(fixed_costs, 2),
                 "sparraten": round(sparraten, 2),
-                "income": round(income_total, 2),
             },
             "vertraege": vertraege,
             "goals": ([{
