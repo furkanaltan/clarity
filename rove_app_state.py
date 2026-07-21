@@ -198,6 +198,37 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
     return [{"d": d, "items": days[d]} for d in order]
 
 
+def _build_budgets(conn: sqlite3.Connection, user_id: int) -> list:
+    """Liefert die vom Nutzer im Bot gesetzten Monatsrahmen fuer die App.
+
+    Die App darf bei einer gekoppelten Sitzung keine eigenen Limits aus vergangenen
+    Buchungen ableiten. Sonst unterscheiden sich App und Bot trotz derselben DB.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT category, monthly_limit, source
+                 FROM category_budgets
+                WHERE user_id = ?
+                  AND active_month = strftime('%Y-%m', 'now', 'localtime')
+                ORDER BY category""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    budgets = []
+    for row in rows:
+        category = _category_label(row["category"])
+        budgets.append({
+            "cat": category,
+            "limit": round(float(row["monthly_limit"] or 0), 2),
+            "tint": CATEGORY_COLORS.get(category, "#6E7B8C"),
+            "auto": row["source"] == "suggested",
+            "source": "bot",
+        })
+    return budgets
+
+
 def _build_vertraege(details: dict) -> list:
     groups = []
     for section, values in (details or {}).items():
@@ -285,6 +316,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
              **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
         ) if a],
         "tx": _build_tx(conn, user_id),
+        "budgets": _build_budgets(conn, user_id),
         "sts": {
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
