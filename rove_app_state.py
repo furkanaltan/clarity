@@ -252,6 +252,14 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     net_worth = cash + investments
     sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
     fixed_costs = float(u.get("fixed_costs") or 0)
+    monthly_expenses = float(conn.execute(
+        """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
+             WHERE user_id = ?
+               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')""",
+        (user_id,),
+    ).fetchone()["total"] or 0)
+    income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
+    available = income - fixed_costs - sparraten - monthly_expenses
 
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
     etf = investments - crypto
@@ -281,7 +289,11 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
             "sparraten": round(sparraten, 2),
-            "income": round(float(u.get("income") or 0) + float(u.get("other_income") or 0), 2),
+            "income": round(income, 2),
+            # Der Bot ist die Quelle der Wahrheit fuer das freie Monatsbudget. Die App nutzt
+            # diesen Wert statt Fixkosten und Ausgaben ein zweites Mal anders zu kombinieren.
+            "available": round(available, 2),
+            "monthExpenses": round(monthly_expenses, 2),
         },
         "vertraege": _build_vertraege(details),
         "goals": ([{

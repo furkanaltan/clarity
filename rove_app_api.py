@@ -205,6 +205,7 @@ def create_expense():
             "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
             (datetime.now().strftime("%Y-%m-%d"), user_id),
         )
+        live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
     return jsonify({
@@ -214,6 +215,7 @@ def create_expense():
         "amount": round(amount, 2),
         "category": bot_category,
         "merchant": merchant,
+        "available": live_data["sts"]["available"],
     })
 
 
