@@ -216,6 +216,7 @@ def _build_vertraege(details: dict) -> list:
                 continue
             items.append({
                 "n": labels.get(key, key.replace("_", " ").title()),
+                "source": "bot",
                 "icon": DETAIL_ICONS.get(key, SECTION_ICONS.get(section, "euro")),
                 "tint": DETAIL_TINTS.get(key, SECTION_TINTS.get(section, "#8FA8BC")),
                 # Bot speichert keinen Abbuchungstag pro Posten (offener Migrationspunkt,
@@ -227,6 +228,69 @@ def _build_vertraege(details: dict) -> list:
         if items:
             groups.append({"cat": SECTION_LABELS.get(section, section.title()), "items": items})
     return groups
+
+
+def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
+    """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
+
+    Lokale App-Ergänzungen wie Sachwerte oder ein manuell gepflegter Immobilienwert gehören
+    absichtlich nicht hierher: Die App führt sie beim Aktualisieren weiter, statt sie zu
+    überschreiben. Der Bot ist derzeit nur Quelle für Cash, Investments, Fixkosten, Ziele und
+    Monatsbuchungen.
+    """
+    row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        raise ValueError(f"Kein User {user_id} in der Bot-Datenbank gefunden")
+    u = dict(row)
+    try:
+        details = json.loads(u.get("fixed_costs_details") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        details = {}
+
+    cash = float(u.get("current_cash") or 0)
+    investments = float(u.get("current_investments") or 0)
+    net_worth = cash + investments
+    sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
+    fixed_costs = float(u.get("fixed_costs") or 0)
+
+    crypto = min(investments, _crypto_holdings_value(conn, user_id))
+    etf = investments - crypto
+    crypto_positions = _crypto_positions(conn, user_id) if crypto else []
+    crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
+                  if crypto_positions else "aus dem Bot")
+    etf_positions = _etf_positions(conn, user_id) if etf else []
+    etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
+               if etf_positions else "aus dem Bot")
+
+    net_worth_k = round(net_worth / 1000, 3)
+    return {
+        "netWorth": round(net_worth, 2),
+        "series": {r: [net_worth_k, net_worth_k] for r in ("1W", "1M", "6M", "1J", "Max")},
+        "assets": [a for a in (
+            {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
+             "value": round(cash, 2), "sub": "aus dem Bot"} if cash else None,
+            {"name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
+             "value": round(etf, 2), "sub": etf_sub,
+             **({"positions": etf_positions} if etf_positions else {})} if etf else None,
+            {"name": "Krypto", "source": "bot", "icon": "bitcoin", "tint": "#F7931A",
+             "value": round(crypto, 2), "sub": crypto_sub,
+             **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
+        ) if a],
+        "tx": _build_tx(conn, user_id),
+        "sts": {
+            "konto": round(cash, 2),
+            "fixRest": round(fixed_costs, 2),
+            "sparraten": round(sparraten, 2),
+        },
+        "vertraege": _build_vertraege(details),
+        "goals": ([{
+            "t": u.get("goal_description"),
+            "icon": "coins", "tint": "#2AABEE",
+            "cur": round(sparraten, 2),
+            "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
+            "source": "bot",
+        }] if (u.get("goal_description") or "").strip() else []),
+    }
 
 
 def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
@@ -319,34 +383,7 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        if not row:
-            raise ValueError(f"Kein User {user_id} in der Bot-Datenbank gefunden")
-        u = dict(row)
-        try:
-            details = json.loads(u.get("fixed_costs_details") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            details = {}
-
-        cash = float(u.get("current_cash") or 0)
-        investments = float(u.get("current_investments") or 0)
-        net_worth = cash + investments
-        sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
-        fixed_costs = float(u.get("fixed_costs") or 0)
-
-        # Krypto aus der Investment-Summe herauslösen (siehe _crypto_holdings_value). Nie mehr
-        # als der Gesamtbetrag herausschneiden, damit ETF-Rest nicht negativ wird.
-        crypto = min(investments, _crypto_holdings_value(conn, user_id))
-        etf = investments - crypto
-        crypto_positions = _crypto_positions(conn, user_id) if crypto else []
-        crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
-                      if crypto_positions else "aus dem Bot")
-        etf_positions = _etf_positions(conn, user_id) if etf else []
-        etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
-                   if etf_positions else "aus dem Bot")
-
-        tx = _build_tx(conn, user_id)
-        vertraege = _build_vertraege(details)
+        state_data = build_live_app_data(conn, user_id)
 
         access = conn.execute(
             "SELECT display_name, username FROM user_access WHERE user_id = ?", (user_id,)
@@ -358,7 +395,6 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         pairing_code = _new_pairing_code(conn)
         expires_at = datetime.now() + timedelta(days=APP_STATE_LINK_TTL_DAYS)
 
-        net_worth_k = round(net_worth / 1000, 3)
         state = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "user_id": user_id,
@@ -367,33 +403,7 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 "baseUrl": PUBLIC_APP_API_BASE_URL,
                 "token": token,
             } if PUBLIC_APP_API_BASE_URL else None,
-            "netWorth": round(net_worth, 2),
-            "series": {r: [net_worth_k, net_worth_k] for r in ("1W", "1M", "6M", "1J", "Max")},
-            "assets": [a for a in (
-                {"name": "Girokonto", "icon": "bank", "tint": "#2AABEE",
-                 "value": round(cash, 2), "sub": "aus dem Bot"} if cash else None,
-                {"name": "ETF & Investments", "icon": "chart", "tint": "#8B7DF5",
-                 "value": round(etf, 2), "sub": etf_sub,
-                 # positions nur setzen, wenn vorhanden — ein leeres [] würde in der App das
-                 # Detail-Sheet als leere Liste rendern statt auf die Standard-Zeile zu fallen
-                 **({"positions": etf_positions} if etf_positions else {})} if etf else None,
-                {"name": "Krypto", "icon": "bitcoin", "tint": "#F7931A",
-                 "value": round(crypto, 2), "sub": crypto_sub,
-                 **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
-            ) if a],
-            "tx": tx,
-            "sts": {
-                "konto": round(cash, 2),
-                "fixRest": round(fixed_costs, 2),
-                "sparraten": round(sparraten, 2),
-            },
-            "vertraege": vertraege,
-            "goals": ([{
-                "t": u.get("goal_description"),
-                "icon": "coins", "tint": "#2AABEE",
-                "cur": round(sparraten, 2),
-                "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
-            }] if (u.get("goal_description") or "").strip() else []),
+            **state_data,
             "score": {
                 "value": int(score_total or 0),
                 "label": score_label or "—",

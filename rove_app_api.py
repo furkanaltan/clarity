@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request
-from rove_app_state import _build_tx
+from rove_app_state import _build_tx, build_live_app_data
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -75,6 +75,11 @@ def pair_options():
 
 @app.route("/v1/transactions", methods=["OPTIONS"])
 def transactions_options():
+    return ("", 204)
+
+
+@app.route("/v1/state", methods=["OPTIONS"])
+def state_options():
     return ("", 204)
 
 
@@ -154,6 +159,19 @@ def current_transactions():
         tx = _build_tx(conn, user_id)
 
     return jsonify({"ok": True, "tx": tx})
+
+
+@app.route("/v1/state", methods=["GET"])
+def current_app_state():
+    """Aktualisiert die vom Bot gefuehrten Bereiche einer gekoppelten App."""
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        state = build_live_app_data(conn, user_id)
+
+    return jsonify({"ok": True, **state})
 
 
 @app.route("/v1/expenses", methods=["POST"])
