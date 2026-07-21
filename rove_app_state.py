@@ -39,6 +39,7 @@ PUBLIC_APP_STATE_DIR = Path(
 )
 PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstrip("/")
 APP_STATE_LINK_TTL_DAYS = int(os.getenv("ROVE_APP_STATE_LINK_TTL_DAYS", "30"))
+PUBLIC_APP_API_BASE_URL = os.getenv("ROVE_APP_API_BASE_URL", "").rstrip("/")
 
 # 1:1-Kopie von bot.py CATEGORY_LABELS (reine Daten, keine Funktion — sicher zu duplizieren,
 # siehe Modul-Docstring warum wir nicht aus bot.py importieren). Per Live-Test gefunden: die
@@ -330,11 +331,18 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
         display_name = ((access["display_name"] if access else "") or
                          (access["username"] if access else "") or "")
 
+        token = secrets.token_urlsafe(24)
+        expires_at = datetime.now() + timedelta(days=APP_STATE_LINK_TTL_DAYS)
+
         net_worth_k = round(net_worth / 1000, 3)
         state = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "user_id": user_id,
             "display_name": display_name,
+            "api": {
+                "baseUrl": PUBLIC_APP_API_BASE_URL,
+                "token": token,
+            } if PUBLIC_APP_API_BASE_URL else None,
             "netWorth": round(net_worth, 2),
             "series": {r: [net_worth_k, net_worth_k] for r in ("1W", "1M", "6M", "1J", "Max")},
             "assets": [a for a in (
@@ -370,8 +378,6 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
     finally:
         conn.close()
 
-    token = secrets.token_urlsafe(24)
-    expires_at = datetime.now() + timedelta(days=APP_STATE_LINK_TTL_DAYS)
     PUBLIC_APP_STATE_DIR.mkdir(parents=True, exist_ok=True)
     output_path = PUBLIC_APP_STATE_DIR / f"{token}.json"
     output_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
