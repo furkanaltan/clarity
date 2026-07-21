@@ -19,6 +19,7 @@ DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
 
 ALLOWED_ORIGIN = os.getenv("ROVE_APP_ALLOWED_ORIGIN", "https://getrove.de")
+PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstrip("/")
 
 APP_TO_BOT_CATEGORY = {
     "Lebensmittel": "LEBENSMITTEL",
@@ -66,6 +67,11 @@ def expenses_options():
     return ("", 204)
 
 
+@app.route("/v1/pair", methods=["OPTIONS"])
+def pair_options():
+    return ("", 204)
+
+
 def token_from_request() -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -92,6 +98,43 @@ def clean_text(value: object, fallback: str = "") -> str:
     text = str(value or "").strip()
     text = " ".join(text.split())
     return text[:80] if text else fallback
+
+
+def clean_pairing_code(value: object) -> str:
+    raw = "".join(char for char in str(value or "").upper() if char.isalnum())
+    return f"{raw[:4]}-{raw[4:8]}" if len(raw) == 8 else ""
+
+
+@app.route("/v1/pair", methods=["POST"])
+def pair_app():
+    """Verbindet eine installierte PWA einmalig mit dem Telegram-App-Code."""
+    if not PUBLIC_APP_STATE_BASE_URL:
+        return jsonify({"ok": False, "error": "app_state_not_configured"}), 503
+
+    payload = request.get_json(silent=True) or {}
+    code = clean_pairing_code(payload.get("code"))
+    if not code:
+        return jsonify({"ok": False, "error": "invalid_code"}), 400
+
+    with db() as conn:
+        try:
+            row = conn.execute(
+                """SELECT token FROM app_state_links
+                   WHERE pairing_code = ?
+                     AND status = 'active'
+                     AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                (code,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return jsonify({"ok": False, "error": "pairing_not_ready"}), 503
+
+    if not row:
+        return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
+
+    return jsonify({
+        "ok": True,
+        "state_url": f"{PUBLIC_APP_STATE_BASE_URL}/{row['token']}.json",
+    })
 
 
 @app.route("/v1/expenses", methods=["POST"])

@@ -130,13 +130,36 @@ def ensure_app_state_links_table() -> None:
                 user_id    INTEGER NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 expires_at TEXT NOT NULL,
-                status     TEXT NOT NULL DEFAULT 'active'
+                status     TEXT NOT NULL DEFAULT 'active',
+                pairing_code TEXT
             )"""
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(app_state_links)")}
+        if "pairing_code" not in columns:
+            conn.execute("ALTER TABLE app_state_links ADD COLUMN pairing_code TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_app_state_links_expiry ON app_state_links(status, expires_at)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_state_links_pairing ON app_state_links(pairing_code, status)"
+        )
         conn.commit()
+
+
+PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def _new_pairing_code(conn: sqlite3.Connection) -> str:
+    """Erzeugt einen gut lesbaren, aber praktisch nicht erratbaren 8-Zeichen-App-Code."""
+    for _ in range(20):
+        raw = "".join(secrets.choice(PAIRING_ALPHABET) for _ in range(8))
+        code = f"{raw[:4]}-{raw[4:]}"
+        exists = conn.execute(
+            "SELECT 1 FROM app_state_links WHERE pairing_code = ? AND status = 'active'", (code,)
+        ).fetchone()
+        if not exists:
+            return code
+    raise RuntimeError("Konnte keinen eindeutigen App-Code erzeugen")
 
 
 def _category_label(raw: str) -> str:
@@ -290,7 +313,7 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
     """Baut das App-State-JSON für user_id und schreibt es nach public/app-state/<token>.json.
     score_total/score_label kommen vom Aufrufer (bot.py hat calculate_clarity_score() schon im
     eigenen Namespace, siehe Modul-Docstring, warum das hier nicht selbst berechnet wird).
-    Gibt {token, path, url, expires_at} zurück."""
+    Gibt {token, pairing_code, path, url, expires_at} zurück."""
     ensure_app_state_links_table()
 
     conn = sqlite3.connect(DB_PATH)
@@ -332,6 +355,7 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                          (access["username"] if access else "") or "")
 
         token = secrets.token_urlsafe(24)
+        pairing_code = _new_pairing_code(conn)
         expires_at = datetime.now() + timedelta(days=APP_STATE_LINK_TTL_DAYS)
 
         net_worth_k = round(net_worth / 1000, 3)
@@ -385,9 +409,16 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
     public_url = f"{PUBLIC_APP_STATE_BASE_URL}/{token}.json" if PUBLIC_APP_STATE_BASE_URL else ""
     with sqlite3.connect(DB_PATH) as db_conn:
         db_conn.execute(
-            "INSERT INTO app_state_links (token, user_id, expires_at, status) VALUES (?, ?, ?, 'active')",
-            (token, user_id, expires_at.strftime("%Y-%m-%d %H:%M:%S")),
+            """INSERT INTO app_state_links (token, user_id, expires_at, status, pairing_code)
+               VALUES (?, ?, ?, 'active', ?)""",
+            (token, user_id, expires_at.strftime("%Y-%m-%d %H:%M:%S"), pairing_code),
         )
         db_conn.commit()
 
-    return {"token": token, "path": output_path, "url": public_url, "expires_at": expires_at}
+    return {
+        "token": token,
+        "pairing_code": pairing_code,
+        "path": output_path,
+        "url": public_url,
+        "expires_at": expires_at,
+    }

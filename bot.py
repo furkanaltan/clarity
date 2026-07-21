@@ -4962,12 +4962,16 @@ def handle_commands(message):
         if result.get("url"):
             from urllib.parse import quote
             param = f"?state={quote(result['url'], safe='')}"
+            app_url = f"https://getrove.de/app/{param}"
+            pairing_code = result.get("pairing_code") or "—"
             bot.send_message(
                 uid,
                 "*Dein Rov.E-App-Zugang ist bereit.*\n\n"
-                "Häng das an die Adresse an, unter der du die App gerade öffnest:\n"
-                f"`{param}`\n\n"
-                f"Gültig für {APP_STATE_LINK_TTL_DAYS} Tage. Schick /app erneut, wenn du frische Daten willst.",
+                f"[App direkt öffnen]({app_url})\n\n"
+                "Für dein Homescreen-Icon:\n"
+                "Öffne Rov.E und tippe auf „Mit Telegram verbinden“.\n"
+                f"Dein App-Code: `{pairing_code}`\n\n"
+                f"Code und Link gelten {APP_STATE_LINK_TTL_DAYS} Tage. Mit /app bekommst du jederzeit einen neuen Zugang.",
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
             )
