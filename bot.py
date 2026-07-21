@@ -2152,6 +2152,70 @@ def maybe_answer_category_spending(user_id: int, text_lower: str) -> str:
     return "\n".join(lines)
 
 
+def is_expense_overview_request(text_lower: str) -> bool:
+    """Erkennt den Wunsch nach einer echten Buchungsliste vor dem KI-Fallback."""
+    has_expense_context = any(word in text_lower for word in [
+        "ausgabe", "ausgaben", "buchung", "buchungen", "eingetragen",
+    ])
+    asks_overview = any(word in text_lower for word in [
+        "zeig", "zeige", "übersicht", "uebersicht", "auflistung", "auflisten",
+        "aufstellung", "alle", "detaill", "detail",
+    ])
+    # Eine direkte Folgefrage wie "Ich will eine detaillierte Übersicht" soll ebenfalls
+    # funktionieren, auch wenn der Nutzer das Wort Ausgaben nicht erneut schreibt.
+    standalone_detail = "übersicht" in text_lower and "detaill" in text_lower
+    return (has_expense_context and asks_overview) or standalone_detail
+
+
+def build_expense_overview(user_id: int, text_lower: str) -> str:
+    """Gibt eine vollständige, DB-basierte Ausgabenübersicht statt eines KI-Auszuges aus."""
+    lifetime_markers = ["alle eingetragen", "komplett", "insgesamt", "seit start", "seitdem"]
+    is_lifetime = any(marker in text_lower for marker in lifetime_markers) or (
+        "alle" in text_lower and "eingetragen" in text_lower
+    )
+    where_period = "" if is_lifetime else (
+        "AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')"
+    )
+    period_label = "seit deinem Start" if is_lifetime else "diesen Monat"
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT amount, category, merchant, created_at
+                  FROM expenses
+                 WHERE user_id = ? {where_period}
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 100""",
+            (user_id,),
+        ).fetchall()
+
+    if not rows:
+        return f"Ich habe {period_label} noch keine Ausgaben gefunden."
+
+    total = sum(float(row["amount"] or 0) for row in rows)
+    categories: dict[str, float] = {}
+    for row in rows:
+        category = row["category"] or "SONSTIGES"
+        categories[category] = categories.get(category, 0.0) + float(row["amount"] or 0)
+
+    title = "Deine Ausgaben seit deinem Start" if is_lifetime else "Deine Ausgaben diesen Monat"
+    lines = [f"*{title}*", f"{len(rows)} Buchungen · {format_eur(total)}", ""]
+    for category, amount in sorted(categories.items(), key=lambda item: item[1], reverse=True):
+        lines.append(f"{CATEGORY_EMOJIS.get(category, '•')} {category_label(category)}: {format_eur(amount)}")
+
+    lines.extend(["", "*Alle Buchungen*"])
+    for row in rows:
+        created = str(row["created_at"] or "")[:10]
+        date_label = created[8:10] + "." + created[5:7] + "." if len(created) == 10 else ""
+        merchant = (row["merchant"] or category_label(row["category"] or "SONSTIGES")).strip()
+        line = f"• {date_label} {merchant}: {format_eur(row['amount'])}"
+        # Telegram erlaubt zwar lange Nachrichten, aber eine Übersicht soll lesbar bleiben.
+        if len("\n".join(lines + [line])) > 3600:
+            lines.append("… weitere Buchungen sind vorhanden.")
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 BUDGET_CORE_CATEGORIES = ["LEBENSMITTEL", "RESTAURANTS", "FREIZEIT", "SHOPPING", "MOBILITAET"]
 
 
@@ -5558,6 +5622,10 @@ def handle_msg(message):
         affordability_reply = maybe_answer_affordability(uid, u, text_lower)
         if affordability_reply:
             bot.send_message(uid, affordability_reply, parse_mode="Markdown")
+            return
+
+        if is_expense_overview_request(text_lower):
+            bot.send_message(uid, build_expense_overview(uid, text_lower), parse_mode="Markdown")
             return
 
         profile_reply = maybe_answer_profile_finance(uid, u, text_lower)

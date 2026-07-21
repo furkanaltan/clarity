@@ -281,6 +281,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
             "sparraten": round(sparraten, 2),
+            "income": round(float(u.get("income") or 0) + float(u.get("other_income") or 0), 2),
         },
         "vertraege": _build_vertraege(details),
         "goals": ([{
