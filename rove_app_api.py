@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from rove_app_state import _build_tx
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -69,6 +70,11 @@ def expenses_options():
 
 @app.route("/v1/pair", methods=["OPTIONS"])
 def pair_options():
+    return ("", 204)
+
+
+@app.route("/v1/transactions", methods=["OPTIONS"])
+def transactions_options():
     return ("", 204)
 
 
@@ -135,6 +141,19 @@ def pair_app():
         "ok": True,
         "state_url": f"{PUBLIC_APP_STATE_BASE_URL}/{row['token']}.json",
     })
+
+
+@app.route("/v1/transactions", methods=["GET"])
+def current_transactions():
+    """Liest die aktuellen Monatsbuchungen fuer eine bereits gekoppelte App."""
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        tx = _build_tx(conn, user_id)
+
+    return jsonify({"ok": True, "tx": tx})
 
 
 @app.route("/v1/expenses", methods=["POST"])
