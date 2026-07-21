@@ -83,6 +83,11 @@ def state_options():
     return ("", 204)
 
 
+@app.route("/v1/budgets", methods=["OPTIONS"])
+def budgets_options():
+    return ("", 204)
+
+
 def token_from_request() -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -114,6 +119,27 @@ def clean_text(value: object, fallback: str = "") -> str:
 def clean_pairing_code(value: object) -> str:
     raw = "".join(char for char in str(value or "").upper() if char.isalnum())
     return f"{raw[:4]}-{raw[4:8]}" if len(raw) == 8 else ""
+
+
+def clean_budget_updates(value: object) -> list[tuple[str, float, str]]:
+    """Validiert einzelne App-Budgetaenderungen vor dem DB-Write."""
+    if not isinstance(value, list) or not value:
+        return []
+
+    updates: dict[str, tuple[float, str]] = {}
+    for item in value[:12]:
+        if not isinstance(item, dict):
+            continue
+        category = APP_TO_BOT_CATEGORY.get(clean_text(item.get("category")))
+        try:
+            amount = round(float(item.get("limit")), 2)
+        except (TypeError, ValueError):
+            continue
+        if not category or amount < 0 or amount > 100_000:
+            continue
+        source = "suggested" if item.get("source") == "suggested" else "manual"
+        updates[category] = (amount, source)
+    return [(category, amount, source) for category, (amount, source) in updates.items()]
 
 
 @app.route("/v1/pair", methods=["POST"])
@@ -172,6 +198,37 @@ def current_app_state():
         state = build_live_app_data(conn, user_id)
 
     return jsonify({"ok": True, **state})
+
+
+@app.route("/v1/budgets", methods=["POST"])
+def update_budgets():
+    """Speichert App-Budgetanpassungen in der Bot-Datenbank fuer den aktuellen Monat."""
+    payload = request.get_json(silent=True) or {}
+    updates = clean_budget_updates(payload.get("budgets"))
+    if not updates:
+        return jsonify({"ok": False, "error": "valid_budget_updates_required"}), 400
+
+    token = token_from_request()
+    active_month = datetime.now().strftime("%Y-%m")
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        for category, limit, source in updates:
+            conn.execute(
+                """INSERT INTO category_budgets
+                   (user_id, category, monthly_limit, source, active_month)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, category, active_month)
+                   DO UPDATE SET monthly_limit = excluded.monthly_limit,
+                                 source = excluded.source""",
+                (user_id, category, limit, source, active_month),
+            )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, "budgets": live_data["budgets"]})
 
 
 @app.route("/v1/expenses", methods=["POST"])
