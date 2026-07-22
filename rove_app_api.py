@@ -23,6 +23,7 @@ from rove_app_state import (
     _build_tx,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_monthly_plan_table,
     ensure_app_properties_table,
 )
 
@@ -113,6 +114,11 @@ def property_options():
 
 @app.route("/v1/investments", methods=["OPTIONS"])
 def investments_options():
+    return ("", 204)
+
+
+@app.route("/v1/monthly-plan", methods=["OPTIONS"])
+def monthly_plan_options():
     return ("", 204)
 
 
@@ -267,6 +273,47 @@ def current_app_state():
         state = build_live_app_data(conn, user_id)
 
     return jsonify({"ok": True, **state})
+
+
+@app.route("/v1/monthly-plan", methods=["POST"])
+def update_monthly_plan():
+    """Bestaetigt oder oeffnet Monatsplan-Posten, ohne Kontobewegungen zu erfinden."""
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    field_by_action = {
+        "confirm_income": ("income_status", "confirmed"),
+        "confirm_fixed_costs": ("fixed_costs_status", "confirmed"),
+        "reopen_income": ("income_status", "planned"),
+        "reopen_fixed_costs": ("fixed_costs_status", "planned"),
+    }
+    if action not in field_by_action:
+        return jsonify({"ok": False, "error": "valid_monthly_plan_action_required"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_app_monthly_plan_table(conn)
+        month_key = datetime.now().strftime("%Y-%m")
+        field, status = field_by_action[action]
+        conn.execute(
+            """INSERT INTO app_monthly_plan_status (user_id, month_key)
+               VALUES (?, ?)
+               ON CONFLICT(user_id, month_key) DO NOTHING""",
+            (user_id, month_key),
+        )
+        conn.execute(
+            f"""UPDATE app_monthly_plan_status
+                   SET {field} = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ? AND month_key = ?""",
+            (status, user_id, month_key),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, **live_data})
 
 
 @app.route("/v1/budgets", methods=["POST"])

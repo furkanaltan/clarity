@@ -378,6 +378,41 @@ def ensure_app_account_balances_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_app_monthly_plan_table(conn: sqlite3.Connection) -> None:
+    """Speichert nur Bestaetigungen zum Monatsplan, keine erfundenen Buchungen."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_monthly_plan_status (
+            user_id            INTEGER NOT NULL,
+            month_key          TEXT NOT NULL,
+            income_status      TEXT NOT NULL DEFAULT 'planned',
+            fixed_costs_status TEXT NOT NULL DEFAULT 'planned',
+            updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, month_key)
+        )"""
+    )
+
+
+def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
+                         fixed_costs: float, sparraten: float) -> dict:
+    """Liefert Planung und explizite Bestaetigungen getrennt von echten Buchungen."""
+    ensure_app_monthly_plan_table(conn)
+    month_key = date.today().strftime("%Y-%m")
+    row = conn.execute(
+        """SELECT income_status, fixed_costs_status
+             FROM app_monthly_plan_status
+            WHERE user_id = ? AND month_key = ?""",
+        (user_id, month_key),
+    ).fetchone()
+    return {
+        "month": month_key,
+        "income": round(income, 2),
+        "fixedCosts": round(fixed_costs, 2),
+        "savings": round(sparraten, 2),
+        "incomeStatus": row["income_status"] if row else "planned",
+        "fixedCostsStatus": row["fixed_costs_status"] if row else "planned",
+    }
+
+
 def ensure_app_properties_table(conn: sqlite3.Connection) -> None:
     """Speichert Immobilienwerte zentral, damit sie keinen App-Neustart verlieren."""
     conn.execute(
@@ -488,6 +523,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     ).fetchone()["total"] or 0)
     income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
     available = income - fixed_costs - sparraten - monthly_expenses
+    monthly_plan = get_app_monthly_plan(conn, user_id, income, fixed_costs, sparraten)
 
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
     etf = investments - crypto
@@ -540,6 +576,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "tx": _build_tx(conn, user_id),
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
+        "monthlyPlan": monthly_plan,
         "sts": {
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
