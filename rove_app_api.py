@@ -11,6 +11,7 @@ import gzip
 import io
 import os
 import re
+import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from rove_app_state import (
     _build_tx,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_goals_table,
     ensure_app_monthly_plan_table,
     ensure_app_properties_table,
 )
@@ -122,6 +124,11 @@ def monthly_plan_options():
     return ("", 204)
 
 
+@app.route("/v1/goals", methods=["OPTIONS"])
+def goals_options():
+    return ("", 204)
+
+
 @app.route("/v1/reports/<report_month>/pdf", methods=["OPTIONS"])
 def report_pdf_options(report_month: str):
     return ("", 204)
@@ -179,6 +186,14 @@ def clean_budget_updates(value: object) -> list[tuple[str, float, str]]:
         source = "suggested" if item.get("source") == "suggested" else "manual"
         updates[category] = (amount, source)
     return [(category, amount, source) for category, (amount, source) in updates.items()]
+
+
+def goal_amount(value: object) -> float | None:
+    try:
+        amount = round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+    return amount if 0 <= amount <= 10_000_000 else None
 
 
 def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
@@ -363,6 +378,86 @@ def update_monthly_plan():
                  WHERE user_id = ? AND month_key = ?""",
             (status, user_id, month_key),
         )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/goals", methods=["POST"])
+def update_goals():
+    """Verwaltet App-Ziele zentral, damit sie App-Neustarts und Geraetewechsel ueberleben."""
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    if action not in {"create", "assign", "set_target", "delete"}:
+        return jsonify({"ok": False, "error": "valid_goal_action_required"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_goals_table(conn)
+
+        if action == "create":
+            name = clean_text(payload.get("name"))
+            target = goal_amount(payload.get("target"))
+            icon = clean_text(payload.get("icon"), "coins")
+            tint = clean_text(payload.get("tint"), "#2AABEE")
+            if not name or target is None or target <= 0:
+                return jsonify({"ok": False, "error": "valid_goal_name_and_target_required"}), 400
+            duplicate = conn.execute(
+                """SELECT 1 FROM app_goals
+                     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
+                (user_id, name),
+            ).fetchone()
+            if duplicate:
+                return jsonify({"ok": False, "error": "goal_name_already_exists"}), 409
+            goal_id = secrets.token_urlsafe(9)
+            conn.execute(
+                """INSERT INTO app_goals
+                   (user_id, goal_id, name, target_amount, icon, tint)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, goal_id, name, target, icon, tint),
+            )
+        else:
+            goal_id = clean_text(payload.get("goal_id"))
+            if not goal_id:
+                return jsonify({"ok": False, "error": "goal_id_required"}), 400
+            goal = conn.execute(
+                """SELECT target_amount, current_amount FROM app_goals
+                     WHERE user_id = ? AND goal_id = ?""",
+                (user_id, goal_id),
+            ).fetchone()
+            if not goal:
+                return jsonify({"ok": False, "error": "goal_not_found"}), 404
+
+            if action == "delete":
+                conn.execute("DELETE FROM app_goals WHERE user_id = ? AND goal_id = ?", (user_id, goal_id))
+            elif action == "assign":
+                amount = goal_amount(payload.get("amount"))
+                if amount is None or amount <= 0:
+                    return jsonify({"ok": False, "error": "valid_goal_amount_required"}), 400
+                target = float(goal["target_amount"] or 0)
+                current = float(goal["current_amount"] or 0)
+                conn.execute(
+                    """UPDATE app_goals
+                          SET current_amount = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND goal_id = ?""",
+                    (round(min(target, current + amount), 2), user_id, goal_id),
+                )
+            else:  # set_target
+                target = goal_amount(payload.get("target"))
+                if target is None or target <= 0:
+                    return jsonify({"ok": False, "error": "valid_goal_target_required"}), 400
+                conn.execute(
+                    """UPDATE app_goals
+                          SET target_amount = ?, current_amount = MIN(current_amount, ?),
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND goal_id = ?""",
+                    (target, target, user_id, goal_id),
+                )
+
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 

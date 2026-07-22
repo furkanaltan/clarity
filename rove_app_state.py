@@ -399,6 +399,44 @@ def ensure_app_monthly_plan_table(conn: sqlite3.Connection) -> None:
         )
 
 
+def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
+    """Speichert zusaetzliche App-Ziele zentral neben dem Telegram-Hauptziel."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_goals (
+            user_id       INTEGER NOT NULL,
+            goal_id       TEXT NOT NULL,
+            name          TEXT NOT NULL,
+            target_amount REAL NOT NULL,
+            current_amount REAL NOT NULL DEFAULT 0.0,
+            icon          TEXT NOT NULL DEFAULT 'coins',
+            tint          TEXT NOT NULL DEFAULT '#2AABEE',
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, goal_id),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    """Liest nur Ziele, die in der App angelegt wurden, ohne Bot-Ziele zu duplizieren."""
+    ensure_app_goals_table(conn)
+    rows = conn.execute(
+        """SELECT goal_id, name, target_amount, current_amount, icon, tint
+             FROM app_goals WHERE user_id = ? ORDER BY datetime(created_at), goal_id""",
+        (user_id,),
+    ).fetchall()
+    return [{
+        "id": str(row["goal_id"]),
+        "t": str(row["name"]),
+        "tar": round(max(0.0, float(row["target_amount"] or 0)), 2),
+        "cur": round(max(0.0, float(row["current_amount"] or 0)), 2),
+        "icon": str(row["icon"] or "coins"),
+        "tint": str(row["tint"] or "#2AABEE"),
+        "source": "app",
+    } for row in rows]
+
+
 def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
                          fixed_costs: float, sparraten: float) -> dict:
     """Liefert Planung und explizite Bestaetigungen getrennt von echten Buchungen."""
@@ -613,7 +651,10 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "cur": round(sparraten, 2),
             "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
             "source": "bot",
-        }] if (u.get("goal_description") or "").strip() else []),
+        }] if (u.get("goal_description") or "").strip() else []) + [
+            goal for goal in get_app_goals(conn, user_id)
+            if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
+        ],
     }
 
 
