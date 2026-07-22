@@ -2873,6 +2873,7 @@ DETAIL_SECTION_LABELS = {
     "abos": ("📱", "Abos"),
     "versicherungen": ("🛡️", "Versicherungen"),
     "kredite": ("💳", "Kredite"),
+    "app_vertraege": ("📄", "Weitere Verträge"),
 }
 
 
@@ -2910,12 +2911,30 @@ DETAIL_ITEM_LABELS = {
 }
 
 
+def get_app_contract_display_names(user_id: int | None) -> dict[str, str]:
+    """Löst App-Vertrags-IDs für die Bot-Ausgabe wieder in echte Namen auf."""
+    if not user_id:
+        return {}
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT detail_key, name FROM app_contracts WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        return {str(row["detail_key"]): str(row["name"]) for row in rows}
+    except sqlite3.OperationalError:
+        # Alte Datenbanken kennen die neue App-Tabelle noch nicht. Die Fixkosten-Ausgabe
+        # bleibt trotzdem verfügbar und fällt nur auf den technischen Fallback zurück.
+        return {}
+
+
 def format_fixed_cost_breakdown(u: dict) -> str:
     details = u.get("details", {})
     total = u.get("fixed_costs") or fixed_costs_total(details if isinstance(details, dict) else {})
     if not isinstance(details, dict) or not any(isinstance(v, dict) and v for v in details.values()):
         return f"Deine aktuellen Fixkosten liegen bei {total:.2f} EUR pro Monat."
 
+    app_contract_names = get_app_contract_display_names(u.get("user_id"))
     lines = ["*Deine Fixkosten*", ""]
     for section, values in details.items():
         if not isinstance(values, dict) or not values:
@@ -2923,7 +2942,7 @@ def format_fixed_cost_breakdown(u: dict) -> str:
         emoji, section_label = DETAIL_SECTION_LABELS.get(section, ("•", section.replace("_", " ").title()))
         lines.append(f"{emoji} *{section_label}*")
         for key, value in values.items():
-            label = DETAIL_ITEM_LABELS.get(key, key.replace("_", " ").title())
+            label = app_contract_names.get(key, DETAIL_ITEM_LABELS.get(key, key.replace("_", " ").title()))
             if key in {"restschuld", "gesamtbetrag", "schulden_gesamt"}:
                 lines.append(f"{label}: {format_eur(value)} offen")
             else:
