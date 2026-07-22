@@ -476,7 +476,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     property_data = get_app_property(conn, user_id)
     property_equity = float(property_data["equity"] if property_data else 0)
     net_worth = cash + investments + property_equity
-    sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
+    etf_savings = round(float(u.get("etf_savings") or 0), 2)
+    cash_savings = round(float(u.get("cash_savings") or 0), 2)
+    sparraten = etf_savings + cash_savings
     fixed_costs = float(u.get("fixed_costs") or 0)
     monthly_expenses = float(conn.execute(
         """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -542,6 +544,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
             "sparraten": round(sparraten, 2),
+            "etfSparrate": etf_savings,
+            "cashSparrate": cash_savings,
+            "sparratenParts": {"etf": etf_savings, "cash": cash_savings},
             "income": round(income, 2),
             # Der Bot ist die Quelle der Wahrheit fuer das freie Monatsbudget. Die App nutzt
             # diesen Wert statt Fixkosten und Ausgaben ein zweites Mal anders zu kombinieren.
