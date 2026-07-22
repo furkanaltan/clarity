@@ -1494,8 +1494,7 @@ def send_report_to_user(user_id: int, report_month: str, bot):
                 "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
             )
         )
-    try:
-        file_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    # Das PDF bleibt nach dem Telegram-Versand im Report-Archiv liegen. Die App kann
+    # es dadurch dauerhaft unter "Reports" öffnen; archive_old_reports() komprimiert
+    # die Datei später automatisch statt sie zu verlieren.
     return True
