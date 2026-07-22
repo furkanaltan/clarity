@@ -85,6 +85,7 @@ DETAIL_LABELS = {
 SECTION_LABELS = {
     "wohnen": "Wohnen", "mobilitaet": "Mobilität", "abos": "Abos",
     "versicherungen": "Versicherungen", "kredite": "Kredite & Wohneigentum",
+    "app_vertraege": "Weitere Verträge",
 }
 SECTION_ICONS = {"wohnen": "house", "mobilitaet": "bolt", "abos": "film",
                   "versicherungen": "shield", "kredite": "house"}
@@ -108,7 +109,7 @@ DETAIL_ICONS = {
 # fehlte hier komplett (Live-Bug 16.07., zweiter Teil desselben Berichts: Icons stimmten schon,
 # aber jeder Posten sah trotzdem gleich blaugrau eingefärbt aus).
 SECTION_TINTS = {"wohnen": "#5B6675", "mobilitaet": "#D07D00", "abos": "#8B7DF5",
-                  "versicherungen": "#3E9C8F", "kredite": "#D8B66A"}
+                  "versicherungen": "#3E9C8F", "kredite": "#D8B66A", "app_vertraege": "#8FA8BC"}
 DETAIL_TINTS = {
     "strom": "#FFD000", "gas": "#FFD000",
     "netflix": "#E50914", "spotify": "#1DB954", "prime": "#00A8E1", "disney": "#113CCF",
@@ -124,6 +125,7 @@ DETAIL_TINTS = {
 # "cancel": False fest für JEDEN Posten, dadurch zeigte die App auch Spotify/Fitnessstudio
 # fälschlich als "Basis-Vertrag" statt kündbar.
 CANCELABLE_SECTIONS = {"abos", "versicherungen"}
+APP_CONTRACT_SECTION = "app_vertraege"
 
 # Bestandsgrößen innerhalb einer Sektion, keine monatlichen Fixkosten-Zeilen.
 DETAIL_SKIP_KEYS = {"restschuld", "gesamtbetrag", "schulden_gesamt"}
@@ -328,6 +330,8 @@ def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
 def _build_vertraege(details: dict) -> list:
     groups = []
     for section, values in (details or {}).items():
+        if section == APP_CONTRACT_SECTION:
+            continue
         if not isinstance(values, dict):
             continue
         labels = DETAIL_LABELS.get(section, {})
@@ -354,6 +358,21 @@ def _build_vertraege(details: dict) -> list:
             })
         if items:
             groups.append({"cat": SECTION_LABELS.get(section, section.title()), "items": items})
+    return groups
+
+
+def build_app_contract_groups(conn: sqlite3.Connection, user_id: int, details: dict) -> list:
+    """Ergaenzt Bot-Fixkosten um zentral gespeicherte, in der App angelegte Verträge."""
+    groups = _build_vertraege(details)
+    by_category = {group["cat"]: group for group in groups}
+    for contract in get_app_contracts(conn, user_id):
+        category = contract.pop("category")
+        group = by_category.get(category)
+        if not group:
+            group = {"cat": category, "items": []}
+            groups.append(group)
+            by_category[category] = group
+        group["items"].append(contract)
     return groups
 
 
@@ -416,6 +435,45 @@ def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+
+
+def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
+    """Speichert aus der App angelegte laufende Verträge zentral und eindeutig."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_contracts (
+            user_id     INTEGER NOT NULL,
+            contract_id TEXT NOT NULL,
+            detail_key  TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            category    TEXT NOT NULL,
+            amount      REAL NOT NULL,
+            icon        TEXT NOT NULL DEFAULT 'doc',
+            tint        TEXT NOT NULL DEFAULT '#8FA8BC',
+            debit_day   TEXT NOT NULL DEFAULT '1.',
+            cancelable  INTEGER NOT NULL DEFAULT 1,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, contract_id),
+            UNIQUE (user_id, detail_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    ensure_app_contracts_table(conn)
+    rows = conn.execute(
+        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable
+             FROM app_contracts WHERE user_id = ? ORDER BY datetime(created_at), contract_id""",
+        (user_id,),
+    ).fetchall()
+    return [{
+        "id": str(row["contract_id"]), "n": str(row["name"]),
+        "a": round(max(0.0, float(row["amount"] or 0)), 2),
+        "icon": str(row["icon"] or "doc"), "tint": str(row["tint"] or "#8FA8BC"),
+        "date": str(row["debit_day"] or "1."), "cancel": bool(row["cancelable"]),
+        "source": "app", "category": str(row["category"]),
+    } for row in rows]
 
 
 def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
@@ -644,7 +702,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "available": round(available, 2),
             "monthExpenses": round(monthly_expenses, 2),
         },
-        "vertraege": _build_vertraege(details),
+        "vertraege": build_app_contract_groups(conn, user_id, details),
         "goals": ([{
             "t": u.get("goal_description"),
             "icon": "coins", "tint": "#2AABEE",

@@ -24,6 +24,7 @@ from rove_app_state import (
     _build_tx,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_contracts_table,
     ensure_app_goals_table,
     ensure_app_monthly_plan_table,
     ensure_app_properties_table,
@@ -129,6 +130,11 @@ def goals_options():
     return ("", 204)
 
 
+@app.route("/v1/contracts", methods=["OPTIONS"])
+def contracts_options():
+    return ("", 204)
+
+
 @app.route("/v1/reports/<report_month>/pdf", methods=["OPTIONS"])
 def report_pdf_options(report_month: str):
     return ("", 204)
@@ -194,6 +200,30 @@ def goal_amount(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return amount if 0 <= amount <= 10_000_000 else None
+
+
+CONTRACT_CATEGORIES = frozenset({"Abos", "Versicherungen", "Wohnen", "Kredite", "Mobilität", "Sonstiges"})
+
+
+def sync_app_contract_details(conn: sqlite3.Connection, user_id: int) -> None:
+    """Spiegelt App-Verträge in Bot-Fixkosten und Monatsbudget."""
+    user = conn.execute("SELECT fixed_costs_details FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    try:
+        details = json.loads(user["fixed_costs_details"] or "{}") if user else {}
+    except (json.JSONDecodeError, TypeError):
+        details = {}
+    rows = conn.execute(
+        "SELECT detail_key, amount FROM app_contracts WHERE user_id = ?", (user_id,)
+    ).fetchall()
+    values = {str(row["detail_key"]): round(float(row["amount"] or 0), 2) for row in rows}
+    if values:
+        details["app_vertraege"] = values
+    else:
+        details.pop("app_vertraege", None)
+    conn.execute(
+        "UPDATE users SET fixed_costs_details = ?, fixed_costs = ? WHERE user_id = ?",
+        (json.dumps(details, ensure_ascii=False), fixed_costs_total(details), user_id),
+    )
 
 
 def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
@@ -461,6 +491,70 @@ def update_goals():
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/contracts", methods=["POST"])
+def update_contracts():
+    """Speichert App-Verträge zentral und rechnet sie sofort in die Fixkosten ein."""
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    if action not in {"create", "update", "delete"}:
+        return jsonify({"ok": False, "error": "valid_contract_action_required"}), 400
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_contracts_table(conn)
+
+        if action == "create":
+            name = clean_text(payload.get("name"))
+            category = clean_text(payload.get("category"), "Sonstiges")
+            amount = goal_amount(payload.get("amount"))
+            if not name or category not in CONTRACT_CATEGORIES or amount is None or amount <= 0:
+                return jsonify({"ok": False, "error": "valid_contract_required"}), 400
+            duplicate = conn.execute(
+                "SELECT 1 FROM app_contracts WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
+                (user_id, name),
+            ).fetchone()
+            if duplicate:
+                return jsonify({"ok": False, "error": "contract_name_already_exists"}), 409
+            contract_id = secrets.token_urlsafe(9)
+            icon = clean_text(payload.get("icon"), "doc")
+            tint = clean_text(payload.get("tint"), "#8FA8BC")
+            cancelable = 0 if category in {"Wohnen", "Kredite"} else 1
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, icon, tint, cancelable)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, contract_id, f"app_{contract_id}", name, category, amount, icon, tint, cancelable),
+            )
+        else:
+            contract_id = clean_text(payload.get("contract_id"))
+            if not contract_id:
+                return jsonify({"ok": False, "error": "contract_id_required"}), 400
+            existing = conn.execute(
+                "SELECT 1 FROM app_contracts WHERE user_id = ? AND contract_id = ?",
+                (user_id, contract_id),
+            ).fetchone()
+            if not existing:
+                return jsonify({"ok": False, "error": "contract_not_found"}), 404
+            if action == "delete":
+                conn.execute("DELETE FROM app_contracts WHERE user_id = ? AND contract_id = ?", (user_id, contract_id))
+            else:
+                amount = goal_amount(payload.get("amount"))
+                if amount is None or amount <= 0:
+                    return jsonify({"ok": False, "error": "valid_contract_amount_required"}), 400
+                conn.execute(
+                    """UPDATE app_contracts SET amount = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE user_id = ? AND contract_id = ?""",
+                    (amount, user_id, contract_id),
+                )
+
+        sync_app_contract_details(conn, user_id)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
     return jsonify({"ok": True, **live_data})
 
 
