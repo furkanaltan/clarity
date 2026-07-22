@@ -282,6 +282,46 @@ def ensure_app_account_balances_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_app_properties_table(conn: sqlite3.Connection) -> None:
+    """Speichert Immobilienwerte zentral, damit sie keinen App-Neustart verlieren."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_properties (
+            user_id        INTEGER PRIMARY KEY,
+            market_value   REAL NOT NULL DEFAULT 0.0,
+            remaining_debt REAL NOT NULL DEFAULT 0.0,
+            monthly_rate   REAL NOT NULL DEFAULT 0.0,
+            house_fee      REAL NOT NULL DEFAULT 0.0,
+            management_fee REAL NOT NULL DEFAULT 0.0,
+            updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
+    try:
+        row = conn.execute(
+            """SELECT market_value, remaining_debt, monthly_rate,
+                      house_fee, management_fee
+                 FROM app_properties WHERE user_id = ?""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or float(row["market_value"] or 0) <= 0:
+        return None
+    market_value = round(max(0.0, float(row["market_value"] or 0)), 2)
+    remaining_debt = round(max(0.0, float(row["remaining_debt"] or 0)), 2)
+    return {
+        "market_value": market_value,
+        "remaining_debt": remaining_debt,
+        "equity": round(market_value - remaining_debt, 2),
+        "monthly_rate": round(max(0.0, float(row["monthly_rate"] or 0)), 2),
+        "house_fee": round(max(0.0, float(row["house_fee"] or 0)), 2),
+        "management_fee": round(max(0.0, float(row["management_fee"] or 0)), 2),
+    }
+
+
 def get_app_cash_accounts(
     conn: sqlite3.Connection, user_id: int, bot_cash: float
 ) -> tuple[dict[str, float], bool]:
@@ -337,7 +377,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     cash_accounts, has_cash_accounts = get_app_cash_accounts(conn, user_id, bot_cash)
     cash = round(sum(cash_accounts.values()), 2)
     investments = float(u.get("current_investments") or 0)
-    net_worth = cash + investments
+    property_data = get_app_property(conn, user_id)
+    property_equity = float(property_data["equity"] if property_data else 0)
+    net_worth = cash + investments + property_equity
     sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
     fixed_costs = float(u.get("fixed_costs") or 0)
     monthly_expenses = float(conn.execute(
@@ -376,6 +418,17 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             {"name": "Krypto", "source": "bot", "icon": "bitcoin", "tint": "#F7931A",
              "value": round(crypto, 2), "sub": crypto_sub,
              **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
+            {"name": "Immobilie", "source": "app", "icon": "house", "tint": "#D8B66A",
+             "value": property_data["equity"], "sub": "Eigenkapital",
+             "real": {
+                 "marktwert": property_data["market_value"],
+                 "restschuld": property_data["remaining_debt"],
+                 "eigenkapital": property_data["equity"],
+                 "rate": property_data["monthly_rate"],
+                 "hausgeld": property_data["house_fee"],
+                 "verwaltung": property_data["management_fee"],
+                 "wert": "—",
+             }} if property_data else None,
         ) if a],
         "tx": _build_tx(conn, user_id),
         "budgets": _build_budgets(conn, user_id),

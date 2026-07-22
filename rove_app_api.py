@@ -6,6 +6,7 @@ und laeuft weiter. Authentifizierung erfolgt ueber den privaten /app-State-Token
 app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenbank.
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -17,6 +18,7 @@ from rove_app_state import (
     _build_tx,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_properties_table,
 )
 
 
@@ -96,6 +98,11 @@ def budgets_options():
 
 @app.route("/v1/accounts", methods=["OPTIONS"])
 def accounts_options():
+    return ("", 204)
+
+
+@app.route("/v1/property", methods=["OPTIONS"])
+def property_options():
     return ("", 204)
 
 
@@ -310,6 +317,15 @@ def update_accounts():
             if account not in ACCOUNT_KEYS or amount > 10_000_000:
                 return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
             balances[account] = amount
+        elif action == "adjust":
+            account = clean_text(payload.get("account")).lower()
+            direction = clean_text(payload.get("direction"), "add").lower()
+            if account not in ACCOUNT_KEYS or direction not in {"add", "subtract"} or amount <= 0:
+                return jsonify({"ok": False, "error": "valid_account_adjustment_required"}), 400
+            delta = amount if direction == "add" else -amount
+            if balances[account] + delta < 0 or balances[account] + delta > 10_000_000:
+                return jsonify({"ok": False, "error": "account_adjustment_not_available"}), 400
+            balances[account] = round(balances[account] + delta, 2)
         else:
             return jsonify({"ok": False, "error": "valid_account_action_required"}), 400
 
@@ -318,6 +334,96 @@ def update_accounts():
         conn.commit()
 
     return jsonify({"ok": True, "accounts": balances, **live_data})
+
+
+def fixed_costs_total(details: dict) -> float:
+    return round(sum(
+        float(value or 0)
+        for section in details.values() if isinstance(section, dict)
+        for key, value in section.items()
+        if key not in {"restschuld", "gesamtbetrag", "schulden_gesamt"}
+    ), 2)
+
+
+@app.route("/v1/property", methods=["POST"])
+def update_property():
+    """Speichert Immobilienwert, Restschuld und optionale laufende Kosten zentral."""
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+
+    def money(key: str) -> float:
+        try:
+            return round(max(0.0, float(payload.get(key) or 0)), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    market_value = money("market_value")
+    remaining_debt = money("remaining_debt")
+    monthly_rate = money("monthly_rate")
+    house_fee = money("house_fee")
+    management_fee = money("management_fee")
+    if market_value <= 0 or market_value > 100_000_000 or remaining_debt > 100_000_000:
+        return jsonify({"ok": False, "error": "valid_property_values_required"}), 400
+
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_app_properties_table(conn)
+        conn.execute(
+            """INSERT INTO app_properties
+               (user_id, market_value, remaining_debt, monthly_rate, house_fee,
+                management_fee, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 market_value = excluded.market_value,
+                 remaining_debt = excluded.remaining_debt,
+                 monthly_rate = excluded.monthly_rate,
+                 house_fee = excluded.house_fee,
+                 management_fee = excluded.management_fee,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (user_id, market_value, remaining_debt, monthly_rate, house_fee, management_fee),
+        )
+
+        user = conn.execute(
+            "SELECT fixed_costs_details FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        try:
+            details = json.loads(user["fixed_costs_details"] or "{}") if user else {}
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        credits = details.get("kredite") if isinstance(details.get("kredite"), dict) else {}
+
+        def upsert_existing_detail(key: str, value: float, sections: tuple[str, ...]) -> None:
+            if not value:
+                return
+            for section in sections:
+                values = details.get(section)
+                if isinstance(values, dict) and key in values:
+                    values[key] = value
+                    return
+            credits[key] = value
+
+        # Leere optionale Felder lassen bestehende Bot-Einträge in Ruhe. So führt eine reine
+        # Vermögenskorrektur nicht versehentlich zum Löschen schon gepflegter Fixkosten.
+        if remaining_debt:
+            credits["restschuld"] = remaining_debt
+        upsert_existing_detail("immobilie", monthly_rate, ("kredite",))
+        upsert_existing_detail("hausgeld", house_fee, ("kredite", "wohnen"))
+        upsert_existing_detail("hausverwalter", management_fee, ("kredite", "wohnen"))
+        if credits:
+            details["kredite"] = credits
+        conn.execute(
+            """UPDATE users
+                  SET fixed_costs_details = ?, fixed_costs = ?
+                WHERE user_id = ?""",
+            (json.dumps(details, ensure_ascii=False), fixed_costs_total(details), user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, **live_data})
 
 
 @app.route("/v1/expenses", methods=["POST"])
