@@ -7,14 +7,19 @@ app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenban
 """
 
 import json
+import gzip
+import io
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from rove_app_state import (
     ACCOUNT_META,
+    REPORTS_ARCHIVE_DIR,
+    REPORTS_DIR,
     _build_tx,
     build_live_app_data,
     ensure_app_account_balances_table,
@@ -108,6 +113,11 @@ def property_options():
 
 @app.route("/v1/investments", methods=["OPTIONS"])
 def investments_options():
+    return ("", 204)
+
+
+@app.route("/v1/reports/<report_month>/pdf", methods=["OPTIONS"])
+def report_pdf_options(report_month: str):
     return ("", 204)
 
 
@@ -512,6 +522,42 @@ def update_investment_position():
     return jsonify({"ok": True, "position": {
         "asset_type": asset_type, "asset_name": stored_name, "value": target_value,
     }, **live_data})
+
+
+@app.route("/v1/reports/<report_month>/pdf", methods=["GET"])
+def download_report_pdf(report_month: str):
+    """Liefert nur dem gekoppelten Nutzer seinen tatsaechlich versendeten PDF-Report."""
+    if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", report_month or ""):
+        return jsonify({"ok": False, "error": "invalid_report_month"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        try:
+            sent = conn.execute(
+                """SELECT 1 FROM report_jobs
+                    WHERE user_id = ? AND report_month = ? AND status = 'sent' LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            sent = None
+        if not sent:
+            return jsonify({"ok": False, "error": "report_not_available"}), 404
+
+    filename = f"rove_report_{user_id}_{report_month}.pdf"
+    pdf_path = REPORTS_DIR / filename
+    if pdf_path.is_file():
+        return send_file(pdf_path, mimetype="application/pdf", as_attachment=False, download_name=filename)
+
+    archive_path = REPORTS_ARCHIVE_DIR / f"{filename}.gz"
+    if archive_path.is_file():
+        with gzip.open(archive_path, "rb") as compressed:
+            payload = io.BytesIO(compressed.read())
+        payload.seek(0)
+        return send_file(payload, mimetype="application/pdf", as_attachment=False, download_name=filename)
+    return jsonify({"ok": False, "error": "report_file_missing"}), 404
 
 
 @app.route("/v1/expenses", methods=["POST"])

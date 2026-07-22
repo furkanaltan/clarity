@@ -40,6 +40,13 @@ PUBLIC_APP_STATE_DIR = Path(
 PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstrip("/")
 APP_STATE_LINK_TTL_DAYS = int(os.getenv("ROVE_APP_STATE_LINK_TTL_DAYS", "30"))
 PUBLIC_APP_API_BASE_URL = os.getenv("ROVE_APP_API_BASE_URL", "").rstrip("/")
+REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", str(APP_DIR / "reports")))
+REPORTS_ARCHIVE_DIR = REPORTS_DIR / "archive"
+
+MONTH_NAMES_DE = (
+    "", "Januar", "Februar", "März", "April", "Mai", "Juni",
+    "Juli", "August", "September", "Oktober", "November", "Dezember",
+)
 
 # 1:1-Kopie von bot.py CATEGORY_LABELS (reine Daten, keine Funktion — sicher zu duplizieren,
 # siehe Modul-Docstring warum wir nicht aus bot.py importieren). Per Live-Test gefunden: die
@@ -227,6 +234,95 @@ def _build_budgets(conn: sqlite3.Connection, user_id: int) -> list:
             "source": "bot",
         })
     return budgets
+
+
+def _report_month_label(month_key: str) -> str:
+    try:
+        year, month = (int(part) for part in month_key.split("-", 1))
+        return f"{MONTH_NAMES_DE[month]} {year}"
+    except (TypeError, ValueError, IndexError):
+        return month_key or "Monatsreport"
+
+
+def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
+    """Echtes App-Archiv: laufender Monat plus tatsaechlich versendete Reports.
+
+    Weblinks sind nur innerhalb ihrer TTL sichtbar. Das PDF bleibt als Archiv erhalten;
+    nach der serverseitigen Komprimierung liegt es als .pdf.gz vor und wird von der API
+    bei Bedarf wieder ausgeliefert.
+    """
+    current_month = datetime.now().strftime("%Y-%m")
+    reports = [{
+        "month": current_month,
+        "m": _report_month_label(current_month),
+        "status": "running",
+        "pdfAvailable": False,
+        "webUrl": "",
+        "webExpiresAt": "",
+    }]
+    try:
+        jobs = conn.execute(
+            """SELECT report_month
+                 FROM report_jobs
+                WHERE user_id = ? AND status = 'sent' AND report_month < ?
+                GROUP BY report_month
+                ORDER BY report_month DESC""",
+            (user_id, current_month),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return reports
+
+    for job in jobs:
+        month_key = str(job["report_month"] or "").strip()
+        if not month_key:
+            continue
+        web_url = ""
+        web_expires_at = ""
+        try:
+            link = conn.execute(
+                """SELECT public_url, expires_at
+                     FROM report_links
+                    WHERE user_id = ? AND report_month = ? AND status = 'active'
+                      AND datetime(expires_at) > datetime('now', 'localtime')
+                    ORDER BY datetime(created_at) DESC LIMIT 1""",
+                (user_id, month_key),
+            ).fetchone()
+            if link:
+                web_url = str(link["public_url"] or "").strip()
+                web_expires_at = str(link["expires_at"] or "").strip()
+        except sqlite3.OperationalError:
+            pass
+
+        pdf_name = f"rove_report_{user_id}_{month_key}.pdf"
+        pdf_available = (REPORTS_DIR / pdf_name).is_file() or (REPORTS_ARCHIVE_DIR / f"{pdf_name}.gz").is_file()
+        snapshot = None
+        try:
+            snapshot = conn.execute(
+                """SELECT net_worth, total_expenses, clarity_score
+                     FROM monthly_snapshots
+                    WHERE user_id = ? AND month = ?
+                    ORDER BY id DESC LIMIT 1""",
+                (user_id, month_key),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            pass
+
+        report = {
+            "month": month_key,
+            "m": _report_month_label(month_key),
+            "status": "ready",
+            "pdfAvailable": bool(pdf_available),
+            "webUrl": web_url,
+            "webExpiresAt": web_expires_at,
+        }
+        if snapshot:
+            report["stats"] = {
+                "netWorth": round(float(snapshot["net_worth"] or 0), 2),
+                "expenses": round(float(snapshot["total_expenses"] or 0), 2),
+                "score": int(snapshot["clarity_score"] or 0),
+            }
+        reports.append(report)
+    return reports
 
 
 def _build_vertraege(details: dict) -> list:
@@ -441,6 +537,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         ) if a],
         "tx": _build_tx(conn, user_id),
         "budgets": _build_budgets(conn, user_id),
+        "reports": _build_reports(conn, user_id),
         "sts": {
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
