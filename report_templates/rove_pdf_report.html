@@ -174,7 +174,7 @@ html,body { margin:0; padding:0; }
       <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:18px; padding:26px 26px 28px; min-height:190px; display:flex; flex-direction:column; justify-content:space-between;">
         <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Tracking-Tage</div>
         <div>
-          <div style="font-family:'Newsreader',serif; font-size:40px; letter-spacing:-0.015em; font-variant-numeric:tabular-nums; white-space:nowrap; color:#B07D35;">2</div>
+          <div style="font-family:'Newsreader',serif; font-size:40px; letter-spacing:-0.015em; font-variant-numeric:tabular-nums; white-space:nowrap; color:#B07D35;">{{ tracked_days }}</div>
           <div style="font-size:13px; color:#9C9BA0; margin-top:4px;">von 30 Tagen</div>
         </div>
       </div>
@@ -275,31 +275,19 @@ html,body { margin:0; padding:0; }
       <div style="display:flex; align-items:center; gap:12px; font-size:11px; font-weight:600; letter-spacing:0.26em; text-transform:uppercase; color:#8A8A90;">Money Map</div>
       <div style="font-size:11px; letter-spacing:0.18em; color:#B4B3B0; text-transform:uppercase;">Dein Verhalten</div>
     </div>
-    <div style="font-family:'Newsreader',serif; font-size:52px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">{{ strongest_name }} sind dein größter <span style="font-style:italic; color:#155681;">Hebel.</span></div>
+    <div style="font-family:'Newsreader',serif; font-size:48px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">{{ strongest_name }} sind dein größter <span style="font-style:italic; color:#155681;">Hebel.</span></div>
     
 
-    <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:20px; padding:40px 42px; display:flex; flex-direction:column; gap:34px;">
+    <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:20px; padding:26px 32px; display:flex; flex-direction:column; gap:16px;">
+      {% for category in money_map_categories %}
       <div>
-        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:12px;">
-          <div style="font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:#16161A;">{{ money_map_categories[0].name }}</div>
-          <div style="display:flex; align-items:baseline; gap:14px; flex-shrink:0; white-space:nowrap;"><span style="font-size:12px; color:#9C9BA0; font-variant-numeric:tabular-nums;">{{ money_map_categories[0].pct_text }} %</span><span style="font-family:'Newsreader',serif; font-size:24px; font-variant-numeric:tabular-nums; color:#16161A;">{{ money_map_categories[0].amount_text }}</span></div>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px;">
+          <div style="font-size:12px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:#16161A;">{{ category.name }}</div>
+          <div style="display:flex; align-items:baseline; gap:12px; flex-shrink:0; white-space:nowrap;"><span style="font-size:11px; color:#9C9BA0; font-variant-numeric:tabular-nums;">{{ category.pct_text }} %</span><span style="font-family:'Newsreader',serif; font-size:21px; font-variant-numeric:tabular-nums; color:#16161A;">{{ category.amount_text }}</span></div>
         </div>
-        <div style="height:30px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ money_map_categories[0].pct_text }}%; height:100%; border-radius:8px; background:#155681;"></div></div>
+        <div style="height:16px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ category.bar_pct }}%; height:100%; border-radius:8px; background:#155681;"></div></div>
       </div>
-      <div>
-        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:12px;">
-          <div style="font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:#16161A;">{{ money_map_categories[1].name }}</div>
-          <div style="display:flex; align-items:baseline; gap:14px; flex-shrink:0; white-space:nowrap;"><span style="font-size:12px; color:#9C9BA0; font-variant-numeric:tabular-nums;">{{ money_map_categories[1].pct_text }} %</span><span style="font-family:'Newsreader',serif; font-size:24px; font-variant-numeric:tabular-nums; color:#16161A;">{{ money_map_categories[1].amount_text }}</span></div>
-        </div>
-        <div style="height:30px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ money_map_categories[1].pct_text }}%; height:100%; border-radius:8px; background:#2AABEE;"></div></div>
-      </div>
-      <div>
-        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:12px;">
-          <div style="font-size:13px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:#16161A;">{{ money_map_categories[2].name }}</div>
-          <div style="display:flex; align-items:baseline; gap:14px; flex-shrink:0; white-space:nowrap;"><span style="font-size:12px; color:#9C9BA0; font-variant-numeric:tabular-nums;">{{ money_map_categories[2].pct_text }} %</span><span style="font-family:'Newsreader',serif; font-size:24px; font-variant-numeric:tabular-nums; color:#16161A;">{{ money_map_categories[2].amount_text }}</span></div>
-        </div>
-        <div style="height:30px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ money_map_categories[2].pct_text }}%; height:100%; border-radius:8px; background:#C9DFEF;"></div></div>
-      </div>
+      {% endfor %}
     </div>
 
     <div style="display:grid; grid-template-columns:1.4fr 1fr; gap:14px; margin-top:14px;">
@@ -454,8 +442,8 @@ html,body { margin:0; padding:0; }
         <div style="font-size:11px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Von {{ milestone_from }} zu {{ milestone_to }}</div>
         <div style="font-family:'Newsreader',serif; font-size:22px; color:#155681; font-variant-numeric:tabular-nums;">{{ milestone_pct_text }} %</div>
       </div>
-      <div style="margin-top:18px; height:12px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:9%; height:100%; border-radius:8px; background:#2AABEE;"></div></div>
-      <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:13px; color:#9C9BA0; font-variant-numeric:tabular-nums;"><span>15.000 €</span><span style="color:#155681; font-weight:600;">{{ net_worth_amount }} · du bist hier</span><span>20.000 €</span></div>
+      <div style="margin-top:18px; height:12px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ milestone_pct_raw }}%; height:100%; border-radius:8px; background:#2AABEE;"></div></div>
+      <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:13px; color:#9C9BA0; font-variant-numeric:tabular-nums;"><span>{{ milestone_from }}</span><span style="color:#155681; font-weight:600;">{{ net_worth_amount }} · du bist hier</span><span>{{ milestone_to }}</span></div>
       <div style="margin-top:28px; background:#EAF3FB; border-radius:14px; padding:22px 26px; font-size:15px; color:#75757B; line-height:1.6;">{{ milestone_eta_text }}</div>
     </div>
 

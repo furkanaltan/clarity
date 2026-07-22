@@ -684,6 +684,24 @@ def get_expense_stats(user_id: int, report_month: str):
     return float(total or 0), int(tracked_days or 0), cats
 
 
+def get_app_property_equity(user_id: int) -> float:
+    """Return central App property equity without requiring App tables for bot-only users."""
+    with get_db() as conn:
+        try:
+            row = conn.execute(
+                """SELECT market_value, remaining_debt
+                     FROM app_properties
+                    WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0.0
+
+    if not row:
+        return 0.0
+    return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
+
+
 def get_biggest_expense(user_id: int, report_month: str):
     start, end, _ = month_bounds(report_month)
     with get_db() as conn:
@@ -969,6 +987,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     cash_rate = row_float(user, "cash_savings")
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
+    property_equity = get_app_property_equity(user_id)
     target_amount = row_float(user, "goal_amount")
     goal_description = user["goal_description"] if "goal_description" in user.keys() else ""
     clarity_points = row_int(user, "clarity_points")
@@ -978,10 +997,17 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     savings_plan = etf_rate + cash_rate
     savings_rate = (savings_plan / income_total * 100.0) if income_total > 0 else 0.0
 
+    # A test report for the open month must show the current App and bot state.
+    # Closed months remain anchored to their saved monthly snapshot.
+    is_current_month = report_month == datetime.now().strftime("%Y-%m")
     net_worth = (
-        float(snapshot["net_worth"])
-        if snapshot and snapshot["net_worth"] is not None
-        else current_investments + cash_reserve
+        current_investments + cash_reserve + property_equity
+        if is_current_month
+        else (
+            float(snapshot["net_worth"])
+            if snapshot and snapshot["net_worth"] is not None
+            else current_investments + cash_reserve + property_equity
+        )
     )
     prev_net_worth = (
         float(prev_snapshot["net_worth"])
@@ -1096,6 +1122,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "savings_rate": savings_rate,
             "current_investments": current_investments,
             "cash_reserve": cash_reserve,
+            "property_equity": property_equity,
             "net_worth": net_worth,
         },
         "pages": {

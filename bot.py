@@ -3840,7 +3840,24 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
     income = (u.get("income") or 0) + (u.get("other_income") or 0)
     free_budget = income - (u.get("fixed_costs") or 0)
     budget_ok = free_budget > 0 and old_expenses <= free_budget
-    net_worth = (u.get("current_investments") or 0) + (u.get("current_cash") or 0)
+    property_equity = 0.0
+    with get_db() as conn:
+        try:
+            property_row = conn.execute(
+                """SELECT market_value, remaining_debt
+                     FROM app_properties WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+            if property_row:
+                property_equity = max(
+                    0.0,
+                    float(property_row["market_value"] or 0) - float(property_row["remaining_debt"] or 0),
+                )
+        except sqlite3.OperationalError:
+            # Bot-only users may not have opened the App yet.
+            pass
+
+    net_worth = (u.get("current_investments") or 0) + (u.get("current_cash") or 0) + property_equity
 
     bonus_lines = []
     latest_points = u.get("clarity_points") or 0
