@@ -261,6 +261,61 @@ def _build_vertraege(details: dict) -> list:
     return groups
 
 
+ACCOUNT_META = {
+    "giro": {"name": "Girokonto", "icon": "bank", "tint": "#2AABEE"},
+    "tagesgeld": {"name": "Tagesgeld", "icon": "coins", "tint": "#35D07F"},
+    "bargeld": {"name": "Bargeld", "icon": "wallet", "tint": "#B08D57"},
+}
+
+
+def ensure_app_account_balances_table(conn: sqlite3.Connection) -> None:
+    """Speichert die Cash-Aufteilung der App, ohne das bestehende Bot-Modell zu brechen."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_account_balances (
+            user_id     INTEGER NOT NULL,
+            account_key TEXT NOT NULL,
+            amount      REAL NOT NULL DEFAULT 0.0,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, account_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_cash_accounts(
+    conn: sqlite3.Connection, user_id: int, bot_cash: float
+) -> tuple[dict[str, float], bool]:
+    """Liest die getrennten Cash-Konten oder faellt sicher auf den Bot-Startwert zurueck.
+
+    Alte Telegram-Profile kennen nur `current_cash`. Bis der Nutzer die Aufteilung einmal
+    vorgenommen hat, wird dieser Wert deshalb vollstaendig dem Girokonto zugeordnet.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT account_key, amount FROM app_account_balances
+                 WHERE user_id = ?""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+
+    if not rows:
+        return {"giro": round(max(0.0, bot_cash), 2), "tagesgeld": 0.0, "bargeld": 0.0}, False
+
+    balances = {key: 0.0 for key in ACCOUNT_META}
+    for row in rows:
+        key = row["account_key"]
+        if key in balances:
+            balances[key] = round(max(0.0, float(row["amount"] or 0)), 2)
+
+    # Der Bot kann zwischen zwei App-Aufrufen neue Cash-Sparraten bestaetigen. Dieser neue
+    # Betrag gehoert zunaechst ins Girokonto, damit Gesamtvermögen und Bot niemals driften.
+    delta = round(float(bot_cash) - sum(balances.values()), 2)
+    if abs(delta) >= 0.01:
+        balances["giro"] = round(max(0.0, balances["giro"] + delta), 2)
+    return balances, True
+
+
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -278,7 +333,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     except (json.JSONDecodeError, TypeError):
         details = {}
 
-    cash = float(u.get("current_cash") or 0)
+    bot_cash = float(u.get("current_cash") or 0)
+    cash_accounts, has_cash_accounts = get_app_cash_accounts(conn, user_id, bot_cash)
+    cash = round(sum(cash_accounts.values()), 2)
     investments = float(u.get("current_investments") or 0)
     net_worth = cash + investments
     sparraten = float(u.get("etf_savings") or 0) + float(u.get("cash_savings") or 0)
@@ -307,7 +364,12 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "series": {r: [net_worth_k, net_worth_k] for r in ("1W", "1M", "6M", "1J", "Max")},
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
-             "value": round(cash, 2), "sub": "aus dem Bot"} if cash else None,
+             "value": cash_accounts["giro"],
+             "sub": "verfuegbar" if has_cash_accounts else "aus dem Bot"} if (cash_accounts["giro"] or has_cash_accounts) else None,
+            {"name": "Tagesgeld", "source": "bot", "icon": "coins", "tint": "#35D07F",
+             "value": cash_accounts["tagesgeld"], "sub": "Rücklage"} if (cash_accounts["tagesgeld"] or has_cash_accounts) else None,
+            {"name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
+             "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
             {"name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
              "value": round(etf, 2), "sub": etf_sub,
              **({"positions": etf_positions} if etf_positions else {})} if etf else None,

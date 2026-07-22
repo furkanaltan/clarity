@@ -12,7 +12,12 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, request
-from rove_app_state import _build_tx, build_live_app_data
+from rove_app_state import (
+    ACCOUNT_META,
+    _build_tx,
+    build_live_app_data,
+    ensure_app_account_balances_table,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -35,6 +40,7 @@ APP_TO_BOT_CATEGORY = {
     "Pflege": "PFLEGE",
     "Sonstiges": "SONSTIGES",
 }
+ACCOUNT_KEYS = frozenset(ACCOUNT_META)
 
 app = Flask(__name__)
 
@@ -85,6 +91,11 @@ def state_options():
 
 @app.route("/v1/budgets", methods=["OPTIONS"])
 def budgets_options():
+    return ("", 204)
+
+
+@app.route("/v1/accounts", methods=["OPTIONS"])
+def accounts_options():
     return ("", 204)
 
 
@@ -140,6 +151,42 @@ def clean_budget_updates(value: object) -> list[tuple[str, float, str]]:
         source = "suggested" if item.get("source") == "suggested" else "manual"
         updates[category] = (amount, source)
     return [(category, amount, source) for category, (amount, source) in updates.items()]
+
+
+def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
+    """Laedt die drei Cash-Konten und migriert alte Bot-Cashwerte beim ersten App-Write."""
+    ensure_app_account_balances_table(conn)
+    rows = conn.execute(
+        """SELECT account_key, amount FROM app_account_balances WHERE user_id = ?""",
+        (user_id,),
+    ).fetchall()
+    balances = {key: 0.0 for key in ACCOUNT_KEYS}
+    if rows:
+        for row in rows:
+            if row["account_key"] in balances:
+                balances[row["account_key"]] = round(max(0.0, float(row["amount"] or 0)), 2)
+        return balances
+
+    # Alte Bot-Profile kannten nur eine Cash-Gesamtsumme. Sie startet sicher im Girokonto;
+    # der Nutzer verschiebt danach Tagesgeld oder Bargeld, ohne Vermögen zu erfinden.
+    user = conn.execute("SELECT current_cash FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    balances["giro"] = round(max(0.0, float(user["current_cash"] or 0)), 2) if user else 0.0
+    return balances
+
+
+def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dict[str, float]) -> None:
+    for key in ACCOUNT_KEYS:
+        conn.execute(
+            """INSERT INTO app_account_balances (user_id, account_key, amount, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, account_key)
+               DO UPDATE SET amount = excluded.amount, updated_at = CURRENT_TIMESTAMP""",
+            (user_id, key, round(max(0.0, balances.get(key, 0.0)), 2)),
+        )
+    conn.execute(
+        "UPDATE users SET current_cash = ? WHERE user_id = ?",
+        (round(sum(balances.values()), 2), user_id),
+    )
 
 
 @app.route("/v1/pair", methods=["POST"])
@@ -229,6 +276,48 @@ def update_budgets():
         conn.commit()
 
     return jsonify({"ok": True, "budgets": live_data["budgets"]})
+
+
+@app.route("/v1/accounts", methods=["POST"])
+def update_accounts():
+    """Korrigiert Cash-Konten oder verschiebt Geld zwischen ihnen ohne Doppelzaehlung."""
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    token = token_from_request()
+
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        balances = app_cash_accounts(conn, user_id)
+        try:
+            amount = round(abs(float(payload.get("amount") or 0)), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+
+        if action == "transfer":
+            source = clean_text(payload.get("from")).lower()
+            target = clean_text(payload.get("to")).lower()
+            if source not in ACCOUNT_KEYS or target not in ACCOUNT_KEYS or source == target:
+                return jsonify({"ok": False, "error": "valid_transfer_accounts_required"}), 400
+            if amount <= 0 or amount > balances[source]:
+                return jsonify({"ok": False, "error": "transfer_amount_not_available"}), 400
+            balances[source] = round(balances[source] - amount, 2)
+            balances[target] = round(balances[target] + amount, 2)
+        elif action == "set":
+            account = clean_text(payload.get("account")).lower()
+            if account not in ACCOUNT_KEYS or amount > 10_000_000:
+                return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
+            balances[account] = amount
+        else:
+            return jsonify({"ok": False, "error": "valid_account_action_required"}), 400
+
+        save_app_cash_accounts(conn, user_id, balances)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, "accounts": balances, **live_data})
 
 
 @app.route("/v1/expenses", methods=["POST"])
