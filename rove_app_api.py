@@ -283,8 +283,10 @@ def update_monthly_plan():
     field_by_action = {
         "confirm_income": ("income_status", "confirmed"),
         "confirm_fixed_costs": ("fixed_costs_status", "confirmed"),
+        "confirm_savings": ("savings_status", "confirmed"),
         "reopen_income": ("income_status", "planned"),
         "reopen_fixed_costs": ("fixed_costs_status", "planned"),
+        "reopen_savings": ("savings_status", "planned"),
     }
     if action not in field_by_action:
         return jsonify({"ok": False, "error": "valid_monthly_plan_action_required"}), 400
@@ -304,6 +306,57 @@ def update_monthly_plan():
                ON CONFLICT(user_id, month_key) DO NOTHING""",
             (user_id, month_key),
         )
+        if action == "confirm_savings":
+            user = conn.execute(
+                """SELECT current_investments, etf_savings, cash_savings
+                     FROM users WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+            etf_savings = round(float(user["etf_savings"] or 0), 2) if user else 0.0
+            cash_savings = round(float(user["cash_savings"] or 0), 2) if user else 0.0
+            already_confirmed = conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ?
+                       AND source IN ('investiert_command', 'app_monthly_plan')
+                       AND strftime('%Y-%m', created_at) = ?
+                     LIMIT 1""",
+                (user_id, month_key),
+            ).fetchone()
+            if not already_confirmed and (etf_savings > 0 or cash_savings > 0):
+                new_investments = round(float(user["current_investments"] or 0) + etf_savings, 2)
+                conn.execute(
+                    "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                    (new_investments, user_id),
+                )
+                balances = app_cash_accounts(conn, user_id)
+                balances["tagesgeld"] = round(balances["tagesgeld"] + cash_savings, 2)
+                save_app_cash_accounts(conn, user_id, balances)
+                if etf_savings > 0:
+                    conn.execute(
+                        """INSERT INTO investment_events
+                           (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                           VALUES (?, ?, 'in', 'etf', 'ETF-Sparrate', 'recurring_plan', 'app_monthly_plan',
+                                   'Monatliche ETF-Sparrate in der App bestätigt')""",
+                        (user_id, etf_savings),
+                    )
+                if cash_savings > 0:
+                    conn.execute(
+                        """INSERT INTO investment_events
+                           (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                           VALUES (?, ?, 'in', 'cash', 'Cash-Sparrate', 'recurring_plan', 'app_monthly_plan',
+                                   'Monatliche Cash-Sparrate in der App bestätigt')""",
+                        (user_id, cash_savings),
+                    )
+                conn.execute(
+                    """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+                       VALUES (?, ?, 'investments', 'app_monthly_plan', 'Stand nach Sparrate')""",
+                    (user_id, new_investments),
+                )
+                conn.execute(
+                    """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+                       VALUES (?, ?, 'cash', 'app_monthly_plan', 'Stand nach Sparrate')""",
+                    (user_id, round(sum(balances.values()), 2)),
+                )
         conn.execute(
             f"""UPDATE app_monthly_plan_status
                    SET {field} = ?, updated_at = CURRENT_TIMESTAMP

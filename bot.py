@@ -3470,7 +3470,7 @@ def has_confirmed_investment_for_month(user_id: int, month_key: str = None) -> b
         cursor.execute(
             """SELECT 1 FROM investment_events
                WHERE user_id = ?
-               AND source = 'investiert_command'
+               AND source IN ('investiert_command', 'app_monthly_plan')
                AND strftime('%Y-%m', created_at) = ?
                LIMIT 1""",
             (user_id, month_key)

@@ -386,10 +386,17 @@ def ensure_app_monthly_plan_table(conn: sqlite3.Connection) -> None:
             month_key          TEXT NOT NULL,
             income_status      TEXT NOT NULL DEFAULT 'planned',
             fixed_costs_status TEXT NOT NULL DEFAULT 'planned',
+            savings_status     TEXT NOT NULL DEFAULT 'planned',
             updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id, month_key)
         )"""
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(app_monthly_plan_status)")}
+    if "savings_status" not in columns:
+        conn.execute(
+            "ALTER TABLE app_monthly_plan_status "
+            "ADD COLUMN savings_status TEXT NOT NULL DEFAULT 'planned'"
+        )
 
 
 def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
@@ -398,11 +405,19 @@ def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
     ensure_app_monthly_plan_table(conn)
     month_key = date.today().strftime("%Y-%m")
     row = conn.execute(
-        """SELECT income_status, fixed_costs_status
+        """SELECT income_status, fixed_costs_status, savings_status
              FROM app_monthly_plan_status
             WHERE user_id = ? AND month_key = ?""",
         (user_id, month_key),
     ).fetchone()
+    confirmed_savings = conn.execute(
+        """SELECT 1 FROM investment_events
+             WHERE user_id = ?
+               AND source IN ('investiert_command', 'app_monthly_plan')
+               AND strftime('%Y-%m', created_at) = ?
+             LIMIT 1""",
+        (user_id, month_key),
+    ).fetchone() is not None
     return {
         "month": month_key,
         "income": round(income, 2),
@@ -410,6 +425,7 @@ def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
         "savings": round(sparraten, 2),
         "incomeStatus": row["income_status"] if row else "planned",
         "fixedCostsStatus": row["fixed_costs_status"] if row else "planned",
+        "savingsStatus": "confirmed" if confirmed_savings else (row["savings_status"] if row else "planned"),
     }
 
 
