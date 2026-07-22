@@ -397,6 +397,15 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
                   if crypto_positions else "aus dem Bot")
     etf_positions = _etf_positions(conn, user_id) if etf else []
+    assigned_investments = round(sum(float(position.get("v") or 0) for position in etf_positions), 2)
+    unassigned_investments = round(max(0.0, etf - assigned_investments), 2)
+    if unassigned_investments >= 0.01:
+        etf_positions.append({
+            "n": "Noch nicht zugeordnet",
+            "v": unassigned_investments,
+            "unassigned": True,
+            "editable": True,
+        })
     etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
                if etf_positions else "aus dem Bot")
 
@@ -508,8 +517,12 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
 
 
 def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
-    """ETF-Positionen aus portfolio_holdings (reine Anzeige-Schublade, wird nirgends mit
-    current_investments verrechnet — Kernanforderung des Features, siehe bot.py).
+    """ETF- und Aktienpositionen fuer die gemeinsame Investment-Schublade.
+
+    Kuratierte ETFs kommen aus portfolio_holdings. Manuell in der App benannte Aktien
+    liegen als manual_adjustment in investment_events. Beide Tabellen sind nur die
+    Aufschluesselung; users.current_investments bleibt die verbindliche Gesamtsumme.
+
     v = total_invested (eingezahlte Summe), chg = Kursentwicklung seit Start (nur wenn beide
     Kurse da sind; sonst zeigt die App ehrlich nur den Betrag). Fehlende Tabelle → []."""
     try:
@@ -524,12 +537,38 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         return []
     out = []
     for r in rows:
-        pos = {"n": r["instrument_label"], "v": round(float(r["total_invested"] or 0), 2)}
+        pos = {
+            "n": r["instrument_label"],
+            "v": round(float(r["total_invested"] or 0), 2),
+            "editable": False,
+        }
         sp, lp = r["start_price"], r["last_price"]
         if sp and lp:
             pct = (float(lp) - float(sp)) / float(sp) * 100.0
             pos["chg"] = f"{'+' if pct >= 0 else '−'}{abs(pct):.1f} %".replace(".", ",")
         out.append(pos)
+
+    try:
+        stock_rows = conn.execute(
+            """SELECT COALESCE(NULLIF(TRIM(asset_name), ''), 'Aktie') AS name,
+                      COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                 FROM investment_events
+                WHERE user_id = ? AND asset_type = 'stock'
+                GROUP BY LOWER(TRIM(asset_name))
+                ORDER BY net DESC, name""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        stock_rows = []
+    out.extend(
+        {
+            "n": row["name"],
+            "v": round(float(row["net"]), 2),
+            "editable": True,
+        }
+        for row in stock_rows
+        if row["net"] is not None and float(row["net"]) > 0
+    )
     return out
 
 

@@ -106,6 +106,11 @@ def property_options():
     return ("", 204)
 
 
+@app.route("/v1/investments", methods=["OPTIONS"])
+def investments_options():
+    return ("", 204)
+
+
 def token_from_request() -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -424,6 +429,89 @@ def update_property():
         conn.commit()
 
     return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/investments", methods=["POST"])
+def update_investment_position():
+    """Setzt manuelle Krypto- oder Aktienwerte, ohne Startvermoegen doppelt zu zaehlen."""
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    asset_type = clean_text(payload.get("asset_type"), "crypto").lower()
+    asset_name = clean_text(payload.get("asset_name"))
+    try:
+        target_value = round(max(0.0, float(payload.get("value") or 0)), 2)
+    except (TypeError, ValueError):
+        target_value = -1.0
+    if asset_type not in {"crypto", "stock"} or not asset_name or target_value < 0 or target_value > 100_000_000:
+        return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
+
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        row = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net,
+                      MAX(asset_name) AS stored_name
+                 FROM investment_events
+                WHERE user_id = ? AND asset_type = ? AND LOWER(TRIM(asset_name)) = LOWER(?)""",
+            (user_id, asset_type, asset_name),
+        ).fetchone()
+        current_value = round(max(0.0, float(row["net"] or 0)), 2)
+        stored_name = clean_text(row["stored_name"], asset_name)
+        delta = round(target_value - current_value, 2)
+        total_row = conn.execute(
+            "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
+        total_delta = delta
+        if asset_type == "stock" and current_value < 0.01:
+            crypto_row = conn.execute(
+                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                     FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
+                (user_id,),
+            ).fetchone()
+            stocks_row = conn.execute(
+                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                     FROM investment_events WHERE user_id = ? AND asset_type = 'stock'""",
+                (user_id,),
+            ).fetchone()
+            try:
+                etf_row = conn.execute(
+                    """SELECT COALESCE(SUM(total_invested), 0) AS total
+                         FROM portfolio_holdings WHERE user_id = ?""",
+                    (user_id,),
+                ).fetchone()
+                etf_total = max(0.0, float(etf_row["total"] or 0))
+            except sqlite3.OperationalError:
+                etf_total = 0.0
+            crypto_total = max(0.0, float(crypto_row["net"] or 0))
+            stocks_total = max(0.0, float(stocks_row["net"] or 0))
+            non_crypto_total = max(0.0, current_total - crypto_total)
+            unassigned = max(0.0, non_crypto_total - etf_total - stocks_total)
+            # Ein bereits im Gesamtwert enthaltener Rest wird nur benannt. Erst ein Betrag
+            # oberhalb dieses Restes erhoeht das Vermoegen wirklich.
+            total_delta = round(max(0.0, target_value - unassigned), 2)
+
+        if current_total + total_delta < 0:
+            return jsonify({"ok": False, "error": "investment_total_not_available"}), 400
+        if abs(delta) >= 0.01:
+            conn.execute(
+                """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                   VALUES (?, ?, ?, ?, ?, 'manual_adjustment', 'app', 'Manuelle Wertkorrektur')""",
+                (user_id, abs(delta), "in" if delta > 0 else "out", asset_type, stored_name),
+            )
+            conn.execute(
+                "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                (round(current_total + total_delta, 2), user_id),
+            )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, "position": {
+        "asset_type": asset_type, "asset_name": stored_name, "value": target_value,
+    }, **live_data})
 
 
 @app.route("/v1/expenses", methods=["POST"])
