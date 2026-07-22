@@ -535,10 +535,12 @@ def build_render_context(data: dict) -> dict:
     net_worth = story.get("net_worth") or profile.get("net_worth") or 0
     investments = story.get("investments") or profile.get("current_investments") or 0
     cash = story.get("cash") or profile.get("cash_reserve") or 0
+    property_equity = profile.get("property_equity") or 0
     total_expenses = month.get("total_expenses") or 0
-    invest_total = investments + cash
-    investments_pct = round((investments / invest_total * 100) if invest_total > 0 else 0, 1)
-    cash_pct = round(100 - investments_pct, 1) if invest_total > 0 else 0
+    wealth_total = investments + cash + property_equity
+    investments_pct = round((investments / wealth_total * 100) if wealth_total > 0 else 0, 1)
+    cash_pct = round((cash / wealth_total * 100) if wealth_total > 0 else 0, 1)
+    property_pct = round((property_equity / wealth_total * 100) if wealth_total > 0 else 0, 1)
 
     investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
     investment_total = investment_summary.get("net_contributions", 0)
@@ -711,8 +713,13 @@ def build_render_context(data: dict) -> dict:
         "investments_pct_raw": investments_pct,
         "investments_pct_text": fmt_percent(investments_pct, 1),
         "cash_pct_text": fmt_percent(cash_pct, 1),
+        "cash_pct_raw": cash_pct,
+        "property_pct_raw": property_pct,
+        "property_pct_text": fmt_percent(property_pct, 1),
+        "has_property_equity": property_equity > 0,
         "investments_amount": money_text(investments),
         "cash_amount": money_text(cash),
+        "property_equity_amount": money_text(property_equity),
         "invest_story_headline": invest_story_headline,
         "invest_story_sub": invest_story_sub,
         "money_map_categories": money_map_categories,

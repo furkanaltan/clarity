@@ -250,11 +250,13 @@ html,body { margin:0; padding:0; }
 
       <div style="margin-top:44px; display:flex; height:52px; border-radius:14px; overflow:hidden; gap:4px;">
         <div style="width:{{ investments_pct_raw }}%; background:#EAF3FB; border-radius:12px; display:flex; align-items:center; padding:0 20px; color:#155681; font-size:13px; font-weight:600; letter-spacing:0.04em;">Investments · {{ investments_pct_text }}</div>
-        <div style="width:{{ 100 - investments_pct_raw }}%; background:#ECEAE5; border-radius:12px; display:flex; align-items:center; padding:0 20px; color:#75757B; font-size:13px; font-weight:600; letter-spacing:0.04em;">Cash · {{ cash_pct_text }}</div>
+        <div style="width:{{ cash_pct_raw }}%; background:#ECEAE5; border-radius:12px; display:flex; align-items:center; padding:0 20px; color:#75757B; font-size:13px; font-weight:600; letter-spacing:0.04em;">Cash · {{ cash_pct_text }}</div>
+        {% if has_property_equity %}<div style="width:{{ property_pct_raw }}%; background:#F5EBD3; border-radius:12px; display:flex; align-items:center; padding:0 20px; color:#8D6526; font-size:13px; font-weight:600; letter-spacing:0.04em;">Immobilie · {{ property_pct_text }}</div>{% endif %}
       </div>
-      <div style="display:flex; justify-content:space-between; margin-top:16px; font-size:14px; color:#9C9BA0;">
+      <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:16px; font-size:14px; color:#9C9BA0;">
         <div><span style="color:#16161A; font-weight:600; font-variant-numeric:tabular-nums;">{{ investments_amount }}</span> investiert</div>
         <div><span style="color:#16161A; font-weight:600; font-variant-numeric:tabular-nums;">{{ cash_amount }}</span> liquide</div>
+        {% if has_property_equity %}<div><span style="color:#8D6526; font-weight:600; font-variant-numeric:tabular-nums;">{{ property_equity_amount }}</span> Immobilien-Eigenkapital</div>{% endif %}
       </div>
     </div>
 
