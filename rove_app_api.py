@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -35,8 +36,18 @@ APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
 
-ALLOWED_ORIGIN = os.getenv("ROVE_APP_ALLOWED_ORIGIN", "https://getrove.de")
+_configured_origins = os.getenv("ROVE_APP_ALLOWED_ORIGINS")
+if not _configured_origins:
+    _configured_origins = f"{os.getenv('ROVE_APP_ALLOWED_ORIGIN', 'https://getrove.de')},https://www.getrove.de"
+ALLOWED_ORIGINS = frozenset(
+    origin.strip().rstrip("/")
+    for origin in _configured_origins.split(",")
+    if origin.strip()
+)
 PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstrip("/")
+PAIR_ATTEMPT_WINDOW_SECONDS = 5 * 60
+PAIR_ATTEMPT_LIMIT = 8
+_pair_attempts: dict[str, list[float]] = {}
 
 APP_TO_BOT_CATEGORY = {
     "Lebensmittel": "LEBENSMITTEL",
@@ -63,10 +74,15 @@ def db() -> sqlite3.Connection:
 
 
 def cors(resp):
-    resp.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Vary"] = "Origin"
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return resp
 
 
@@ -75,9 +91,20 @@ def after_request(resp):
     return cors(resp)
 
 
+@app.before_request
+def reject_untrusted_browser_writes():
+    """Nur die Rov.E-Webseite darf Daten im Namen eines App-Tokens veraendern."""
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin and origin not in ALLOWED_ORIGINS:
+        return jsonify({"ok": False, "error": "untrusted_origin"}), 403
+    return None
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "service": "rove-app-api", "db": str(DB_PATH)})
+    return jsonify({"ok": True, "service": "rove-app-api"})
 
 
 @app.route("/v1/expenses", methods=["OPTIONS"])
@@ -171,6 +198,19 @@ def clean_text(value: object, fallback: str = "") -> str:
 def clean_pairing_code(value: object) -> str:
     raw = "".join(char for char in str(value or "").upper() if char.isalnum())
     return f"{raw[:4]}-{raw[4:8]}" if len(raw) == 8 else ""
+
+
+def pairing_attempt_allowed() -> bool:
+    """Bremst Rateversuche am achtstelligen Verbindungs-Code pro IP aus."""
+    ip = request.headers.get("X-Real-IP", request.remote_addr or "unknown")
+    now = time.monotonic()
+    attempts = [stamp for stamp in _pair_attempts.get(ip, []) if now - stamp < PAIR_ATTEMPT_WINDOW_SECONDS]
+    if len(attempts) >= PAIR_ATTEMPT_LIMIT:
+        _pair_attempts[ip] = attempts
+        return False
+    attempts.append(now)
+    _pair_attempts[ip] = attempts
+    return True
 
 
 def clean_budget_updates(value: object) -> list[tuple[str, float, str]]:
@@ -272,6 +312,8 @@ def pair_app():
     code = clean_pairing_code(payload.get("code"))
     if not code:
         return jsonify({"ok": False, "error": "invalid_code"}), 400
+    if not pairing_attempt_allowed():
+        return jsonify({"ok": False, "error": "too_many_pairing_attempts"}), 429
 
     with db() as conn:
         try:
