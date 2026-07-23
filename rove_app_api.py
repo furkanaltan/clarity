@@ -483,6 +483,7 @@ def request_login_code():
     try:
         send_login_email(email, code)
     except RuntimeError as exc:
+        app.logger.warning("Login-Code an %s konnte nicht gesendet werden: %s", email, exc)
         return jsonify({"ok": False, "error": str(exc)}), 502
 
     return jsonify({"ok": True, "sent": True, "needsPairing": not bool(account)})
