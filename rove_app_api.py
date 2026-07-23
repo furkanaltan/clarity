@@ -8,21 +8,26 @@ app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenban
 
 import json
 import gzip
+import hashlib
+import hmac
 import io
 import os
 import re
 import secrets
 import sqlite3
 import time
-from datetime import datetime
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, make_response, request, send_file
 from rove_app_state import (
     ACCOUNT_META,
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
     _build_tx,
+    build_app_state,
     build_live_app_data,
     ensure_app_account_balances_table,
     ensure_app_contracts_table,
@@ -48,6 +53,19 @@ PUBLIC_APP_STATE_BASE_URL = os.getenv("ROVE_APP_STATE_PUBLIC_BASE_URL", "").rstr
 PAIR_ATTEMPT_WINDOW_SECONDS = 5 * 60
 PAIR_ATTEMPT_LIMIT = 8
 _pair_attempts: dict[str, list[float]] = {}
+AUTH_CODE_TTL_MINUTES = int(os.getenv("ROVE_APP_AUTH_CODE_TTL_MINUTES", "10"))
+AUTH_SESSION_TTL_DAYS = int(os.getenv("ROVE_APP_AUTH_SESSION_TTL_DAYS", "180"))
+AUTH_ATTEMPT_WINDOW_SECONDS = 15 * 60
+AUTH_ATTEMPT_LIMIT = 5
+_auth_attempts: dict[str, list[float]] = {}
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+AUTH_SECRET = os.getenv("ROVE_APP_AUTH_SECRET", "").strip()
+LOGIN_FROM_EMAIL = os.getenv("ROVE_LOGIN_FROM_EMAIL", "info@getrove.de").strip()
+LOGIN_FROM_NAME = os.getenv("ROVE_LOGIN_FROM_NAME", "Rov.E").strip()
+SESSION_COOKIE_NAME = os.getenv("ROVE_APP_SESSION_COOKIE", "rove_app_session")
+SESSION_COOKIE_SECURE = os.getenv("ROVE_APP_COOKIE_SECURE", "1") != "0"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 APP_TO_BOT_CATEGORY = {
     "Lebensmittel": "LEBENSMITTEL",
@@ -77,6 +95,7 @@ def cors(resp):
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Vary"] = "Origin"
@@ -105,6 +124,14 @@ def reject_untrusted_browser_writes():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"ok": True, "service": "rove-app-api"})
+
+
+@app.route("/v1/auth/request-code", methods=["OPTIONS"])
+@app.route("/v1/auth/verify-code", methods=["OPTIONS"])
+@app.route("/v1/auth/me", methods=["OPTIONS"])
+@app.route("/v1/auth/logout", methods=["OPTIONS"])
+def auth_options():
+    return ("", 204)
 
 
 @app.route("/v1/expenses", methods=["OPTIONS"])
@@ -211,6 +238,364 @@ def pairing_attempt_allowed() -> bool:
     attempts.append(now)
     _pair_attempts[ip] = attempts
     return True
+
+
+def auth_attempt_allowed(email: str) -> bool:
+    ip = request.headers.get("X-Real-IP", request.remote_addr or "unknown")
+    key = f"{ip}:{email.casefold()}"
+    now = time.monotonic()
+    attempts = [stamp for stamp in _auth_attempts.get(key, []) if now - stamp < AUTH_ATTEMPT_WINDOW_SECONDS]
+    if len(attempts) >= AUTH_ATTEMPT_LIMIT:
+        _auth_attempts[key] = attempts
+        return False
+    attempts.append(now)
+    _auth_attempts[key] = attempts
+    return True
+
+
+def normalize_email(value: object) -> str:
+    email = str(value or "").strip().casefold()
+    return email if EMAIL_RE.match(email) and len(email) <= 254 else ""
+
+
+def auth_secret() -> str:
+    # Der Secret muss stabil bleiben, weil Codes und Sessions nur gehasht gespeichert werden.
+    return AUTH_SECRET or BREVO_API_KEY
+
+
+def keyed_hash(value: str) -> str:
+    secret = auth_secret()
+    if not secret:
+        raise RuntimeError("app_auth_not_configured")
+    return hmac.new(secret.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def ensure_auth_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_state_links (
+            token      TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at TEXT NOT NULL,
+            status     TEXT NOT NULL DEFAULT 'active',
+            pairing_code TEXT
+        )"""
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(app_state_links)")}
+    if "pairing_code" not in columns:
+        conn.execute("ALTER TABLE app_state_links ADD COLUMN pairing_code TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_state_links_expiry ON app_state_links(status, expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_state_links_pairing ON app_state_links(pairing_code, status)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_accounts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            email       TEXT NOT NULL UNIQUE,
+            user_id     INTEGER NOT NULL,
+            verified_at TEXT NOT NULL,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_login_codes (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            email        TEXT NOT NULL,
+            code_hash    TEXT NOT NULL,
+            pairing_code TEXT,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at   TEXT NOT NULL,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            consumed_at  TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_sessions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash  TEXT NOT NULL UNIQUE,
+            account_id  INTEGER NOT NULL,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at  TEXT NOT NULL,
+            last_seen_at TEXT,
+            revoked_at  TEXT,
+            FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_login_codes_email ON app_login_codes(email, consumed_at, expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sessions_hash ON app_sessions(token_hash, revoked_at, expires_at)")
+
+
+def latest_score(conn: sqlite3.Connection, user_id: int) -> tuple[int, str]:
+    try:
+        row = conn.execute(
+            """SELECT clarity_score, rank_name
+                 FROM score_history
+                WHERE user_id = ?
+                ORDER BY recorded_date DESC, id DESC LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    if row:
+        return int(row["clarity_score"] or 0), str(row["rank_name"] or "—")
+    try:
+        row = conn.execute(
+            """SELECT clarity_score
+                 FROM monthly_snapshots
+                WHERE user_id = ?
+                ORDER BY month DESC, id DESC LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    return (int(row["clarity_score"] or 0), "—") if row else (0, "—")
+
+
+def create_state_url_for_user(conn: sqlite3.Connection, user_id: int) -> str:
+    if not PUBLIC_APP_STATE_BASE_URL:
+        raise RuntimeError("app_state_not_configured")
+    score_total, score_label = latest_score(conn, user_id)
+    result = build_app_state(user_id, score_total, score_label)
+    return str(result.get("url") or "")
+
+
+def send_login_email(email: str, code: str) -> None:
+    if not BREVO_API_KEY:
+        raise RuntimeError("brevo_not_configured")
+    payload = {
+        "sender": {"name": LOGIN_FROM_NAME, "email": LOGIN_FROM_EMAIL},
+        "to": [{"email": email}],
+        "subject": "Dein Rov.E Login-Code",
+        "textContent": (
+            f"Dein Rov.E Login-Code lautet: {code}\n\n"
+            f"Der Code ist {AUTH_CODE_TTL_MINUTES} Minuten gültig. "
+            "Wenn du das nicht warst, kannst du diese E-Mail ignorieren."
+        ),
+        "htmlContent": (
+            "<html><body style=\"font-family:Arial,sans-serif;color:#111\">"
+            "<p>Dein Rov.E Login-Code lautet:</p>"
+            f"<p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">{code}</p>"
+            f"<p>Der Code ist {AUTH_CODE_TTL_MINUTES} Minuten gültig.</p>"
+            "<p style=\"color:#666\">Wenn du das nicht warst, kannst du diese E-Mail ignorieren.</p>"
+            "</body></html>"
+        ),
+        "tags": ["rove-app-login"],
+    }
+    req = urllib.request.Request(
+        BREVO_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"brevo_status_{response.status}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+
+
+def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None:
+    raw = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if not raw:
+        return None
+    try:
+        token_hash = keyed_hash(raw)
+    except RuntimeError:
+        return None
+    row = conn.execute(
+        """SELECT s.id AS session_id, a.user_id
+             FROM app_sessions s
+             JOIN app_accounts a ON a.id = s.account_id
+            WHERE s.token_hash = ?
+              AND s.revoked_at IS NULL
+              AND datetime(s.expires_at) >= datetime('now', 'localtime')""",
+        (token_hash,),
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute("UPDATE app_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", (row["session_id"],))
+    return int(row["user_id"]), int(row["session_id"])
+
+
+def set_session_cookie(resp, raw_token: str, expires_at: datetime):
+    resp.set_cookie(
+        SESSION_COOKIE_NAME,
+        raw_token,
+        max_age=AUTH_SESSION_TTL_DAYS * 24 * 60 * 60,
+        expires=expires_at,
+        secure=SESSION_COOKIE_SECURE,
+        httponly=True,
+        samesite="Lax",
+        path="/app-api/",
+    )
+    return resp
+
+
+@app.route("/v1/auth/request-code", methods=["POST"])
+def request_login_code():
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    pairing_code = clean_pairing_code(payload.get("pairing_code"))
+    if not email:
+        return jsonify({"ok": False, "error": "valid_email_required"}), 400
+    if not auth_attempt_allowed(email):
+        return jsonify({"ok": False, "error": "too_many_login_attempts"}), 429
+
+    try:
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        code_hash = keyed_hash(f"{email}:{code}")
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+    with db() as conn:
+        ensure_auth_tables(conn)
+        account = conn.execute("SELECT id FROM app_accounts WHERE email = ?", (email,)).fetchone()
+        if not account:
+            if not pairing_code:
+                return jsonify({"ok": False, "error": "pairing_code_required"}), 409
+            linked = conn.execute(
+                """SELECT 1 FROM app_state_links
+                   WHERE pairing_code = ?
+                     AND status = 'active'
+                     AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                (pairing_code,),
+            ).fetchone()
+            if not linked:
+                return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
+        conn.execute(
+            """INSERT INTO app_login_codes (email, code_hash, pairing_code, expires_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                email,
+                code_hash,
+                pairing_code or None,
+                (datetime.now() + timedelta(minutes=AUTH_CODE_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+
+    try:
+        send_login_email(email, code)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    return jsonify({"ok": True, "sent": True, "needsPairing": not bool(account)})
+
+
+@app.route("/v1/auth/verify-code", methods=["POST"])
+def verify_login_code():
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    code = re.sub(r"\D", "", str(payload.get("code") or ""))[:6]
+    if not email or len(code) != 6:
+        return jsonify({"ok": False, "error": "valid_email_and_code_required"}), 400
+
+    try:
+        code_hash = keyed_hash(f"{email}:{code}")
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+    with db() as conn:
+        ensure_auth_tables(conn)
+        row = conn.execute(
+            """SELECT id, pairing_code, attempts
+                 FROM app_login_codes
+                WHERE email = ?
+                  AND consumed_at IS NULL
+                  AND datetime(expires_at) >= datetime('now', 'localtime')
+                ORDER BY datetime(created_at) DESC, id DESC LIMIT 1""",
+            (email,),
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "code_expired"}), 401
+        if int(row["attempts"] or 0) >= 5:
+            return jsonify({"ok": False, "error": "too_many_code_attempts"}), 429
+        if not conn.execute(
+            "SELECT 1 FROM app_login_codes WHERE id = ? AND code_hash = ?", (row["id"], code_hash)
+        ).fetchone():
+            conn.execute("UPDATE app_login_codes SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            return jsonify({"ok": False, "error": "invalid_code"}), 401
+
+        account = conn.execute("SELECT id, user_id FROM app_accounts WHERE email = ?", (email,)).fetchone()
+        if account:
+            account_id = int(account["id"])
+            user_id = int(account["user_id"])
+        else:
+            pairing_code = str(row["pairing_code"] or "")
+            linked = conn.execute(
+                """SELECT user_id FROM app_state_links
+                   WHERE pairing_code = ?
+                     AND status = 'active'
+                     AND datetime(expires_at) >= datetime('now', 'localtime')
+                   ORDER BY datetime(created_at) DESC LIMIT 1""",
+                (pairing_code,),
+            ).fetchone()
+            if not linked:
+                return jsonify({"ok": False, "error": "pairing_code_required"}), 409
+            user_id = int(linked["user_id"])
+            cur = conn.execute(
+                """INSERT INTO app_accounts (email, user_id, verified_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)""",
+                (email, user_id),
+            )
+            account_id = int(cur.lastrowid)
+
+        raw_session = secrets.token_urlsafe(32)
+        expires_at = datetime.now() + timedelta(days=AUTH_SESSION_TTL_DAYS)
+        conn.execute(
+            """INSERT INTO app_sessions (token_hash, account_id, expires_at)
+               VALUES (?, ?, ?)""",
+            (keyed_hash(raw_session), account_id, expires_at.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.execute("UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
+        conn.commit()
+        state_url = create_state_url_for_user(conn, user_id)
+
+    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
+    return set_session_cookie(resp, raw_session, expires_at)
+
+
+@app.route("/v1/auth/me", methods=["GET"])
+def auth_me():
+    try:
+        with db() as conn:
+            ensure_auth_tables(conn)
+            session = session_user_from_cookie(conn)
+            if not session:
+                return jsonify({"ok": False, "error": "not_logged_in"}), 401
+            user_id, _session_id = session
+            conn.commit()
+            state_url = create_state_url_for_user(conn, user_id)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    return jsonify({"ok": True, "state_url": state_url})
+
+
+@app.route("/v1/auth/logout", methods=["POST"])
+def auth_logout():
+    raw = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if raw:
+        try:
+            token_hash = keyed_hash(raw)
+            with db() as conn:
+                ensure_auth_tables(conn)
+                conn.execute(
+                    "UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?",
+                    (token_hash,),
+                )
+                conn.commit()
+        except RuntimeError:
+            pass
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(SESSION_COOKIE_NAME, path="/app-api/")
+    return resp
 
 
 def clean_budget_updates(value: object) -> list[tuple[str, float, str]]:
