@@ -1334,6 +1334,15 @@ def create_expense():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        # Vor dem INSERT pruefen: Ein return innerhalb des DB-Kontexts wuerde einen bereits
+        # eingefuegten Datensatz sonst normal committen, obwohl die Zahlung abgelehnt wurde.
+        ensure_app_cash_movements_table(conn)
+        account_key = "bargeld" if paid_cash else "giro"
+        movement_kind = "payment" if paid_cash else "card"
+        balances = app_cash_accounts(conn, user_id)
+        if paid_cash and amount > balances[account_key]:
+            return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
+
         cur = conn.execute(
             """INSERT INTO expenses (user_id, amount, category, merchant, description)
                VALUES (?, ?, ?, ?, ?)""",
@@ -1343,14 +1352,6 @@ def create_expense():
         # Jede App-Ausgabe senkt dauerhaft das Konto, aus dem sie bezahlt wurde. Ohne diese
         # Kontowirkung sprang der Girostand nach dem naechsten App-Refresh auf den alten Wert
         # zurueck, obwohl Ausgabe, Budget und Report die Buchung bereits kannten.
-        ensure_app_cash_movements_table(conn)
-        account_key = "bargeld" if paid_cash else "giro"
-        movement_kind = "payment" if paid_cash else "card"
-        balances = app_cash_accounts(conn, user_id)
-        if paid_cash and amount > balances[account_key]:
-            # Bargeld kann nicht ins Minus. Die Ausgabe wird gar nicht angelegt, damit
-            # Buchung, Portemonnaie und Kontostand nicht auseinanderlaufen.
-            return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
         # Giro darf ins Minus gehen (z. B. 100 EUR Kontostand minus 600 EUR Ausgabe =
         # -500 EUR). Beim Loeschen wird exakt derselbe Betrag wieder gutgeschrieben.
         account_applied = round(amount, 2)
