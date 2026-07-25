@@ -1777,6 +1777,7 @@ def maybe_delete_logged_expense(user_id: int, text_input: str, text_lower: str) 
 
     with get_db() as conn:
         conn.execute("DELETE FROM expenses WHERE id = ?", (match["id"],))
+        reverse_app_paid_expense(conn, user_id, match["id"])
         conn.commit()
 
     return f"🗑️ Gelöscht: {match['merchant']} {match['amount']:.2f}€ · {match['category']}."
@@ -4429,12 +4430,95 @@ def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
         if not expense:
             return None
 
+        sync_app_paid_expense_amount(conn, user_id, expense_id, new_amount)
         cursor.execute(
             "UPDATE expenses SET amount = ? WHERE id = ? AND user_id = ?",
             (new_amount, expense_id, user_id)
         )
         conn.commit()
         return expense
+
+
+def _app_payment_movement(conn, user_id: int, expense_id: int):
+    """Findet die Kontowirkung einer App-Ausgabe, falls die neue App-Tabelle schon existiert."""
+    try:
+        return conn.execute(
+            """SELECT id, kind, amount FROM app_cash_movements
+                 WHERE user_id = ? AND expense_id = ?
+                   AND kind IN ('payment', 'card')
+                 ORDER BY id DESC LIMIT 1""",
+            (user_id, expense_id),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+
+
+def _set_app_account_amount(conn, user_id: int, account_key: str, amount: float) -> None:
+    conn.execute(
+        """INSERT INTO app_account_balances (user_id, account_key, amount, updated_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(user_id, account_key)
+           DO UPDATE SET amount = excluded.amount, updated_at = CURRENT_TIMESTAMP""",
+        (user_id, account_key, round(max(0.0, amount), 2)),
+    )
+    conn.execute(
+        """UPDATE users
+              SET current_cash = COALESCE((
+                    SELECT SUM(amount) FROM app_account_balances WHERE user_id = ?
+                  ), current_cash)
+            WHERE user_id = ?""",
+        (user_id, user_id),
+    )
+
+
+def reverse_app_paid_expense(conn, user_id: int, expense_id: int) -> float:
+    """Gibt bei einer App-Ausgabe den wirklich abgezogenen Betrag auf ihr Ursprungskonto zurück."""
+    movement = _app_payment_movement(conn, user_id, expense_id)
+    if not movement:
+        return 0.0
+
+    account_key = "bargeld" if movement["kind"] == "payment" else "giro"
+    row = conn.execute(
+        """SELECT amount FROM app_account_balances
+             WHERE user_id = ? AND account_key = ?""",
+        (user_id, account_key),
+    ).fetchone()
+    current = float(row["amount"] or 0) if row else 0.0
+    refund = round(max(0.0, float(movement["amount"] or 0)), 2)
+    _set_app_account_amount(conn, user_id, account_key, current + refund)
+    conn.execute(
+        "DELETE FROM app_cash_movements WHERE user_id = ? AND expense_id = ?",
+        (user_id, expense_id),
+    )
+    return refund
+
+
+def sync_app_paid_expense_amount(
+    conn, user_id: int, expense_id: int, new_amount: float
+) -> None:
+    """Hält das Portemonnaie korrekt, wenn /editlast eine bar bezahlte App-Ausgabe ändert."""
+    movement = _app_payment_movement(conn, user_id, expense_id)
+    if not movement:
+        return
+
+    account_key = "bargeld" if movement["kind"] == "payment" else "giro"
+    row = conn.execute(
+        """SELECT amount FROM app_account_balances
+             WHERE user_id = ? AND account_key = ?""",
+        (user_id, account_key),
+    ).fetchone()
+    current = float(row["amount"] or 0) if row else 0.0
+    old_applied = round(max(0.0, float(movement["amount"] or 0)), 2)
+    funds_before_expense = round(current + old_applied, 2)
+    new_applied = round(min(max(0.0, float(new_amount)), funds_before_expense), 2)
+    _set_app_account_amount(
+        conn, user_id, account_key, funds_before_expense - new_applied
+    )
+    conn.execute(
+        """UPDATE app_cash_movements SET amount = ?
+             WHERE id = ? AND user_id = ?""",
+        (new_applied, movement["id"], user_id),
+    )
 
 
 def handle_pending_action(user_id: int, text_input: str, text_lower: str) -> bool:
@@ -5395,6 +5479,7 @@ def handle_commands(message):
                 bot.send_message(uid, "Nichts zum Löschen.")
                 return
             cursor.execute("DELETE FROM expenses WHERE id = ?", (last["id"],))
+            reverse_app_paid_expense(conn, uid, last["id"])
             conn.commit()
         bot.send_message(uid, f"↩️ {last['amount']:.2f}€ bei {last['merchant']} gelöscht.")
 
