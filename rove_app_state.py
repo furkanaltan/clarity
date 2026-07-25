@@ -471,6 +471,8 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
       bleibt ganz normal in expenses (Budget, Bot, Report rechnen unveraendert damit); hier
       steht nur, DASS bar gezahlt wurde und WELCHER Betrag dem Bargeld abgezogen wurde. Beim
       Loeschen der Ausgabe geht genau dieser Betrag ins Portemonnaie zurueck — nie mehr.
+    - `card`: eine App-Ausgabe vom Girokonto. Sie erscheint nicht als eigene Buchungszeile,
+      merkt aber den wirklich abgezogenen Girobetrag, damit Refresh und Loeschen symmetrisch sind.
 
     Bewusst eine eigene App-Tabelle: an `expenses` wird nichts geaendert, der Bot bleibt
     unberuehrt. Betraege sind immer positiv, die Richtung steckt in `kind`.

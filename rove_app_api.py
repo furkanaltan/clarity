@@ -1331,23 +1331,27 @@ def create_expense():
             (user_id, amount, bot_category, merchant, description),
         )
         expense_id = cur.lastrowid
-        cash_applied = 0.0
-        if paid_cash:
-            ensure_app_cash_movements_table(conn)
-            balances = app_cash_accounts(conn, user_id)
-            # Nie unter null: wer mehr bar zahlt als hinterlegt ist, hat den Bargeldstand nicht
-            # gepflegt. Die Ausgabe wird trotzdem gebucht (sie ist echt), das Portemonnaie geht
-            # nur bis 0. Gemerkt wird der tatsaechlich abgezogene Betrag — sonst wuerde beim
-            # Loeschen mehr zurueckgegeben als je abgegangen ist.
-            cash_applied = round(min(round(amount, 2), balances["bargeld"]), 2)
-            if cash_applied > 0:
-                balances["bargeld"] = round(balances["bargeld"] - cash_applied, 2)
-                save_app_cash_accounts(conn, user_id, balances)
-            conn.execute(
-                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-                   VALUES (?, 'payment', ?, ?)""",
-                (user_id, cash_applied, expense_id),
-            )
+        # Jede App-Ausgabe senkt dauerhaft das Konto, aus dem sie bezahlt wurde. Ohne diese
+        # Kontowirkung sprang der Girostand nach dem naechsten App-Refresh auf den alten Wert
+        # zurueck, obwohl Ausgabe, Budget und Report die Buchung bereits kannten.
+        ensure_app_cash_movements_table(conn)
+        account_key = "bargeld" if paid_cash else "giro"
+        movement_kind = "payment" if paid_cash else "card"
+        balances = app_cash_accounts(conn, user_id)
+        # Konten werden nie negativ. Ist der gepflegte Kontostand kleiner als die Ausgabe,
+        # bleibt die Ausgabe trotzdem echt; gespeichert wird nur der tatsaechlich abgezogene
+        # Anteil, damit beim Loeschen niemals mehr Geld zurueckkommt als vorher abging.
+        account_applied = round(min(round(amount, 2), balances[account_key]), 2)
+        if account_applied > 0:
+            balances[account_key] = round(balances[account_key] - account_applied, 2)
+            save_app_cash_accounts(conn, user_id, balances)
+        conn.execute(
+            """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
+               VALUES (?, ?, ?, ?)""",
+            (user_id, movement_kind, account_applied, expense_id),
+        )
+        cash_applied = account_applied if paid_cash else 0.0
+        giro_applied = 0.0 if paid_cash else account_applied
         conn.execute(
             "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
             (datetime.now().strftime("%Y-%m-%d"), user_id),
@@ -1364,6 +1368,8 @@ def create_expense():
         "merchant": merchant,
         "paid_cash": paid_cash,
         "cash_applied": cash_applied,
+        "giro_applied": giro_applied,
+        "accounts": balances,
         "available": live_data["sts"]["available"],
     })
 
@@ -1385,8 +1391,8 @@ def delete_expense(expense_id: int):
 
         ensure_app_cash_movements_table(conn)
         cash_movement = conn.execute(
-            """SELECT id, amount FROM app_cash_movements
-                 WHERE user_id = ? AND kind = 'payment' AND expense_id = ?""",
+            """SELECT id, kind, amount FROM app_cash_movements
+                 WHERE user_id = ? AND kind IN ('payment', 'card') AND expense_id = ?""",
             (user_id, expense_id),
         ).fetchone()
 
@@ -1397,21 +1403,28 @@ def delete_expense(expense_id: int):
         if cur.rowcount == 0:
             return jsonify({"ok": False, "error": "expense_not_found"}), 404
 
-        # War die Ausgabe bar bezahlt, geht das Geld ins Portemonnaie zurueck — genau der
-        # Betrag, der damals abgezogen wurde. Das laeuft hier serverseitig, damit es auch
-        # stimmt, wenn die Buchung nach einem Refresh geloescht wird oder der Bot sie loescht.
+        # Beim Löschen geht genau der damals abgezogene Betrag auf sein Ursprungskonto zurück.
+        # Alte Bot-Ausgaben ohne App-Kontowirkung haben keine Bewegungszeile und erhalten
+        # bewusst keine Gutschrift.
         refunded_cash = 0.0
+        refunded_giro = 0.0
         if cash_movement:
-            refunded_cash = round(max(0.0, float(cash_movement["amount"] or 0)), 2)
-            if refunded_cash > 0:
+            refund = round(max(0.0, float(cash_movement["amount"] or 0)), 2)
+            target = "bargeld" if cash_movement["kind"] == "payment" else "giro"
+            if refund > 0:
                 balances = app_cash_accounts(conn, user_id)
-                balances["bargeld"] = round(balances["bargeld"] + refunded_cash, 2)
+                balances[target] = round(balances[target] + refund, 2)
                 save_app_cash_accounts(conn, user_id, balances)
+            if target == "bargeld":
+                refunded_cash = refund
+            else:
+                refunded_giro = refund
             conn.execute(
                 "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
                 (cash_movement["id"], user_id),
             )
 
+        balances = app_cash_accounts(conn, user_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -1419,6 +1432,8 @@ def delete_expense(expense_id: int):
         "ok": True,
         "id": expense_id,
         "refunded_cash": refunded_cash,
+        "refunded_giro": refunded_giro,
+        "accounts": balances,
         "available": live_data["sts"]["available"],
     })
 
