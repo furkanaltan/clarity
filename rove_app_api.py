@@ -674,7 +674,12 @@ def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float
     if rows:
         for row in rows:
             if row["account_key"] in balances:
-                balances[row["account_key"]] = round(max(0.0, float(row["amount"] or 0)), 2)
+                value = float(row["amount"] or 0)
+                # Giro darf einen Dispo/negativen Stand abbilden. Tagesgeld und Bargeld
+                # bleiben echte Guthabenkonten und koennen nicht unter null fallen.
+                balances[row["account_key"]] = round(
+                    value if row["account_key"] == "giro" else max(0.0, value), 2
+                )
         return balances
 
     # Alte Bot-Profile kannten nur eine Cash-Gesamtsumme. Sie startet sicher im Girokonto;
@@ -686,12 +691,16 @@ def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float
 
 def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dict[str, float]) -> None:
     for key in ACCOUNT_KEYS:
+        value = float(balances.get(key, 0.0))
+        if key != "giro":
+            value = max(0.0, value)
+        value = min(10_000_000.0, max(-10_000_000.0, value))
         conn.execute(
             """INSERT INTO app_account_balances (user_id, account_key, amount, updated_at)
                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(user_id, account_key)
                DO UPDATE SET amount = excluded.amount, updated_at = CURRENT_TIMESTAMP""",
-            (user_id, key, round(max(0.0, balances.get(key, 0.0)), 2)),
+            (user_id, key, round(value, 2)),
         )
     conn.execute(
         "UPDATE users SET current_cash = ? WHERE user_id = ?",
@@ -1338,13 +1347,15 @@ def create_expense():
         account_key = "bargeld" if paid_cash else "giro"
         movement_kind = "payment" if paid_cash else "card"
         balances = app_cash_accounts(conn, user_id)
-        # Konten werden nie negativ. Ist der gepflegte Kontostand kleiner als die Ausgabe,
-        # bleibt die Ausgabe trotzdem echt; gespeichert wird nur der tatsaechlich abgezogene
-        # Anteil, damit beim Loeschen niemals mehr Geld zurueckkommt als vorher abging.
-        account_applied = round(min(round(amount, 2), balances[account_key]), 2)
-        if account_applied > 0:
-            balances[account_key] = round(balances[account_key] - account_applied, 2)
-            save_app_cash_accounts(conn, user_id, balances)
+        if paid_cash and amount > balances[account_key]:
+            # Bargeld kann nicht ins Minus. Die Ausgabe wird gar nicht angelegt, damit
+            # Buchung, Portemonnaie und Kontostand nicht auseinanderlaufen.
+            return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
+        # Giro darf ins Minus gehen (z. B. 100 EUR Kontostand minus 600 EUR Ausgabe =
+        # -500 EUR). Beim Loeschen wird exakt derselbe Betrag wieder gutgeschrieben.
+        account_applied = round(amount, 2)
+        balances[account_key] = round(balances[account_key] - account_applied, 2)
+        save_app_cash_accounts(conn, user_id, balances)
         conn.execute(
             """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
                VALUES (?, ?, ?, ?)""",
