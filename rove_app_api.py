@@ -30,6 +30,7 @@ from rove_app_state import (
     build_app_state,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_cash_movements_table,
     ensure_app_contracts_table,
     ensure_app_goals_table,
     ensure_app_monthly_plan_table,
@@ -141,6 +142,11 @@ def expenses_options():
 
 @app.route("/v1/expenses/<int:expense_id>", methods=["OPTIONS"])
 def expense_item_options(expense_id: int):
+    return ("", 204)
+
+
+@app.route("/v1/cash-movements/<int:movement_id>", methods=["OPTIONS"])
+def cash_movement_item_options(movement_id: int):
     return ("", 204)
 
 
@@ -1049,6 +1055,16 @@ def update_accounts():
                 return jsonify({"ok": False, "error": "transfer_amount_not_available"}), 400
             balances[source] = round(balances[source] - amount, 2)
             balances[target] = round(balances[target] + amount, 2)
+            # Nur eine echte Abhebung wird als Buchungszeile gemerkt (die App schickt dafuer
+            # log:"withdrawal"). Ein normales Umbuchen im Konten-Detail bleibt bewusst still —
+            # sonst tauchten in der Buchungsliste ploetzlich Zeilen auf, die es dort nie gab.
+            if clean_text(payload.get("log")).lower() == "withdrawal" and source == "giro" and target == "bargeld":
+                ensure_app_cash_movements_table(conn)
+                conn.execute(
+                    """INSERT INTO app_cash_movements (user_id, kind, amount)
+                       VALUES (?, 'withdrawal', ?)""",
+                    (user_id, amount),
+                )
         elif action == "set":
             account = clean_text(payload.get("account")).lower()
             if account not in ACCOUNT_KEYS or amount > 10_000_000:
@@ -1297,6 +1313,11 @@ def create_expense():
     bot_category = APP_TO_BOT_CATEGORY.get(app_category, "SONSTIGES")
     merchant = clean_text(payload.get("merchant") or payload.get("name"), "App-Buchung")
     description = clean_text(payload.get("description"), "Via Rov.E App")
+    # Bar bezahlt ("30 Euro Doener mit Bargeld bezahlt", Furkan 25.07.): eine ganz normale
+    # Ausgabe fuer Budget/Bot/Report — das Geld kommt aber aus dem Portemonnaie, nicht vom
+    # Girokonto. Beides in EINEM Aufruf, damit Buchung und Bargeldstand nie halb gespeichert
+    # sind und die App keine zweite Runde ueber /v1/accounts drehen muss.
+    paid_cash = bool(payload.get("paid_cash"))
 
     token = token_from_request()
     with db() as conn:
@@ -1309,6 +1330,24 @@ def create_expense():
                VALUES (?, ?, ?, ?, ?)""",
             (user_id, amount, bot_category, merchant, description),
         )
+        expense_id = cur.lastrowid
+        cash_applied = 0.0
+        if paid_cash:
+            ensure_app_cash_movements_table(conn)
+            balances = app_cash_accounts(conn, user_id)
+            # Nie unter null: wer mehr bar zahlt als hinterlegt ist, hat den Bargeldstand nicht
+            # gepflegt. Die Ausgabe wird trotzdem gebucht (sie ist echt), das Portemonnaie geht
+            # nur bis 0. Gemerkt wird der tatsaechlich abgezogene Betrag — sonst wuerde beim
+            # Loeschen mehr zurueckgegeben als je abgegangen ist.
+            cash_applied = round(min(round(amount, 2), balances["bargeld"]), 2)
+            if cash_applied > 0:
+                balances["bargeld"] = round(balances["bargeld"] - cash_applied, 2)
+                save_app_cash_accounts(conn, user_id, balances)
+            conn.execute(
+                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
+                   VALUES (?, 'payment', ?, ?)""",
+                (user_id, cash_applied, expense_id),
+            )
         conn.execute(
             "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
             (datetime.now().strftime("%Y-%m-%d"), user_id),
@@ -1318,11 +1357,13 @@ def create_expense():
 
     return jsonify({
         "ok": True,
-        "id": cur.lastrowid,
+        "id": expense_id,
         "user_id": user_id,
         "amount": round(amount, 2),
         "category": bot_category,
         "merchant": merchant,
+        "paid_cash": paid_cash,
+        "cash_applied": cash_applied,
         "available": live_data["sts"]["available"],
     })
 
@@ -1342,6 +1383,13 @@ def delete_expense(expense_id: int):
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        ensure_app_cash_movements_table(conn)
+        cash_movement = conn.execute(
+            """SELECT id, amount FROM app_cash_movements
+                 WHERE user_id = ? AND kind = 'payment' AND expense_id = ?""",
+            (user_id, expense_id),
+        ).fetchone()
+
         cur = conn.execute(
             "DELETE FROM expenses WHERE id = ? AND user_id = ?",
             (expense_id, user_id),
@@ -1349,12 +1397,79 @@ def delete_expense(expense_id: int):
         if cur.rowcount == 0:
             return jsonify({"ok": False, "error": "expense_not_found"}), 404
 
+        # War die Ausgabe bar bezahlt, geht das Geld ins Portemonnaie zurueck — genau der
+        # Betrag, der damals abgezogen wurde. Das laeuft hier serverseitig, damit es auch
+        # stimmt, wenn die Buchung nach einem Refresh geloescht wird oder der Bot sie loescht.
+        refunded_cash = 0.0
+        if cash_movement:
+            refunded_cash = round(max(0.0, float(cash_movement["amount"] or 0)), 2)
+            if refunded_cash > 0:
+                balances = app_cash_accounts(conn, user_id)
+                balances["bargeld"] = round(balances["bargeld"] + refunded_cash, 2)
+                save_app_cash_accounts(conn, user_id, balances)
+            conn.execute(
+                "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
+                (cash_movement["id"], user_id),
+            )
+
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
     return jsonify({
         "ok": True,
         "id": expense_id,
+        "refunded_cash": refunded_cash,
+        "available": live_data["sts"]["available"],
+    })
+
+
+@app.route("/v1/cash-movements/<int:movement_id>", methods=["DELETE"])
+def delete_cash_movement(movement_id: int):
+    """Nimmt eine Bargeld-Abhebung zurueck: Geld zurueck aufs Girokonto, Zeile weg.
+
+    Getrennter Endpunkt, weil eine Abhebung nicht in `expenses` steht. Sie hat deshalb auch
+    keine `sid`, sondern eine `csid` — ein DELETE /v1/expenses/<csid> wuerde sonst eine
+    fremde Ausgabe mit derselben Nummer treffen.
+    """
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_app_cash_movements_table(conn)
+        row = conn.execute(
+            "SELECT id, kind, amount FROM app_cash_movements WHERE id = ? AND user_id = ?",
+            (movement_id, user_id),
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "cash_movement_not_found"}), 404
+        if clean_text(row["kind"]).lower() != "withdrawal":
+            # 'payment'-Zeilen haengen an einer Ausgabe und werden ueber
+            # DELETE /v1/expenses/<id> mitgeloescht, nie einzeln.
+            return jsonify({"ok": False, "error": "cash_movement_not_reversible"}), 400
+
+        amount = round(abs(float(row["amount"] or 0)), 2)
+        balances = app_cash_accounts(conn, user_id)
+        if amount > balances["bargeld"]:
+            # Das abgehobene Geld ist schon (teilweise) ausgegeben. Wir erfinden hier kein Geld
+            # zurueck aufs Girokonto — die App zeigt das und laesst die Zeile stehen.
+            return jsonify({"ok": False, "error": "cash_already_spent"}), 400
+
+        balances["bargeld"] = round(balances["bargeld"] - amount, 2)
+        balances["giro"] = round(balances["giro"] + amount, 2)
+        save_app_cash_accounts(conn, user_id, balances)
+        conn.execute(
+            "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
+            (movement_id, user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "id": movement_id,
+        "accounts": balances,
         "available": live_data["sts"]["available"],
     })
 

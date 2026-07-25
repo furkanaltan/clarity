@@ -68,6 +68,10 @@ CATEGORY_COLORS = {
     "Gesundheit": "#3E9C8F", "Sonstiges": "#6E7B8C", "Pflege": "#D66BA0", "Abos": "#8B7DF5",
 }
 
+# Bargeld ist keine Ausgaben-Kategorie, sondern das Portemonnaie selbst — gleiche Farbe wie das
+# Bargeld-Asset (ACCOUNT_META) und wie BARGELD_TINT in der App.
+CASH_TINT = "#B08D57"
+
 # details-Struktur aus bot.py (fixed_costs_details, siehe /verfeinern) — flache Zahlen pro
 # Unterschlüssel, kein Abbuchungstag, keine Kündbarkeit. Labels hier nur fürs Anzeigen.
 DETAIL_LABELS = {
@@ -178,6 +182,25 @@ def _category_label(raw: str) -> str:
     return CATEGORY_LABEL_FIX.get(label, label)
 
 
+def _cash_movements_this_month(conn: sqlite3.Connection, user_id: int) -> list:
+    """Liest die Bargeld-Bewegungen des laufenden Monats, ohne zu scheitern, wenn es noch keine gibt.
+
+    Dieselbe defensive Leseart wie get_app_cash_accounts(): die Tabelle entsteht erst beim
+    ersten Schreibvorgang der App (ensure_app_cash_movements_table), das Lesen darf davor
+    keinen 500er ausloesen.
+    """
+    try:
+        return conn.execute(
+            """SELECT id, kind, amount, expense_id, created_at FROM app_cash_movements
+                 WHERE user_id = ?
+                   AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+                 ORDER BY created_at DESC""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
 def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
     rows = conn.execute(
         """SELECT id, amount, category, merchant, description, created_at FROM expenses
@@ -185,19 +208,21 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
            ORDER BY created_at DESC""",
         (user_id,),
     ).fetchall()
-    days: dict[str, list] = {}
-    order: list[str] = []
-    today_iso = date.today().isoformat()
+    # Bargeld-Bewegungen liegen NICHT in expenses (siehe ensure_app_cash_movements_table):
+    # eine Abhebung ist keine Ausgabe, und ob eine Ausgabe bar bezahlt wurde, kann die
+    # Bot-Tabelle nicht abbilden. Beides kommt hier dazu, damit die Buchungsliste den
+    # Refresh ueberlebt (Bug 25.07.: "Bargeld abgehoben" verschwand nach 45 Sekunden).
+    movements = _cash_movements_this_month(conn, user_id)
+    cash_paid_expense_ids = {
+        int(m["expense_id"])
+        for m in movements
+        if m["kind"] == "payment" and m["expense_id"] is not None
+    }
+    entries: list[tuple[str, dict]] = []
     for r in rows:
         cat = _category_label(r["category"])
         name = (r["merchant"] or r["description"] or cat).strip() or cat
-        created = r["created_at"] or ""
-        day_key = created[:10]
-        day_label = "Heute" if day_key == today_iso else (day_key or "Unbekannt")
-        if day_label not in days:
-            days[day_label] = []
-            order.append(day_label)
-        days[day_label].append({
+        item = {
             # "sid" = Server-ID der Zeile in expenses. Bewusst NICHT "id": die App vergibt
             # ihre eigenen lokalen IDs (TXID) und wuerde eine mitgelieferte "id" ueberschreiben.
             # Ohne sid kann die App eine Buchung nur im Browser-RAM loeschen — der 45s-Refresh
@@ -208,7 +233,41 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
             "a": -abs(float(r["amount"] or 0)),
             "c": CATEGORY_COLORS.get(cat, "#6E7B8C"),
             "i": (name[:1] or "?").upper(),
-        })
+        }
+        if r["id"] in cash_paid_expense_ids:
+            # Ohne dieses Flag waere nach einem Refresh nicht mehr erkennbar, dass die Ausgabe
+            # aus dem Portemonnaie kam — die App wuerde sie beim Loeschen dem Girokonto
+            # zurueckgeben statt dem Bargeld.
+            item["bar"] = True
+        entries.append((r["created_at"] or "", item))
+    for m in movements:
+        if m["kind"] != "withdrawal":
+            continue
+        entries.append((m["created_at"] or "", {
+            # "csid" statt "sid": diese Zeile steht in app_cash_movements, nicht in expenses.
+            # Ein "sid" hier waere gefaehrlich — die App wuerde beim Loeschen
+            # DELETE /v1/expenses/<id> aufrufen und damit eine fremde Ausgabe mit derselben
+            # Nummer treffen. Abhebungen gehen ueber DELETE /v1/cash-movements/<id>.
+            "csid": m["id"],
+            "n": "Bargeld abgehoben",
+            "cat": "Bargeld",
+            "a": -abs(float(m["amount"] or 0)),
+            "c": CASH_TINT,
+            "i": "B",
+            "transfer": True,
+        }))
+    entries.sort(key=lambda entry: entry[0], reverse=True)
+
+    days: dict[str, list] = {}
+    order: list[str] = []
+    today_iso = date.today().isoformat()
+    for created, item in entries:
+        day_key = (created or "")[:10]
+        day_label = "Heute" if day_key == today_iso else (day_key or "Unbekannt")
+        if day_label not in days:
+            days[day_label] = []
+            order.append(day_label)
+        days[day_label].append(item)
     return [{"d": d, "items": days[d]} for d in order]
 
 
@@ -399,6 +458,37 @@ def ensure_app_account_balances_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (user_id, account_key),
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
+    )
+
+
+def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
+    """Merkt die zwei Bargeld-Faelle, die die Bot-Tabelle `expenses` nicht abbilden kann.
+
+    - `withdrawal`: Abhebung Girokonto → Portemonnaie. Das ist KEINE Ausgabe und steht deshalb
+      nicht in expenses. Ohne diese Zeile verschwand "Bargeld abgehoben" beim naechsten
+      Refresh wieder aus der Buchungsliste, obwohl der Betrag stimmte (Bug 25.07.).
+    - `payment`: eine echte Ausgabe, die aus dem Portemonnaie bezahlt wurde. Die Ausgabe selbst
+      bleibt ganz normal in expenses (Budget, Bot, Report rechnen unveraendert damit); hier
+      steht nur, DASS bar gezahlt wurde und WELCHER Betrag dem Bargeld abgezogen wurde. Beim
+      Loeschen der Ausgabe geht genau dieser Betrag ins Portemonnaie zurueck — nie mehr.
+
+    Bewusst eine eigene App-Tabelle: an `expenses` wird nichts geaendert, der Bot bleibt
+    unberuehrt. Betraege sind immer positiv, die Richtung steckt in `kind`.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_cash_movements (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            kind       TEXT NOT NULL,
+            amount     REAL NOT NULL DEFAULT 0.0,
+            expense_id INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_app_cash_movements_user
+             ON app_cash_movements (user_id, created_at)"""
     )
 
 
