@@ -81,6 +81,18 @@ APP_TO_BOT_CATEGORY = {
     "Pflege": "PFLEGE",
     "Sonstiges": "SONSTIGES",
 }
+BOT_TO_APP_CATEGORY = {
+    "LEBENSMITTEL": "Lebensmittel",
+    "MOBILITAET": "Mobilität",
+    "RESTAURANTS": "Restaurant",
+    "ABOS": "Abos",
+    "SHOPPING": "Shopping",
+    "FREIZEIT": "Freizeit",
+    "DROGERIE": "Drogerie",
+    "GESUNDHEIT": "Gesundheit",
+    "PFLEGE": "Pflege",
+    "SONSTIGES": "Sonstiges",
+}
 ACCOUNT_KEYS = frozenset(ACCOUNT_META)
 
 app = Flask(__name__)
@@ -142,6 +154,11 @@ def expenses_options():
 
 @app.route("/v1/expenses/<int:expense_id>", methods=["OPTIONS"])
 def expense_item_options(expense_id: int):
+    return ("", 204)
+
+
+@app.route("/v1/expenses/<int:expense_id>/category", methods=["OPTIONS"])
+def expense_category_options(expense_id: int):
     return ("", 204)
 
 
@@ -231,6 +248,85 @@ def clean_text(value: object, fallback: str = "") -> str:
     text = str(value or "").strip()
     text = " ".join(text.split())
     return text[:80] if text else fallback
+
+
+def normalize_category_rule_alias(value: object) -> str:
+    """Gleiche robuste Händler-Normalisierung wie der Telegram-Bot.
+
+    Die Regel liegt bewusst in der gemeinsamen `user_category_rules`-Tabelle.
+    Damit merkt sich Rov.E eine Korrektur sowohl in der App als auch im Bot.
+    """
+    alias = clean_text(value).lower()
+    alias = re.sub(
+        r"\b(das|der|die|den|dem|mein|meine|meinen|meiner|bitte|künftig|kuenftig|zukünftig|zukunftig)\b",
+        " ",
+        alias,
+    )
+    alias = re.sub(r"[^a-z0-9äöüß ]+", " ", alias)
+    return re.sub(r"\s+", " ", alias).strip()[:80]
+
+
+def ensure_user_category_rules_table(conn: sqlite3.Connection) -> None:
+    """Macht die App auch bei sehr alten Bot-Profilen migrationssicher."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS user_category_rules (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            alias       TEXT    NOT NULL,
+            category    TEXT    NOT NULL,
+            label       TEXT    DEFAULT '',
+            usage_count INTEGER DEFAULT 0,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, alias)
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_user_category_rules_user
+           ON user_category_rules(user_id, alias)"""
+    )
+
+
+def category_rule_for_merchant(conn: sqlite3.Connection, user_id: int, merchant: str) -> str | None:
+    normalized = normalize_category_rule_alias(merchant)
+    if not normalized:
+        return None
+    ensure_user_category_rules_table(conn)
+    rows = conn.execute(
+        """SELECT alias, category
+             FROM user_category_rules
+            WHERE user_id = ?
+            ORDER BY LENGTH(alias) DESC""",
+        (user_id,),
+    ).fetchall()
+    for row in rows:
+        alias = str(row["alias"] or "")
+        if alias and re.search(rf"\b{re.escape(alias)}\b", normalized):
+            conn.execute(
+                """UPDATE user_category_rules
+                      SET usage_count = usage_count + 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND alias = ?""",
+                (user_id, alias),
+            )
+            return str(row["category"])
+    return None
+
+
+def save_category_rule(conn: sqlite3.Connection, user_id: int, merchant: str, category: str) -> None:
+    alias = normalize_category_rule_alias(merchant)
+    if len(alias) < 2 or category not in BOT_TO_APP_CATEGORY:
+        return
+    ensure_user_category_rules_table(conn)
+    conn.execute(
+        """INSERT INTO user_category_rules
+               (user_id, alias, category, label, usage_count, updated_at)
+           VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+           ON CONFLICT(user_id, alias)
+           DO UPDATE SET category = excluded.category,
+                         label = excluded.label,
+                         updated_at = CURRENT_TIMESTAMP""",
+        (user_id, alias, category, alias.title()),
+    )
 
 
 def clean_pairing_code(value: object) -> str:
@@ -1334,6 +1430,10 @@ def create_expense():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        # Eine einmal korrigierte Händler-Kategorie gewinnt zentral gegen die lokale
+        # Heuristik. Das gilt beim nächsten App-Eintrag ebenso wie beim Telegram-Bot.
+        bot_category = category_rule_for_merchant(conn, user_id, merchant) or bot_category
+
         # Vor dem INSERT pruefen: Ein return innerhalb des DB-Kontexts wuerde einen bereits
         # eingefuegten Datensatz sonst normal committen, obwohl die Zahlung abgelehnt wurde.
         ensure_app_cash_movements_table(conn)
@@ -1383,6 +1483,42 @@ def create_expense():
         "giro_applied": giro_applied,
         "accounts": balances,
         "available": live_data["sts"]["available"],
+    })
+
+
+@app.route("/v1/expenses/<int:expense_id>/category", methods=["POST"])
+def update_expense_category(expense_id: int):
+    """Korrigiert eine Buchung und merkt die Kategorie für den Händler zentral."""
+    payload = request.get_json(silent=True) or {}
+    bot_category = APP_TO_BOT_CATEGORY.get(clean_text(payload.get("category")))
+    if not bot_category:
+        return jsonify({"ok": False, "error": "valid_category_required"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        row = conn.execute(
+            "SELECT merchant FROM expenses WHERE id = ? AND user_id = ?",
+            (expense_id, user_id),
+        ).fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "expense_not_found"}), 404
+
+        conn.execute(
+            "UPDATE expenses SET category = ? WHERE id = ? AND user_id = ?",
+            (bot_category, expense_id, user_id),
+        )
+        save_category_rule(conn, user_id, str(row["merchant"] or ""), bot_category)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "id": expense_id,
+        "category": BOT_TO_APP_CATEGORY[bot_category],
+        "merchant": str(row["merchant"] or ""),
     })
 
 
