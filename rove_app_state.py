@@ -180,7 +180,7 @@ def _category_label(raw: str) -> str:
 
 def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
     rows = conn.execute(
-        """SELECT amount, category, merchant, description, created_at FROM expenses
+        """SELECT id, amount, category, merchant, description, created_at FROM expenses
            WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
            ORDER BY created_at DESC""",
         (user_id,),
@@ -198,6 +198,11 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
             days[day_label] = []
             order.append(day_label)
         days[day_label].append({
+            # "sid" = Server-ID der Zeile in expenses. Bewusst NICHT "id": die App vergibt
+            # ihre eigenen lokalen IDs (TXID) und wuerde eine mitgelieferte "id" ueberschreiben.
+            # Ohne sid kann die App eine Buchung nur im Browser-RAM loeschen — der 45s-Refresh
+            # holt sie danach aus der DB zurueck (Bug 25.07.).
+            "sid": r["id"],
             "n": name,
             "cat": cat,
             "a": -abs(float(r["amount"] or 0)),

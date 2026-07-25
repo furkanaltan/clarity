@@ -139,6 +139,11 @@ def expenses_options():
     return ("", 204)
 
 
+@app.route("/v1/expenses/<int:expense_id>", methods=["OPTIONS"])
+def expense_item_options(expense_id: int):
+    return ("", 204)
+
+
 @app.route("/v1/pair", methods=["OPTIONS"])
 def pair_options():
     return ("", 204)
@@ -1318,6 +1323,38 @@ def create_expense():
         "amount": round(amount, 2),
         "category": bot_category,
         "merchant": merchant,
+        "available": live_data["sts"]["available"],
+    })
+
+
+@app.route("/v1/expenses/<int:expense_id>", methods=["DELETE"])
+def delete_expense(expense_id: int):
+    """Loescht eine Buchung dauerhaft aus der DB (App-Pendant zu /undo im Bot).
+
+    Ohne diesen Endpunkt konnte die App nur ihren eigenen RAM-Stand aendern; der
+    45s-Refresh hat die Buchung danach aus der DB zurueckgeholt (Bug 25.07.).
+    Das user_id im WHERE ist Pflicht — sonst koennte ein gueltiges Token fremde
+    Zeilen loeschen, indem es einfach IDs durchprobiert.
+    """
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        cur = conn.execute(
+            "DELETE FROM expenses WHERE id = ? AND user_id = ?",
+            (expense_id, user_id),
+        )
+        if cur.rowcount == 0:
+            return jsonify({"ok": False, "error": "expense_not_found"}), 404
+
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "id": expense_id,
         "available": live_data["sts"]["available"],
     })
 
