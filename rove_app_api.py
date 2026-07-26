@@ -157,6 +157,11 @@ def expense_item_options(expense_id: int):
     return ("", 204)
 
 
+@app.route("/v1/income", methods=["OPTIONS"])
+def income_options():
+    return ("", 204)
+
+
 @app.route("/v1/expenses/<int:expense_id>/category", methods=["OPTIONS"])
 def expense_category_options(expense_id: int):
     return ("", 204)
@@ -1486,6 +1491,62 @@ def create_expense():
     })
 
 
+@app.route("/v1/income", methods=["POST"])
+def create_income():
+    """Speichert eine in der App erfasste Einnahme dauerhaft und hebt das Girokonto.
+
+    Bis 26.07. gab es diesen Weg nicht: `syncExpenseToServer()` stieg bei `a >= 0` aus,
+    "Gehalt 2450" hob das Konto nur im Browser und der 45s-Refresh entfernte Geld UND
+    Buchungszeile kommentarlos wieder. Da Ausgaben das Konto seit dem Karten-Dauerabzug
+    dauerhaft senken, lief der Kontostand systematisch nach unten.
+
+    Bewusst NICHT in `expenses`: dort wuerde die Einnahme als Ausgabe in Budget, Bot und
+    Report zaehlen. Und bewusst NICHT als Aenderung an `users.income` — das ist das
+    monatliche Einkommen im Profil, keine einzelne Buchung.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        amount = abs(float(payload.get("amount") or 0))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        return jsonify({"ok": False, "error": "amount_required"}), 400
+    label = clean_text(payload.get("label") or payload.get("name"), "Einnahme")
+
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_app_cash_movements_table(conn)
+        applied = round(amount, 2)
+        balances = app_cash_accounts(conn, user_id)
+        balances["giro"] = round(balances["giro"] + applied, 2)
+        save_app_cash_accounts(conn, user_id, balances)
+        cur = conn.execute(
+            """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+               VALUES (?, 'income', ?, ?)""",
+            (user_id, applied, label),
+        )
+        movement_id = cur.lastrowid
+        conn.execute(
+            "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
+            (datetime.now().strftime("%Y-%m-%d"), user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "id": movement_id,
+        "amount": applied,
+        "label": label,
+        "accounts": balances,
+        "available": live_data["sts"]["available"],
+    })
+
+
 @app.route("/v1/expenses/<int:expense_id>/category", methods=["POST"])
 def update_expense_category(expense_id: int):
     """Korrigiert eine Buchung und merkt die Kategorie für den Händler zentral."""
@@ -1607,20 +1668,27 @@ def delete_cash_movement(movement_id: int):
         ).fetchone()
         if not row:
             return jsonify({"ok": False, "error": "cash_movement_not_found"}), 404
-        if clean_text(row["kind"]).lower() != "withdrawal":
-            # 'payment'-Zeilen haengen an einer Ausgabe und werden ueber
+        kind = clean_text(row["kind"]).lower()
+        if kind not in ("withdrawal", "income"):
+            # 'payment'- und 'card'-Zeilen haengen an einer Ausgabe und werden ueber
             # DELETE /v1/expenses/<id> mitgeloescht, nie einzeln.
             return jsonify({"ok": False, "error": "cash_movement_not_reversible"}), 400
 
         amount = round(abs(float(row["amount"] or 0)), 2)
         balances = app_cash_accounts(conn, user_id)
-        if amount > balances["bargeld"]:
-            # Das abgehobene Geld ist schon (teilweise) ausgegeben. Wir erfinden hier kein Geld
-            # zurueck aufs Girokonto — die App zeigt das und laesst die Zeile stehen.
-            return jsonify({"ok": False, "error": "cash_already_spent"}), 400
-
-        balances["bargeld"] = round(balances["bargeld"] - amount, 2)
-        balances["giro"] = round(balances["giro"] + amount, 2)
+        if kind == "income":
+            # Einnahme geloescht: das Geld verlaesst das Girokonto wieder. Bewusst OHNE
+            # Guthaben-Pruefung — das Giro darf ins Minus, das ist Furkans Entscheidung
+            # (der Nutzer verantwortet sein Konto selbst). Andernfalls waere eine
+            # laengst ausgegebene Einnahme unloeschbar.
+            balances["giro"] = round(balances["giro"] - amount, 2)
+        else:
+            if amount > balances["bargeld"]:
+                # Das abgehobene Geld ist schon (teilweise) ausgegeben. Wir erfinden hier kein
+                # Geld zurueck aufs Girokonto — die App zeigt das und laesst die Zeile stehen.
+                return jsonify({"ok": False, "error": "cash_already_spent"}), 400
+            balances["bargeld"] = round(balances["bargeld"] - amount, 2)
+            balances["giro"] = round(balances["giro"] + amount, 2)
         save_app_cash_accounts(conn, user_id, balances)
         conn.execute(
             "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",

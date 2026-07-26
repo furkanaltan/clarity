@@ -72,6 +72,10 @@ CATEGORY_COLORS = {
 # Bargeld-Asset (ACCOUNT_META) und wie BARGELD_TINT in der App.
 CASH_TINT = "#B08D57"
 
+# Einnahmen sind ebenfalls keine Ausgaben-Kategorie. Gleicher Farbwert, den die App fuer
+# "Einnahme" verwendet — sonst haette dieselbe Buchung im Feed und im Detail zwei Farben.
+INCOME_TINT = "#155681"
+
 # details-Struktur aus bot.py (fixed_costs_details, siehe /verfeinern) — flache Zahlen pro
 # Unterschlüssel, kein Abbuchungstag, keine Kündbarkeit. Labels hier nur fürs Anzeigen.
 DETAIL_LABELS = {
@@ -188,10 +192,14 @@ def _cash_movements_this_month(conn: sqlite3.Connection, user_id: int) -> list:
     Dieselbe defensive Leseart wie get_app_cash_accounts(): die Tabelle entsteht erst beim
     ersten Schreibvorgang der App (ensure_app_cash_movements_table), das Lesen darf davor
     keinen 500er ausloesen.
+
+    Bewusst `SELECT *` statt einer Spaltenliste: eine Datenbank, in der `label` noch fehlt,
+    wuerde bei `SELECT ... label ...` einen OperationalError werfen — und der Except-Zweig
+    unten haette dann ALLE Bewegungen des Monats verschluckt, also auch die Abhebungen.
     """
     try:
         return conn.execute(
-            """SELECT id, kind, amount, expense_id, created_at FROM app_cash_movements
+            """SELECT * FROM app_cash_movements
                  WHERE user_id = ?
                    AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
                  ORDER BY created_at DESC""",
@@ -199,6 +207,15 @@ def _cash_movements_this_month(conn: sqlite3.Connection, user_id: int) -> list:
         ).fetchall()
     except sqlite3.OperationalError:
         return []
+
+
+def _movement_label(row, fallback: str) -> str:
+    """Liest `label` auch aus Zeilen, die noch aus der Zeit vor der Spalte stammen."""
+    try:
+        value = row["label"] if "label" in row.keys() else None
+    except (IndexError, KeyError):
+        value = None
+    return (str(value).strip() or fallback) if value else fallback
 
 
 def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
@@ -241,6 +258,19 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
             item["bar"] = True
         entries.append((r["created_at"] or "", item))
     for m in movements:
+        if m["kind"] == "income":
+            # Einnahmen tragen wie Abhebungen eine `csid`, keine `sid` — sie stehen nicht in
+            # `expenses`. Ein `sid` wuerde die App beim Loeschen auf DELETE /v1/expenses/<id>
+            # schicken und dort eine fremde Ausgabe mit derselben Nummer treffen.
+            entries.append((m["created_at"] or "", {
+                "csid": m["id"],
+                "n": _movement_label(m, "Einnahme"),
+                "cat": "Einnahme",
+                "a": abs(float(m["amount"] or 0)),
+                "c": INCOME_TINT,
+                "i": "€",
+            }))
+            continue
         if m["kind"] != "withdrawal":
             continue
         entries.append((m["created_at"] or "", {
@@ -473,6 +503,11 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
       Loeschen der Ausgabe geht genau dieser Betrag ins Portemonnaie zurueck — nie mehr.
     - `card`: eine App-Ausgabe vom Girokonto. Sie erscheint nicht als eigene Buchungszeile,
       merkt aber den wirklich abgezogenen Girobetrag, damit Refresh und Loeschen symmetrisch sind.
+    - `income`: eine Einnahme, die der Nutzer in der App erfasst hat ("Gehalt 2450"). Sie gehoert
+      NICHT in `expenses` — das wuerde Budget, Bot und Report als Ausgabe verrechnen. Bis 26.07.
+      wurde sie ueberhaupt nicht gespeichert: das Girokonto stieg nur lokal, und der 45s-Refresh
+      hat Geld UND Buchungszeile kommentarlos wieder entfernt (Furkan-Bug 26.07.). Da Ausgaben
+      das Konto dauerhaft senken, driftete der Kontostand systematisch nach unten.
 
     Bewusst eine eigene App-Tabelle: an `expenses` wird nichts geaendert, der Bot bleibt
     unberuehrt. Betraege sind immer positiv, die Richtung steckt in `kind`.
@@ -484,10 +519,16 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
             kind       TEXT NOT NULL,
             amount     REAL NOT NULL DEFAULT 0.0,
             expense_id INTEGER,
+            label      TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    # Bestandsdatenbanken kennen `label` noch nicht. Ohne diese Nachruestung wuerde jede
+    # Einnahme als "Einnahme" ohne Namen in der Liste stehen.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(app_cash_movements)")}
+    if "label" not in columns:
+        conn.execute("ALTER TABLE app_cash_movements ADD COLUMN label TEXT")
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_app_cash_movements_user
              ON app_cash_movements (user_id, created_at)"""
@@ -686,13 +727,20 @@ def get_app_cash_accounts(
     for row in rows:
         key = row["account_key"]
         if key in balances:
-            balances[key] = round(max(0.0, float(row["amount"] or 0)), 2)
+            value = float(row["amount"] or 0)
+            # Das Girokonto darf ueberzogen sein — genau wie beim Schreiben in
+            # rove_app_api.app_cash_accounts(). Bis 26.07. stand hier ein max(0.0, …) ueber
+            # ALLE Konten: die Datenbank hielt -500 EUR, /v1/state lieferte 0 EUR. Die App
+            # zeigte direkt nach der Buchung -500 (aus der POST-Antwort) und 45 Sekunden
+            # spaeter 0 — die Ueberziehung war unsichtbar und das Gesamtvermoegen zu hoch.
+            # Tagesgeld und Bargeld bleiben echte Guthabenkonten.
+            balances[key] = round(value if key == "giro" else max(0.0, value), 2)
 
     # Der Bot kann zwischen zwei App-Aufrufen neue Cash-Sparraten bestaetigen. Dieser neue
     # Betrag gehoert zunaechst ins Girokonto, damit Gesamtvermögen und Bot niemals driften.
     delta = round(float(bot_cash) - sum(balances.values()), 2)
     if abs(delta) >= 0.01:
-        balances["giro"] = round(max(0.0, balances["giro"] + delta), 2)
+        balances["giro"] = round(balances["giro"] + delta, 2)
     return balances, True
 
 
