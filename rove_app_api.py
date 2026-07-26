@@ -99,9 +99,37 @@ app = Flask(__name__)
 
 
 def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # Wartezeit statt Sofortabbruch: seit begin_write() die Schreibsperre vorzieht,
+    # treffen parallele Buchungen aufeinander. Der zweite Request soll kurz warten
+    # und dann den bereits gesenkten Stand lesen, nicht mit "database is locked"
+    # abbrechen. 15 s ist grosszuegig — ein Endpunkt haelt die Sperre wenige ms.
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def begin_write(conn: sqlite3.Connection) -> None:
+    """Nimmt die Schreibsperre SOFORT statt erst beim ersten UPDATE.
+
+    Fund 4 aus dem Kontostand-Audit vom 26.07.: Python oeffnet die Transaktion
+    erst beim ersten schreibenden Statement. Das `SELECT` in app_cash_accounts()
+    lag damit ausserhalb — zwei fast gleichzeitige Buchungen lasen beide denselben
+    Stand, rechneten beide von dort und die zweite ueberschrieb die erste. Beide
+    Ausgaben standen in der Liste, nur eine war vom Konto weg, ohne Fehlermeldung.
+    Gemessen: acht parallele Buchungen a 30 EUR senkten das Giro um 30 statt 240.
+
+    Ausloeser ist nicht "App und Bot gleichzeitig", sondern die App gegen sich
+    selbst: commitEntry() feuert syncExpenseToServer() ohne `await`, damit die
+    Eingabe nicht haengt. Bei schlechtem Netz ist der erste POST noch unterwegs,
+    wenn der zweite abgeschickt wird.
+
+    BEGIN IMMEDIATE zieht die Sperre vor das Lesen. Der zweite Request wartet
+    (siehe timeout in db()) und liest danach den korrekten Stand.
+
+    Gehoert an den Anfang jedes Endpunkts, der einen Kontostand liest und daraus
+    einen neuen berechnet. Reine Leser (/v1/state) brauchen es nicht.
+    """
+    conn.execute("BEGIN IMMEDIATE")
 
 
 def cors(resp):
@@ -887,6 +915,7 @@ def update_monthly_plan():
 
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)   # bucht die Cash-Sparrate aufs Tagesgeld — siehe begin_write()
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
@@ -1146,11 +1175,12 @@ def update_accounts():
     token = token_from_request()
 
     with db() as conn:
+        begin_write(conn)   # siehe begin_write(): Lesen und Schreiben muessen ein Block sein
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
-        balances = app_cash_accounts(conn, user_id)
+        balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
         try:
             amount = round(abs(float(payload.get("amount") or 0)), 2)
         except (TypeError, ValueError):
@@ -1431,6 +1461,7 @@ def create_expense():
 
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)   # siehe begin_write(): sonst verlieren parallele Buchungen den Abzug
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
@@ -1515,12 +1546,15 @@ def create_income():
 
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)   # siehe begin_write(): Lesen und Schreiben muessen ein Block sein
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_cash_movements_table(conn)
         applied = round(amount, 2)
+        # gelesen unter der Sperre aus begin_write() — sonst geht eine von zwei
+        # gleichzeitigen Einnahmen beim Girostand verloren
         balances = app_cash_accounts(conn, user_id)
         balances["giro"] = round(balances["giro"] + applied, 2)
         save_app_cash_accounts(conn, user_id, balances)
@@ -1594,11 +1628,15 @@ def delete_expense(expense_id: int):
     """
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)   # siehe begin_write()
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_cash_movements_table(conn)
+        # Die Erstattung unten liest den Kontostand und rechnet von dort hoch. Ohne die
+        # Sperre aus begin_write() koennte eine parallele Buchung dazwischenschreiben und
+        # die Gutschrift wieder verschlucken.
         cash_movement = conn.execute(
             """SELECT id, kind, amount FROM app_cash_movements
                  WHERE user_id = ? AND kind IN ('payment', 'card') AND expense_id = ?""",
@@ -1657,11 +1695,15 @@ def delete_cash_movement(movement_id: int):
     """
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)   # siehe begin_write()
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_cash_movements_table(conn)
+        # Auch hier gilt die Sperre aus begin_write(): die Rueckbuchung unten rechnet
+        # vom gelesenen Stand aus, und die Bargeld-Pruefung darf nicht auf einem Wert
+        # entscheiden, den ein paralleler Request gerade veraendert.
         row = conn.execute(
             "SELECT id, kind, amount FROM app_cash_movements WHERE id = ? AND user_id = ?",
             (movement_id, user_id),
