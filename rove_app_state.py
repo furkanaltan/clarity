@@ -867,6 +867,42 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float):
     return series, hist_dates
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
+    ).fetchone() is not None
+
+
+def _financial_history_start(conn: sqlite3.Connection, user_id: int) -> str | None:
+    """Ermittelt den ersten echten Tracking-Tag fuer ehrliche Chart-Beschriftungen."""
+    starts = []
+    row = conn.execute(
+        "SELECT MIN(date(created_at)) AS d FROM expenses WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row and row["d"]:
+        starts.append(str(row["d"]))
+
+    if _table_exists(conn, "app_cash_movements"):
+        row = conn.execute(
+            """SELECT MIN(date(created_at)) AS d FROM app_cash_movements
+                 WHERE user_id = ? AND kind IN ('income', 'fixed')""",
+            (user_id,),
+        ).fetchone()
+        if row and row["d"]:
+            starts.append(str(row["d"]))
+
+    if _table_exists(conn, "investment_events"):
+        row = conn.execute(
+            """SELECT MIN(date(created_at)) AS d FROM investment_events
+                 WHERE user_id = ?
+                   AND source IN ('investiert_command', 'app_monthly_plan')""",
+            (user_id,),
+        ).fetchone()
+        if row and row["d"]:
+            starts.append(str(row["d"]))
+    return min(starts) if starts else None
+
+
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -924,10 +960,12 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                if etf_positions else "aus dem Bot")
 
     net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
+    history_start = _financial_history_start(conn, user_id)
     return {
         "netWorth": round(net_worth, 2),
         "series": net_series,
         "histDates": net_hist_dates,
+        "historyStart": history_start,
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],

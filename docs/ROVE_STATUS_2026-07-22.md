@@ -10,6 +10,15 @@
 - Juli bleibt damit ehrlich ein Plan-/Testmonat. Nach der Bestätigung im August kann
   der August-Report sauber sagen, dass Gehalt, Fixkosten und Sparrate erfasst wurden.
 
+## Vermögenskurve: Zeitraum und Delta vereinheitlicht (27.07.2026)
+
+- Der Header über der Kurve zeigt nun immer die Veränderung des gerade gewählten Zeitraums.
+- Negative Entwicklung erscheint rot mit Pfeil nach unten, positive grün mit Pfeil nach oben.
+- Die doppelte graue Delta-Zeile unter den Zeiträumen ist entfernt.
+- Ein Tipp auf den Chip wechselt zwischen Prozent und dem exakten Euro-Unterschied.
+- Bei noch zu kurzer Historie steht ehrlich „seit Tracking-Start“, statt einen falschen
+  6-Monats- oder Jahresvergleich vorzutäuschen.
+
 ## Produktentscheidung
 
 - Rov.E wird langfristig App-first.

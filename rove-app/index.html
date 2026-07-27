@@ -552,8 +552,10 @@
   .net .lbl{font-size:14px;color:var(--muted);font-weight:500;margin-bottom:6px}
   .net .val{font-size:44px;font-weight:800;letter-spacing:-1.5px;line-height:1}
   .chip{display:inline-flex;align-items:center;gap:5px;margin-top:12px;padding:6px 11px;border-radius:999px;
-    font-size:13.5px;font-weight:700;background:var(--green-soft);color:var(--green);transition:opacity .15s}
+    font-size:13.5px;font-weight:700;background:var(--green-soft);color:var(--green);transition:opacity .15s;
+    border:0;cursor:pointer;font-family:inherit}
   .chip svg{width:13px;height:13px}
+  .chip.negative{background:rgba(244,94,94,.13);color:#F45E5E}
   .chip .sub{color:var(--muted);font-weight:500;margin-left:2px}
   .chip.score{background:var(--blue-soft);color:var(--blue);margin-left:6px}
   .delta{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px;font-variant-numeric:tabular-nums}
@@ -1101,10 +1103,10 @@
     <div class="net">
       <div class="lbl">Gesamtvermögen</div>
       <div class="val" id="networth">—</div>
-      <span class="chip">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l8 8h-5v8h-6v-8H4z"/></svg>
-        <span id="change">—</span><span class="sub">diesen Monat</span>
-      </span>
+      <button class="chip" id="changeChip" type="button" aria-label="Veränderung als Eurobetrag anzeigen">
+        <svg id="changeArrow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l8 8h-5v8h-6v-8H4z"/></svg>
+        <span id="change">—</span><span class="sub" id="changePeriod">diesen Monat</span>
+      </button>
     </div>
 
     <div class="chart-wrap">
@@ -1117,7 +1119,7 @@
         <button class="range on" data-r="1J">1J</button>
         <button class="range" data-r="Max">Max</button>
       </div>
-      <div class="delta" id="chartDelta"></div>
+      <div class="delta" id="chartDelta" hidden></div>
     </div>
 
     <!-- Mentor-Karte bewusst NICHT mehr direkt unter dem Titel (Furkan-Feinschliff 16.07.: Kopf
@@ -1862,19 +1864,47 @@ function countUp(el, target, fmt, dur=600){
 if(DATA.assets.length && APP_MODE!=="bridge" && APP_MODE!=="profile") countUp(document.getElementById("networth"), DATA.netWorth, eur2);
 document.getElementById("change").textContent = DATA.changePct;
 
-// Monats-Änderung dynamisch aus der 1M-Serie (statt hart kodiert).
-// EINE Funktion für alle Lade-Sequenzen: dieselbe Rechnung stand vorher dreimal im Code und fehlte
-// in der vierten (dem Live-Refresh). Der Pfeil blieb dadurch auf dem Wert des eingefrorenen
-// Snapshots stehen — bei Furkan „+0 % diesen Monat", obwohl die Kurve längst −1.592 € zeigte
-// (27.07.). Wer eine neue Lade-Sequenz baut, ruft das hier mit auf.
-function updateChangeBadge(){
-  const el = document.getElementById("change"); if(!el) return;
-  const m = DATA.series && DATA.series["1M"];
-  if(!m || m.length < 2 || !m[0]){ el.textContent = "—"; return; }
-  const d = (m[m.length-1]-m[0])/m[0]*100;
-  el.textContent = (d>=0?"+":"−") + Math.abs(d).toLocaleString("de-DE",{maximumFractionDigits:1}) + " %";
+// Der Header und die gerade gewählte Kurve müssen dieselbe Zeitspanne meinen. Bei weniger
+// Historie als der gewählten Spanne zeigen wir offen "seit Tracking-Start" statt einen
+// künstlichen 6M- oder Jahresvergleich zu behaupten.
+const RANGE_DAYS={"1W":7,"1M":30,"6M":182,"1J":365,"Max":0};
+const RANGE_LABELS={"1W":"diese Woche","1M":"diesen Monat","6M":"in 6 Monaten","1J":"in 1 Jahr","Max":"seit Beginn"};
+const ARROW_UP="M12 4l8 8h-5v8h-6v-8H4z";
+const ARROW_DOWN="M12 20l-8-8h5V4h6v8h5z";
+let CHANGE_MODE="percent";
+function historyCoversRange(range){
+  if(range==="Max") return true;
+  if(!DATA.historyStart) return false;
+  const start=new Date(`${DATA.historyStart}T12:00:00`);
+  if(Number.isNaN(start.getTime())) return false;
+  return (Date.now()-start.getTime())/86400000 >= RANGE_DAYS[range]-1;
 }
-updateChangeBadge();
+function updateChangeBadge(range=CHART.range||"1M"){
+  const el=document.getElementById("change"), chip=document.querySelector("#tab-home .net .chip");
+  const period=document.getElementById("changePeriod"), arrow=document.getElementById("changeArrow");
+  const pts=DATA.series && DATA.series[range];
+  if(!el || !chip || !period || !arrow) return;
+  if(!pts || pts.length<2 || !pts[0]){
+    el.textContent="—"; period.textContent="noch keine Daten"; chip.classList.remove("negative"); return;
+  }
+  const euroDelta=(pts[pts.length-1]-pts[0])*1000;
+  const percentDelta=euroDelta/(pts[0]*1000)*100;
+  const negative=euroDelta<0;
+  el.textContent=CHANGE_MODE==="euro"
+    ? `${negative?"−":"+"}${eur(Math.abs(euroDelta))}`
+    : `${negative?"−":"+"}${Math.abs(percentDelta).toLocaleString("de-DE",{maximumFractionDigits:1})} %`;
+  period.textContent=historyCoversRange(range) ? RANGE_LABELS[range] : "seit Tracking-Start";
+  chip.classList.toggle("negative",negative);
+  chip.setAttribute("aria-label", CHANGE_MODE==="euro"
+    ? "Veränderung als Prozent anzeigen"
+    : "Veränderung als Eurobetrag anzeigen");
+  arrow.innerHTML=`<path d="${negative?ARROW_DOWN:ARROW_UP}"/>`;
+}
+updateChangeBadge("1M");
+document.getElementById("changeChip").addEventListener("click",()=>{
+  CHANGE_MODE=CHANGE_MODE==="percent" ? "euro" : "percent";
+  updateChangeBadge(CHART.range||"1J");
+});
 
 // ===================== AKTIVITÄTSCENTER (Glocke = Ereignisse, nicht Einordnung) =====================
 const ACT_ICONS = {
@@ -2289,7 +2319,8 @@ drawChart("1J");
 document.getElementById("ranges").addEventListener("click",e=>{
   const b=e.target.closest(".range"); if(!b)return;
   document.querySelectorAll(".range").forEach(r=>r.classList.remove("on"));
-  b.classList.add("on"); drawChart(b.dataset.r);
+  CHANGE_MODE="percent";
+  b.classList.add("on"); drawChart(b.dataset.r); updateChangeBadge(b.dataset.r);
 });
 
 // ===================== ZIELE (Dashboard-Preview + Ziele-Tab) =====================
@@ -4007,6 +4038,7 @@ async function refreshAppDataFromServer(){
     // neue Werte lieferte. Gleiche Lücke wie damals bei der Glocke: eine Sequenz vergessen.
     if(data.series) DATA.series=data.series;
     if(data.histDates) DATA.histDates=data.histDates;
+    if(data.historyStart) DATA.historyStart=data.historyStart;
     if(data.sts){
       DATA.sts={...DATA.sts,konto:data.sts.konto||0,fixRest:data.sts.fixRest||0,
         sparraten:data.sts.sparraten||0,
@@ -4020,7 +4052,7 @@ async function refreshAppDataFromServer(){
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
     if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1J");
-    updateChangeBadge();   // fehlte hier komplett — der Pfeil blieb auf dem Snapshot-Wert stehen
+    updateChangeBadge(CHART.range||"1J");
     maybeOpenMonthlyPlanOnMonthStart();
     return true;
   }catch(err){
@@ -6074,6 +6106,7 @@ async function loadBridgeState(){
     if(!botBudgets.length) DATA.budgets = [];
     if(b.series) DATA.series = b.series;
     if(b.histDates) DATA.histDates = b.histDates;   // echte Datums-Labels vom Server (27.07.)
+    if(b.historyStart) DATA.historyStart = b.historyStart;
     if(b.sts) DATA.sts = {konto:b.sts.konto||0, fixRest:b.sts.fixRest||0, sparraten:b.sts.sparraten||0,
                           etfSparrate:Number(b.sts.etfSparrate||b.sts.sparratenParts?.etf||0),
                           cashSparrate:Number(b.sts.cashSparrate||b.sts.sparratenParts?.cash||0),
@@ -6090,7 +6123,7 @@ async function loadBridgeState(){
 
     renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
     drawChart(CHART.range||"1J"); mentorLine(); applyHomeEmpty();
-    updateChangeBadge();   // "+X % diesen Monat" aus der echten 1M-Serie
+    updateChangeBadge(CHART.range||"1J");
     if(nw) delete nw.dataset.lock;
     recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
     maybeOpenMonthlyPlanOnMonthStart();
@@ -6400,7 +6433,7 @@ function loadProfileState(){
   seedNetHistoryIfEmpty(); syncNetHistory(); rebuildSeriesFromHistory();
   renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
   drawChart(CHART.range||"1J"); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
-  updateChangeBadge();
+  updateChangeBadge(CHART.range||"1J");
   if(nw) delete nw.dataset.lock;
   recalcNetWorth();
   return true;
