@@ -936,6 +936,40 @@ def update_monthly_plan():
         # der Status. Ein Status kann von der Wahrheit abweichen (Nutzer loescht die Buchung
         # wieder), die Bewegung nicht. Reopen + erneutes Bestaetigen bucht deshalb nicht doppelt,
         # solange die Bewegung existiert — und bucht korrekt neu, wenn sie geloescht wurde.
+        # „Doch noch nicht da" / „Doch noch nicht abgebucht" muss die Buchung wirklich zuruecknehmen
+        # (Furkan-Fund 27.07.: der Knopf stellte nur den Status um, das Geld blieb — er musste die
+        # Zeile von Hand im Cashflow loeschen). Rueckgaengig heisst rueckgaengig, sonst ist der
+        # Knopf eine Luege.
+        if action in ("reopen_income", "reopen_fixed_costs"):
+            if action == "reopen_income":
+                zeile = conn.execute(
+                    """SELECT id, amount FROM app_cash_movements
+                         WHERE user_id = ? AND kind = 'income'
+                           AND strftime('%Y-%m', created_at) = ?
+                           AND lower(COALESCE(label, '')) LIKE '%gehalt%'
+                         ORDER BY id DESC LIMIT 1""",
+                    (user_id, month_key),
+                ).fetchone()
+                richtung = -1        # Gehalt zurueckgenommen: Geld verlaesst das Giro wieder
+            else:
+                zeile = conn.execute(
+                    """SELECT id, amount FROM app_cash_movements
+                         WHERE user_id = ? AND kind = 'fixed'
+                           AND strftime('%Y-%m', created_at) = ?
+                         ORDER BY id DESC LIMIT 1""",
+                    (user_id, month_key),
+                ).fetchone()
+                richtung = 1         # Fixkosten zurueckgenommen: Geld kommt aufs Giro zurueck
+            if zeile:
+                betrag = round(abs(float(zeile["amount"] or 0)), 2)
+                balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
+                balances["giro"] = round(balances["giro"] + richtung * betrag, 2)
+                save_app_cash_accounts(conn, user_id, balances)
+                conn.execute(
+                    "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
+                    (zeile["id"], user_id),
+                )
+
         if action in ("confirm_income", "confirm_fixed_costs"):
             user = conn.execute(
                 "SELECT income, other_income, fixed_costs FROM users WHERE user_id = ?",
