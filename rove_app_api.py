@@ -940,7 +940,7 @@ def update_monthly_plan():
         # (Furkan-Fund 27.07.: der Knopf stellte nur den Status um, das Geld blieb — er musste die
         # Zeile von Hand im Cashflow loeschen). Rueckgaengig heisst rueckgaengig, sonst ist der
         # Knopf eine Luege.
-        if action in ("reopen_income", "reopen_fixed_costs"):
+        if action in ("reopen_income", "reopen_fixed_costs", "reopen_savings"):
             if action == "reopen_income":
                 zeile = conn.execute(
                     """SELECT id, amount FROM app_cash_movements
@@ -951,7 +951,7 @@ def update_monthly_plan():
                     (user_id, month_key),
                 ).fetchone()
                 richtung = -1        # Gehalt zurueckgenommen: Geld verlaesst das Giro wieder
-            else:
+            elif action == "reopen_fixed_costs":
                 zeile = conn.execute(
                     """SELECT id, amount FROM app_cash_movements
                          WHERE user_id = ? AND kind = 'fixed'
@@ -960,6 +960,60 @@ def update_monthly_plan():
                     (user_id, month_key),
                 ).fetchone()
                 richtung = 1         # Fixkosten zurueckgenommen: Geld kommt aufs Giro zurueck
+            else:
+                # Sparrate ist keine neue Einnahme. Sie verschiebt bereits vorhandenes Geld
+                # vom Giro in ETF/Investments bzw. Tagesgeld. Beim Rueckgaengigmachen muss
+                # dieselbe Umschichtung exakt andersherum laufen, sonst bleibt Vermoegen
+                # kuenstlich erzeugt im System stehen.
+                rows = conn.execute(
+                    """SELECT asset_type, COALESCE(SUM(amount), 0) AS amount
+                         FROM investment_events
+                        WHERE user_id = ?
+                          AND source = 'app_monthly_plan'
+                          AND strftime('%Y-%m', created_at) = ?
+                          AND asset_type IN ('etf', 'cash')
+                        GROUP BY asset_type""",
+                    (user_id, month_key),
+                ).fetchall()
+                savings = {str(row["asset_type"]): round(float(row["amount"] or 0), 2) for row in rows}
+                etf_amount = savings.get("etf", 0.0)
+                cash_amount = savings.get("cash", 0.0)
+                if etf_amount or cash_amount:
+                    user = conn.execute(
+                        "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+                    ).fetchone()
+                    investments = round(float(user["current_investments"] or 0), 2) if user else 0.0
+                    balances = app_cash_accounts(conn, user_id)
+                    # Keine Korrektur auf Verdacht: Wurden Tagesgeld oder Investments danach
+                    # bereits separat vermindert, wuerde eine automatische Rueckbuchung Geld
+                    # erfinden. Dann bleibt die bestaetigte Sparrate stehen, bis der Nutzer
+                    # die spaetere Aenderung zuerst geklaert hat.
+                    if investments + 0.009 < etf_amount or balances["tagesgeld"] + 0.009 < cash_amount:
+                        return jsonify({"ok": False, "error": "savings_already_moved"}), 400
+                    balances["giro"] = round(balances["giro"] + etf_amount + cash_amount, 2)
+                    balances["tagesgeld"] = round(balances["tagesgeld"] - cash_amount, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
+                    conn.execute(
+                        "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                        (round(investments - etf_amount, 2), user_id),
+                    )
+                    conn.execute(
+                        """DELETE FROM investment_events
+                             WHERE user_id = ?
+                               AND source = 'app_monthly_plan'
+                               AND strftime('%Y-%m', created_at) = ?
+                               AND asset_type IN ('etf', 'cash')""",
+                        (user_id, month_key),
+                    )
+                    conn.execute(
+                        """DELETE FROM portfolio_snapshots
+                             WHERE user_id = ?
+                               AND source = 'app_monthly_plan'
+                               AND strftime('%Y-%m', created_at) = ?""",
+                        (user_id, month_key),
+                    )
+                zeile = None
+                richtung = 0
             if zeile:
                 betrag = round(abs(float(zeile["amount"] or 0)), 2)
                 balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
@@ -1045,6 +1099,10 @@ def update_monthly_plan():
                     (new_investments, user_id),
                 )
                 balances = app_cash_accounts(conn, user_id)
+                # Sparen ist eine Umschichtung, keine zweite Einnahme: Der Betrag verlaesst
+                # das Girokonto. ETF wandert ins Investment, Cash ins Tagesgeld. Dadurch bleibt
+                # das Nettovermoegen gleich und nur seine Verteilung aendert sich.
+                balances["giro"] = round(balances["giro"] - etf_savings - cash_savings, 2)
                 balances["tagesgeld"] = round(balances["tagesgeld"] + cash_savings, 2)
                 save_app_cash_accounts(conn, user_id, balances)
                 if etf_savings > 0:

@@ -1375,6 +1375,35 @@ aktiv, aber neue Finanzlogik darf nicht mehr stillschweigend nur lokal im Browse
   ausgeliefert. Er muss zusätzlich als Git-Snapshot abgelegt werden; bis dahin ist der aktuelle
   Frontendstand nicht verlässlich über GitHub wiederherstellbar.
 
+## Sparrate ist eine Umschichtung, keine zweite Einnahme (27.07., noch zu deployen)
+
+Review-Fund von Codex nach dem Monatscheck-Fix:
+
+- `confirm_savings` erhöhte bisher ETF/Investments und Tagesgeld, zog dieselbe Summe aber nicht
+  vom Giro ab. Nach einem bereits bestätigten Gehalt erschien die Sparrate dadurch ein zweites
+  Mal im Nettovermögen.
+- Beispiel vor dem Fix: Giro 5.000 €, Tagesgeld 1.000 €, Investments 1.000 €; ETF 300 € plus
+  Cash 700 € sparen ergab fälschlich 8.000 € Gesamtvermögen statt weiterhin 7.000 €.
+
+Fix in `rove_app_api.py`:
+
+- ETF-Sparrate: Giro minus ETF, Investments plus ETF.
+- Cash-Sparrate: Giro minus Cash, Tagesgeld plus Cash.
+- `reopen_savings` dreht beide Transfers exakt um, löscht nur die eigenen
+  `app_monthly_plan`-Ereignisse und bricht sicher ab, falls Tagesgeld oder Investments danach
+  bereits separat vermindert wurden. So kann eine Rückbuchung kein Geld erfinden.
+
+Geprüft mit Flask/API gegen eine Datenbankkopie:
+
+1. 5.000 € Giro, 1.000 € Tagesgeld, 1.000 € Investments
+2. 300 € ETF + 700 € Cash bestätigen → 4.000 € Giro, 1.700 € Tagesgeld, 1.300 € Investments
+3. Gesamtvermögen bleibt exakt 7.000 €
+4. Rückgängig → alle drei Konten und die Ereignisse exakt beim Ausgangsstand
+
+Wichtig nach dem Deploy: Einmal prüfen, ob Furkan im Juli bereits eine Sparrate bestätigt hatte.
+Alte Bestätigungen vor diesem Fix haben den Giro noch nicht gesenkt und brauchen dann eine
+einmalige, bewusst kontrollierte Korrektur — niemals blind für alle Nutzer nachbuchen.
+
 ## Nächste Reihenfolge
 
 1. Zentrale App-Verträge deployen und testen: neuen Vertrag anlegen, App schliessen,
