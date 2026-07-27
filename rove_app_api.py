@@ -34,6 +34,7 @@ from rove_app_state import (
     ensure_app_contracts_table,
     ensure_app_goals_table,
     ensure_app_monthly_plan_table,
+    ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
 
@@ -1183,6 +1184,53 @@ def update_goals():
             goal_id = clean_text(payload.get("goal_id"))
             if not goal_id:
                 return jsonify({"ok": False, "error": "goal_id_required"}), 400
+            if goal_id == "primary":
+                primary = conn.execute(
+                    "SELECT goal_description, goal_amount FROM users WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                if not primary or not clean_text(primary["goal_description"]):
+                    return jsonify({"ok": False, "error": "goal_not_found"}), 404
+                target = float(primary["goal_amount"] or 0)
+                ensure_app_primary_goal_progress_table(conn)
+                progress = conn.execute(
+                    "SELECT current_amount FROM app_primary_goal_progress WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                current = float(progress["current_amount"] or 0) if progress else 0.0
+
+                if action == "delete":
+                    conn.execute(
+                        "UPDATE users SET goal_description = '', goal_amount = 0 WHERE user_id = ?", (user_id,)
+                    )
+                    conn.execute("DELETE FROM app_primary_goal_progress WHERE user_id = ?", (user_id,))
+                elif action == "assign":
+                    amount = goal_amount(payload.get("amount"))
+                    if amount is None or amount <= 0:
+                        return jsonify({"ok": False, "error": "valid_goal_amount_required"}), 400
+                    next_amount = round(min(target, current + amount), 2)
+                    conn.execute(
+                        """INSERT INTO app_primary_goal_progress (user_id, current_amount)
+                           VALUES (?, ?)
+                           ON CONFLICT(user_id) DO UPDATE SET
+                             current_amount = excluded.current_amount,
+                             updated_at = CURRENT_TIMESTAMP""",
+                        (user_id, next_amount),
+                    )
+                else:  # set_target
+                    next_target = goal_amount(payload.get("target"))
+                    if next_target is None or next_target <= 0:
+                        return jsonify({"ok": False, "error": "valid_goal_target_required"}), 400
+                    conn.execute("UPDATE users SET goal_amount = ? WHERE user_id = ?", (next_target, user_id))
+                    conn.execute(
+                        """INSERT INTO app_primary_goal_progress (user_id, current_amount)
+                           VALUES (?, ?)
+                           ON CONFLICT(user_id) DO UPDATE SET
+                             current_amount = MIN(app_primary_goal_progress.current_amount, excluded.current_amount),
+                             updated_at = CURRENT_TIMESTAMP""",
+                        (user_id, min(current, next_target)),
+                    )
+                live_data = build_live_app_data(conn, user_id)
+                conn.commit()
+                return jsonify({"ok": True, **live_data})
             goal = conn.execute(
                 """SELECT target_amount, current_amount FROM app_goals
                      WHERE user_id = ? AND goal_id = ?""",

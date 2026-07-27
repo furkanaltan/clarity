@@ -16,8 +16,16 @@
 - Negative Entwicklung erscheint rot mit Pfeil nach unten, positive grün mit Pfeil nach oben.
 - Die doppelte graue Delta-Zeile unter den Zeiträumen ist entfernt.
 - Ein Tipp auf den Chip wechselt zwischen Prozent und dem exakten Euro-Unterschied.
-- Bei noch zu kurzer Historie steht ehrlich „seit Tracking-Start“, statt einen falschen
-  6-Monats- oder Jahresvergleich vorzutäuschen.
+- Der Zeitraum steht nur im aktiven Reiter; die Kennzahl darunter bleibt bewusst kompakt.
+
+## Ziele: App übernimmt das Telegram-Hauptziel (28.07.2026)
+
+- Das bestehende Hauptziel kann in der App jetzt zugeordnet, im Zielbetrag verändert und gelöscht werden.
+- Die frühere Telegram-Sperre ist entfernt; Änderungen laufen direkt in die gemeinsame Datenbasis.
+- Zielzuweisungen sind bewusst eine Zweckbindung: Sie erhöhen keinen Kontostand und erzeugen kein
+  neues Vermögen. Das Geld bleibt z. B. auf dem Tagesgeld, wird aber dem Ziel zugeordnet.
+- Die alte Anzeige, welche die monatliche Sparrate fälschlich als bereits gesparten Zielbetrag
+  ausgegeben hat, ist entfernt. Ohne bereits erfasste Zweckbindung beginnt der Ziel-Fortschritt bei 0 EUR.
 
 ## Produktentscheidung
 

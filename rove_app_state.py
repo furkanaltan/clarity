@@ -594,6 +594,26 @@ def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_app_primary_goal_progress_table(conn: sqlite3.Connection) -> None:
+    """Speichert die Zweckbindung des einen bestehenden Bot-Hauptziels zentral."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_primary_goal_progress (
+            user_id        INTEGER PRIMARY KEY,
+            current_amount REAL NOT NULL DEFAULT 0.0,
+            updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_primary_goal_progress(conn: sqlite3.Connection, user_id: int, target: float) -> float:
+    ensure_app_primary_goal_progress_table(conn)
+    row = conn.execute(
+        "SELECT current_amount FROM app_primary_goal_progress WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    return round(min(max(0.0, float(row["current_amount"] or 0)), max(0.0, target)), 2) if row else 0.0
+
+
 def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
     """Speichert aus der App angelegte laufende Verträge zentral und eindeutig."""
     conn.execute(
@@ -867,42 +887,6 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float):
     return series, hist_dates
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
-    ).fetchone() is not None
-
-
-def _financial_history_start(conn: sqlite3.Connection, user_id: int) -> str | None:
-    """Ermittelt den ersten echten Tracking-Tag fuer ehrliche Chart-Beschriftungen."""
-    starts = []
-    row = conn.execute(
-        "SELECT MIN(date(created_at)) AS d FROM expenses WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    if row and row["d"]:
-        starts.append(str(row["d"]))
-
-    if _table_exists(conn, "app_cash_movements"):
-        row = conn.execute(
-            """SELECT MIN(date(created_at)) AS d FROM app_cash_movements
-                 WHERE user_id = ? AND kind IN ('income', 'fixed')""",
-            (user_id,),
-        ).fetchone()
-        if row and row["d"]:
-            starts.append(str(row["d"]))
-
-    if _table_exists(conn, "investment_events"):
-        row = conn.execute(
-            """SELECT MIN(date(created_at)) AS d FROM investment_events
-                 WHERE user_id = ?
-                   AND source IN ('investiert_command', 'app_monthly_plan')""",
-            (user_id,),
-        ).fetchone()
-        if row and row["d"]:
-            starts.append(str(row["d"]))
-    return min(starts) if starts else None
-
-
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -960,12 +944,10 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                if etf_positions else "aus dem Bot")
 
     net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
-    history_start = _financial_history_start(conn, user_id)
     return {
         "netWorth": round(net_worth, 2),
         "series": net_series,
         "histDates": net_hist_dates,
-        "historyStart": history_start,
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],
@@ -1011,10 +993,13 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         },
         "vertraege": build_app_contract_groups(conn, user_id, details),
         "goals": ([{
+            "id": "primary",
             "t": u.get("goal_description"),
             "icon": "coins", "tint": "#2AABEE",
-            "cur": round(sparraten, 2),
+            "cur": get_app_primary_goal_progress(conn, user_id, float(u.get("goal_amount") or 0)),
             "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
+            # Wird weiterhin als Bot-Hauptziel markiert, damit lokale Snapshots es niemals
+            # wiederbeleben. Bearbeiten und Löschen übernimmt jetzt trotzdem die App-API.
             "source": "bot",
         }] if (u.get("goal_description") or "").strip() else []) + [
             goal for goal in get_app_goals(conn, user_id)

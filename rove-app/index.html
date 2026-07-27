@@ -1145,7 +1145,7 @@
   <section class="screen" id="tab-ziele">
     <div class="eyebrow">Deine Töpfe</div>
     <h1 class="ptitle">Deine Ziele</h1>
-    <p class="scr-sub">Tippe ein Ziel an, um Geld zuzuweisen.</p>
+    <p class="scr-sub">Tippe ein Ziel an, um vorhandenes Geld zuzuordnen.</p>
     <div id="goals-all"></div>
   </section>
 
@@ -4254,13 +4254,14 @@ function openGoalSheet(i){
   document.getElementById("gTitle").textContent = g.t;
   document.getElementById("gHint").textContent = g.cur>=g.tar
     ? `${eur(g.cur)} — dein Topf ist voll. Stark!`
-    : `Wie viel möchtest du zuweisen?`;
+    : `Wie viel deines vorhandenen Geldes möchtest du diesem Ziel zuordnen?`;
   const bar=document.getElementById("gBar");
   bar.style.background=`linear-gradient(90deg,${g.tint}99,${g.tint})`; bar.style.width=p+"%";
   document.getElementById("gInfo").innerHTML=`
     <div class="drow"><span class="k">Fortschritt</span><span class="v">${eur(g.cur)} von ${eur(g.tar)} · ${p} %</span></div>
     <div class="drow"><span class="k">Fehlt noch</span><span class="v">${eur(Math.max(0,g.tar-g.cur))}</span></div>
-    <div class="drow"><span class="k">Voll bei voller Sparrate</span><span class="v">${goalMonths(g)}</span></div>`;
+    <div class="drow"><span class="k">Voll bei voller Sparrate</span><span class="v">${goalMonths(g)}</span></div>
+    <div class="hint" style="margin-top:10px">Zweckbindung: Das Geld bleibt auf deinen Konten, z. B. auf dem Tagesgeld. Es wird nicht zusätzlich als Vermögen gezählt.</div>`;
   gIn.value=""; gIn.placeholder="Betrag, z. B. 100";
   document.getElementById("gChips").innerHTML=["50","100","250","500"].map(v=>`<span class="chip-q">+ ${v} €</span>`).join("");
   const del=document.getElementById("gDel");
@@ -4274,10 +4275,6 @@ async function assignMoney(){
   if(!amt){ gIn.focus(); return; }
   const g=DATA.goals[gIdx];
   const wasDone=g.cur>=g.tar;
-  if(APP_MODE==="bridge" && g.source==="bot"){
-    showToast("Dieses Ziel kommt aus Telegram. Bitte dort anpassen.");
-    return;
-  }
   if(gMode==="target"){
     if(APP_MODE==="bridge"){
       if(!await syncGoal("set_target",{goal_id:g.id,target:amt})) return;
@@ -4309,7 +4306,7 @@ async function assignMoney(){
   gIn.value="";
   closeSheet(); buzz();
   if(!wasDone && g.cur>=g.tar) celebrateGoal(g);   // Delight: Topf voll → Feier
-  else showToast(`✓ ${eur(amt)} → ${g.t}`);
+  else showToast(`✓ ${eur(amt)} für ${g.t} zugeordnet`);
 }
 document.getElementById("gEdit").addEventListener("click",()=>{
   const g=DATA.goals[gIdx];
@@ -4324,7 +4321,6 @@ document.getElementById("gDel").addEventListener("click",e=>{
   // Nur die Zweckbindung fällt weg — das Angesparte ist Vermögen (liegt z. B. im Tagesgeld),
   // die Monats-Sparrate (sts.sparraten) bleibt unberührt.
   if(APP_MODE==="bridge"){
-    if(g.source==="bot"){ showToast("Dieses Ziel kommt aus Telegram. Bitte dort anpassen."); return; }
     syncGoal("delete",{goal_id:g.id}).then(ok=>{
       if(!ok) return;
       closeSheet(); buzz();
