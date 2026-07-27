@@ -76,6 +76,10 @@ CASH_TINT = "#B08D57"
 # "Einnahme" verwendet — sonst haette dieselbe Buchung im Feed und im Detail zwei Farben.
 INCOME_TINT = "#155681"
 
+# Fixkosten-Abbuchung (Monatscheck). Ruhiges Grau — sie ist keine Konsum-Ausgabe, sondern eine
+# planmaessige Belastung, die im Budget laengst beruecksichtigt ist.
+FIXED_TINT = "#5B6675"
+
 # details-Struktur aus bot.py (fixed_costs_details, siehe /verfeinern) — flache Zahlen pro
 # Unterschlüssel, kein Abbuchungstag, keine Kündbarkeit. Labels hier nur fürs Anzeigen.
 DETAIL_LABELS = {
@@ -269,6 +273,21 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
                 "a": abs(float(m["amount"] or 0)),
                 "c": INCOME_TINT,
                 "i": "€",
+            }))
+            continue
+        if m["kind"] == "fixed":
+            # Fixkosten-Abbuchung, im Monatscheck bestaetigt (27.07.). Bewusst NICHT in `expenses`:
+            # das Budget rechnet `verfuegbar = Einnahmen - Fixkosten - Sparraten - Ausgaben`, die
+            # Fixkosten sind dort also schon abgezogen. Stuenden sie zusaetzlich in `expenses`,
+            # wuerden sie doppelt zaehlen und Budget, Bot und Report verfaelschen. Hier bewegen sie
+            # nur das Konto — und werden sichtbar, damit der Kontostand nachvollziehbar bleibt.
+            entries.append((m["created_at"] or "", {
+                "csid": m["id"],
+                "n": _movement_label(m, "Fixkosten"),
+                "cat": "Fixkosten",
+                "a": -abs(float(m["amount"] or 0)),
+                "c": FIXED_TINT,
+                "i": "F",
             }))
             continue
         if m["kind"] != "withdrawal":
@@ -790,11 +809,18 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
         deltas[row["d"]] = deltas.get(row["d"], 0.0) - float(row["s"] or 0)
     try:
         for row in conn.execute(
-            """SELECT date(created_at) AS d, SUM(amount) AS s FROM app_cash_movements
-                 WHERE user_id = ? AND kind = 'income' AND date(created_at) >= ? GROUP BY d""",
+            """SELECT date(created_at) AS d, kind, SUM(amount) AS s FROM app_cash_movements
+                 WHERE user_id = ? AND kind IN ('income', 'fixed') AND date(created_at) >= ?
+                 GROUP BY d, kind""",
             (user_id, grenze),
         ).fetchall():
-            deltas[row["d"]] = deltas.get(row["d"], 0.0) + float(row["s"] or 0)
+            betrag = float(row["s"] or 0)
+            # `fixed` (Fixkosten-Abbuchung) senkt das Konto, steht aber bewusst NICHT in `expenses`
+            # (sonst doppelte Budget-Verrechnung). Ohne diese Zeile fehlte sie in der Kurve und der
+            # Verlauf haette an dem Tag einen Sprung gemacht, den es nie gab.
+            deltas[row["d"]] = deltas.get(row["d"], 0.0) + (
+                betrag if row["kind"] == "income" else -betrag
+            )
     except sqlite3.OperationalError:
         pass          # Tabelle entsteht erst beim ersten Schreibvorgang der App (gleiche
                       # defensive Leseart wie get_app_cash_accounts)

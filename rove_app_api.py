@@ -921,8 +921,67 @@ def update_monthly_plan():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_monthly_plan_table(conn)
+        ensure_app_cash_movements_table(conn)
         month_key = datetime.now().strftime("%Y-%m")
         field, status = field_by_action[action]
+
+        # ===== Gehalt und Fixkosten wirklich buchen (27.07.) =====
+        # Bis hierher setzten `confirm_income` und `confirm_fixed_costs` NUR einen Status —
+        # `confirm_savings` bucht dagegen seit jeher echtes Geld. Diese Asymmetrie war die
+        # Ursache dafuer, dass der Kontostand nur fallen konnte: Ausgaben gingen ab, aber es
+        # kam nie etwas rein (Furkan-Fund 27.07.). Der Bot hat NIE ein Gehalt gebucht, es gibt
+        # in bot.py ueberhaupt keine Zahltag-Logik — `users.income` ist reiner Planungswert.
+        #
+        # Doppelbuchungssperre wie bei confirm_savings: gepruefft wird die Bewegung selbst, nicht
+        # der Status. Ein Status kann von der Wahrheit abweichen (Nutzer loescht die Buchung
+        # wieder), die Bewegung nicht. Reopen + erneutes Bestaetigen bucht deshalb nicht doppelt,
+        # solange die Bewegung existiert — und bucht korrekt neu, wenn sie geloescht wurde.
+        if action in ("confirm_income", "confirm_fixed_costs"):
+            user = conn.execute(
+                "SELECT income, other_income, fixed_costs FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
+
+            if action == "confirm_income":
+                betrag = round(float(user["income"] or 0) + float(user["other_income"] or 0), 2) if user else 0.0
+                schon_da = conn.execute(
+                    """SELECT 1 FROM app_cash_movements
+                         WHERE user_id = ? AND kind = 'income'
+                           AND strftime('%Y-%m', created_at) = ?
+                           AND lower(COALESCE(label, '')) LIKE '%gehalt%'
+                         LIMIT 1""",
+                    (user_id, month_key),
+                ).fetchone()
+                if not schon_da and betrag > 0:
+                    balances["giro"] = round(balances["giro"] + betrag, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
+                    conn.execute(
+                        """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+                           VALUES (?, 'income', ?, 'Gehalt')""",
+                        (user_id, betrag),
+                    )
+            else:
+                betrag = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
+                schon_da = conn.execute(
+                    """SELECT 1 FROM app_cash_movements
+                         WHERE user_id = ? AND kind = 'fixed'
+                           AND strftime('%Y-%m', created_at) = ?
+                         LIMIT 1""",
+                    (user_id, month_key),
+                ).fetchone()
+                if not schon_da and betrag > 0:
+                    # Bewusst OHNE Deckungspruefung: die Abbuchung hat real stattgefunden, der
+                    # Nutzer bestaetigt sie nur. Wir erfinden kein Geld und blockieren auch nicht
+                    # die Wahrheit, wenn das Konto knapp ist — gleiche Haltung wie beim Loeschen
+                    # einer Einnahme.
+                    balances["giro"] = round(balances["giro"] - betrag, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
+                    conn.execute(
+                        """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+                           VALUES (?, 'fixed', ?, 'Fixkosten')""",
+                        (user_id, betrag),
+                    )
         conn.execute(
             """INSERT INTO app_monthly_plan_status (user_id, month_key)
                VALUES (?, ?)
@@ -1711,14 +1770,20 @@ def delete_cash_movement(movement_id: int):
         if not row:
             return jsonify({"ok": False, "error": "cash_movement_not_found"}), 404
         kind = clean_text(row["kind"]).lower()
-        if kind not in ("withdrawal", "income"):
+        if kind not in ("withdrawal", "income", "fixed"):
             # 'payment'- und 'card'-Zeilen haengen an einer Ausgabe und werden ueber
             # DELETE /v1/expenses/<id> mitgeloescht, nie einzeln.
             return jsonify({"ok": False, "error": "cash_movement_not_reversible"}), 400
 
         amount = round(abs(float(row["amount"] or 0)), 2)
         balances = app_cash_accounts(conn, user_id)
-        if kind == "income":
+        if kind == "fixed":
+            # Fixkosten-Abbuchung zurueckgenommen (im Monatscheck versehentlich bestaetigt):
+            # das Geld kommt aufs Girokonto zurueck. Der Monatscheck-Status bleibt davon
+            # unberuehrt — beim naechsten Bestaetigen greift die Doppelbuchungssperre nicht
+            # mehr, weil die Bewegung dann weg ist. Genau so soll es sein.
+            balances["giro"] = round(balances["giro"] + amount, 2)
+        elif kind == "income":
             # Einnahme geloescht: das Geld verlaesst das Girokonto wieder. Bewusst OHNE
             # Guthaben-Pruefung — das Giro darf ins Minus, das ist Furkans Entscheidung
             # (der Nutzer verantwortet sein Konto selbst). Andernfalls waere eine
