@@ -744,6 +744,103 @@ def get_app_cash_accounts(
     return balances, True
 
 
+# ===================== VERMOEGENSVERLAUF FUER DEN CHART =====================
+# Zeitraeume exakt so, wie die App sie beschriftet: seriesDates() in index.html verteilt die Punkte
+# gleichmaessig rueckwaerts ueber die Spanne. Anzahl und Schrittweite muessen dazu passen, sonst
+# stehen unter der Kurve falsche Daten. Zusaetzlich schicken wir die Labels gleich mit (histDates),
+# damit die App gar nicht erst raten muss.
+NET_SERIES_RANGES = {
+    "1W": (7, 1),      # (Spanne in Tagen, Schrittweite in Tagen)
+    "1M": (30, 1),
+    "6M": (182, 7),
+    "1J": (365, 30),
+    "Max": (730, 60),
+}
+_MONATE_KURZ = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+_WOCHENTAGE_KURZ = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+
+
+def _series_label(tag: date, bereich: str) -> str:
+    """Gleiche Schreibweise wie die App sie sonst selbst erzeugt (de-DE, kurze Monatsnamen)."""
+    if bereich == "1W":
+        return f"{_WOCHENTAGE_KURZ[tag.weekday()]}, {tag.day}. {_MONATE_KURZ[tag.month - 1]}"
+    if bereich == "1M":
+        return f"{tag.day}. {_MONATE_KURZ[tag.month - 1]}"
+    if bereich == "Max":
+        return str(tag.year)
+    return f"{_MONATE_KURZ[tag.month - 1]} {tag.year}"
+
+
+def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict:
+    """Taegliche Veraenderung des Vermoegens aus den echten Buchungen.
+
+    Ausgaben senken es, Einnahmen heben es. Bewusst NICHT mitgezaehlt werden die uebrigen
+    `app_cash_movements`: `withdrawal` ist neutral (Geld wechselt nur vom Giro ins Portemonnaie),
+    und `payment`/`card` sind reine Buchhaltung zu einer Ausgabe, die bereits in `expenses` steht —
+    beides wuerde die Bewegung doppelt zaehlen.
+    """
+    grenze = (date.today() - timedelta(days=tage + 1)).isoformat()
+    deltas: dict = {}
+    for row in conn.execute(
+        """SELECT date(created_at) AS d, SUM(amount) AS s FROM expenses
+             WHERE user_id = ? AND date(created_at) >= ? GROUP BY d""",
+        (user_id, grenze),
+    ).fetchall():
+        deltas[row["d"]] = deltas.get(row["d"], 0.0) - float(row["s"] or 0)
+    try:
+        for row in conn.execute(
+            """SELECT date(created_at) AS d, SUM(amount) AS s FROM app_cash_movements
+                 WHERE user_id = ? AND kind = 'income' AND date(created_at) >= ? GROUP BY d""",
+            (user_id, grenze),
+        ).fetchall():
+            deltas[row["d"]] = deltas.get(row["d"], 0.0) + float(row["s"] or 0)
+    except sqlite3.OperationalError:
+        pass          # Tabelle entsteht erst beim ersten Schreibvorgang der App (gleiche
+                      # defensive Leseart wie get_app_cash_accounts)
+    return deltas
+
+
+def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float):
+    """Rekonstruiert den Vermoegensverlauf rueckwaerts aus den echten Buchungen.
+
+    Bis 27.07. stand hier ein Platzhalter — derselbe Wert zweimal, fuer jeden Zeitraum. Die Kurve
+    war dadurch eine Waagerechte und die Zeile darunter (`letzter - erster`) immer exakt 0, egal
+    wie viel der Nutzer ausgegeben hatte (Furkan-Fund 27.07.: "die bewegen sich nicht").
+
+    Das Verfahren braucht keine neue Tabelle: das heutige Vermoegen ist bekannt und jede Buchung
+    seit einem Zeitpunkt auch, also ist der Stand von damals rechenbar —
+    `Wert(gestern) = Wert(heute) - Veraenderung(heute)`. Damit ist der Verlauf sofort echt, rueckwirkend
+    so weit, wie der Bot Buchungen hat, statt erst ab dem naechsten Tages-Snapshot zu wachsen.
+
+    ⚠️ Grenze der Genauigkeit, bewusst so: rekonstruiert werden Ausgaben und Einnahmen. Kurs-
+    bewegungen von ETF/Krypto, Aenderungen am Immobilienwert und von Hand korrigierte Kontostaende
+    lassen sich rueckwaerts nicht trennen — die wirken so, als haetten sie immer den heutigen Wert
+    gehabt. Fuer 1W und 1M ist die Kurve damit auf den Cent genau; fuer 1J zeigt sie die Spar- und
+    Ausgabenbewegung, nicht die Kursentwicklung.
+    """
+    max_tage = max(spanne for spanne, _ in NET_SERIES_RANGES.values())
+    deltas = _daily_net_deltas(conn, user_id, max_tage)
+    heute = date.today()
+
+    # werte[i] = Vermoegen vor i Tagen. Rueckwaerts: den Tagesdelta wieder herausrechnen.
+    werte = [float(net_worth)]
+    for i in range(max_tage):
+        tag = (heute - timedelta(days=i)).isoformat()
+        werte.append(werte[-1] - deltas.get(tag, 0.0))
+
+    series: dict = {}
+    hist_dates: dict = {}
+    for name, (spanne, schritt) in NET_SERIES_RANGES.items():
+        offsets = sorted({*range(spanne, -1, -schritt), 0}, reverse=True)
+        series[name] = [round(werte[min(o, len(werte) - 1)] / 1000, 3) for o in offsets]
+        hist_dates[name] = [
+            "Heute" if o == 0 else _series_label(heute - timedelta(days=o), name)
+            for o in offsets
+        ]
+    return series, hist_dates
+
+
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -800,10 +897,11 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
                if etf_positions else "aus dem Bot")
 
-    net_worth_k = round(net_worth / 1000, 3)
+    net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
     return {
         "netWorth": round(net_worth, 2),
-        "series": {r: [net_worth_k, net_worth_k] for r in ("1W", "1M", "6M", "1J", "Max")},
+        "series": net_series,
+        "histDates": net_hist_dates,
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],
