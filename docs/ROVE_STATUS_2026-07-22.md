@@ -1,5 +1,15 @@
 # Rov.E Arbeitsstand – 22.07.2026
 
+## Report: Monatsplan nur als echte Ausführung ausweisen (27.07.2026)
+
+- `report_engine.py` trennt Profil-Planwerte von bestätigten Monatsbewegungen.
+- Einkommen, Fixkosten und Sparrate werden im Report nur dann als bestätigt bezeichnet,
+  wenn sie im jeweiligen Monat in `app_monthly_plan_status` wirklich bestätigt wurden.
+- Der KI-Text erhält denselben Status und darf eine vollständige Monatsbestätigung
+  nicht mehr überschreiben.
+- Juli bleibt damit ehrlich ein Plan-/Testmonat. Nach der Bestätigung im August kann
+  der August-Report sauber sagen, dass Gehalt, Fixkosten und Sparrate erfasst wurden.
+
 ## Produktentscheidung
 
 - Rov.E wird langfristig App-first.
@@ -1403,6 +1413,50 @@ Geprüft mit Flask/API gegen eine Datenbankkopie:
 Wichtig nach dem Deploy: Einmal prüfen, ob Furkan im Juli bereits eine Sparrate bestätigt hatte.
 Alte Bestätigungen vor diesem Fix haben den Giro noch nicht gesenkt und brauchen dann eine
 einmalige, bewusst kontrollierte Korrektur — niemals blind für alle Nutzer nachbuchen.
+
+## Produktprinzipien aus dem Technik-Briefing (27.07.)
+
+Das Briefing ist verbindliche Produktleitlinie: Rov.E baut den Kreislauf
+**Erfassen → Verstehen → Handeln → Fortschritt**, nicht eine Sammlung beliebiger
+Finanzfunktionen.
+
+### Bereits erfüllt oder weit fortgeschritten
+
+- **Zahlen als Vertrauensbasis:** App-Ausgaben, Einnahmen, Fixkosten, Bargeld, Transfers und
+  Sparraten werden als getrennte Vorgänge behandelt; Kontowirkungen sind serverseitig und
+  Löschungen/Rücknahmen korrigieren sie wieder.
+- **Korrekturen zentral:** Kategorien korrigieren die Datenbank, Budgets, Reports und die
+  zukünftige Händlerregel — nicht nur die sichtbare App-Zeile.
+- **Keine stillen Demo-Werte:** Der Start wartet auf den Live-State; der alte 30-Tage-Linkstand
+  wird nicht mehr kurz als aktueller Kontostand dargestellt.
+- **Manueller Modus:** App-Einträge, Vermögen, Verträge, Ziele und Budgets funktionieren ohne
+  Bank- oder Brokerzugang. Das bleibt ein vollwertiger, datensparsamer Produktweg.
+- **LLM-Grenze:** Der Mentor rechnet heute daten-/regelbasiert; ein späteres LLM darf nur
+  formulieren und erklären, nie Kontostände erfinden oder selbst Geld bewegen.
+- **Frontend versioniert:** Der stabile App-Stand liegt seit Commit `7878967` zusätzlich auf
+  GitHub (`rove-app/index.html`) und nicht nur im Live-scp-Pfad.
+
+### Noch offen, aber richtige nächste Priorität
+
+1. **Stufe 1 abschließen:** Sparraten-Transfer deployen, reale Monatslogik/Report vollständig
+   prüfen, Backups und Fehlerprotokolle kurz auditieren.
+2. **Datenfrische sichtbar machen:** In der App eine zurückhaltende Anzeige wie
+   „Zuletzt aktualisiert: gerade eben" für servergeladene Werte. Bei späteren APIs zusätzlich
+   Quelle, Zeitpunkt, Fehlerzustand und manueller Refresh.
+3. **Aktivierung statt Feature-Flut:** Nach wenigen Einträgen erste echte Kategorieverteilung,
+   ein klarer nächster Schritt und Fortschritt zum Report. Test mit Nicht-Finanzmenschen.
+4. **Mentor danach:** DB-first-Antworten mit konkreten Zahlen und Bestätigung vor Änderungen;
+   LLM erst ergänzen, wenn diese Faktenbasis stabil steht.
+
+### Bewusst später
+
+- Bank-, Broker- und Krypto-APIs: erst mit Aktualitätsstatus, manueller Korrektur und sauberem
+  Fallback.
+- Kündigungsservice und Vertragsoptimierung: erst wenn sie eine echte, sichere Handlung liefern.
+- Keine provisionsgetriebene Vermittlung, keine Finanznachrichten ohne persönlichen Kontext.
+
+**Prüffrage vor jedem neuen Feature:** Verbessert es Erfassung, Verständnis, Handlung oder
+Fortschritt? Falls nicht, kommt es nicht in die aktuelle App.
 
 ## Nächste Reihenfolge
 

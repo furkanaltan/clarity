@@ -799,6 +799,35 @@ def get_investment_summary(user_id: int, report_month: str) -> dict:
     return summary
 
 
+def get_monthly_execution(user_id: int, report_month: str) -> dict:
+    """Liest nur die explizit bestaetigten Monatsbewegungen der App.
+
+    Profilwerte bleiben eine Planung. Im Report darf daraus keine ausgefuehrte
+    Buchung werden, solange der Nutzer sie fuer den jeweiligen Monat nicht
+    bestaetigt hat.
+    """
+    execution = {
+        "income_confirmed": False,
+        "fixed_costs_confirmed": False,
+        "savings_confirmed": False,
+    }
+    with get_db() as conn:
+        if not table_exists(conn, "app_monthly_plan_status"):
+            return execution
+        row = conn.execute(
+            """SELECT income_status, fixed_costs_status, savings_status
+                 FROM app_monthly_plan_status
+                WHERE user_id = ? AND month_key = ?""",
+            (user_id, report_month),
+        ).fetchone()
+    if not row:
+        return execution
+    execution["income_confirmed"] = row["income_status"] == "confirmed"
+    execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
+    execution["savings_confirmed"] = row["savings_status"] == "confirmed"
+    return execution
+
+
 def get_latest_portfolio_snapshots(user_id: int) -> list:
     with get_db() as conn:
         if not table_exists(conn, "portfolio_snapshots"):
@@ -1033,6 +1062,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     goal_progress = (net_worth / target_amount * 100.0) if target_amount > 0 else 0.0
     months_to_goal = calculate_goal_projection(target_amount, net_worth, savings_plan)
     investment_summary = get_investment_summary(user_id, report_month)
+    monthly_execution = get_monthly_execution(user_id, report_month)
     wealth_history = get_wealth_history(user_id, report_month)
     portfolio_snapshots = get_latest_portfolio_snapshots(user_id)
     badges = get_user_badges(user_id)
@@ -1047,7 +1077,15 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     else:
         development_text = f"Dein Nettovermögen liegt {abs(net_worth_delta):.2f} EUR unter dem Vormonat."
 
-    if investment_summary["net_contributions"] > 0:
+    if (
+        monthly_execution["income_confirmed"]
+        and monthly_execution["fixed_costs_confirmed"]
+        and monthly_execution["savings_confirmed"]
+    ):
+        best_decision = "Dein Monatsplan wurde bestätigt: Gehalt, Fixkosten und Sparrate sind erfasst."
+    elif monthly_execution["savings_confirmed"]:
+        best_decision = f"Deine Sparrate von {savings_plan:.2f} EUR wurde für diesen Monat bestätigt."
+    elif investment_summary["net_contributions"] > 0:
         best_decision = f"Du hast {investment_summary['net_contributions']:.2f} EUR investiert oder zurückgelegt."
     elif savings_plan > 0:
         best_decision = f"Deine geplante Sparrate liegt bei {savings_plan:.2f} EUR pro Monat."
@@ -1166,6 +1204,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "is_visible": len(wealth_history) >= 2,
                 "note": "Die Vermögenskurve wird ab dem zweiten Monatsabschluss sichtbar.",
                 "investment_summary": investment_summary,
+                "monthly_execution": monthly_execution,
                 "portfolio_snapshots": portfolio_snapshots,
             },
             "goal": {
@@ -1213,7 +1252,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     if ai.get("development"):
         p["cover"]["development_text"] = ai["development"]
         p["financial_story"]["text"] = ai["development"]
-    if ai.get("best_decision"):
+    if ai.get("best_decision") and not all(monthly_execution.values()):
         p["month"]["best_decision"] = ai["best_decision"]
     if ai.get("focus"):
         p["month"]["focus"] = ai["focus"]

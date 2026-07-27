@@ -82,6 +82,7 @@ def _build_signals(data: dict) -> str:
     strongest = month.get("strongest_category") or {}
     biggest = month.get("biggest_expense") or {}
     inv_summary = wealth.get("investment_summary") or {}
+    execution = wealth.get("monthly_execution") or {}
 
     remaining = month.get("remaining_budget")
     budget_line = "im Rahmen" if (remaining is None or remaining >= 0) else f"{_eur(abs(remaining))} ueberzogen"
@@ -117,6 +118,10 @@ def _build_signals(data: dict) -> str:
         f"Freies Budget-Ergebnis: {budget_line}",
         f"Geplante Sparrate/Monat: {_eur(profile.get('savings_plan'))} (Sparquote {round(profile.get('savings_rate') or 0)}%)",
         f"Investiert/zurueckgelegt diesen Monat: {_eur(inv_summary.get('net_contributions'))}",
+        "Monatsplan bestaetigt: "
+        f"Gehalt {'ja' if execution.get('income_confirmed') else 'nein'}, "
+        f"Fixkosten {'ja' if execution.get('fixed_costs_confirmed') else 'nein'}, "
+        f"Sparrate {'ja' if execution.get('savings_confirmed') else 'nein'}",
         f"Nettovermoegen: {_eur(profile.get('net_worth'))}",
         f"Vermoegensentwicklung: {dev_line}",
         f"Rov.E Score: {score.get('clarity_score', 0)}/100, Rang {score.get('rank_name', '-')}",
