@@ -1621,3 +1621,11 @@ eigenes Server-Secret an `rove-app-api`, weil dort die Push-Bibliothek und der p
 VAPID-Schluessel liegen. Die Nachricht hat pro Berichtsmonat einen festen Tag und ersetzt dadurch
 bei einem erneuten Versand die vorherige statt zu stapeln. Zahltag- und Fixkosten-Hinweise werden
 erst separat gebaut, weil Zeitpunkt und Inhalt aus echten Nutzerdaten kommen muessen.
+
+### Monatscheck am Zahltag
+
+Als zweiter und letzter regelmaessiger Push ist ein taeglicher, aber streng gefilterter
+`rove_monthly_reminders.py`-Job vorgesehen. Er laeuft morgens, sendet jedoch nur am individuell
+hinterlegten Zahltag und nur, wenn Einkommen, Fixkosten oder Sparrate noch nicht bestaetigt sind.
+Pro Nutzer und Monat speichert `app_push_delivery_log` genau eine erfolgreiche Zustellung. Die
+eine Nachricht buendelt alle offenen Punkte; es gibt keine separaten Gehalts- und Fixkosten-Pushes.
