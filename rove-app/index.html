@@ -1340,9 +1340,12 @@
   <!-- Profil-Menü (Avatar) -->
   <div class="sheet" id="psheet">
     <div class="grab"></div>
+    <!-- ⚠️ Hier standen bis 27.07. ein echter Name und eine echte E-Mail-Adresse fest im HTML.
+         Weil applyProfileIdentity() nur im Profil-Modus lief, sah JEDER eingeladene Beta-Tester
+         diese fremden Daten. Nie wieder echte Werte als Platzhalter — im Zweifel leer. -->
     <div class="phead">
-      <div class="pav">F</div>
-      <div><div class="pn">Furkan</div><div class="pm">project-clarity@outlook.com</div></div>
+      <div class="pav">•</div>
+      <div><div class="pn">Dein Profil</div><div class="pm">—</div></div>
     </div>
     <div class="pmenu" id="pmenu"></div>
   </div>
@@ -4026,6 +4029,8 @@ async function refreshAppDataFromServer(){
     // neue Werte lieferte. Gleiche Lücke wie damals bei der Glocke: eine Sequenz vergessen.
     if(data.series) DATA.series=data.series;
     if(data.histDates) DATA.histDates=data.histDates;
+    if(data.identity) DATA.identity=data.identity;
+    if(data.payday) DATA.payday=data.payday;
     if(data.sts){
       DATA.sts={...DATA.sts,konto:data.sts.konto||0,fixRest:data.sts.fixRest||0,
         sparraten:data.sts.sparraten||0,
@@ -4035,7 +4040,7 @@ async function refreshAppDataFromServer(){
     }
 
     renderGoals();renderAssets();renderTx();renderBudgets();renderVertraege();renderActivity();
-    recalcNetWorth();mentorLine();applyHomeEmpty();
+    recalcNetWorth();mentorLine();applyHomeEmpty();applyProfileIdentity();
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
     if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1J");
@@ -4944,7 +4949,38 @@ function renderSettings(){
     <button class="switch ${PREFS[key]?'on':''}" data-pref="${key}" aria-label="${label}"></button></div>`;
   const info=(label,val)=>`<div class="set-row"><div class="st"><div class="sl">${label}</div></div><div class="sv">${val}</div></div>`;
   const action=(key,label,sub)=>`<div class="set-row" data-act="${key}" style="cursor:pointer"><div class="st"><div class="sl">${label}</div><div class="ss">${sub}</div></div><div class="sv">›</div></div>`;
+  // Profil-Sektion (27.07.): Bis dahin gab es keine Möglichkeit, den eigenen Namen zu setzen —
+  // und in den Einstellungen stand bei jedem Tester Furkans Name und Adresse. Die E-Mail ist
+  // bewusst nur Anzeige: sie ist der Login-Schlüssel und darf nicht ohne neue Bestätigung wechseln.
+  const ident = (APP_MODE==="bridge" && DATA.identity) ? DATA.identity : null;
+  const pd = DATA.payday || {};
+  const pdText = pd.day ? `Jeden ${pd.day}. im Monat` : "Noch nicht gesetzt — antippen";
+  const profilRows = ident ? `
+    <div class="set-sec">Profil</div>
+    <div class="set-card">
+      ${action("name","Name",ident.name || "Noch nicht gesetzt")}
+      ${info("E-Mail", ident.email || "—")}
+    </div>` : "";
+  // Haptik nur zeigen, wenn das Gerät sie überhaupt kann. iOS unterstützt navigator.vibrate NICHT
+  // — auf dem iPhone war der Schalter ein Versprechen ohne Wirkung (Furkan-Fund 27.07.: „ich merk
+  // da nichts, glaube das ist nur Deko"). Ein toter Schalter ist schlimmer als kein Schalter.
+  const kannVibrieren = typeof navigator!=="undefined" && typeof navigator.vibrate==="function";
+  // Der Benachrichtigungs-Schalter ist bewusst RAUS: PREFS.notif wurde nirgends gelesen, es gibt
+  // weder Service Worker noch Push. Er hat Erinnerungen versprochen, die nie kommen konnten.
+  // Kommt zurück, sobald echte Push-Benachrichtigungen gebaut sind.
+  // Benachrichtigungen erscheinen nur, wenn der Server sie wirklich verschicken kann (VAPID-
+  // Schlüssel gesetzt). Der Text sagt den Zustand, nicht ein Versprechen.
+  const pushZeile = (typeof PUSH!=="undefined" && PUSH.available)
+    ? action("push","Benachrichtigungen", PUSH.abo ? "An — nur Wichtiges" : "Aus — antippen zum Aktivieren")
+    : "";
+  const prefRows = (kannVibrieren || pushZeile) ? `
+    <div class="set-sec">Präferenzen</div>
+    <div class="set-card">
+      ${pushZeile}
+      ${kannVibrieren ? row("haptik","Haptisches Feedback","Kurze Vibration bei Aktionen") : ""}
+    </div>` : "";
   document.getElementById("setbody").innerHTML = `
+    ${profilRows}
     <div class="set-sec">Zugang</div>
     <div class="set-card">
       ${action("access","Rov.E Zugang","Beta-Zugang aktiv")}
@@ -4952,21 +4988,23 @@ function renderSettings(){
     <div class="set-sec">Monatsplanung</div>
     <div class="set-card">
       ${action("monthly-plan","Monatscheck","Gehalt, Fixkosten und Sparrate im Blick")}
+      ${ident ? action("payday","Zahltag",pdText) : ""}
     </div>
     <div class="set-sec">Erscheinungsbild</div>
     <div class="seg" id="themeSeg">
       <button class="seg-opt ${theme==='dark'?'on':''}" data-theme="dark">🌙 Dunkel</button>
       <button class="seg-opt ${theme==='light'?'on':''}" data-theme="light">☀️ Hell</button>
     </div>
-    <div class="set-sec">Präferenzen</div>
-    <div class="set-card">
-      ${row("haptik","Haptisches Feedback","Kurze Vibration bei Aktionen")}
-      ${row("notif","Benachrichtigungen","Erinnerungen & Report-Hinweise")}
-    </div>
+    ${prefRows}
     <div class="set-sec">Konto</div>
     <div class="set-card">
       ${info("Währung","Euro (€)")}
       ${info("Sprache","Deutsch")}
+      ${/* Nur zur Kontrolle während des Aufbaus (27.07.): zeigt, ob der Service Worker läuft.
+           Bewusst NICHT „Benachrichtigungen" genannt — die gibt es noch nicht, und ein zweites
+           Versprechen ohne Wirkung wäre genau der Fehler, den wir gerade behoben haben.
+           Fliegt raus, sobald Push wirklich verschickt wird. */""}
+      ${info("Push-Grundlage", SW_STATUS)}
       ${info("Version","Rov.E 1.0 · Beta")}
     </div>
     ${settingsDataRows()}`;
@@ -5017,6 +5055,56 @@ function renderMonthlyPlan(){
     ${row("Sparrate",Number(p.savings||0),p.savingsStatus,p.savingsStatus==="confirmed"?null:"confirm_savings","Sparrate ist ausgeführt")}
     <div class="hint" style="margin:14px 0 0">Stimmt ein Betrag nicht, passt du den Vertrag oder dein Einkommen an — die Buchung kannst du in der Buchungsliste löschen. Später übernimmt eine Bankverbindung das automatisch.</div>`;
 }
+// Anzeigenamen ändern (27.07.). Bewusst schlicht: bei vier Beta-Nutzern ist ein eigenes Sheet
+// Aufwand ohne Gegenwert. Wichtig ist, dass der Name serverseitig landet und nicht nur lokal —
+// sonst steht er nach dem nächsten Refresh wieder auf dem alten Wert.
+// Ein Weg für alle Profil-Felder. Es wird NUR geschickt, was sich ändern soll — der Server rührt
+// alles andere nicht an, sonst würde ein Namens-Update den Zahltag löschen.
+async function saveProfileField(patch, erfolgsMeldung){
+  if(APP_MODE!=="bridge" || !ROVE_API?.baseUrl || !ROVE_API?.token){
+    showToast("Dafür musst du mit Rov.E verbunden sein"); return false;
+  }
+  try{
+    const res=await fetch(`${ROVE_API.baseUrl}/v1/profile`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${ROVE_API.token}`},
+      body:JSON.stringify(patch)
+    });
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(data.identity) DATA.identity=data.identity;
+    if(data.payday)   DATA.payday=data.payday;
+    applyProfileIdentity(); renderSettings();
+    showToast(erfolgsMeldung);
+    return true;
+  }catch(err){
+    console.warn("Profil konnte nicht gespeichert werden:",err);
+    showToast("Konnte es nicht speichern — bitte nochmal");
+    return false;
+  }
+}
+async function changeDisplayName(){
+  const jetzt = (DATA.identity && DATA.identity.name) || "";
+  let eingabe;
+  try{ eingabe = prompt("Wie sollen wir dich nennen?", jetzt); }catch(e){ return; }
+  if(eingabe===null) return;                       // abgebrochen
+  const name = String(eingabe).trim().slice(0,40);
+  if(name===jetzt) return;
+  await saveProfileField({name}, name ? `Alles klar, ${name}` : "Name entfernt");
+}
+// Zahltag (27.07.): Rov.E rät hier bewusst NICHTS. Ohne Angabe fragt die App einmal nach, statt
+// einen Termin zu erfinden und zur falschen Zeit eine Gehaltsbuchung vorzuschlagen.
+async function changePayday(){
+  const jetzt = (DATA.payday && DATA.payday.day) || "";
+  let eingabe;
+  try{ eingabe = prompt("An welchem Tag im Monat kommt dein Gehalt?\n(Zahl von 1 bis 31)", jetzt||""); }
+  catch(e){ return; }
+  if(eingabe===null) return;
+  const tag = parseInt(String(eingabe).trim(), 10);
+  if(!(tag>=1 && tag<=31)){ showToast("Bitte eine Zahl zwischen 1 und 31"); return; }
+  if(tag===jetzt) return;
+  await saveProfileField({payday:tag}, `Zahltag: jeden ${tag}.`);
+}
 async function syncMonthlyPlan(action){
   if(APP_MODE!=="bridge" || !ROVE_API?.baseUrl || !ROVE_API?.token) return false;
   try{
@@ -5047,8 +5135,14 @@ async function syncMonthlyPlan(action){
   }
 }
 function openMonthlyPlan(){ openOnly("monthlyplansheet", renderMonthlyPlan); }
+// Hiess mal „OnMonthStart" und öffnete sich stur am 1. — Furkan bekommt am 15. Gehalt und hätte
+// zwei Wochen zu früh bestätigen sollen (27.07.). Jetzt entscheidet der hinterlegte Zahltag.
+// Ohne gesetzten Zahltag meldet sich Rov.E gar nicht von selbst: lieber still als zur falschen
+// Zeit eine Gehaltsbuchung vorschlagen. Die App fragt den Tag stattdessen in den Einstellungen ab.
 function maybeOpenMonthlyPlanOnMonthStart(){
-  if(APP_MODE!=="bridge" || new Date().getDate()!==1 || !DATA.monthlyPlan) return;
+  if(APP_MODE!=="bridge" || !DATA.monthlyPlan) return;
+  const pd = DATA.payday || {};
+  if(!pd.day || !pd.faellig || pd.gebucht) return;
   const key=`rove-monthly-plan-opened:${BRIDGE_USER_ID||"user"}:${DATA.monthlyPlan.month||"current"}`;
   try{
     if(localStorage.getItem(key)) return;
@@ -5068,6 +5162,9 @@ document.getElementById("setbody").addEventListener("click",e=>{
     const k=act.dataset.act; buzz();
     const reloadClean=()=>{ location.hash=""; location.reload(); };
     if(k==="access"){ openAccess(); }
+    else if(k==="name"){ changeDisplayName(); }
+    else if(k==="payday"){ changePayday(); }
+    else if(k==="push"){ togglePush(); }
     else if(k==="monthly-plan"){ openMonthlyPlan(); }
     else if(k==="demo"){ try{sessionStorage.setItem("rove-demo","1");}catch(_){} reloadClean(); }
     else if(k==="exit-demo"){ try{sessionStorage.removeItem("rove-demo");}catch(_){} reloadClean(); }
@@ -6089,6 +6186,8 @@ async function loadBridgeState(){
     if(!botBudgets.length) DATA.budgets = [];
     if(b.series) DATA.series = b.series;
     if(b.histDates) DATA.histDates = b.histDates;   // echte Datums-Labels vom Server (27.07.)
+    if(b.identity) DATA.identity = b.identity;      // Name + Login-Adresse des Kontos (27.07.)
+    if(b.payday) DATA.payday = b.payday;            // Zahltag des Kontos (27.07.)
     if(b.sts) DATA.sts = {konto:b.sts.konto||0, fixRest:b.sts.fixRest||0, sparraten:b.sts.sparraten||0,
                           etfSparrate:Number(b.sts.etfSparrate||b.sts.sparratenParts?.etf||0),
                           cashSparrate:Number(b.sts.cashSparrate||b.sts.sparratenParts?.cash||0),
@@ -6104,7 +6203,7 @@ async function loadBridgeState(){
     DATA.tx.forEach(d=>d.items.forEach(i=>{ if(i.id==null) i.id=TXID++; }));
 
     renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
-    drawChart(CHART.range||"1J"); mentorLine(); applyHomeEmpty();
+    drawChart(CHART.range||"1J"); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
     updateChangeBadge(CHART.range||"1J");
     if(nw) delete nw.dataset.lock;
     recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
@@ -6281,13 +6380,21 @@ async function connectAppWithCode(){
 
 // Profil-Identität in die UI: Avatar-Buchstabe + Profil-Sheet-Kopf (statt der hart kodierten
 // Mock-Persona "F"/"Furkan"/E-Mail — die bleibt nur im Mock/Demo-Modus sichtbar).
+// ⚠️ Muss in ALLEN Lade-Sequenzen aufgerufen werden (loadBridgeState, refreshAppDataFromServer,
+// loadProfileState). Bis 27.07. stand der Aufruf nur in loadProfileState — im App-Modus blieben
+// deshalb die fest im HTML stehenden Werte sichtbar, also Furkans Name und Adresse bei jedem
+// eingeladenen Tester. Siehe dieselbe Bug-Klasse bei der Glocke und beim Chart.
 function applyProfileIdentity(){
-  const name = PROFILE_META.name || "";
+  // Im App-Modus gewinnt IMMER die Identität vom Server — sie gehört zum angemeldeten Konto.
+  // PROFILE_META ist der lokale Profil-Modus und darf hier nie hineinregieren.
+  const server = (APP_MODE==="bridge" && DATA.identity) ? DATA.identity : null;
+  const name  = (server ? server.name : PROFILE_META.name) || "";
+  const unten = server ? (server.email || "Mit Rov.E verbunden") : "Lokales Profil auf diesem Gerät";
   const letter = name ? name.trim()[0].toUpperCase() : "•";
   const av=document.getElementById("avatar"); if(av) av.textContent=letter;
   const pav=document.querySelector(".pav");   if(pav) pav.textContent=letter;
   const pn=document.querySelector(".pn");     if(pn) pn.textContent=name || "Dein Profil";
-  const pm=document.querySelector(".pm");     if(pm) pm.textContent="Lokales Profil auf diesem Gerät";
+  const pm=document.querySelector(".pm");     if(pm) pm.textContent=unten;
 }
 
 // Auto-Zahltag (Furkan-Wunsch 16.07.: "soll am 1./15. immer buchen, wann der Kunde das angegeben
@@ -6472,6 +6579,102 @@ function loadProfileState(){
   if(window.visualViewport) visualViewport.addEventListener("resize", pruefe);
   window.addEventListener("orientationchange", ()=>{ H=0; lies(); setTimeout(()=>{ pruefe(); setzePosition(); },300); });
 })();
+
+// ===================== SERVICE WORKER (27.07.) =====================
+// Fundament für Push-Benachrichtigungen. Der Worker selbst greift bewusst NICHT in die
+// Auslieferung ein (kein fetch-Handler, siehe sw.js) — sonst würde er das Auto-Update der
+// installierten App aushebeln, und genau das ist der Grund, warum niemand Rov.E löschen und neu
+// installieren muss.
+//
+// Registrierung schlägt auf file:// fehl (lokale Vorschau) und ist ausserhalb von HTTPS gar nicht
+// erlaubt. Beides ist erwartbar und darf die App nicht stören — deshalb still abfangen.
+let SW_STATUS = "nicht unterstützt";
+(function(){
+  if(!("serviceWorker" in navigator)) return;
+  if(location.protocol!=="https:" && location.hostname!=="localhost"){ SW_STATUS="nur über HTTPS"; return; }
+  SW_STATUS = "wird eingerichtet";
+  navigator.serviceWorker.register("sw.js").then(reg=>{
+    SW_STATUS = "bereit";
+    initPush();          // erst wenn der Worker steht — vorher gibt es keinen PushManager
+
+    // Neue Worker-Version sofort übernehmen, statt auf das Schliessen aller Fenster zu warten.
+    reg.addEventListener("updatefound", ()=>{ const w=reg.installing; if(w) w.onstatechange=()=>{}; });
+  }).catch(err=>{
+    SW_STATUS = "fehlgeschlagen";
+    console.warn("Service Worker nicht registriert:", err);
+  });
+})();
+
+// ===================== PUSH-BENACHRICHTIGUNGEN (27.07.) =====================
+// PUSH.available bleibt false, solange der Server keine Schlüssel hat — dann taucht der Schalter
+// in den Einstellungen gar nicht erst auf. Kein zweiter toter Schalter.
+const PUSH = { available:false, publicKey:"", erlaubt:false, abo:null };
+
+function b64ToUint8(base64){
+  const pad = "=".repeat((4 - base64.length % 4) % 4);
+  const roh = atob((base64 + pad).replace(/-/g,"+").replace(/_/g,"/"));
+  return Uint8Array.from([...roh].map(c=>c.charCodeAt(0)));
+}
+
+async function initPush(){
+  if(APP_MODE!=="bridge" || !ROVE_API?.baseUrl) return;
+  if(!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try{
+    const res = await fetch(`${ROVE_API.baseUrl}/v1/push/key`);
+    const data = await res.json();
+    if(!data.available || !data.publicKey) return;
+    PUSH.available = true; PUSH.publicKey = data.publicKey;
+    PUSH.erlaubt = (typeof Notification!=="undefined" && Notification.permission==="granted");
+    const reg = await navigator.serviceWorker.ready;
+    PUSH.abo = await reg.pushManager.getSubscription();
+    // Einstellungen koennen schon offen sein, waehrend der Push-Status im Hintergrund laedt.
+    // Dann die Zeile direkt nachreichen statt den Nutzer zum Schliessen und Oeffnen zu zwingen.
+    if(document.getElementById("setsheet")?.classList.contains("on")) renderSettings();
+  }catch(e){ /* still: ohne Push funktioniert die App unverändert */ }
+}
+
+async function togglePush(){
+  if(!PUSH.available){ showToast("Benachrichtigungen sind noch nicht eingerichtet"); return; }
+  const reg = await navigator.serviceWorker.ready;
+
+  if(PUSH.abo){                                        // abbestellen
+    try{
+      const endpoint = PUSH.abo.endpoint;
+      await PUSH.abo.unsubscribe();
+      await fetch(`${ROVE_API.baseUrl}/v1/push/unsubscribe`,{
+        method:"POST", headers:{"Content-Type":"application/json","Authorization":`Bearer ${ROVE_API.token}`},
+        body:JSON.stringify({endpoint})
+      });
+      PUSH.abo=null; renderSettings(); showToast("Benachrichtigungen aus");
+    }catch(e){ showToast("Konnte nicht abbestellen"); }
+    return;
+  }
+
+  // iOS zeigt den Erlaubnis-Dialog NUR in der installierten App und nur nach einem echten Tippen —
+  // deshalb hängt das hier am Knopf und läuft nicht automatisch beim Start.
+  let erlaubnis = "denied";
+  try{ erlaubnis = await Notification.requestPermission(); }catch(e){}
+  if(erlaubnis!=="granted"){
+    showToast(erlaubnis==="denied" ? "In den iPhone-Einstellungen erlauben" : "Nicht erlaubt");
+    return;
+  }
+  try{
+    const abo = await reg.pushManager.subscribe({
+      userVisibleOnly:true,                            // Pflicht: keine stillen Nachrichten
+      applicationServerKey: b64ToUint8(PUSH.publicKey)
+    });
+    const res = await fetch(`${ROVE_API.baseUrl}/v1/push/subscribe`,{
+      method:"POST", headers:{"Content-Type":"application/json","Authorization":`Bearer ${ROVE_API.token}`},
+      body:JSON.stringify(abo.toJSON())
+    });
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    PUSH.abo=abo; PUSH.erlaubt=true; renderSettings();
+    showToast("Benachrichtigungen an — Rov.E meldet sich nur, wenn es zählt");
+  }catch(err){
+    console.warn("Push-Abo fehlgeschlagen:",err);
+    showToast("Konnte Benachrichtigungen nicht aktivieren");
+  }
+}
 
 // Splash nach der Animation aus dem DOM nehmen — bei ?state= erst NACH dem Laden, damit nie
 // kurz Furkans Mock-Persona (Rewe/Netflix/42.850€) aufblitzt, bevor die echten Daten da sind.
