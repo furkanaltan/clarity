@@ -940,6 +940,87 @@ die Fensterunterkante (Vorsicht: `#app` endet bei 797, das Fenster bei 844 — e
 
 Die Messsonde bleibt bis dahin drin.
 
+## Push-Benachrichtigungen: Fundament gebaut (27.07.)
+
+Auslöser: Der Schalter „Benachrichtigungen" in den Einstellungen war **reine Deko** — `PREFS.notif`
+wurde nirgends gelesen, es gab weder Service Worker noch Push. Ebenso „Haptisches Feedback":
+`navigator.vibrate` gibt es auf iOS nicht, auf dem iPhone passierte also garantiert nichts.
+**Beide toten Schalter sind raus** (Haptik erscheint nur noch auf Geräten, die wirklich vibrieren).
+
+### Service Worker — `rove-app/sw.js` (NEUE Datei, muss mit deployt werden)
+
+⚠️ **Er hat bewusst KEINEN `fetch`-Handler.** Ein Service Worker, der Anfragen aus einem Cache
+beantwortet, ist der häufigste Grund dafür, dass eine installierte PWA für immer eine alte Version
+zeigt — und würde damit das Auto-Update aushebeln, das der Grund ist, warum niemand Rov.E löschen
+muss (Löschen killt den Login). Ohne fetch-Handler kann er die Auslieferung nicht beeinflussen.
+Wer dort Caching einbaut, muss vorher wissen, wie danach aktualisiert wird.
+
+Er kann genau zwei Dinge: Push-Nachrichten anzeigen und beim Antippen ein bestehendes App-Fenster
+fokussieren statt ein zweites zu öffnen.
+
+### Server
+
+- `app_push_subscriptions` (mehrere Geräte pro Nutzer erlaubt, `endpoint` ist UNIQUE).
+- `POST /v1/push/subscribe` · `POST /v1/push/unsubscribe` · `GET /v1/push/key`.
+- `send_push_to_user(conn, user_id, title, body, tag, url)` — abgelaufene Abos (404/410) werden
+  gelöscht, alle anderen Fehler nur geloggt. **Eine fehlgeschlagene Benachrichtigung darf niemals
+  eine Buchung oder einen Report scheitern lassen.**
+- Braucht `pywebpush` und die VAPID-Schlüssel als Umgebungsvariablen.
+
+⚠️ **Fehlt die Bibliothek oder ein Schlüssel, meldet `/v1/push/key` `available:false`, die App
+blendet den Schalter gar nicht ein und der Versand ist ein stiller No-Op.** Ein Deploy ohne
+Einrichtung kann also nichts kaputtmachen — und es entsteht kein neuer toter Schalter.
+
+### Noch zu tun, bevor wirklich etwas ankommt
+
+1. `pywebpush` in die Server-venv installieren.
+2. VAPID-Schlüsselpaar erzeugen, in die `.env` (`ROVE_VAPID_PUBLIC`, `ROVE_VAPID_PRIVATE`,
+   `ROVE_VAPID_SUBJECT`). **Nicht ins Repo.**
+3. Danach: Auslöser einbauen — Gehalt am Zahltag, Fixkosten am Vortag, Report fertig. Furkans
+   Vorgabe: **dezent**, nur wenn es zählt, kein Spam.
+
+⚠️ **iOS-Besonderheit:** Push funktioniert dort NUR in der installierten PWA (ab iOS 16.4) und der
+Erlaubnis-Dialog erscheint nur nach einem echten Tippen. Deshalb hängt `togglePush()` am Knopf in
+den Einstellungen und läuft nicht automatisch beim Start.
+
+## Identitäts-Leck bei den ersten Beta-Testern — gefixt (27.07., bestätigt)
+
+Furkan hat drei Tester eingeladen. **Alle drei sahen in den Einstellungen seinen Namen und seine
+E-Mail-Adresse.** Zwei Ursachen, beide behoben:
+
+1. In `index.html` standen Name und Adresse **fest im Markup** (`<div class="pn">…`).
+2. `applyProfileIdentity()` würde das überschreiben, wurde aber **nur in `loadProfileState()`**
+   aufgerufen — im App-Modus lief es nie.
+
+**Fix:** Server liefert `identity` (`_identity()` in `rove_app_state.py`, Quelle `app_accounts`),
+die Platzhalter im HTML sind neutral (`Dein Profil` / `—`), und `applyProfileIdentity()` steht jetzt
+in allen drei Lade-Sequenzen. Fallback für den Namen ist der Teil vor dem @ der **eigenen**
+Login-Adresse — nie ein fremder Name, lieber gar keiner. Auch aus dem Code-Kommentar wurde die echte
+Adresse entfernt, sonst wäre sie weiter im ausgelieferten HTML gestanden.
+
+**Neu dazu:** `POST /v1/profile` setzt einen Anzeigenamen (`app_accounts.display_name`, per
+Migration ergänzt). In der App unter Einstellungen → Profil. Die E-Mail bleibt bewusst
+unveränderlich — sie ist der Login-Schlüssel, ein Wechsel ohne neue Bestätigung wäre eine
+Übernahmelücke.
+
+Getestet, 9 Prüfungen grün. Von Furkan am Gerät bestätigt.
+
+✅ **Kein Datenleck — an drei echten Konten geprüft.** Furkan hat kontrolliert, ob die Tester auch
+seine Zahlen sehen: „Zahlen, Verträge, Sparrate usw. von den Kunden ist alles richtig übernommen
+worden." Jeder Tester hängt an seinem eigenen Bot-Konto, nur Name und Adresse kamen aus dem
+Markup. **Damit ist das Mehrbenutzer-Modell erstmals im echten Betrieb belegt** und nicht mehr nur
+Theorie — wichtig für den Rollout an die vier.
+
+⚠️ **Damit ist dieselbe Bug-Klasse an EINEM Tag viermal aufgetreten**: Glocke (25.07.), Zeitreihe,
+Prozent-Pfeil und Identität (alle 27.07.). Immer dasselbe Muster — eine Funktion fehlt in einer der
+drei Lade-Sequenzen `loadProfileState()` / `loadBridgeState()` / `refreshAppDataFromServer()`.
+**Wer eine Funktion hinzufügt, die etwas anzeigt, prüft alle drei Listen nebeneinander.** Wo sich
+dieselbe Logik mehrfach wiederholt, gehört sie in eine Funktion (Vorbild: `updateChangeBadge()`).
+
+**Nebenbefund, noch offen:** Alte `/app`-Links enthalten kein `identity` — der eingefrorene Snapshot
+stammt aus der Zeit davor. Da die Startsequenz seit dem 26.07. die Live-Abfrage abwartet, ist das
+beim Öffnen unsichtbar. Neue Links enthalten es.
+
 ## ⚠️ GRUNDSATZFUND: Der Bot hat nie ein Gehalt gebucht (27.07.)
 
 Beim Nachrechnen von Furkans Kontostand aufgefallen und in `bot.py` verifiziert:
@@ -1019,26 +1100,25 @@ Beide mit echten Endpunkt-Aufrufen nachgetestet, zusammen jetzt 20 Prüfungen, a
 geht das Konto ins Minus. Das ist richtig — die Abbuchung hat real stattgefunden, der Nutzer
 bestätigt sie nur. Praktische Folge: erst Gehalt bestätigen, dann Fixkosten.
 
-### Nächster Arbeitsschritt: Zahltag (vereinbart 27.07.)
+### Zahltag — gebaut und getestet (27.07.)
 
-Es gibt nirgends ein `payday`-Feld — nicht in `bot.py`, nicht im API, nicht im State. Der
-Monatscheck öffnet sich deshalb pauschal am **1.** eines Monats. Wer später Gehalt bekommt,
-bestätigt zu früh oder muss ihn selbst öffnen. **Furkan bekommt am 15.** und hat den Punkt
-ausdrücklich als „muss auf jeden Fall rein" bestätigt.
+Der Monatscheck öffnete sich stur am **1.**, unabhängig davon, wann das Gehalt kommt (Furkan bekommt
+am 15.). Ein Zahltag-Feld gab es nirgends — weder im Bot noch im API. Furkan hat sich für den
+direkten Weg entschieden: **die App fragt einmal, der Wert liegt serverseitig.**
 
-Ein `payday`-Block war am 27.07. bereits gebaut (`users.payday`, plus `faellig`/`gebucht` im
-State) und **bewusst wieder entfernt**, weil sich herausstellte, dass der Monatscheck den Auslöser
-schon abdeckt. Wer das wieder aufgreift, sollte wissen: die Erkennung „Gehalt schon gebucht?" lässt
-sich aus den Bewegungen ableiten (Einnahme dieses Monats mit Label nach Gehalt klingend ODER
-Betrag ≥ 50 % des erwarteten Gehalts) — ein eigenes Merker-Feld braucht es nicht und wäre
-fehleranfällig, weil es von der Wahrheit abweichen kann.
+- `users.payday` (INTEGER 1–31, nullable) per `ensure_payday_column()` ergänzt.
+- `POST /v1/profile` nimmt jetzt `name` **und/oder** `payday`. ⚠️ Es wird nur geschrieben, was im
+  Payload steht — sonst würde eine Namensänderung den Zahltag löschen (ist als Testfall abgedeckt).
+- `_payday_block()` liefert `{day, faellig, gebucht}`. `gebucht` kommt aus den Bewegungen, nicht aus
+  einem Merker — ein Merker kann von der Wahrheit abweichen, sobald jemand die Buchung löscht.
+- App: Einstellungen → Profil → **Zahltag**. `maybeOpenMonthlyPlanOnMonthStart()` heisst zwar noch
+  so, entscheidet aber jetzt über den Zahltag statt über den 1.
 
-Offene Entwurfsfragen: Woher kommt der Tag (App fragt einmal? eigener Endpunkt? Onboarding?), was
-bei mehreren Einkommensquellen mit verschiedenen Terminen, und was der Monatscheck vor dem Zahltag
-anzeigt.
+**Ohne gesetzten Zahltag meldet sich Rov.E gar nicht von selbst.** Lieber still als zur falschen
+Zeit eine Gehaltsbuchung vorschlagen — geraten wird nichts.
 
-**Kein Termindruck mehr:** Furkan am 27.07. — der Bot kann bei Bedarf länger laufen als bis zum
-01.08. Qualität geht vor Abschalttermin.
+11 Prüfungen grün, u. a.: ungültiger Tag → 400, Namensänderung lässt den Zahltag stehen, Zahltag 31
+gilt in kürzeren Monaten am Monatsletzten, gebuchtes Gehalt schaltet die Nachfrage ab.
 
 **Noch offen:** `maybeAutoBookIncome()` / `maybeAutoBookFixedCost()` in der App laufen weiterhin nur
 im lokalen Profil-Modus und schreiben nur in den Browser-Speicher. Für Bridge-Nutzer irrelevant,
@@ -1505,3 +1585,39 @@ Fortschritt? Falls nicht, kommt es nicht in die aktuelle App.
   was gebaut wurde.
 - Die App wird nie gelöscht und neu installiert, um ein Update zu erzwingen. Auto-Update ist
   bestätigt (25.07.); Löschen killt den Login.
+
+## Web Push: Ende-zu-Ende aktiviert und bestaetigt (29.07.)
+
+Der bereits vorbereitete Push-Block wurde auf dem Produktivserver vollstaendig aktiviert und mit
+Furkans installiertem iPhone getestet.
+
+- `pywebpush` ist in `/root/rove-app-api-venv` installiert.
+- Das VAPID-Schluesselpaar liegt ausschliesslich unter `/root/clarity/secrets/`; der private
+  Schluessel ist nicht im Repository und nicht in der App.
+- Die Serverumgebung enthaelt nur den oeffentlichen VAPID-Key, den Pfad zum privaten PEM-Schluessel
+  und `mailto:info@getrove.de` als Absenderkennung.
+- `GET /app-api/v1/push/key` liefert produktiv `available: true`.
+- Furkan hat in der installierten Homescreen-PWA Benachrichtigungen aktiviert. Das Geraete-Abo
+  wurde in `app_push_subscriptions` gespeichert.
+- Ein echter Test-Push ueber `send_push_to_user(...)` ist auf dem iPhone angekommen.
+
+Wichtig: Der Service Worker hat weiterhin keinen `fetch`-Handler und kann deshalb das bestaetigte
+Auto-Update nicht einfrieren. Push funktioniert auf iOS nur ueber die installierte Homescreen-PWA,
+nicht im Safari-Tab.
+
+### Noch nicht bauen, bevor ein Anlass feststeht
+
+Die Infrastruktur ist aktiv, aber es gibt bewusst noch keine automatischen Ausloeser. Der naechste
+separate Produktentscheid ist, welche wenigen Ereignisse wirklich eine Nachricht verdienen (z. B.
+Report bereit, Monatscheck am Zahltag oder Fixkosten-Hinweis). Keine Push-Nachricht darf Buchungen,
+Reports oder Monatslogik beeinflussen; Versandfehler bleiben immer folgenlos.
+
+### Naechster Ausloeser: Monatsreport
+
+Der erste automatische Ausloeser wird bewusst der bereits bestehende Monatsreport sein: Erst wenn
+PDF und Web-Report erfolgreich per Telegram versendet wurden, erhaelt ein Nutzer mit aktivierter
+App genau eine Push-Nachricht. Der Bot uebergibt den Auftrag dafuer nur ueber localhost und ein
+eigenes Server-Secret an `rove-app-api`, weil dort die Push-Bibliothek und der private
+VAPID-Schluessel liegen. Die Nachricht hat pro Berichtsmonat einen festen Tag und ersetzt dadurch
+bei einem erneuten Versand die vorherige statt zu stapeln. Zahltag- und Fixkosten-Hinweise werden
+erst separat gebaut, weil Zeitpunkt und Inhalt aus echten Nutzerdaten kommen muessen.

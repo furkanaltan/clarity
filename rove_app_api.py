@@ -63,6 +63,8 @@ _auth_attempts: dict[str, list[float]] = {}
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 AUTH_SECRET = os.getenv("ROVE_APP_AUTH_SECRET", "").strip()
+# Nur fuer interne Server-zu-Server-Hinweise, niemals an den Browser ausliefern.
+INTERNAL_PUSH_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 LOGIN_FROM_EMAIL = os.getenv("ROVE_LOGIN_FROM_EMAIL", "info@getrove.de").strip()
 LOGIN_FROM_NAME = os.getenv("ROVE_LOGIN_FROM_NAME", "Rov.E").strip()
 SESSION_COOKIE_NAME = os.getenv("ROVE_APP_SESSION_COOKIE", "rove_app_session")
@@ -1304,6 +1306,31 @@ def push_unsubscribe():
             conn.execute("DELETE FROM app_push_subscriptions WHERE user_id = ?", (user_id,))
         conn.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/v1/internal/push", methods=["POST"])
+def internal_push():
+    """Nimmt einen Push-Auftrag vom lokalen Monatsreport-Prozess entgegen."""
+    supplied = request.headers.get("X-RovE-Internal", "")
+    if not INTERNAL_PUSH_SECRET or not hmac.compare_digest(supplied, INTERNAL_PUSH_SECRET):
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        user_id = int(payload.get("user_id") or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+    title = clean_text(payload.get("title"))[:120]
+    body = clean_text(payload.get("body"))[:500]
+    tag = clean_text(payload.get("tag"))[:120] or "rove"
+    url = clean_text(payload.get("url"))[:300] or "./"
+    if user_id <= 0 or not title:
+        return jsonify({"ok": False, "error": "invalid_push_payload"}), 400
+
+    with db() as conn:
+        sent = send_push_to_user(conn, user_id, title, body, tag=tag, url=url)
+        conn.commit()
+    return jsonify({"ok": True, "sent": sent})
 
 
 def ensure_payday_column(conn: sqlite3.Connection) -> None:

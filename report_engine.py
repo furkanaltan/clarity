@@ -5,6 +5,8 @@ import json
 import gzip
 import shutil
 import logging
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -23,6 +25,8 @@ DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 APP_DIR = Path(__file__).resolve().parent
 REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", str(APP_DIR / "reports")))
 MIN_TRACKING_DAYS = int(os.getenv("MIN_TRACKING_DAYS", "14"))
+APP_PUSH_INTERNAL_URL = os.getenv("ROVE_APP_INTERNAL_PUSH_URL", "http://127.0.0.1:5057/v1/internal/push")
+APP_PUSH_INTERNAL_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 
 
 class ReportSkipped(Exception):
@@ -1517,6 +1521,51 @@ def archive_old_reports(days: int = REPORT_ARCHIVE_AFTER_DAYS) -> int:
     return archived
 
 
+def send_report_push(user_id: int, report_month: str) -> None:
+    """Gibt nach erfolgreichem Report-Versand einen App-Push in Auftrag.
+
+    Der Bot besitzt absichtlich keine Web-Push-Bibliothek. Der laufende Rov.E-App-Server besitzt
+    sie und erhaelt deshalb ausschliesslich ueber localhost einen signierten Auftrag. Fehler bleiben
+    folgenlos: Ein Report darf niemals wegen einer Benachrichtigung erneut versendet werden.
+    """
+    if not APP_PUSH_INTERNAL_SECRET:
+        logger.info("Report-Push uebersprungen: interner Push-Zugang ist nicht konfiguriert.")
+        return
+
+    month_label = report_month
+    try:
+        year, month = map(int, report_month.split("-"))
+        month_label = f"{GERMAN_MONTHS.get(month, report_month)} {year}"
+    except (TypeError, ValueError):
+        pass
+
+    payload = json.dumps({
+        "user_id": user_id,
+        "title": "Dein Rov.E Report ist bereit",
+        "body": f"Dein Monatsreport fuer {month_label} wartet in deiner App.",
+        "tag": f"rove-report-{report_month}",
+        "url": "./",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        APP_PUSH_INTERNAL_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-RovE-Internal": APP_PUSH_INTERNAL_SECRET,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if result.get("ok"):
+            logger.info("Report-Push fuer User %s an %s Geraet(e) uebergeben.", user_id, result.get("sent", 0))
+        else:
+            logger.warning("Report-Push fuer User %s abgelehnt: %s", user_id, result)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
+        logger.warning("Report-Push fuer User %s fehlgeschlagen: %s", user_id, exc)
+
+
 def send_report_to_user(user_id: int, report_month: str, bot):
     report_data = build_report_data(user_id, report_month)
     tracked_days = report_data["meta"]["tracked_days"]
@@ -1560,6 +1609,9 @@ def send_report_to_user(user_id: int, report_month: str, bot):
                 "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
             )
         )
+
+    send_report_push(user_id, report_month)
+
     # Das PDF bleibt nach dem Telegram-Versand im Report-Archiv liegen. Die App kann
     # es dadurch dauerhaft unter "Reports" öffnen; archive_old_reports() komprimiert
     # die Datei später automatisch statt sie zu verlieren.
