@@ -949,6 +949,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "series": net_series,
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),
+        "payday": _payday_block(conn, user_id, u, income),
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],
@@ -1006,6 +1007,61 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             goal for goal in get_app_goals(conn, user_id)
             if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
         ],
+    }
+
+
+def _salary_booked_this_month(conn: sqlite3.Connection, user_id: int, erwartet: float) -> bool:
+    """Wurde das Gehalt diesen Monat schon verbucht?
+
+    Bewusst aus den Bewegungen abgeleitet statt in einem Merker-Feld gemerkt: ein Merker koennte
+    von der Wahrheit abweichen (Nutzer loescht die Buchung wieder), die Bewegungen koennen das
+    nicht. Erkannt wird eine Einnahme, deren Bezeichnung nach Gehalt klingt ODER die mindestens
+    die Haelfte des erwarteten Gehalts ausmacht — eine kleine Nebeneinnahme soll die Zahltag-Frage
+    nicht unterdruecken, das echte Gehalt unter anderem Namen aber schon.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT amount, COALESCE(label, '') AS label FROM app_cash_movements
+                 WHERE user_id = ? AND kind = 'income'
+                   AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return False
+    schwelle = max(1.0, erwartet * 0.5)
+    for row in rows:
+        text = str(row["label"]).casefold()
+        if "gehalt" in text or "lohn" in text:
+            return True
+        if float(row["amount"] or 0) >= schwelle:
+            return True
+    return False
+
+
+def _payday_block(conn: sqlite3.Connection, user_id: int, u: dict, erwartet: float) -> dict:
+    """Zahltag des Nutzers — damit die App zum richtigen Termin fragt statt pauschal am 1.
+
+    Vorher oeffnete sich der Monatscheck immer am 1., unabhaengig davon, wann das Gehalt kommt
+    (Furkan selbst bekommt am 15.). Der Tag wird einmal in der App abgefragt und hier gespeichert;
+    `day = 0` heisst „noch nie gesetzt" und ist fuer die App das Signal, danach zu fragen.
+
+    Kein Zahltag = keine Faelligkeit. Wir raten nichts — lieber fragt die App einmal nach, als dass
+    Rov.E einen Termin erfindet und zur falschen Zeit eine Gehaltsbuchung vorschlaegt.
+    """
+    try:
+        day = int(u.get("payday") or 0)
+    except (TypeError, ValueError):
+        day = 0
+    if not 1 <= day <= 31:
+        day = 0
+
+    heute = date.today()
+    # Zahltag am 31. in einem kuerzeren Monat: der letzte Monatstag zaehlt als erreicht.
+    letzter = (heute.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    return {
+        "day": day,
+        "faellig": bool(day and heute.day >= min(day, letzter.day)),
+        "gebucht": _salary_booked_this_month(conn, user_id, erwartet),
     }
 
 

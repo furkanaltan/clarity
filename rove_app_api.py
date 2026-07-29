@@ -1151,6 +1151,13 @@ def update_monthly_plan():
     return jsonify({"ok": True, **live_data})
 
 
+def ensure_payday_column(conn: sqlite3.Connection) -> None:
+    """`users.payday` gab es bis 27.07. nicht — der Bot kennt bis heute keinen Zahltag."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "payday" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN payday INTEGER")
+
+
 @app.route("/v1/profile", methods=["OPTIONS"])
 def profile_options():
     return ("", 204)
@@ -1164,7 +1171,6 @@ def update_profile():
     ueber eine neue Bestaetigung laufen, sonst koennte man ein fremdes Konto uebernehmen.
     """
     payload = request.get_json(silent=True) or {}
-    name = clean_text(payload.get("name"))[:40]
 
     token = token_from_request()
     with db() as conn:
@@ -1173,11 +1179,30 @@ def update_profile():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         ensure_auth_tables(conn)
-        conn.execute(
-            """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
-                 WHERE user_id = ?""",
-            (name or None, user_id),
-        )
+
+        # Nur senden, was sich aendern soll — sonst wuerde ein Namens-Update den Zahltag loeschen.
+        if "name" in payload:
+            name = clean_text(payload.get("name"))[:40]
+            conn.execute(
+                """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE user_id = ?""",
+                (name or None, user_id),
+            )
+
+        if "payday" in payload:
+            # Zahltag (27.07.): Der Monatscheck oeffnete sich pauschal am 1., unabhaengig davon,
+            # wann das Gehalt kommt. Ein Feld dafuer gab es nirgends — weder im Bot noch im API.
+            ensure_payday_column(conn)
+            try:
+                day = int(payload.get("payday") or 0)
+            except (TypeError, ValueError):
+                day = 0
+            if day and not 1 <= day <= 31:
+                return jsonify({"ok": False, "error": "payday_out_of_range"}), 400
+            conn.execute(
+                "UPDATE users SET payday = ? WHERE user_id = ?",
+                (day or None, user_id),
+            )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
