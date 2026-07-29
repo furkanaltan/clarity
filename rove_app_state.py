@@ -948,6 +948,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "netWorth": round(net_worth, 2),
         "series": net_series,
         "histDates": net_hist_dates,
+        "identity": _identity(conn, user_id),
         "assets": [a for a in (
             {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],
@@ -1006,6 +1007,38 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
         ],
     }
+
+
+def _identity(conn: sqlite3.Connection, user_id: int) -> dict:
+    """Name und Login-Adresse des angemeldeten Nutzers.
+
+    Bis 27.07. lieferte der Server hier gar nichts, und in `index.html` standen „Furkan" und
+    „project-clarity@outlook.com" fest im HTML. `applyProfileIdentity()` haette das ueberschrieben,
+    lief aber nur im Profil-Modus — im App-Modus sah also JEDER Beta-Tester Furkans Namen und
+    Furkans E-Mail-Adresse in den Einstellungen (Furkan-Fund 27.07., erste eingeladene Tester).
+
+    Fallback fuer den Namen ist der Teil vor dem @ der eigenen Login-Adresse — nie ein fremder
+    Name, lieber gar keiner.
+    """
+    try:
+        row = conn.execute(
+            """SELECT email, display_name FROM app_accounts
+                 WHERE user_id = ? ORDER BY verified_at DESC LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {"email": "", "name": ""}
+    if not row:
+        return {"email": "", "name": ""}
+
+    email = str(row["email"] or "").strip()
+    try:
+        name = str(row["display_name"] or "").strip()
+    except (IndexError, KeyError):
+        name = ""              # Spalte existiert in aelteren Datenbanken noch nicht
+    if not name and "@" in email:
+        name = email.split("@", 1)[0].replace(".", " ").replace("_", " ").strip().title()
+    return {"email": email, "name": name}
 
 
 def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:

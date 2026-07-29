@@ -438,6 +438,13 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    # Anzeigename (27.07.): Die App zeigte bei JEDEM Nutzer „Furkan / project-clarity@outlook.com"
+    # — die Werte standen fest im HTML und der Server lieferte ueberhaupt keine Identitaet. Weder
+    # `users` (Bot) noch `app_accounts` hatten ein Namensfeld. Nullable: wer nichts setzt, bekommt
+    # in der App den Teil vor dem @ seiner Login-Adresse.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(app_accounts)")}
+    if "display_name" not in columns:
+        conn.execute("ALTER TABLE app_accounts ADD COLUMN display_name TEXT")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS app_login_codes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1137,6 +1144,39 @@ def update_monthly_plan():
                    SET {field} = ?, updated_at = CURRENT_TIMESTAMP
                  WHERE user_id = ? AND month_key = ?""",
             (status, user_id, month_key),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/profile", methods=["OPTIONS"])
+def profile_options():
+    return ("", 204)
+
+
+@app.route("/v1/profile", methods=["POST"])
+def update_profile():
+    """Setzt den Anzeigenamen des angemeldeten Nutzers.
+
+    Die E-Mail bleibt bewusst unveraenderlich — sie ist der Login-Schluessel. Ein Wechsel muesste
+    ueber eine neue Bestaetigung laufen, sonst koennte man ein fremdes Konto uebernehmen.
+    """
+    payload = request.get_json(silent=True) or {}
+    name = clean_text(payload.get("name"))[:40]
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_auth_tables(conn)
+        conn.execute(
+            """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ?""",
+            (name or None, user_id),
         )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
