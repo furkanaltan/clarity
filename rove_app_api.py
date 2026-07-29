@@ -1151,6 +1151,161 @@ def update_monthly_plan():
     return jsonify({"ok": True, **live_data})
 
 
+# ===================== PUSH-BENACHRICHTIGUNGEN (27.07.) =====================
+# Bewusst so gebaut, dass ein Deploy OHNE Schluessel und ohne Bibliothek nichts kaputtmacht:
+# fehlt eines von beidem, meldet der Server `push.available = false`, die App blendet den Schalter
+# gar nicht erst ein und der Versand ist ein stiller No-Op. Ein Schalter, der nichts tut, war
+# genau der Fehler, den wir am 27.07. entfernt haben — der kommt nicht durch die Hintertuer zurueck.
+VAPID_PUBLIC_KEY = os.getenv("ROVE_VAPID_PUBLIC", "").strip()
+VAPID_PRIVATE_KEY = os.getenv("ROVE_VAPID_PRIVATE", "").strip()
+VAPID_SUBJECT = os.getenv("ROVE_VAPID_SUBJECT", "mailto:info@getrove.de").strip()
+
+try:
+    from pywebpush import webpush, WebPushException   # type: ignore
+    PUSH_LIB_OK = True
+except Exception:                                     # Bibliothek nicht installiert
+    webpush = None
+    WebPushException = Exception
+    PUSH_LIB_OK = False
+
+
+def push_available() -> bool:
+    return bool(PUSH_LIB_OK and VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
+
+
+def ensure_push_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_push_subscriptions (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            endpoint   TEXT NOT NULL UNIQUE,
+            p256dh     TEXT NOT NULL,
+            auth       TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_push_subs_user ON app_push_subscriptions(user_id)"
+    )
+
+
+def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: str,
+                      tag: str = "rove", url: str = "./") -> int:
+    """Schickt eine Benachrichtigung an alle Geraete eines Nutzers. Gibt die Anzahl Zustellungen zurueck.
+
+    Abgelaufene Abos (404/410 vom Push-Dienst) werden geloescht — sonst sammeln sich tote Endpunkte
+    an und jeder Versand laeuft in Fehler. Der Rest wird geloggt, aber nie nach oben geworfen: eine
+    fehlgeschlagene Benachrichtigung darf niemals eine Buchung oder einen Report scheitern lassen.
+    """
+    if not push_available():
+        return 0
+    try:
+        ensure_push_table(conn)
+        rows = conn.execute(
+            "SELECT id, endpoint, p256dh, auth FROM app_push_subscriptions WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+
+    nutzlast = json.dumps({"title": title, "body": body, "tag": tag, "url": url})
+    zugestellt = 0
+    for row in rows:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": row["endpoint"],
+                    "keys": {"p256dh": row["p256dh"], "auth": row["auth"]},
+                },
+                data=nutzlast,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_SUBJECT},
+                timeout=10,
+            )
+            zugestellt += 1
+        except WebPushException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (404, 410):
+                conn.execute("DELETE FROM app_push_subscriptions WHERE id = ?", (row["id"],))
+            else:
+                app.logger.warning("Push fehlgeschlagen (%s): %s", status, exc)
+        except Exception as exc:
+            app.logger.warning("Push fehlgeschlagen: %s", exc)
+    return zugestellt
+
+
+@app.route("/v1/push/key", methods=["OPTIONS"])
+@app.route("/v1/push/subscribe", methods=["OPTIONS"])
+@app.route("/v1/push/unsubscribe", methods=["OPTIONS"])
+def push_options():
+    return ("", 204)
+
+
+@app.route("/v1/push/key", methods=["GET"])
+def push_key():
+    """Sagt der App, ob Push ueberhaupt eingerichtet ist — und wenn ja, mit welchem Schluessel.
+
+    Bewusst ein eigener Endpunkt statt ein Feld im State: der oeffentliche Schluessel und die
+    Verfuegbarkeit sind Server-Konfiguration, keine Nutzerdaten. So bleibt rove_app_state.py frei
+    von Push-Wissen. Ohne Token abrufbar — der oeffentliche Schluessel ist per Definition oeffentlich.
+    """
+    return jsonify({"available": push_available(), "publicKey": VAPID_PUBLIC_KEY if push_available() else ""})
+
+
+@app.route("/v1/push/subscribe", methods=["POST"])
+def push_subscribe():
+    """Merkt sich das Geraete-Abo. Mehrere Geraete pro Nutzer sind ausdruecklich erlaubt."""
+    if not push_available():
+        return jsonify({"ok": False, "error": "push_not_configured"}), 503
+    payload = request.get_json(silent=True) or {}
+    endpoint = str(payload.get("endpoint") or "").strip()
+    keys = payload.get("keys") or {}
+    p256dh = str(keys.get("p256dh") or "").strip()
+    auth = str(keys.get("auth") or "").strip()
+    if not endpoint or not p256dh or not auth:
+        return jsonify({"ok": False, "error": "subscription_incomplete"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_push_table(conn)
+        # Derselbe Endpunkt kann nach einem Geraetewechsel einem anderen Konto gehoeren.
+        conn.execute(
+            """INSERT INTO app_push_subscriptions (user_id, endpoint, p256dh, auth)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(endpoint) DO UPDATE SET
+                 user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth""",
+            (user_id, endpoint, p256dh, auth),
+        )
+        conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/v1/push/unsubscribe", methods=["POST"])
+def push_unsubscribe():
+    payload = request.get_json(silent=True) or {}
+    endpoint = str(payload.get("endpoint") or "").strip()
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_push_table(conn)
+        if endpoint:
+            conn.execute(
+                "DELETE FROM app_push_subscriptions WHERE user_id = ? AND endpoint = ?",
+                (user_id, endpoint),
+            )
+        else:
+            conn.execute("DELETE FROM app_push_subscriptions WHERE user_id = ?", (user_id,))
+        conn.commit()
+    return jsonify({"ok": True})
+
+
 def ensure_payday_column(conn: sqlite3.Connection) -> None:
     """`users.payday` gab es bis 27.07. nicht — der Bot kennt bis heute keinen Zahltag."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
