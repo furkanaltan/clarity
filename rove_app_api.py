@@ -34,6 +34,8 @@ from rove_app_state import (
     ensure_app_contracts_table,
     ensure_app_goals_table,
     ensure_app_monthly_plan_table,
+    ensure_app_scheduled_savings_table,
+    apply_due_scheduled_savings,
     ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
@@ -889,6 +891,8 @@ def current_transactions():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        apply_due_scheduled_savings(conn, user_id)
         tx = _build_tx(conn, user_id)
 
     return jsonify({"ok": True, "tx": tx})
@@ -930,6 +934,9 @@ def update_monthly_plan():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        # Falls eine neue Rate zum Monatswechsel faellig wurde, muss der
+        # Monatscheck direkt mit ihr rechnen, auch ohne vorherigen App-Refresh.
+        apply_due_scheduled_savings(conn, user_id)
         ensure_app_monthly_plan_table(conn)
         ensure_app_cash_movements_table(conn)
         month_key = datetime.now().strftime("%Y-%m")
@@ -1386,6 +1393,7 @@ def update_profile():
                 (day or None, user_id),
             )
 
+        scheduled_savings = None
         # Sparrate gehoert zur Monatsplanung und darf nicht nur im Browser leben.
         # Sonst zeigt Rov.E bis zum naechsten Refresh einen anderen Betrag als
         # Monatsplan, Coach und Report. Bereits ausgefuehrte Sparraten bleiben
@@ -1407,9 +1415,6 @@ def update_profile():
                      LIMIT 1""",
                 (user_id, month_key),
             ).fetchone()
-            if (status and status["savings_status"] == "confirmed") or executed:
-                return jsonify({"ok": False, "error": "savings_already_confirmed"}), 409
-
             current = conn.execute(
                 "SELECT etf_savings, cash_savings FROM users WHERE user_id = ?",
                 (user_id,),
@@ -1431,14 +1436,34 @@ def update_profile():
                 cash_savings = savings_amount("cash_savings", float(current["cash_savings"] or 0))
             except ValueError:
                 return jsonify({"ok": False, "error": "valid_savings_amount_required"}), 400
-            conn.execute(
-                "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
-                (etf_savings, cash_savings, user_id),
-            )
+            if (status and status["savings_status"] == "confirmed") or executed:
+                next_month = (datetime.now().replace(day=28) + timedelta(days=4)).strftime("%Y-%m")
+                ensure_app_scheduled_savings_table(conn)
+                conn.execute(
+                    """INSERT INTO app_scheduled_savings
+                           (user_id, effective_month, etf_savings, cash_savings, updated_at)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                           effective_month = excluded.effective_month,
+                           etf_savings = excluded.etf_savings,
+                           cash_savings = excluded.cash_savings,
+                           updated_at = CURRENT_TIMESTAMP""",
+                    (user_id, next_month, etf_savings, cash_savings),
+                )
+                scheduled_savings = {
+                    "effectiveMonth": next_month,
+                    "etf": etf_savings,
+                    "cash": cash_savings,
+                }
+            else:
+                conn.execute(
+                    "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
+                    (etf_savings, cash_savings, user_id),
+                )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
-    return jsonify({"ok": True, **live_data})
+    return jsonify({"ok": True, **live_data, "scheduledSavings": scheduled_savings})
 
 
 @app.route("/v1/goals", methods=["POST"])

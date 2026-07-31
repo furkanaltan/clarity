@@ -575,6 +575,47 @@ def ensure_app_monthly_plan_table(conn: sqlite3.Connection) -> None:
         )
 
 
+def ensure_app_scheduled_savings_table(conn: sqlite3.Connection) -> None:
+    """Merkt eine Sparraten-Aenderung fuer den naechsten Monatsplan vor.
+
+    Die laufende Monats-Sparrate kann bereits echtes Geld zwischen Giro, ETF und
+    Tagesgeld verschoben haben. Deshalb wird sie nie rueckwirkend ueberschrieben.
+    Eine Vormerkung ist dagegen reine Planung und wird erst im Folgemonat zum
+    neuen Standardwert.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_scheduled_savings (
+            user_id         INTEGER PRIMARY KEY,
+            effective_month TEXT NOT NULL,
+            etf_savings     REAL NOT NULL DEFAULT 0.0,
+            cash_savings    REAL NOT NULL DEFAULT 0.0,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict | None:
+    """Aktiviert eine fällige Vormerkung genau einmal und gibt sie zurueck."""
+    ensure_app_scheduled_savings_table(conn)
+    month_key = date.today().strftime("%Y-%m")
+    row = conn.execute(
+        """SELECT effective_month, etf_savings, cash_savings
+             FROM app_scheduled_savings WHERE user_id = ?""",
+        (user_id,),
+    ).fetchone()
+    if not row or str(row["effective_month"]) > month_key:
+        return None
+    etf = round(max(0.0, float(row["etf_savings"] or 0)), 2)
+    cash = round(max(0.0, float(row["cash_savings"] or 0)), 2)
+    conn.execute(
+        "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
+        (etf, cash, user_id),
+    )
+    conn.execute("DELETE FROM app_scheduled_savings WHERE user_id = ?", (user_id,))
+    return {"effectiveMonth": month_key, "etf": etf, "cash": cash}
+
+
 def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
     """Speichert zusaetzliche App-Ziele zentral neben dem Telegram-Hauptziel."""
     conn.execute(
@@ -895,6 +936,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     überschreiben. Der Bot ist derzeit nur Quelle für Cash, Investments, Fixkosten, Ziele und
     Monatsbuchungen.
     """
+    # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
+    # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
+    apply_due_scheduled_savings(conn, user_id)
     row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
         raise ValueError(f"Kein User {user_id} in der Bot-Datenbank gefunden")
