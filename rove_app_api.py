@@ -1347,7 +1347,7 @@ def profile_options():
 
 @app.route("/v1/profile", methods=["POST"])
 def update_profile():
-    """Setzt den Anzeigenamen des angemeldeten Nutzers.
+    """Aktualisiert sichere, dauerhafte Profilfelder des angemeldeten Nutzers.
 
     Die E-Mail bleibt bewusst unveraenderlich — sie ist der Login-Schluessel. Ein Wechsel muesste
     ueber eine neue Bestaetigung laufen, sonst koennte man ein fremdes Konto uebernehmen.
@@ -1384,6 +1384,56 @@ def update_profile():
             conn.execute(
                 "UPDATE users SET payday = ? WHERE user_id = ?",
                 (day or None, user_id),
+            )
+
+        # Sparrate gehoert zur Monatsplanung und darf nicht nur im Browser leben.
+        # Sonst zeigt Rov.E bis zum naechsten Refresh einen anderen Betrag als
+        # Monatsplan, Coach und Report. Bereits ausgefuehrte Sparraten bleiben
+        # unveraendert: Sie sind echte Umschichtungen und keine editierbare Planung.
+        savings_keys = {"etf_savings", "cash_savings"}
+        if savings_keys.intersection(payload):
+            ensure_app_monthly_plan_table(conn)
+            month_key = datetime.now().strftime("%Y-%m")
+            status = conn.execute(
+                """SELECT savings_status FROM app_monthly_plan_status
+                     WHERE user_id = ? AND month_key = ?""",
+                (user_id, month_key),
+            ).fetchone()
+            executed = conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ?
+                       AND source IN ('investiert_command', 'app_monthly_plan')
+                       AND strftime('%Y-%m', created_at) = ?
+                     LIMIT 1""",
+                (user_id, month_key),
+            ).fetchone()
+            if (status and status["savings_status"] == "confirmed") or executed:
+                return jsonify({"ok": False, "error": "savings_already_confirmed"}), 409
+
+            current = conn.execute(
+                "SELECT etf_savings, cash_savings FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+            def savings_amount(key: str, fallback: float) -> float:
+                if key not in payload:
+                    return fallback
+                try:
+                    value = round(float(payload.get(key)), 2)
+                except (TypeError, ValueError):
+                    raise ValueError(key)
+                if value < 0 or value > 100000:
+                    raise ValueError(key)
+                return value
+
+            try:
+                etf_savings = savings_amount("etf_savings", float(current["etf_savings"] or 0))
+                cash_savings = savings_amount("cash_savings", float(current["cash_savings"] or 0))
+            except ValueError:
+                return jsonify({"ok": False, "error": "valid_savings_amount_required"}), 400
+            conn.execute(
+                "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
+                (etf_savings, cash_savings, user_id),
             )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
