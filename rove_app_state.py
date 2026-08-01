@@ -190,8 +190,8 @@ def _category_label(raw: str) -> str:
     return CATEGORY_LABEL_FIX.get(label, label)
 
 
-def _cash_movements_this_month(conn: sqlite3.Connection, user_id: int) -> list:
-    """Liest die Bargeld-Bewegungen des laufenden Monats, ohne zu scheitern, wenn es noch keine gibt.
+def _cash_movements_for_month(conn: sqlite3.Connection, user_id: int, month_key: str) -> list:
+    """Liest Bargeld-Bewegungen eines Monats, ohne zu scheitern, wenn es noch keine gibt.
 
     Dieselbe defensive Leseart wie get_app_cash_accounts(): die Tabelle entsteht erst beim
     ersten Schreibvorgang der App (ensure_app_cash_movements_table), das Lesen darf davor
@@ -204,10 +204,9 @@ def _cash_movements_this_month(conn: sqlite3.Connection, user_id: int) -> list:
     try:
         return conn.execute(
             """SELECT * FROM app_cash_movements
-                 WHERE user_id = ?
-                   AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+                 WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?
                  ORDER BY created_at DESC""",
-            (user_id,),
+            (user_id, month_key),
         ).fetchall()
     except sqlite3.OperationalError:
         return []
@@ -222,18 +221,24 @@ def _movement_label(row, fallback: str) -> str:
     return (str(value).strip() or fallback) if value else fallback
 
 
-def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
+def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = None) -> list:
+    """Baut die Buchungsliste fuer den angefragten Monat.
+
+    Der Cashflow kann damit vergangene Monate anzeigen, ohne sie editierbar zu machen.
+    Fehlt month_key, bleibt das bisherige Verhalten erhalten und liefert den laufenden Monat.
+    """
+    month_key = month_key or date.today().strftime("%Y-%m")
     rows = conn.execute(
         """SELECT id, amount, category, merchant, description, created_at FROM expenses
-           WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+           WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?
            ORDER BY created_at DESC""",
-        (user_id,),
+        (user_id, month_key),
     ).fetchall()
     # Bargeld-Bewegungen liegen NICHT in expenses (siehe ensure_app_cash_movements_table):
     # eine Abhebung ist keine Ausgabe, und ob eine Ausgabe bar bezahlt wurde, kann die
     # Bot-Tabelle nicht abbilden. Beides kommt hier dazu, damit die Buchungsliste den
     # Refresh ueberlebt (Bug 25.07.: "Bargeld abgehoben" verschwand nach 45 Sekunden).
-    movements = _cash_movements_this_month(conn, user_id)
+    movements = _cash_movements_for_month(conn, user_id, month_key)
     cash_paid_expense_ids = {
         int(m["expense_id"])
         for m in movements
@@ -312,7 +317,12 @@ def _build_tx(conn: sqlite3.Connection, user_id: int) -> list:
     today_iso = date.today().isoformat()
     for created, item in entries:
         day_key = (created or "")[:10]
-        day_label = "Heute" if day_key == today_iso else (day_key or "Unbekannt")
+        if day_key == today_iso:
+            day_label = "Heute"
+        elif len(day_key) == 10:
+            day_label = f"{day_key[8:10]}.{day_key[5:7]}."
+        else:
+            day_label = day_key or "Unbekannt"
         if day_label not in days:
             days[day_label] = []
             order.append(day_label)
@@ -349,6 +359,16 @@ def _build_budgets(conn: sqlite3.Connection, user_id: int) -> list:
             "source": "bot",
         })
     return budgets
+
+
+def _previous_month_keys(count: int = 3) -> list[str]:
+    """Liefert die letzten abgeschlossenen Monats-Schluessel, neuester zuerst."""
+    cursor = date.today().replace(day=1)
+    months: list[str] = []
+    for _ in range(count):
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        months.append(cursor.strftime("%Y-%m"))
+    return months
 
 
 def _report_month_label(month_key: str) -> str:
@@ -988,6 +1008,15 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                if etf_positions else "aus dem Bot")
 
     net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
+    tx = _build_tx(conn, user_id)
+    # Die App-Navigation kann bis zu drei abgeschlossene Monate zurueckgehen. Diese
+    # Buchungen sind bewusst nur lesbar: Der laufende Monat bleibt die einzige Stelle,
+    # an der der Nutzer etwas aendern kann.
+    tx_history = {
+        month_key: history
+        for month_key in _previous_month_keys()
+        if (history := _build_tx(conn, user_id, month_key))
+    }
     return {
         "netWorth": round(net_worth, 2),
         "series": net_series,
@@ -1020,7 +1049,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                  "wert": "—",
              }} if property_data else None,
         ) if a],
-        "tx": _build_tx(conn, user_id),
+        "tx": tx,
+        "txHistory": tx_history,
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
