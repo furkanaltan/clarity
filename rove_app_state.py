@@ -330,20 +330,24 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     return [{"d": d, "items": days[d]} for d in order]
 
 
-def _build_budgets(conn: sqlite3.Connection, user_id: int) -> list:
-    """Liefert die vom Nutzer im Bot gesetzten Monatsrahmen fuer die App.
+def _build_budgets(
+    conn: sqlite3.Connection, user_id: int, month_key: str | None = None
+) -> list:
+    """Liefert die gesetzten Monatsrahmen fuer genau einen Monat.
 
     Die App darf bei einer gekoppelten Sitzung keine eigenen Limits aus vergangenen
-    Buchungen ableiten. Sonst unterscheiden sich App und Bot trotz derselben DB.
+    Buchungen ableiten. Vergangene Monate sind reine Historie; ein Rahmen wird nie
+    automatisch in den Folgemonat kopiert.
     """
+    month_key = month_key or date.today().strftime("%Y-%m")
     try:
         rows = conn.execute(
             """SELECT category, monthly_limit, source
                  FROM category_budgets
                 WHERE user_id = ?
-                  AND active_month = strftime('%Y-%m', 'now', 'localtime')
+                  AND active_month = ?
                 ORDER BY category""",
-            (user_id,),
+            (user_id, month_key),
         ).fetchall()
     except sqlite3.OperationalError:
         return []
@@ -1017,6 +1021,11 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         for month_key in _previous_month_keys()
         if (history := _build_tx(conn, user_id, month_key))
     }
+    budget_history = {
+        month_key: history
+        for month_key in _previous_month_keys()
+        if (history := _build_budgets(conn, user_id, month_key))
+    }
     return {
         "netWorth": round(net_worth, 2),
         "series": net_series,
@@ -1051,6 +1060,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         ) if a],
         "tx": tx,
         "txHistory": tx_history,
+        "budgetHistory": budget_history,
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
