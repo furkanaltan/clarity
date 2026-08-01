@@ -13,6 +13,7 @@ import urllib.request
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager
 from pathlib import Path
+from zoneinfo import ZoneInfo
 import telebot
 import openai
 from dotenv import load_dotenv
@@ -49,6 +50,7 @@ REPORT_WORKER_INTERVAL_SECONDS = int(os.getenv("REPORT_WORKER_INTERVAL_SECONDS",
 REPORT_MAX_ATTEMPTS = int(os.getenv("REPORT_MAX_ATTEMPTS", "3"))
 REPORT_RETRY_DELAY_MINUTES = int(os.getenv("REPORT_RETRY_DELAY_MINUTES", "15"))
 REPORT_CREATION_MISFIRE_GRACE_SECONDS = int(os.getenv("REPORT_CREATION_MISFIRE_GRACE_SECONDS", "21600"))
+REPORT_TIMEZONE = ZoneInfo("Europe/Berlin")
 BOT_LOCK_FILE = os.getenv("CLARITY_BOT_LOCK_FILE", "clarity_bot.lock")
 APP_DISPLAY_NAME = "Rov.E"
 SCORE_DISPLAY_NAME = "Rov.E Score"
@@ -6325,8 +6327,13 @@ def get_active_user_ids() -> list:
         return [row["user_id"] for row in cursor.fetchall()]
 
 
+def report_now() -> datetime:
+    """Keep every report-queue timestamp in the scheduler's Berlin timezone."""
+    return datetime.now(REPORT_TIMEZONE).replace(tzinfo=None)
+
+
 def random_report_time_for_today() -> str:
-    now = datetime.now()
+    now = report_now()
     start = datetime(now.year, now.month, now.day, REPORT_SEND_WINDOW_START_HOUR, 0, 0)
     end = datetime(now.year, now.month, now.day, REPORT_SEND_WINDOW_END_HOUR, 0, 0)
     if now > start:
@@ -6384,7 +6391,7 @@ def ensure_monthly_report_jobs(today: date = None) -> int:
 
 def claim_due_report_jobs(limit: int = None) -> list:
     limit = limit or REPORT_WORKER_BATCH_SIZE
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
         cursor = conn.cursor()
         conn.execute("BEGIN IMMEDIATE")
@@ -6408,14 +6415,14 @@ def claim_due_report_jobs(limit: int = None) -> list:
 
 
 def mark_report_job_sent(job_id: int):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
         conn.execute("UPDATE report_jobs SET status = 'sent', last_error = '', updated_at = ? WHERE id = ?", (now, job_id))
         conn.commit()
 
 
 def mark_report_job_failed(job: dict, error: str):
-    now_dt = datetime.now()
+    now_dt = report_now()
     now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
     attempts = job.get("attempts") or 0
     final_failed = attempts >= REPORT_MAX_ATTEMPTS
@@ -6433,7 +6440,7 @@ def mark_report_job_failed(job: dict, error: str):
 
 
 def mark_report_job_skipped(job: dict, reason: str):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
     clean_reason = (reason or "Report übersprungen")[:1000]
     with get_db() as conn:
         conn.execute(
