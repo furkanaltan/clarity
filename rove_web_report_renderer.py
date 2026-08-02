@@ -550,15 +550,19 @@ def standalone_script() -> str:
 """.strip()
 
 
-def month_names(report_month: str) -> tuple[str, str]:
+def month_label_with_offset(report_month: str, months_ahead: int = 0) -> str:
     year, month = map(int, report_month.split("-"))
     names = {
         1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
         7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
     }
-    next_month = 1 if month == 12 else month + 1
-    next_year = year + 1 if month == 12 else year
-    return f"{names[month]} {year}", f"{names[next_month]} {next_year}"
+    month_index = year * 12 + (month - 1) + months_ahead
+    target_year, target_month_index = divmod(month_index, 12)
+    return f"{names[target_month_index + 1]} {target_year}"
+
+
+def month_names(report_month: str) -> tuple[str, str]:
+    return month_label_with_offset(report_month), month_label_with_offset(report_month, 1)
 
 
 def build_render_context(data: dict) -> dict:
@@ -567,6 +571,9 @@ def build_render_context(data: dict) -> dict:
     pages = data["pages"]
     month_label, next_label = month_names(meta["report_month"])
     next_month_name = next_label.split(" ", 1)[0]
+    next_report_delivery_month_name = month_label_with_offset(
+        meta["report_month"], 2
+    ).split(" ", 1)[0]
     month_short = month_label.split(" ", 1)[0]
 
     cover = pages["cover"]
@@ -748,6 +755,7 @@ def build_render_context(data: dict) -> dict:
         "month_label": h(month_label),
         "next_label": h(next_label),
         "next_month_name": h(next_month_name),
+        "next_report_delivery_month_name": h(next_report_delivery_month_name),
         "month_short": h(month_short),
         "freedom_step_text": money_text(cover.get("freedom_step") or 0, 0) if (cover.get("freedom_step") or 0) < 0 else f"+{money_text(cover.get('freedom_step') or 0)}",
         "development_percent_text": (

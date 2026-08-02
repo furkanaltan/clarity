@@ -1454,11 +1454,16 @@ beruhigt sich auf ~807 statt 844, die Leiste sitzt also rund 36 px zu hoch. Näc
 `interactive-widget` im Viewport-Meta — bewusst noch nicht angefasst, damit erst die Startsequenz
 im echten Betrieb beobachtet werden kann.
 
-## Telegram-Abschaltung: Termin steht
+## Telegram-Abschaltung: kontrollierte Migration
 
-Der Bot wird abgeschaltet, sobald alle Beta-Nutzer in der App sind — aber **frühestens ab dem
-01.08.2026**, und die Migration steuert Furkan selbst und bewusst. Bis dahin bleibt `bot.py` in
-vollem Betrieb und darf nicht als „tot" behandelt werden.
+Die App ist die neue Hauptoberfläche. Der Telegram-Bot bleibt jedoch mindestens bis nach zwei
+vollständig geprüften Monatszyklen aktiv, weil er den bestehenden Reportversand noch trägt.
+Frühester sinnvoller Termin für die vollständige technische Abschaltung ist Mitte September 2026.
+
+Vorher wird Telegram für etwa eine Woche auf einen ruhigen Weiterleitungsmodus reduziert: keine
+neuen App-Funktionen, klare Nachricht zur App, Report- und Datenpfad weiter überwacht. Erst wenn
+der August- und September-Report inklusive App-Archiv sauber gelaufen sind und alle aktiven Nutzer
+einen dauerhaften App-Login haben, kann `clarity-bot` ohne Daten- oder Report-Risiko enden.
 
 ## Bestätigter App-Stand (27.07.)
 
@@ -1544,6 +1549,10 @@ Finanzfunktionen.
    ein klarer nächster Schritt und Fortschritt zum Report. Test mit Nicht-Finanzmenschen.
 4. **Mentor danach:** DB-first-Antworten mit konkreten Zahlen und Bestätigung vor Änderungen;
    LLM erst ergänzen, wenn diese Faktenbasis stabil steht.
+5. **Score und Rov.E Points glätten:** Die Gamification bleibt Teil des Produkts, wird aber erst
+   nach der Monatswechsel- und Infrastrukturprüfung wieder vertieft. Dann werden Score,
+   Punktequellen, Fortschritt und Sprache gegen echte App-Daten geprüft und als ruhige Motivation
+   gestaltet — nie als Anreiz, Geld auszugeben oder Daten zu verfälschen.
 
 ### Bewusst später
 
@@ -1629,3 +1638,173 @@ Als zweiter und letzter regelmaessiger Push ist ein taeglicher, aber streng gefi
 hinterlegten Zahltag und nur, wenn Einkommen, Fixkosten oder Sparrate noch nicht bestaetigt sind.
 Pro Nutzer und Monat speichert `app_push_delivery_log` genau eine erfolgreiche Zustellung. Die
 eine Nachricht buendelt alle offenen Punkte; es gibt keine separaten Gehalts- und Fixkosten-Pushes.
+
+## Push-Einstellung: stabiler Startzustand (30.07.)
+
+Die Zeile "Benachrichtigungen" in den Einstellungen wurde vorher nur sichtbar, wenn der
+Service Worker *nach* der Bot/App-Verbindung fertig wurde. Auf manchen iPhone-Starts war die
+Verbindung noch nicht geladen, als der erste Push-Abruf lief; die Zeile fehlte dann bis zu einem
+zufaelligen spaeteren Refresh.
+
+`index.html` fragt den Push-Status jetzt nach erfolgreicher Bridge-Verbindung und bei jedem
+Oeffnen der Einstellungen neu ab. Gleichzeitige Abfragen werden zusammengelegt. Das betrifft nur
+die Anzeige; bestehende Push-Erlaubnisse und Abos werden weder geloescht noch neu angefordert.
+
+## Monatsrahmen: klare Warnstufe unter null (31.07.)
+
+Die Mentor-Karte unterscheidet jetzt drei saubere Situationen: Budgetrahmen aufgebraucht bei noch
+positivem Monatsgeld, freies Monatsgeld positiv und den echten Negativfall. Bei `frei < 0` hat der
+Gesamt-Monatsrahmen Vorrang vor einem einzelnen Budgettopf und zeigt nur zwei ruhige Zeilen: den
+exakten Fehlbetrag sowie die variablen Ausgaben mit dem Hinweis, welcher Betrag zur geplanten
+Sparrate fehlt. Das vermeidet die fruehere, zu schwere Dreifach-Erklaerung.
+
+Die Sparrate wird dabei bewusst nur als *eingeplant* bezeichnet. Erst die explizite Monatsplan-
+Bestaetigung bucht sie; Rov.E behauptet vorher nie, der Kunde habe sie bereits nicht eingehalten.
+Der Assistent beantwortet ausserdem "Schaffe ich meine Sparrate?" mit derselben Live-Rechnung.
+
+## Einkommen und Sparrate: eine gemeinsame Quelle (31.07.)
+
+Der Mentor beantwortet direkte Fragen wie "Wie hoch sind meine Einnahmen?" jetzt kurz aus den
+echten Onboarding-Daten statt mit einer allgemeinen Profilantwort.
+
+Die ETF- und Cash-Sparrate kann der Assistent nur noch getrennt aendern, zum Beispiel
+`ETF 300 EUR und Cash 700 EUR`. In der gekoppelten App wird diese Aenderung ueber
+`/v1/profile` dauerhaft in `users.etf_savings` und `users.cash_savings` gespeichert und danach
+aus der gemeinsamen DB neu geladen. Dadurch nutzen Coach, Monatsplan, Score und Report wieder
+denselben Wert. Eine bereits im laufenden Monat bestaetigte Sparrate bleibt gesperrt: Sie ist eine
+echte Umschichtung und darf nicht nachtraeglich still umgeschrieben werden.
+
+Bei einer bestaetigten laufenden Sparrate wird die neue Eingabe nicht rueckwirkend umgesetzt,
+sondern klar als Vormerkung fuer den Folgemonat behandelt.
+
+## Sparrate ab naechstem Monat vormerken (31.07.)
+
+Eine bereits bestaetigte Sparrate kann nun trotzdem fuer den Folgemonat geaendert werden.
+`app_scheduled_savings` speichert ETF-, Cash-Teil und Wirksamkeitsmonat pro Nutzer. Der laufende
+Monat bleibt unveraendert; beim ersten App-Zugriff im neuen Monat uebernimmt Rov.E die Vormerkung
+als neue Planungsrate. Das ist keine Geldbewegung. Die echte Umschichtung erfolgt weiterhin erst,
+wenn der Nutzer die Sparrate im Monatscheck bestaetigt.
+
+Beim 45-Sekunden-Refresh wurde zuvor nur die Summe der Sparrate, nicht aber ihr ETF-/Cash-Split
+uebernommen. Das ist korrigiert: Jeder Refresh uebernimmt jetzt beide Teilwerte und die Summe aus
+derselben DB-Antwort.
+
+Die Negativwarnung ist visuell bewusst zurueckgenommen: nur der Fehlbetrag ist rot, die Erklaerung
+bleibt in normaler Schrift. Die Vermoegenskurve startet bei jedem App-Start auf `1W`; der Nutzer
+kann danach wie gewohnt seinen Zeitraum waehlen.
+
+## Report-Queue: Berliner Zeit durchgehend verwenden (01.08.)
+
+Der APScheduler plante die Report-Jobs bereits in `Europe/Berlin`, der Queue-Worker verglich den
+naiven SQLite-Zeitstempel aber mit der UTC-Serverzeit. Das haette jeden zufaellig geplanten
+Report um zwei Stunden verzoegert. Planung, Abholung, Wiederholungen und Statuszeitstempel nutzen
+nun dieselbe Berliner Zeit. Bereits angelegte Jobs bleiben gueltig und werden nach dem
+Service-Neustart entsprechend ihrer vorgesehenen Berliner Uhrzeit abgearbeitet.
+
+## August-Start: Planung nicht als eingegangenes Geld ausgeben (01.08.)
+
+Der Cashflow startet im neuen Monat bewusst bei null: Juli-Buchungen bleiben in der Datenbasis,
+im Report und in der Historie, erscheinen aber nicht mehr in der August-Monatsliste. Die
+Mentor-Leiste unterscheidet nun vor der Gehaltsbestaetigung klar zwischen dem geplanten
+Ausgabenrahmen und tatsaechlich frei verfuegbarem Geld. Erst nach `Gehalt ist eingegangen` darf
+Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
+# Monatswechsel 01.08.2026: Cashflow-Historie
+
+- Die Juli-Daten wurden nicht geloescht. Die Live-Bridge lieferte bisher nur Buchungen des laufenden Monats, weshalb die vorhandene Cashflow-Navigation fuer Juli leer blieb.
+- `rove_app_state.py` liefert nun die letzten drei abgeschlossenen Monate als schreibgeschuetzte `txHistory`; die App uebernimmt diese beim Start und bei jedem Live-Refresh.
+- Dieser Schritt ist bewusst read-only: Er kopiert keine Budgets, bestaetigt kein Gehalt und bucht weder Fixkosten noch Sparraten. Die Budget-/Zahltag-Logik wird danach separat geloest.
+- Der Rollout braucht nur einen Neustart von `rove-app-api`; der laufende Report-Versand im separaten `clarity-bot` wird davon nicht unterbrochen.
+
+## Incident: leerer App-Start nach Frontend-Update
+
+- Die API und `clarity-bot` waren gesund; `/v1/state` antwortete durchgehend mit HTTP 200. Die Finanzdaten waren nicht geloescht.
+- Primaere Ursache des kompletten Startabbruchs: Der neue Mentor-Text griff in `mentorLine()` auf `REPORT_MONTHS_DE` zu. `mentorLine()` laeuft beim ersten Rendern, die `const`-Liste wird aber erst spaeter im Report-Abschnitt initialisiert. JavaScript brach mit `ReferenceError: Cannot access 'REPORT_MONTHS_DE' before initialization` ab; deshalb blieben Nettovermoegen, Mentor und Assets als leeres Geruest stehen.
+- Fix: Der fruehe Mentor-Text formatiert den Monatsnamen direkt ueber `Date.toLocaleDateString()`. Damit gibt es keine Abhaengigkeit mehr auf spaeter initialisierte Konstanten.
+- Zusaetzliche Absicherung in `rove-app/index.html`: State-Abruf mit 8-Sekunden-Grenze; danach zuerst Wiederherstellung der 180-Tage-Sitzung, andernfalls sichtbarer Login statt leerer Finanzansicht. Keine Mock-Daten und keine Datenbankmutation im Fehlerfall.
+- Die monatliche Finanzlogik bleibt kalenderbasiert (1. bis Monatsende). Ein Zahltag am 15. bedeutet bis dahin „Ausgabenrahmen geplant, Gehalt noch nicht bestaetigt“, nicht einen verschobenen 15.-bis-15.-Monat.
+
+## Budget-Historie und bewusste Monatsuebernahme (01.08.)
+
+- `rove_app_state.py` liefert Budgetrahmen der letzten drei abgeschlossenen Monate getrennt als `budgetHistory`. Vergangene Limits werden niemals in den aktuellen Monat hineingerechnet.
+- Der Budget-Reiter verwendet jetzt dieselbe Monatsnavigation wie der Cashflow. Abgeschlossene Monate zeigen Rahmen, damaligen Verbrauch und Rest/Abweichung schreibgeschuetzt an.
+- Ist der aktuelle Monat leer, zeigt Rov.E das letzte gespeicherte Budget als Vorlage. Erst der ausdrueckliche Knopf `Budget aus <Monat> uebernehmen` schreibt neue Zeilen fuer den aktuellen Monat.
+- Gekoppelte App-Nutzer erhalten keine automatisch aus den ersten Monatsausgaben erfundenen Hilfsbudgets mehr. Bis zur bewussten Uebernahme bleibt der aktuelle Rahmen leer.
+- Diese Aenderung bucht weder Gehalt noch Fixkosten oder Sparraten und aendert keine Reportdaten. Die Zahltag-/Monatscheck-Logik wird als eigener Schritt behandelt.
+
+## Report-Texte: Vermoegen nur noch faktisch beschreiben (02.08.)
+
+- Die bisherige feste Aussage `Mehr als die Haelfte deines Vermoegens arbeitet bereits fuer dich` ist aus Weblink und PDF entfernt. Sie war fuer Nutzer ohne Investments oder mit negativem Nettovermoegen offensichtlich falsch.
+- Beide Report-Ausgaben teilen weiter denselben Kontext aus `rove_web_report_renderer.py`. Die Aussage richtet sich jetzt nach Nettovermoegen und dem tatsaechlich investierten Anteil: negativer Stand, 0 EUR, nur liquide Mittel, unter 50 Prozent investiert oder mindestens 50 Prozent investiert.
+- Auch die Monatsfazit-Zeile behauptet eine Investition oder Ruecklage nur bei einer echten Monatsbuchung. Andernfalls bezeichnet sie die Sparrate korrekt als geplant.
+- Der alte HTML-Fallback-Renderer verwendet dieselben Schutzfaelle, falls der normale WeasyPrint-PDF-Renderer einmal nicht verfuegbar ist.
+
+## Score, Rov.E Punkte und Mentor: gemeinsame Live-Logik (02.08., noch zu deployen)
+
+- Neu: `rove_score.py` ist die einzige Berechnung fuer den ernsthaften Rov.E Score. App-API,
+  Report-Engine und der verbleibende Telegram-Bot verwenden damit dieselben vier Faktoren:
+  Budget-Kontrolle, Sparrate, Tracking-Konstanz und finanzielle Struktur.
+- Der App-State liefert den kompletten Live-Score inklusive Faktorwerten, ehrlicher Erklaerung
+  und naechstem Hebel. Die App ersetzt beim Start und beim 45-Sekunden-Refresh nun den ganzen
+  Score, nicht nur Zahl und Rang. Dadurch bleiben keine alten Demo-Balken im Profil zurueck.
+- Rov.E Punkte (RP) bleiben bewusst eine kleine Gewohnheits-Belohnung und kein zweiter
+  Finanzscore. Die erste echte App-Buchung eines Tages vergibt RP und Streak genau einmal,
+  transaktionssicher in der gemeinsamen Datenbank. Die App zeigt die Belohnung einmal als
+  kurze Bestaetigung; im Score-Screen steht nur der aktuelle Fortschritt und der naechste Rang.
+- Die Mentor-Karte priorisiert weiterhin immer: Monatscheck vor Gehalt, echter Negativbetrag
+  und frische Budgetwarnung. Im ruhigen Zustand rotiert sie stabil pro Kalendertag zwischen
+  Budgetrahmen, Score-Hebel, RP-Fortschritt und Tracking-Konstanz. Kein Wechsel bei jedem
+  Refresh und keine Motivationssprüche ohne Datenbasis.
+- Geaenderte Dateien: `rove_score.py`, `rove_app_state.py`, `rove_app_api.py`, `report_engine.py`,
+  `bot.py`, `work/rove-app/index.html`.
+- Lokal geprueft: Python-Kompilierung, JavaScript-Syntax, Git-Diff-Whitespace und eine echte
+  lokale Score-Berechnung mit vier Faktoren/RP. Nach Deployment einmal die App neu oeffnen und
+  eine kleine echte Ausgabe eintragen: Score-Faktoren, Profil-Badge und maximal eine RP-Bestaetigung
+  pruefen.
+
+## RP gegen Buchen-und-Loeschen abgesichert (02.08., noch zu deployen)
+
+- Neue Tracking-Belohnungen erhalten in `rove_point_events` einen eindeutigen Tagesnachweis und
+  die ID der Buchung, die den Punkt ausgeloest hat. Bestehende alte RP werden nicht migriert oder
+  neu berechnet.
+- Wird die ausloesende Buchung geloescht und es gibt am selben Tag noch eine andere Ausgabe,
+  wandert der Nachweis auf diese Buchung: RP und Streak bleiben korrekt bestehen.
+- Wird die letzte Ausgabe des Tages geloescht, nimmt Rov.E exakt die fuer diesen Tag vergebenen
+  RP zurueck. Das gilt auch fuer den 7-/30-Tage- oder spaeteren Wochenbonus. Der aktuelle Streak
+  und das letzte Aktivitaetsdatum werden aus den verbleibenden echten Buchungstagen neu gebildet.
+- Buchung, Kontogutschrift und RP-Ruecknahme laufen in derselben gesperrten DB-Transaktion. Ein
+  Refresh oder paralleler Request kann deshalb keinen halben Zustand hinterlassen.
+- Lokal geprueft: zwei Buchungen am selben Tag (erste Loeschung 0 RP, letzte Loeschung -1 RP)
+  sowie Tag-7-Bonus (+11 RP, nach Loeschung exakt -11 RP und Rueckkehr zum 6-Tage-Streak).
+- Geaenderte Dateien: `rove_score.py`, `rove_app_api.py`. Nur `rove-app-api` muss neu starten.
+
+## Seitenhierarchie und doppelte Kopfzeilen bereinigt (02.08., noch zu deployen)
+
+- Auf allen vier Hauptseiten steht die grosse weisse Hauptueberschrift jetzt zuerst. Auf der
+  Uebersicht folgt das Datum darunter; bei Zielen folgt `Deine Toepfe` darunter.
+- Cashflow zeigt den Monat nur noch in der Pfeilnavigation. Die zweite Zeile mit demselben Monat
+  und derselben Buchungsanzahl im Seitenkopf ist entfernt.
+- Vertraege beginnt direkt mit der Hauptueberschrift. `Fixkosten · monatlich` ist entfernt; die
+  Summenkarte erklaert bereits `Deine Fixkosten pro Monat`. Das zusaetzliche `/Monat` direkt am
+  grossen Betrag ist ebenfalls entfernt.
+- Hilfreiche Unterzeilen wurden bewusst behalten, weil sie nicht dieselbe Information wiederholen.
+- Geaenderte Datei: `work/rove-app/index.html`. JavaScript-Syntax und verbleibende Header-Texte
+  wurden geprueft; fuer das statische Frontend ist kein Service-Neustart erforderlich.
+
+## PDF-Report: Schlussmonat und Score-Seite korrigiert (02.08., noch zu deployen)
+
+- Der Abschlusssatz im PDF ist nicht mehr fest auf August gesetzt. Er nennt jetzt den Monat,
+  in dem der naechste Monatsreport erscheint: Ein Juli-Report sagt daher korrekt
+  `Wir sehen uns im September`. Der Jahreswechsel November -> Januar ist mit abgedeckt.
+- Der Plan auf Seite 10 bleibt bewusst beim direkten Folgemonat: Im Juli-Report ist das der
+  Plan fuer August. Der Webreport verwendet diese Logik bereits korrekt und enthaelt keinen
+  fehlerhaften festen Abschlusssatz.
+- Die vier kleinen Fortschrittsbalken der Score-Aufschluesselung wurden nur aus dem statischen
+  PDF entfernt. WeasyPrint platzierte sie ausserhalb ihrer Zeilen und dadurch ueber
+  `Dein naechster Schritt`, `Status` sowie unterhalb der Karte. Zahlen und Score-Aufteilung
+  bleiben vollstaendig sichtbar; die Web-Animationen bleiben unveraendert.
+- Kreisfortschritt, Rangbeschreibung und naechster Rang auf PDF-Seite 6 kommen jetzt aus den
+  echten Score-Daten statt aus fest hinterlegten Beispielwerten.
+- Lokal geprueft: Python-Kompilierung, Juli -> September, Jahreswechsel November -> Januar,
+  Web-Plan Juli -> August, PDF weiterhin exakt 10 Seiten sowie visuelle Kontrolle der Seiten
+  6 und 10.
+- Geaenderte Dateien: `rove_web_report_renderer.py`, `report_templates/rove_pdf_report.html`.
