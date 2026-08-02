@@ -39,7 +39,7 @@ from rove_app_state import (
     ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
-from rove_score import award_tracking_points
+from rove_score import award_tracking_points, reverse_tracking_points_for_deleted_expense
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -2022,7 +2022,7 @@ def create_expense():
         )
         cash_applied = account_applied if paid_cash else 0.0
         giro_applied = 0.0 if paid_cash else account_applied
-        reward = award_tracking_points(conn, user_id)
+        reward = award_tracking_points(conn, user_id, expense_id=expense_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -2159,12 +2159,23 @@ def delete_expense(expense_id: int):
             (user_id, expense_id),
         ).fetchone()
 
+        expense = conn.execute(
+            "SELECT created_at FROM expenses WHERE id = ? AND user_id = ?",
+            (expense_id, user_id),
+        ).fetchone()
+        if not expense:
+            return jsonify({"ok": False, "error": "expense_not_found"}), 404
+
         cur = conn.execute(
             "DELETE FROM expenses WHERE id = ? AND user_id = ?",
             (expense_id, user_id),
         )
         if cur.rowcount == 0:
             return jsonify({"ok": False, "error": "expense_not_found"}), 404
+
+        reward_reversed = reverse_tracking_points_for_deleted_expense(
+            conn, user_id, expense_id, str(expense["created_at"] or "")
+        )
 
         # Beim Löschen geht genau der damals abgezogene Betrag auf sein Ursprungskonto zurück.
         # Alte Bot-Ausgaben ohne App-Kontowirkung haben keine Bewegungszeile und erhalten
@@ -2196,6 +2207,7 @@ def delete_expense(expense_id: int):
         "id": expense_id,
         "refunded_cash": refunded_cash,
         "refunded_giro": refunded_giro,
+        "reward_reversed": reward_reversed,
         "accounts": balances,
         "available": live_data["sts"]["available"],
     })

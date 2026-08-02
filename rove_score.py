@@ -330,11 +330,91 @@ def calculate_score(
     }
 
 
-def award_tracking_points(conn: sqlite3.Connection, user_id: int, today: date | None = None) -> dict:
+def ensure_point_events_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS rove_point_events (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               user_id INTEGER NOT NULL,
+               event_key TEXT NOT NULL,
+               event_date TEXT NOT NULL,
+               event_type TEXT NOT NULL,
+               points INTEGER NOT NULL,
+               expense_id INTEGER,
+               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               UNIQUE(user_id, event_key)
+           )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_rove_point_events_expense
+           ON rove_point_events(user_id, expense_id)"""
+    )
+
+
+def _tracking_reward(streak: int) -> int:
+    reward = 1
+    if streak == 7:
+        reward += 10
+    elif streak == 30:
+        reward += 30
+    elif streak > 7 and streak % 7 == 0:
+        reward += 5
+    return reward
+
+
+def _latest_tracking_state(conn: sqlite3.Connection, user_id: int) -> tuple[str | None, int]:
+    rows = conn.execute(
+        """SELECT DISTINCT DATE(created_at) AS tracking_day
+             FROM expenses
+             WHERE user_id = ?
+             ORDER BY tracking_day DESC""",
+        (user_id,),
+    ).fetchall()
+    if not rows:
+        return None, 0
+    latest_key = str(_value(rows[0], "tracking_day", ""))
+    try:
+        expected = date.fromisoformat(latest_key)
+    except ValueError:
+        return None, 0
+    streak = 0
+    for row in rows:
+        try:
+            current = date.fromisoformat(str(_value(row, "tracking_day", "")))
+        except ValueError:
+            continue
+        if current != expected:
+            break
+        streak += 1
+        expected -= timedelta(days=1)
+    return latest_key, streak
+
+
+def award_tracking_points(
+    conn: sqlite3.Connection,
+    user_id: int,
+    expense_id: int | None = None,
+    today: date | None = None,
+) -> dict:
     """Award the once-per-day tracking point for App activity, safely shared with the bot."""
     today = today or date.today()
     today_key = today.isoformat()
     yesterday_key = (today - timedelta(days=1)).isoformat()
+    ensure_point_events_table(conn)
+    event_key = f"tracking:{today_key}"
+    existing = conn.execute(
+        """SELECT points FROM rove_point_events
+           WHERE user_id = ? AND event_key = ?""",
+        (user_id, event_key),
+    ).fetchone()
+    if existing:
+        user = conn.execute(
+            "SELECT streak_days, clarity_points FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return {
+            "awarded": 0,
+            "streak": _int(user, "streak_days") if user else 0,
+            "points": _int(user, "clarity_points") if user else 0,
+        }
     user = conn.execute(
         "SELECT last_activity_date, streak_days, clarity_points FROM users WHERE user_id = ?", (user_id,)
     ).fetchone()
@@ -346,19 +426,65 @@ def award_tracking_points(conn: sqlite3.Connection, user_id: int, today: date | 
             "streak": _int(user, "streak_days"),
             "points": _int(user, "clarity_points"),
         }
-
     streak = _int(user, "streak_days") + 1 if str(_value(user, "last_activity_date", "")) == yesterday_key else 1
-    awarded = 1
-    if streak == 7:
-        awarded += 10
-    elif streak == 30:
-        awarded += 30
-    elif streak > 7 and streak % 7 == 0:
-        awarded += 5
+    awarded = _tracking_reward(streak)
     points = _int(user, "clarity_points") + awarded
     conn.execute(
         """UPDATE users SET last_activity_date = ?, streak_days = ?, clarity_points = ?
            WHERE user_id = ?""",
         (today_key, streak, points, user_id),
     )
+    conn.execute(
+        """INSERT INTO rove_point_events
+           (user_id, event_key, event_date, event_type, points, expense_id)
+           VALUES (?, ?, ?, 'tracking_day', ?, ?)""",
+        (user_id, event_key, today_key, awarded, expense_id),
+    )
     return {"awarded": awarded, "streak": streak, "points": points}
+
+
+def reverse_tracking_points_for_deleted_expense(
+    conn: sqlite3.Connection,
+    user_id: int,
+    expense_id: int,
+    created_at: str,
+) -> int:
+    """Reverse App RP only when the deleted expense was the last one of its day."""
+    ensure_point_events_table(conn)
+    event_date = str(created_at or "")[:10]
+    if not event_date:
+        return 0
+    event_key = f"tracking:{event_date}"
+    event = conn.execute(
+        """SELECT id, points, expense_id FROM rove_point_events
+           WHERE user_id = ? AND event_key = ? AND event_type = 'tracking_day'""",
+        (user_id, event_key),
+    ).fetchone()
+    if not event:
+        return 0
+
+    replacement = conn.execute(
+        """SELECT id FROM expenses
+           WHERE user_id = ? AND DATE(created_at) = DATE(?)
+           ORDER BY id LIMIT 1""",
+        (user_id, event_date),
+    ).fetchone()
+    if replacement:
+        if _int(event, "expense_id") == expense_id:
+            conn.execute(
+                "UPDATE rove_point_events SET expense_id = ? WHERE id = ?",
+                (_int(replacement, "id"), _int(event, "id")),
+            )
+        return 0
+
+    reversed_points = max(0, _int(event, "points"))
+    conn.execute("DELETE FROM rove_point_events WHERE id = ?", (_int(event, "id"),))
+    latest_day, streak = _latest_tracking_state(conn, user_id)
+    conn.execute(
+        """UPDATE users
+           SET clarity_points = MAX(0, COALESCE(clarity_points, 0) - ?),
+               last_activity_date = ?, streak_days = ?
+           WHERE user_id = ?""",
+        (reversed_points, latest_day, streak, user_id),
+    )
+    return reversed_points
