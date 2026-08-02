@@ -253,7 +253,7 @@
 
       <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px;">
         <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Monatsfazit</div>
-        <div style="font-family: 'Newsreader', serif; font-size: 26px; line-height: 1.55; margin-top: 14px; color: #F4F1EA;">Du hast an <span style="color: #3BA7FF;">{{ tracked_days }} Tagen</span> aktiv getrackt und <span style="color: #3BA7FF;">{{ invested_amount }}</span> investiert oder zurückgelegt. Mehr als die Hälfte deines Vermögens arbeitet bereits für dich — die stärkste Kategorie war <span style="color: #F4F1EA; font-weight: 500;">{{ strongest_name }}</span> mit {{ strongest_amount }}.</div>
+        <div style="font-family: 'Newsreader', serif; font-size: 26px; line-height: 1.55; margin-top: 14px; color: #F4F1EA;">Du hast an <span style="color: #3BA7FF;">{{ tracked_days }} Tagen</span> aktiv getrackt. {{ month_savings_sentence }} {{ wealth_sentence }} Die stärkste Kategorie war <span style="color: #F4F1EA; font-weight: 500;">{{ strongest_name }}</span> mit {{ strongest_amount }}.</div>
       </div>
     </div>
   </section>
@@ -300,7 +300,7 @@
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">04</div>
       <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Financial Story · Wo du stehst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">Mehr als die Hälfte deines Vermögens arbeitet schon für dich.</div>
+      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">{{ wealth_headline }}</div>
 
       <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 52px 54px;">
         <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #9EA4A0;">Nettovermögen · {{ month_label }}</div>

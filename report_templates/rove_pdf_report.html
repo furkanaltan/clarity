@@ -182,7 +182,7 @@ html,body { margin:0; padding:0; }
 
     <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:18px; padding:34px 38px; margin-top:14px;">
       <div style="display:flex; align-items:center; gap:12px; font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#155681;">Monatsfazit</div>
-      <div style="font-family:'Newsreader',serif; font-size:24px; line-height:1.5; margin-top:14px; color:#16161A;">Du hast an <span style="color:#155681;">{{ tracked_days }} Tagen</span> aktiv getrackt und <span style="color:#155681;">{{ invested_amount }}</span> investiert oder zurückgelegt. Mehr als die Hälfte deines Vermögens arbeitet bereits für dich — die stärkste Kategorie war <span style="font-style:italic;">{{ strongest_name }}</span> mit {{ strongest_amount }}.</div>
+      <div style="font-family:'Newsreader',serif; font-size:24px; line-height:1.5; margin-top:14px; color:#16161A;">Du hast an <span style="color:#155681;">{{ tracked_days }} Tagen</span> aktiv getrackt. {{ month_savings_sentence }} {{ wealth_sentence }} Die stärkste Kategorie war <span style="font-style:italic;">{{ strongest_name }}</span> mit {{ strongest_amount }}.</div>
     </div>
 
     <div style="display:flex; align-items:center; justify-content:space-between; position:absolute; left:60px; right:60px; bottom:44px; padding-top:24px; border-top:1px solid #E4E2DD;">
@@ -241,7 +241,7 @@ html,body { margin:0; padding:0; }
       <div style="display:flex; align-items:center; gap:12px; font-size:11px; font-weight:600; letter-spacing:0.26em; text-transform:uppercase; color:#8A8A90;">Financial Story</div>
       <div style="font-size:11px; letter-spacing:0.18em; color:#B4B3B0; text-transform:uppercase;">Wo du stehst</div>
     </div>
-    <div style="font-family:'Newsreader',serif; font-size:52px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">Mehr als die Hälfte deines Vermögens <span style="font-style:italic; color:#155681;">arbeitet</span> schon für dich.</div>
+    <div style="font-family:'Newsreader',serif; font-size:52px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">{{ wealth_headline }}</div>
     
 
     <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:22px; padding:46px 48px;">

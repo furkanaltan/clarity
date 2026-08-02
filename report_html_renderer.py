@@ -1052,7 +1052,23 @@ def render_777_financial_story(_page_html: str, data: dict) -> str:
     inv_pct = invested_share(data)
     cash_pct = cash_share(data)
     note = humanize_text(story["text"])
-    headline = "Mehr als die Hälfte deines Vermögens arbeitet schon für dich." if inv_pct >= 50 else "Deine finanzielle Basis ist sichtbar aufgebaut."
+    net_worth = float(story.get("net_worth") or 0)
+    investments = max(0.0, float(story.get("investments") or 0))
+    if net_worth < 0:
+        headline = "Dein finanzieller Ausgangspunkt ist jetzt klar."
+        note_title = f"Dein Nettovermögen liegt aktuell bei {fmt_money(net_worth, 0)}."
+    elif net_worth == 0:
+        headline = "Dein Startpunkt ist klar sichtbar."
+        note_title = "Dein Nettovermögen liegt aktuell bei 0 €."
+    elif investments <= 0:
+        headline = "Dein Vermögen liegt aktuell liquide bereit."
+        note_title = "Bisher ist noch kein Anteil deines Vermögens investiert."
+    elif inv_pct >= 50:
+        headline = "Mehr als die Hälfte deines Vermögens ist bereits investiert."
+        note_title = f"{fmt_percent(inv_pct, 1)} deines Vermögens sind bereits investiert."
+    else:
+        headline = f"{fmt_percent(inv_pct, 1)} deines Vermögens sind bereits investiert."
+        note_title = headline
     return f"""
   <section class="page">
     <div class="topline">Financial Story · Wo du stehst</div>
@@ -1062,12 +1078,12 @@ def render_777_financial_story(_page_html: str, data: dict) -> str:
       <div class="label">Nettovermögen · {h(data["meta"]["month_label"])}</div>
       <div class="net-worth">{h(fmt_money(story["net_worth"], 0))}</div>
       <div class="wealth-bar">
-        <div class="wealth-invested" style="width:{max(5, inv_pct):.1f}%">Investments · {h(fmt_percent(inv_pct, 1))}</div>
-        <div class="wealth-cash" style="width:{max(5, cash_pct):.1f}%">Cash · {h(fmt_percent(cash_pct, 1))}</div>
+        <div class="wealth-invested" style="width:{max(0, inv_pct):.1f}%">Investments · {h(fmt_percent(inv_pct, 1))}</div>
+        <div class="wealth-cash" style="width:{max(0, cash_pct):.1f}%">Cash · {h(fmt_percent(cash_pct, 1))}</div>
       </div>
       <div class="wealth-labels"><div><strong>{h(fmt_money(story["investments"], 0))}</strong> investiert</div><div><strong>{h(fmt_money(story["cash"], 0))}</strong> liquide</div></div>
     </div>
-    <div class="card financial-note"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="note-title">Mit {h(fmt_percent(inv_pct, 1))} investiertem Kapital ist dein Vermögen nicht nur geparkt.</div><div class="note-body">{h(note)}</div></div></div>
+    <div class="card financial-note"><div class="round-icon green">{ICON_SVGS["arrow"]}</div><div><div class="note-title">{h(note_title)}</div><div class="note-body">{h(note)}</div></div></div>
 {footer(4)}
   </section>
 """.rstrip()

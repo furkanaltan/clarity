@@ -73,6 +73,76 @@ def money_text(value, decimals: int = 0) -> str:
     return fmt_money(value, decimals)
 
 
+def wealth_position_copy(
+    net_worth: float,
+    investments: float,
+    cash: float,
+    wealth_total: float,
+) -> dict[str, str]:
+    """Return factual wealth copy for every financial starting point."""
+    net_worth = float(net_worth or 0)
+    investments = max(0.0, float(investments or 0))
+    cash = max(0.0, float(cash or 0))
+    wealth_total = max(0.0, float(wealth_total or 0))
+    investments_pct = investments / wealth_total * 100 if wealth_total > 0 else 0.0
+
+    if net_worth < 0:
+        return {
+            "headline": "Dein finanzieller Ausgangspunkt ist jetzt klar.",
+            "sentence": (
+                f"Dein Nettovermögen liegt aktuell bei {money_text(net_worth)}. "
+                "Der Fokus liegt jetzt auf Transparenz und einem stabilen Puffer."
+            ),
+            "story_headline": "Dein aktueller Stand ist klar sichtbar.",
+            "story_sub": (
+                "Der Report zeigt dir den Ausgangspunkt. Mit jedem dokumentierten Monat "
+                "siehst du, was sich konkret verändert."
+            ),
+        }
+    if net_worth == 0:
+        return {
+            "headline": "Dein finanzieller Ausgangspunkt ist jetzt klar.",
+            "sentence": (
+                "Dein Nettovermögen liegt aktuell bei 0 €. "
+                "Der Fokus liegt jetzt auf Transparenz und einem ersten stabilen Puffer."
+            ),
+            "story_headline": "Dein Startpunkt ist klar sichtbar.",
+            "story_sub": (
+                "Mit jedem dokumentierten Monat entsteht ein verlässliches Bild davon, "
+                "was bei dir ankommt und wofür es wieder rausgeht."
+            ),
+        }
+    if investments <= 0:
+        return {
+            "headline": "Dein Vermögen liegt aktuell liquide bereit.",
+            "sentence": "Dein Vermögen liegt aktuell liquide bereit; bisher ist noch kein Anteil investiert.",
+            "story_headline": "Dein Vermögen liegt aktuell liquide bereit.",
+            "story_sub": (
+                "Das gibt dir Flexibilität. Wenn du künftig investierst oder gezielt zurücklegst, "
+                "wird auch diese Entwicklung im Monatsbild sichtbar."
+            ),
+        }
+    if investments_pct >= 50:
+        return {
+            "headline": "Mehr als die Hälfte deines Vermögens ist bereits investiert.",
+            "sentence": "Mehr als die Hälfte deines Vermögens ist bereits investiert.",
+            "story_headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
+            "story_sub": (
+                f"Deine {money_text(cash)} Liquidität bleibt verfügbar. "
+                "So ist dein Vermögen aufgeteilt, ohne dass der Überblick verloren geht."
+            ),
+        }
+    return {
+        "headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
+        "sentence": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
+        "story_headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
+        "story_sub": (
+            f"Deine {money_text(cash)} Liquidität bleibt verfügbar. "
+            "Der Report macht sichtbar, wie sich diese Aufteilung entwickelt."
+        ),
+    }
+
+
 def category_label(value: str) -> str:
     text = str(value or "Sonstiges").replace("_", " ").strip()
     return text.title() if text.isupper() else text
@@ -545,6 +615,13 @@ def build_render_context(data: dict) -> dict:
     investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
     investment_total = investment_summary.get("net_contributions", 0)
     invested_amount_raw = investment_total or savings_plan
+    wealth_copy = wealth_position_copy(net_worth, investments, cash, wealth_total)
+    if investment_total > 0:
+        month_savings_sentence = f"Du hast {money_text(investment_total)} investiert oder zurückgelegt."
+    elif savings_plan > 0:
+        month_savings_sentence = f"Für deine Sparrate sind {money_text(savings_plan)} pro Monat geplant."
+    else:
+        month_savings_sentence = "Dein Monatsbild wird mit jeder Buchung klarer."
 
     # "Hebel"-Berechnung: Kategorie halbieren, freigesetzten Betrag hochrechnen
     half_target = strongest_amount / 2
@@ -581,16 +658,8 @@ def build_render_context(data: dict) -> dict:
     else:
         invest_vs_strongest_text = f"Ein wichtiger Baustein neben deinen Ausgaben in {h(strongest_name)}."
 
-    if investments_pct >= 50:
-        invest_story_headline = f"Mit {fmt_percent(investments_pct, 1)} investiertem Kapital bist du keiner, der nur spart — du baust auf."
-    elif investments_pct > 0:
-        invest_story_headline = f"Mit {fmt_percent(investments_pct, 1)} investiertem Kapital hast du einen soliden Grundstein gelegt."
-    else:
-        invest_story_headline = "Dein Vermögen liegt aktuell als Cash bereit — der nächste Schritt ist, es arbeiten zu lassen."
-    invest_story_sub = (
-        f"Deine {money_text(cash)} Liquidität decken Unerwartetes, ohne dein Wachstum zu bremsen. "
-        f"Dieser Monat ist dein Startpunkt — ab {h(next_month_name)} wird die Entwicklung sichtbar."
-    )
+    invest_story_headline = wealth_copy["story_headline"]
+    invest_story_sub = wealth_copy["story_sub"]
 
     score_headline_suffix = (
         "du hast dein Geld fest im Griff." if score_value >= 70
@@ -694,6 +763,9 @@ def build_render_context(data: dict) -> dict:
         "strongest_name": h(strongest_name),
         "tracked_days": meta.get("tracked_days", 0),
         "invested_amount": money_text(invested_amount_raw),
+        "month_savings_sentence": h(month_savings_sentence),
+        "wealth_headline": h(wealth_copy["headline"]),
+        "wealth_sentence": h(wealth_copy["sentence"]),
         "strongest_amount": money_text(strongest_amount),
         "ratio_sentence": h(
             f"Für jeden gesparten Euro sind {round(ratio_to_savings * 100)} Cent in {strongest_name} geflossen."
