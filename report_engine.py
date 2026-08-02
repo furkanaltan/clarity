@@ -17,6 +17,7 @@ from reportlab.lib.colors import HexColor
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from rove_score import calculate_score as calculate_live_score
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -566,67 +567,8 @@ def calculate_savings_execution_points(savings_ratio: float, confirmed: bool) ->
 
 
 def calculate_clarity_score_v2(user_id: int, user, total_expenses: float, report_month: str) -> dict:
-    income = row_float(user, "income") + row_float(user, "other_income")
-    fixed = row_float(user, "fixed_costs")
-    free_budget = income - fixed
-    remaining = free_budget - total_expenses
-    savings_amount = row_float(user, "etf_savings") + row_float(user, "cash_savings")
-    savings_ratio = savings_amount / income if income > 0 else 0
-    cash = row_float(user, "current_cash")
-
-    budget_points = 0
-    if free_budget > 0:
-        remaining_ratio = remaining / free_budget
-        budget_points = 25 if remaining_ratio >= 0.30 else max(0, int(25 * remaining_ratio / 0.30))
-
-    confirmed = has_confirmed_investment_for_month(user_id, report_month)
-    savings_points = calculate_savings_execution_points(savings_ratio, confirmed)
-    tracking_days_90 = get_tracking_days_90(user_id)
-    consistency_points = min(25, int(25 * min(tracking_days_90, 90) / 90))
-
-    structure_points = 0
-    if fixed > 0 and cash >= fixed * 3:
-        structure_points += 10
-    if savings_ratio >= 0.15:
-        structure_points += 8
-    if free_budget > 0:
-        structure_points += 7
-
-    raw_total = budget_points + savings_points + consistency_points + structure_points
-    start_score = calculate_start_score(user)
-    platform_days = get_platform_days(user_id)
-    cap, days_to_unlock, next_unlock_level = get_score_cap(platform_days)
-    baseline = start_score if platform_days == 0 else min(start_score, cap)
-    total = min(max(raw_total, baseline), cap)
-    rank_name, rank_icon = get_score_rank(total)
-
-    if platform_days < 30:
-        phase = "Aufbauphase"
-    elif platform_days < 90:
-        phase = "Proof-Phase"
-    else:
-        phase = "Verified"
-
-    return {
-        "total": total,
-        "raw_total": raw_total,
-        "cap": cap,
-        "budget": budget_points,
-        "savings": savings_points,
-        "consistency": consistency_points,
-        "structure": structure_points,
-        "start_score": start_score,
-        "platform_days": platform_days,
-        "proof_days": platform_days,
-        "tracking_days_90": tracking_days_90,
-        "savings_confirmed": confirmed,
-        "savings_ratio": savings_ratio,
-        "rank_name": rank_name,
-        "rank_icon": rank_icon,
-        "phase": phase,
-        "days_to_unlock": days_to_unlock,
-        "next_unlock_level": next_unlock_level,
-    }
+    with get_db() as conn:
+        return calculate_live_score(conn, user_id, user, total_expenses, report_month)
 
 
 def calculate_goal_projection(goal_amount: float, current_value: float, monthly_savings: float):

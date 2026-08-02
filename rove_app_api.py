@@ -39,6 +39,7 @@ from rove_app_state import (
     ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
+from rove_score import award_tracking_points
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -2021,10 +2022,7 @@ def create_expense():
         )
         cash_applied = account_applied if paid_cash else 0.0
         giro_applied = 0.0 if paid_cash else account_applied
-        conn.execute(
-            "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
-            (datetime.now().strftime("%Y-%m-%d"), user_id),
-        )
+        reward = award_tracking_points(conn, user_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -2038,6 +2036,7 @@ def create_expense():
         "paid_cash": paid_cash,
         "cash_applied": cash_applied,
         "giro_applied": giro_applied,
+        "reward": reward,
         "accounts": balances,
         "available": live_data["sts"]["available"],
     })
@@ -2085,10 +2084,6 @@ def create_income():
             (user_id, applied, label),
         )
         movement_id = cur.lastrowid
-        conn.execute(
-            "UPDATE users SET last_activity_date = ? WHERE user_id = ?",
-            (datetime.now().strftime("%Y-%m-%d"), user_id),
-        )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 

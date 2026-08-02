@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import telebot
 import openai
 from dotenv import load_dotenv
+from rove_score import calculate_score as calculate_live_score
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -3563,74 +3564,9 @@ def calculate_savings_execution_points(savings_ratio: float, confirmed: bool) ->
 
 
 def calculate_clarity_score(user_id: int, u: dict, total_expenses: float, report_month: str = None) -> dict:
-    """
-    Clarity Score V2: schwerer Prestige-Score aus Budget, Umsetzung,
-    90-Tage-Konstanz und finanzieller Struktur.
-    """
-    report_month = report_month or date.today().strftime("%Y-%m")
-    income = (u.get("income") or 0) + (u.get("other_income") or 0)
-    fixed = u.get("fixed_costs") or 0
-    free_budget = income - fixed
-    remaining = free_budget - total_expenses
-    savings_amount = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
-    savings_ratio = savings_amount / income if income > 0 else 0
-    cash = u.get("current_cash") or 0
-
-    budget_points = 0
-    if free_budget > 0:
-        remaining_ratio = remaining / free_budget
-        budget_points = 25 if remaining_ratio >= 0.30 else max(0, int(25 * remaining_ratio / 0.30))
-
-    confirmed = has_confirmed_investment_for_month(user_id, report_month)
-    savings_points = calculate_savings_execution_points(savings_ratio, confirmed)
-
-    tracking_days_90 = get_tracking_days_90(user_id)
-    consistency_points = min(25, int(25 * min(tracking_days_90, 90) / 90))
-
-    structure_points = 0
-    if fixed > 0 and cash >= fixed * 3:
-        structure_points += 10
-    if savings_ratio >= 0.15:
-        structure_points += 8
-    if free_budget > 0:
-        structure_points += 7
-
-    raw_total = budget_points + savings_points + consistency_points + structure_points
-    start_score = calculate_start_score(u)
-    platform_days = get_platform_days(user_id)
-    proof_days = platform_days
-    cap, days_to_unlock, next_unlock_level = get_score_cap(platform_days)
-    baseline = start_score if platform_days == 0 else min(start_score, cap)
-    capped_total = min(max(raw_total, baseline), cap)
-    rank_name, rank_emoji = get_score_rank(capped_total)
-
-    if platform_days < 30:
-        phase = "Aufbauphase"
-    elif platform_days < 90:
-        phase = "Proof-Phase"
-    else:
-        phase = "Verified"
-
-    return {
-        "total": capped_total,
-        "raw_total": raw_total,
-        "cap": cap,
-        "budget": budget_points,
-        "savings": savings_points,
-        "consistency": consistency_points,
-        "structure": structure_points,
-        "start_score": start_score,
-        "platform_days": platform_days,
-        "proof_days": proof_days,
-        "tracking_days_90": tracking_days_90,
-        "savings_confirmed": confirmed,
-        "savings_ratio": savings_ratio,
-        "rank_name": rank_name,
-        "rank_emoji": rank_emoji,
-        "phase": phase,
-        "days_to_unlock": days_to_unlock,
-        "next_unlock_level": next_unlock_level,
-    }
+    """Use one score formula for the remaining bot, reports and the App."""
+    with get_db() as conn:
+        return calculate_live_score(conn, user_id, u, total_expenses, report_month)
 
 
 def record_score_history_if_needed(user_id: int, u: dict = None) -> None:

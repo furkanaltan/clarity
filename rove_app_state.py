@@ -30,6 +30,8 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from rove_score import calculate_score
+
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
@@ -992,6 +994,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
     available = income - fixed_costs - sparraten - monthly_expenses
     monthly_plan = get_app_monthly_plan(conn, user_id, income, fixed_costs, sparraten)
+    score = calculate_score(conn, user_id, u, monthly_expenses)
 
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
     etf = investments - crypto
@@ -1064,6 +1067,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
+        "score": score,
         "sts": {
             "konto": round(cash, 2),
             "fixRest": round(fixed_costs, 2),
@@ -1322,11 +1326,9 @@ def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—"
                 "token": token,
             } if PUBLIC_APP_API_BASE_URL else None,
             **state_data,
-            "score": {
-                "value": int(score_total or 0),
-                "label": score_label or "—",
-            },
         }
+        # score_total/score_label bleiben nur fuer alte Aufrufer im Funktionskopf. Der
+        # State enthaelt jetzt immer den live berechneten Score inklusive Faktoren und RP.
     finally:
         conn.close()
 
