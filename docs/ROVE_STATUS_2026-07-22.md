@@ -1966,3 +1966,20 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Manuell angelegte Aktien wie Under Armour bleiben beim bisherigen Aktien-Korrekturpfad.
 - Geaenderte Dateien: `work/rove-app/index.html`, `work/Calrity_Main/rove_app_api.py` und
   `rove_app_state.py`. API-Neustart erforderlich.
+
+## App: Sparraten wieder klar bearbeitbar (03.08., noch zu deployen)
+
+- Der ETF-Plan steuert nur den Ablauf einer ETF-Buchung. Die Hoehe von ETF- und Cash-Sparen hat
+  jetzt wieder einen eigenen, sichtbaren Weg: `Monatsplan -> Sparrate aendern` oder im ETF-Plan
+  `Rate aendern`.
+- Das eigene Sheet zeigt beide Werte nebeneinander. So kann ein Kunde seine ETF-Rate und seine
+  flexible Cash-Ruecklage in einem Schritt aendern, ohne unruhige Browser-Pop-ups oder eine
+  versteckte Mentor-Eingabe.
+- Ist in diesem Monat bereits Cash-Sparen bestaetigt oder der ETF-Plan ausgefuehrt, bleibt die
+  echte Buchung unveraendert. Die neue Rate wird verbindlich fuer den Folgemonat vorgemerkt.
+  Dadurch wird kein bereits sichtbarer Monatsstand rueckwirkend veraendert.
+- Der API-Check erkennt nun auch eine ETF-Plan-Ausfuehrung als bereits erfolgte Sparbewegung. Ohne
+  diese Absicherung konnte eine nachtraegliche Aenderung bei ausgefuehrtem ETF-Plan noch im
+  laufenden Monat an der Vorgabe drehen.
+- Geaenderte Dateien: `work/rove-app/index.html` und `work/Calrity_Main/rove_app_api.py`.
+  API-Neustart erforderlich.
