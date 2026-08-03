@@ -1898,6 +1898,16 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Die Vermoegenszahl beginnt direkt nach dem kompakten Kopf; keine Information wurde entfernt.
 - Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
 
+## App: Vermoegens-Kopf weiter reduziert (03.08., noch zu deployen)
+
+- `Uebersicht` wurde im Home-Kopf komplett entfernt, weil die Tab-Leiste den Ort bereits eindeutig
+  macht und ein zweiter Seitentitel nur visuelle Lautstaerke erzeugt.
+- Das Datum steht jetzt zuerst als dezenter Kontext. Darunter ist `Gesamtvermoegen` die klare,
+  fett gesetzte Ueberschrift in der bisherigen ruhigen Titelgroesse.
+- Die grosse Vermoegenszahl wurde von 44 auf 40 px reduziert. Sie bleibt die wichtigste Zahl,
+  wirkt aber nicht mehr wie ein zweiter Hero ueber der Seite.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
 ## App: Zahltag aus Einstellungen in Monatsplan verschoben (03.08., noch zu deployen)
 
 - Der Zahltag steht nicht mehr zwischen Name und E-Mail in den Profileinstellungen. Diese Ansicht
@@ -1998,10 +2008,11 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Eine vorgemerkte Rate wird nun im App-State mitgeliefert und beim erneuten Bearbeiten als
   Ausgangswert verwendet. Mehrfaches Aendern vor dem Folgemonat ueberschreibt dadurch nicht mehr
   unbemerkt einen Teil der bereits vorgemerkten ETF-/Cash-Aufteilung.
-- Die ETF-Oberflaeche ist reduziert: Termin und Quellkonto bilden einen Badge, der Ablaufstatus
-  einen zweiten. `Einstellungen aendern` und `Rate aendern` sind zwei klare Aktionen. Pausieren
-  liegt nur noch innerhalb der Einstellungen; alte Mini-Links, dauerhafte Pause-Knoepfe und
+- Die ETF-Oberflaeche ist reduziert; alte Mini-Links, dauerhafte Pause-Knoepfe und
   Live-Kurs-Erklaertexte wurden entfernt.
+- Nach dem Handy-Check weiter reduziert: Die normale ETF-Kachel zeigt neben dem Betrag nur noch
+  `Einstellungen aendern`. Rate, Termin, Quellkonto, Automatik/Bestaetigung/Pause und eine eventuell
+  faellige manuelle Erfassung liegen ausschliesslich auf der Einstellungsseite.
 - Verifiziert: Python-Kompilierung, JavaScript-Syntax sowie Rechentests fuer Giro, Tagesgeld,
   fehlendes Guthaben, Pause, Bestaetigung, Doppelbuchung und vorgemerkte Folgemonatsrate.
 - Geaenderte Dateien: `work/rove-app/index.html`, `work/Calrity_Main/rove_app_api.py`,
