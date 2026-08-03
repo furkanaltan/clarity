@@ -642,6 +642,25 @@ def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict 
     return {"effectiveMonth": month_key, "etf": etf, "cash": cash}
 
 
+def get_app_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict | None:
+    """Liefert eine noch nicht aktive Sparrate fuer die transparente App-Anzeige."""
+    ensure_app_scheduled_savings_table(conn)
+    month_key = date.today().strftime("%Y-%m")
+    row = conn.execute(
+        """SELECT effective_month, etf_savings, cash_savings
+             FROM app_scheduled_savings
+            WHERE user_id = ? AND effective_month > ?""",
+        (user_id, month_key),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "effectiveMonth": str(row["effective_month"]),
+        "etf": round(max(0.0, float(row["etf_savings"] or 0)), 2),
+        "cash": round(max(0.0, float(row["cash_savings"] or 0)), 2),
+    }
+
+
 def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
     """Speichert den Ausfuehrungsrhythmus eines ETF-Sparplans pro App-Konto.
 
@@ -1041,6 +1060,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     cash_savings = round(float(u.get("cash_savings") or 0), 2)
     sparraten = etf_savings + cash_savings
     etf_plan = get_app_etf_savings_plan(conn, user_id, etf_savings)
+    scheduled_savings = get_app_scheduled_savings(conn, user_id)
     fixed_costs = float(u.get("fixed_costs") or 0)
     monthly_expenses = float(conn.execute(
         """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -1125,6 +1145,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
         "etfPlan": etf_plan,
+        "scheduledSavings": scheduled_savings,
         "score": score,
         "sts": {
             "konto": round(cash, 2),

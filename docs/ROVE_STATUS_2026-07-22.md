@@ -1983,3 +1983,26 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   laufenden Monat an der Vorgabe drehen.
 - Geaenderte Dateien: `work/rove-app/index.html` und `work/Calrity_Main/rove_app_api.py`.
   API-Neustart erforderlich.
+
+## App: ETF-Logik-Audit und reduzierte Bedienung (03.08., noch zu deployen)
+
+- Die ETF-Umschichtung wurde als Geldfluss erneut vollstaendig geprueft: Der Betrag sinkt exakt
+  auf dem gewaehlten Quellkonto und steigt exakt bei Investments. Das Gesamtvermoegen bleibt dabei
+  unveraendert. Giro darf negativ werden; Tagesgeld lehnt eine nicht gedeckte Rate ohne Teilbuchung ab.
+- Pause, Bestaetigungsmodus, automatische Erfassung und die Einmal-pro-Monat-Sperre wurden mit
+  isolierten SQLite-Szenarien geprueft. Auch `Monatsende` wird in kurzen Monaten korrekt auf den
+  28., 29. oder 30. gelegt.
+- Wichtiger Monatswechsel-Fix: Eine vorgemerkte neue Sparrate wird jetzt vor dem ETF-Lauf aktiviert.
+  Damit kann am ersten Ausfuehrungstag nicht mehr versehentlich noch einmal die alte Rate gebucht
+  werden.
+- Eine vorgemerkte Rate wird nun im App-State mitgeliefert und beim erneuten Bearbeiten als
+  Ausgangswert verwendet. Mehrfaches Aendern vor dem Folgemonat ueberschreibt dadurch nicht mehr
+  unbemerkt einen Teil der bereits vorgemerkten ETF-/Cash-Aufteilung.
+- Die ETF-Oberflaeche ist reduziert: Termin und Quellkonto bilden einen Badge, der Ablaufstatus
+  einen zweiten. `Einstellungen aendern` und `Rate aendern` sind zwei klare Aktionen. Pausieren
+  liegt nur noch innerhalb der Einstellungen; alte Mini-Links, dauerhafte Pause-Knoepfe und
+  Live-Kurs-Erklaertexte wurden entfernt.
+- Verifiziert: Python-Kompilierung, JavaScript-Syntax sowie Rechentests fuer Giro, Tagesgeld,
+  fehlendes Guthaben, Pause, Bestaetigung, Doppelbuchung und vorgemerkte Folgemonatsrate.
+- Geaenderte Dateien: `work/rove-app/index.html`, `work/Calrity_Main/rove_app_api.py`,
+  `work/Calrity_Main/rove_app_state.py`. API-Neustart erforderlich; der Bot bleibt unberuehrt.

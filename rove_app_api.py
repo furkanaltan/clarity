@@ -38,6 +38,7 @@ from rove_app_state import (
     ensure_app_monthly_plan_table,
     ensure_app_scheduled_savings_table,
     apply_due_scheduled_savings,
+    get_app_scheduled_savings,
     ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
@@ -987,6 +988,9 @@ def current_app_state():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        # Eine fuer diesen Monat vorgemerkte Rate muss VOR dem ETF-Lauf aktiv werden.
+        # Sonst wuerde am Monatsersten noch einmal der alte Betrag gebucht.
+        apply_due_scheduled_savings(conn, user_id)
         # Ein automatischer ETF-Sparplan wird beim ersten sicheren App-Kontakt am
         # Ausfuehrungstag erfasst. Ohne Broker-API bleibt das ausschliesslich die
         # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
@@ -1279,6 +1283,7 @@ def update_etf_plan():
                 (1 if action == "resume" else 0, user_id),
             )
         else:
+            apply_due_scheduled_savings(conn, user_id)
             result = record_due_etf_plan(conn, user_id, force=True)
             if not result.get("ok"):
                 return jsonify(result), 400
@@ -1533,12 +1538,16 @@ def update_profile():
                 execution_day = 0
             source_account = clean_text(plan.get("source_account")).lower()
             mode = clean_text(plan.get("mode")).lower()
+            active_raw = plan.get("active", True)
             if not 1 <= execution_day <= 31:
                 return jsonify({"ok": False, "error": "etf_execution_day_out_of_range"}), 400
             if source_account not in {"giro", "tagesgeld"}:
                 return jsonify({"ok": False, "error": "valid_etf_source_required"}), 400
             if mode not in {"auto", "confirm"}:
                 return jsonify({"ok": False, "error": "valid_etf_mode_required"}), 400
+            if active_raw not in {True, False, 0, 1}:
+                return jsonify({"ok": False, "error": "valid_etf_active_required"}), 400
+            active = 1 if bool(active_raw) else 0
             ensure_app_etf_savings_plan_table(conn)
             now = datetime.now()
             # Kein rueckwirkendes Buchen beim Einrichten: Ist der gewuenschte Tag
@@ -1551,17 +1560,17 @@ def update_profile():
             conn.execute(
                 """INSERT INTO app_etf_savings_plan
                        (user_id, execution_day, source_account, mode, active, start_month, updated_at)
-                   VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                    ON CONFLICT(user_id) DO UPDATE SET
                        execution_day = excluded.execution_day,
                        source_account = excluded.source_account,
                        mode = excluded.mode,
-                       active = 1,
+                       active = excluded.active,
                        start_month = CASE
                          WHEN app_etf_savings_plan.start_month > excluded.start_month
                          THEN app_etf_savings_plan.start_month ELSE excluded.start_month END,
                        updated_at = CURRENT_TIMESTAMP""",
-                (user_id, execution_day, source_account, mode, start_month),
+                (user_id, execution_day, source_account, mode, active, start_month),
             )
 
         scheduled_savings = None
@@ -1590,6 +1599,7 @@ def update_profile():
                 "SELECT etf_savings, cash_savings FROM users WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
+            pending = get_app_scheduled_savings(conn, user_id)
 
             def savings_amount(key: str, fallback: float) -> float:
                 if key not in payload:
@@ -1603,8 +1613,14 @@ def update_profile():
                 return value
 
             try:
-                etf_savings = savings_amount("etf_savings", float(current["etf_savings"] or 0))
-                cash_savings = savings_amount("cash_savings", float(current["cash_savings"] or 0))
+                etf_savings = savings_amount(
+                    "etf_savings",
+                    float(pending["etf"] if pending else current["etf_savings"] or 0),
+                )
+                cash_savings = savings_amount(
+                    "cash_savings",
+                    float(pending["cash"] if pending else current["cash_savings"] or 0),
+                )
             except ValueError:
                 return jsonify({"ok": False, "error": "valid_savings_amount_required"}), 400
             if (status and status["savings_status"] == "confirmed") or executed:
@@ -1636,7 +1652,15 @@ def update_profile():
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
-    return jsonify({"ok": True, **live_data, "scheduledSavings": scheduled_savings})
+    return jsonify(
+        {
+            "ok": True,
+            **live_data,
+            "scheduledSavings": scheduled_savings
+            if scheduled_savings is not None
+            else live_data.get("scheduledSavings"),
+        }
+    )
 
 
 @app.route("/v1/goals", methods=["POST"])
