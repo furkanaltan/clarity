@@ -1951,3 +1951,18 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   `rove_score.py`, `report_engine.py`, `rove_monthly_reminders.py`, `bot.py` und
   `work/rove-app/index.html`. API-Neustart erforderlich; `bot.py` wird nur fuer die gleiche
   Sparbewegungs-Erkennung im weiterhin laufenden Beta-Bot neu geladen.
+
+## App: ETF-Plan-Auswahl und Holding-Korrektur (03.08., noch zu deployen)
+
+- Die unruhigen Browser-Pop-ups `OK`/`Abbrechen` fuer den ETF-Sparplan wurden durch ein eigenes
+  Rov.E-Sheet ersetzt: Ausfuehrungstag, Giro oder Tagesgeld und automatisches Erfassen oder
+  kurze Bestaetigung sind als ruhige, sichtbare Auswahl formatiert.
+- Bestehende ETF-Holdings aus `portfolio_holdings` zeigen nun ebenfalls den Bearbeiten-Stift.
+  Die Korrektur aktualisiert genau dieses Holding und den Gesamtwert. Sie legt keine zweite
+  Aktie/ETF-Position an, wie es der bisherige allgemeinen Aktienweg getan haette.
+- Jede ETF-Wertkorrektur bekommt einen Audit-Eintrag `manual_adjustment`; der Monatsreport
+  zaehlt ihn bewusst nicht als neue Investition. Man korrigiert damit einen Stand, nicht den
+  Sparfortschritt.
+- Manuell angelegte Aktien wie Under Armour bleiben beim bisherigen Aktien-Korrekturpfad.
+- Geaenderte Dateien: `work/rove-app/index.html`, `work/Calrity_Main/rove_app_api.py` und
+  `rove_app_state.py`. API-Neustart erforderlich.

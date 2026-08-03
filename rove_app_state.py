@@ -1321,7 +1321,10 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         pos = {
             "n": r["instrument_label"],
             "v": round(float(r["total_invested"] or 0), 2),
-            "editable": False,
+            # Ohne Broker-Anbindung ist der angezeigte Depotwert ein manuell
+            # gepflegter Wert. Er darf deshalb direkt in der App korrigiert werden.
+            "editable": True,
+            "holding": True,
         }
         sp, lp = r["start_price"], r["last_price"]
         if sp and lp:

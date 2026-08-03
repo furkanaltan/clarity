@@ -2015,7 +2015,7 @@ def update_property():
 
 @app.route("/v1/investments", methods=["POST"])
 def update_investment_position():
-    """Setzt manuelle Krypto- oder Aktienwerte, ohne Startvermoegen doppelt zu zaehlen."""
+    """Setzt manuelle Krypto-, Aktien- oder bestehende ETF-Werte ohne Doppelzaehlung."""
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
     asset_type = clean_text(payload.get("asset_type"), "crypto").lower()
@@ -2024,13 +2024,60 @@ def update_investment_position():
         target_value = round(max(0.0, float(payload.get("value") or 0)), 2)
     except (TypeError, ValueError):
         target_value = -1.0
-    if asset_type not in {"crypto", "stock"} or not asset_name or target_value < 0 or target_value > 100_000_000:
+    if asset_type not in {"crypto", "stock", "etf"} or not asset_name or target_value < 0 or target_value > 100_000_000:
         return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
 
     with db() as conn:
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        # Ein bestehendes ETF-Holding darf nicht als neue Aktienposition daneben
+        # angelegt werden. Die Korrektur aktualisiert deshalb genau das Depot-Holding.
+        if asset_type == "etf":
+            try:
+                holding = conn.execute(
+                    """SELECT instrument_key, instrument_label, COALESCE(total_invested, 0) AS value
+                         FROM portfolio_holdings
+                         WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
+                         LIMIT 1""",
+                    (user_id, asset_name),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                holding = None
+            if not holding:
+                return jsonify({"ok": False, "error": "etf_holding_not_found"}), 404
+            current_value = round(max(0.0, float(holding["value"] or 0)), 2)
+            delta = round(target_value - current_value, 2)
+            total_row = conn.execute(
+                "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
+            if current_total + delta < -0.009:
+                return jsonify({"ok": False, "error": "investment_total_not_available"}), 400
+            if abs(delta) >= 0.01:
+                conn.execute(
+                    """UPDATE portfolio_holdings
+                           SET total_invested = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE user_id = ? AND instrument_key = ?""",
+                    (target_value, user_id, holding["instrument_key"]),
+                )
+                # Audit-Trail ohne falsche Investitionsbehauptung im Monatsreport.
+                conn.execute(
+                    """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                       VALUES (?, ?, ?, 'etf', ?, 'manual_adjustment', 'app', 'Manuelle ETF-Wertkorrektur')""",
+                    (abs(delta), "in" if delta > 0 else "out", holding["instrument_label"]),
+                )
+                conn.execute(
+                    "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                    (round(current_total + delta, 2), user_id),
+                )
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+            return jsonify({"ok": True, "position": {
+                "asset_type": "etf", "asset_name": holding["instrument_label"], "value": target_value,
+            }, **live_data})
 
         row = conn.execute(
             """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net,
