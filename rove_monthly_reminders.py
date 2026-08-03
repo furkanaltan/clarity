@@ -33,7 +33,9 @@ def missing_plan_parts(row) -> list[str]:
         missing.append("Einkommen")
     if row["fixed_costs_status"] != "confirmed":
         missing.append("Fixkosten")
-    if row["savings_status"] != "confirmed":
+    # ETF-Sparpläne werden separat am eigenen Ausführungstag gebucht. Die
+    # Zahltags-Erinnerung soll deshalb nur noch flexibles Cash-Sparen anmahnen.
+    if float(row["cash_savings"] or 0) > 0 and row["savings_status"] != "confirmed":
         missing.append("Sparrate")
     return missing
 
@@ -49,7 +51,8 @@ def send_due_monthly_reminders(today: date | None = None) -> int:
             """SELECT u.user_id,
                       COALESCE(s.income_status, 'planned') AS income_status,
                       COALESCE(s.fixed_costs_status, 'planned') AS fixed_costs_status,
-                      COALESCE(s.savings_status, 'planned') AS savings_status
+                      COALESCE(s.savings_status, 'planned') AS savings_status,
+                      COALESCE(u.cash_savings, 0) AS cash_savings
                  FROM users u
                  LEFT JOIN app_monthly_plan_status s
                    ON s.user_id = u.user_id AND s.month_key = ?

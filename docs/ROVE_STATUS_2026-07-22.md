@@ -1808,3 +1808,146 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   Web-Plan Juli -> August, PDF weiterhin exakt 10 Seiten sowie visuelle Kontrolle der Seiten
   6 und 10.
 - Geaenderte Dateien: `rove_web_report_renderer.py`, `report_templates/rove_pdf_report.html`.
+
+## Light Mode: dunklen Tabbar-Saum entfernt (02.08., noch zu deployen)
+
+- Die untere Navigation nutzt im hellen Modus jetzt eine deckende weisse Flaeche ohne Blur.
+  Der iOS-Blur konnte an der Safe-Area einen dunklen Schatten erzeugen, obwohl kein sichtbarer
+  Schatten im Design vorgesehen war. Der dunkle Modus behaelt seine bisherige Glasoptik.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## Light Mode: iOS-Systemfarbe angleichen (02.08., noch zu deployen)
+
+- Die iOS-Systemfarbe (`theme-color`) war bisher fest dunkel. Sie wird nun bereits vor dem
+  ersten Rendern und beim Umschalten auf die helle App-Flaeche gesetzt. Damit kann die untere
+  Safe-Area im installierten Light Mode keinen dunklen Streifen mehr von der alten Systemfarbe
+  uebernehmen.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## Light Mode: Schatten der geschlossenen Sheets entfernt (02.08., noch zu deployen)
+
+- Ursache des schwarzen Nebels unter der Tabbar: Alle etwa zwanzig geschlossenen Eingabe-Sheets
+  lagen zwar unterhalb des sichtbaren Bereichs, behielten aber jeweils ihren schwarzen
+  Aufwaerts-Schatten. Im hellen Modus addierten sich diese Schatten sichtbar.
+- Geschlossene Sheets haben nun keinen Schatten mehr. Erst das aktiv geoeffnete Sheet bekommt
+  seinen Schatten zurueck. Die Oeffnungsanimation, Positionierung und der dunkle Modus bleiben
+  unveraendert.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Bestaetigungs-Chip in Glasoptik (02.08., noch zu deployen)
+
+- Alle kurzen Bestaetigungen nach einer Eingabe nutzen jetzt dieselbe ruhige Glasoptik wie die
+  restlichen iOS-inspirierten Komponenten: abgerundete Karte statt flacher Pill-Form, heller
+  Rand, dezenter gruener Verlauf, Innenlicht und weicher Schatten.
+- Im hellen Modus ist der Chip entsprechend heller gehalten, damit er nicht wie ein fremder
+  gruener Standard-Toast wirkt. Verhalten, Text und Dauer der Rueckmeldung bleiben unveraendert.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Monatscheck im Cashflow statt in Einstellungen (03.08., noch zu deployen)
+
+- Gehalt, Fixkosten und Sparrate sind monatliche Cashflow-Ereignisse, keine Einstellung. Der
+  bisherige Abschnitt `Monatsplanung` samt `Monatscheck` wurde deshalb aus den Einstellungen
+  entfernt.
+- Der Cashflow hat jetzt einen eigenen `Monatsplan`-Chip. Der Chip ist horizontal erreichbar,
+  ohne die untere Tab-Leiste mit einem weiteren Symbol zu ueberladen.
+- Die Einstellungen enthalten damit keine monatliche Handlung mehr.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Monatsplan-Hinweis als einmaliger goldener Wegweiser (03.08., noch zu deployen)
+
+- Der `Monatsplan`-Chip steht vor `Budgets`, weil die Reihenfolge damit dem Monatsablauf folgt:
+  Einnahmen und Ausgaben, Monatsplan, dann Budgetkontrolle.
+- Der vorherige goldene Dauerpunkt ist ersetzt. Ein kleiner goldener Punkt erscheint nur, bis der
+  Kunde den Monatsplan im jeweiligen Monat erstmals geoeffnet hat. Danach verschwindet er auch
+  dann, wenn eine Bestaetigung bewusst erst spaeter erfolgt. Mit einem neuen Monatsplan ist er
+  wieder einmal sichtbar.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Ziel-hinzufuegen als Nebenaktion (03.08., noch zu deployen)
+
+- Unter bestehenden Zielen erscheint keine grosse gestrichelte Empty-State-Karte mehr. Sie sah
+  aus wie ein weiterer Hero und nahm den echten Zielen ihre visuelle Prioritaet.
+- Der Einstieg ist jetzt eine schmale, neutrale Plus-Zeile `Weiteres Ziel anlegen`. Die Funktion
+  und der Ziel-Anlegen-Flow bleiben unveraendert.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Kopfbereiche weiter reduziert (03.08., noch zu deployen)
+
+- `Deine Toepfe` unter `Deine Ziele` und die Erklaerung unter `Vertraege` wurden entfernt. Die
+  nachfolgenden Karten machen beide Inhalte bereits selbst klar, daher waren die Zeilen doppelt.
+- Glocke und Profilkreis auf der Uebersicht sind von 44 auf 40 px verkleinert. Sie bleiben gut
+  bedienbar, konkurrieren aber nicht mehr mit dem Vermoegenswert als Hauptinformation.
+- Das Datum auf der Uebersicht wurde bewusst nicht verschoben; dessen Platzierung wird separat
+  entschieden.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Vertraege-Hierarchie geglaettet (03.08., noch zu deployen)
+
+- Zwischen `Vertraege` und der Fixkosten-Karte liegen jetzt bewusst 20 px. Der Kopf klebt nicht
+  mehr an der Hauptinformation, bleibt aber kompakt.
+- `+ Vertrag hinzufuegen` ist von einer gefuellten blauen Aktion zu einem ruhigen blauen Umriss
+  reduziert. Er bleibt auffindbar, konkurriert aber nicht mehr mit Fixkosten und Vertragsliste.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Uebersicht-Kopf beruhigt (03.08., noch zu deployen)
+
+- `Dein Ueberblick` wurde zu `Uebersicht` reduziert und ist mit 23 px bewusst kleiner als der
+  Vermoegenswert. Der Titel orientiert, ohne selbst zum Hero zu werden.
+- Das Datum steht direkt darunter als kleine Kontextzeile. Glocke und Profil bleiben bewusst
+  links beziehungsweise rechts im vertrauten, ausgeglichenen Kopfbereich.
+- Die Vermoegenszahl beginnt direkt nach dem kompakten Kopf; keine Information wurde entfernt.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Zahltag aus Einstellungen in Monatsplan verschoben (03.08., noch zu deployen)
+
+- Der Zahltag steht nicht mehr zwischen Name und E-Mail in den Profileinstellungen. Diese Ansicht
+  bleibt damit auf echte Kontodaten beschraenkt.
+- Im Monatsplan erscheint er als eigene, antippbare kleine Kachel direkt unter der Einordnung.
+  Dort kann der Kunde den Tag auch jederzeit aendern oder erstmals festlegen, ohne ihn in den
+  Einstellungen suchen zu muessen.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: Fixkosten von Konsum-Insights getrennt (03.08., noch zu deployen)
+
+- Fixkosten bleiben als echte Abbuchungen im Cashflow sichtbar. Das ist wichtig fuer den vollstaendigen
+  Verlauf und die Nachvollziehbarkeit.
+- Coach-Fragen wie `Was war meine groesste Ausgabe?`, Ausgaben-Uebersichten, Budget- und
+  Konsum-Berechnungen behandeln Miete, Kredit, Hausgeld, Versicherungen und Abos aber nicht mehr
+  als frei gewaehlten Konsum. Die groesste Ausgabe meint damit verlässlich die groesste Konsumausgabe.
+- Die Gesamtuebersicht nennt Konsumausgaben und Fixkosten getrennt, statt beides in eine Zahl zu
+  werfen. So wird eine normale Miete nie mehr als persoenlicher Ausgaben-Ausreisser bewertet.
+- Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
+
+## App: ETF-Sparplan getrennt von Cash-Sparen (03.08., noch zu deployen)
+
+- Ein ETF-Sparplan ist jetzt ein eigener, dauerhaft gespeicherter Ablauf: Ausfuehrungstag
+  (1 bis 31), Quellkonto (Giro oder Tagesgeld), Modus (automatisch in Rov.E erfassen oder
+  kurz bestaetigen) und Pause/Aktivierung liegen in `app_etf_savings_plan`.
+- Bestehende App-Kunden werden nicht still umgestellt. Sobald eine ETF-Sparrate vorhanden ist,
+  erscheint einmalig bei `ETF & Investments` und im `Monatsplan` die Einrichtung. Bis dahin
+  bleibt der bisherige Monatscheck unveraendert.
+- Der lokale Erststart-Wizard fragt die drei ETF-Plan-Werte ebenfalls ab und speichert sie im
+  lokalen Profil. Die produktive serverseitige Buchung beginnt im aktuellen Beta-Ablauf erst,
+  sobald ein Konto mit Rov.E verbunden ist (heute ueber den bestehenden App-/Telegram-Zugang).
+  Ein vollstaendiges Direkt-Registrieren ohne vorheriges Konto bleibt ein eigener, spaeterer
+  Account-Onboarding-Block und wird nicht als bereits live verkauft.
+- Wird ein Plan nach seinem Ausfuehrungstag eingerichtet, beginnt er erst im Folgemonat. Dadurch
+  gibt es keine rueckwirkende oder doppelte Buchung. Der automatische Modus erfasst beim ersten
+  sicheren App-Kontakt am bzw. nach dem Ausfuehrungstag ausschliesslich die interne Rov.E-
+  Umschichtung; es wird niemals eine echte Bank- oder Broker-Order behauptet.
+- ETF und Cash bleiben absichtlich getrennt: `Cash-Sparen` wird weiter nur durch die bewusste
+  Monatsbestaetigung vom Giro aufs Tagesgeld umgebucht. Ein eingerichteter ETF-Plan wird dabei
+  nicht mehr versehentlich mitgebucht.
+- Der ETF-Plan kann in der ETF-Kachel oder per Mentor mit Formulierungen wie `ETF-Sparplan
+  pausieren`, `ETF-Sparplan weiterlaufen lassen` und bei Bestaetigungsmodus `ETF-Sparplan jetzt
+  erfassen` gesteuert werden.
+- ETF-Plan-Buchungen zaehlen fuer Score und Monatsreport als echte Sparbewegung. Die
+  Zahltags-Erinnerung nennt nur noch flexibles Cash-Sparen, damit ein separater ETF-Plan nicht
+  doppelt angemahnt wird.
+- Verifiziert mit einer isolierten SQLite-Pruefung: 300 EUR ETF vom Tagesgeld reduzieren
+  Tagesgeld 500 -> 200 und erhoehen Investments 2.000 -> 2.300; ein zweiter Lauf im selben
+  Monat erzeugt keine zweite Buchung.
+- Geaenderte Dateien: `work/Calrity_Main/rove_app_state.py`, `rove_app_api.py`,
+  `rove_score.py`, `report_engine.py`, `rove_monthly_reminders.py`, `bot.py` und
+  `work/rove-app/index.html`. API-Neustart erforderlich; `bot.py` wird nur fuer die gleiche
+  Sparbewegungs-Erkennung im weiterhin laufenden Beta-Bot neu geladen.

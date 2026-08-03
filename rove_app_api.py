@@ -32,7 +32,9 @@ from rove_app_state import (
     ensure_app_account_balances_table,
     ensure_app_cash_movements_table,
     ensure_app_contracts_table,
+    ensure_app_etf_savings_plan_table,
     ensure_app_goals_table,
+    get_app_etf_savings_plan,
     ensure_app_monthly_plan_table,
     ensure_app_scheduled_savings_table,
     apply_due_scheduled_savings,
@@ -850,6 +852,83 @@ def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dic
     )
 
 
+def _etf_plan_due_day(today: datetime, configured_day: int) -> int:
+    """31. wird in kurzen Monaten fair als letzter Kalendertag behandelt."""
+    first_next = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    last_day = (first_next - timedelta(days=1)).day
+    return min(max(1, int(configured_day)), last_day)
+
+
+def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool = False) -> dict:
+    """Erfasst einen ETF-Sparplan einmal pro Monat in Rov.E, nie bei Bank oder Broker."""
+    ensure_app_etf_savings_plan_table(conn)
+    user = conn.execute(
+        "SELECT current_investments, etf_savings FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not user:
+        return {"ok": False, "error": "user_not_found"}
+    amount = round(float(user["etf_savings"] or 0), 2)
+    plan = conn.execute(
+        """SELECT execution_day, source_account, mode, active, start_month
+             FROM app_etf_savings_plan WHERE user_id = ?""",
+        (user_id,),
+    ).fetchone()
+    if not plan or amount <= 0:
+        return {"ok": False, "error": "etf_plan_not_configured"}
+
+    now = datetime.now()
+    month_key = now.strftime("%Y-%m")
+    if not bool(plan["active"]):
+        return {"ok": False, "error": "etf_plan_paused"}
+    if str(plan["start_month"]) > month_key:
+        return {"ok": False, "error": "etf_plan_starts_later"}
+    if not force:
+        if str(plan["mode"]) != "auto":
+            return {"ok": False, "error": "etf_plan_needs_confirmation"}
+        if now.day < _etf_plan_due_day(now, int(plan["execution_day"])):
+            return {"ok": False, "error": "etf_plan_not_due"}
+
+    exists = conn.execute(
+        """SELECT 1 FROM investment_events
+             WHERE user_id = ? AND source = 'app_etf_plan' AND asset_type = 'etf'
+               AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+        (user_id, month_key),
+    ).fetchone()
+    if exists:
+        return {"ok": True, "alreadyRecorded": True, "amount": amount}
+
+    source = str(plan["source_account"])
+    balances = app_cash_accounts(conn, user_id)
+    if source == "tagesgeld" and balances["tagesgeld"] + 0.009 < amount:
+        return {"ok": False, "error": "etf_plan_source_insufficient"}
+    balances[source] = round(balances[source] - amount, 2)
+    save_app_cash_accounts(conn, user_id, balances)
+
+    investments = round(float(user["current_investments"] or 0) + amount, 2)
+    conn.execute("UPDATE users SET current_investments = ? WHERE user_id = ?", (investments, user_id))
+    booking_note = (
+        f"Automatisch in Rov.E erfasst · Quelle: {source}"
+        if not force else f"In Rov.E erfasst · Quelle: {source}"
+    )
+    conn.execute(
+        """INSERT INTO investment_events
+               (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+           VALUES (?, ?, 'in', 'etf', 'ETF-Sparplan', 'recurring_plan', 'app_etf_plan', ?)""",
+        (user_id, amount, booking_note),
+    )
+    conn.execute(
+        """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+           VALUES (?, ?, 'investments', 'app_etf_plan', 'Stand nach ETF-Sparplan')""",
+        (user_id, investments),
+    )
+    conn.execute(
+        """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
+           VALUES (?, ?, 'cash', 'app_etf_plan', 'Stand nach ETF-Sparplan')""",
+        (user_id, round(sum(balances.values()), 2)),
+    )
+    return {"ok": True, "amount": amount, "source": source}
+
+
 @app.route("/v1/pair", methods=["POST"])
 def pair_app():
     """Verbindet eine installierte PWA einmalig mit dem Telegram-App-Code."""
@@ -904,10 +983,16 @@ def current_app_state():
     """Aktualisiert die vom Bot gefuehrten Bereiche einer gekoppelten App."""
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        # Ein automatischer ETF-Sparplan wird beim ersten sicheren App-Kontakt am
+        # Ausfuehrungstag erfasst. Ohne Broker-API bleibt das ausschliesslich die
+        # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
+        record_due_etf_plan(conn, user_id)
         state = build_live_app_data(conn, user_id)
+        conn.commit()
 
     return jsonify({"ok": True, **state})
 
@@ -1102,6 +1187,11 @@ def update_monthly_plan():
             ).fetchone()
             etf_savings = round(float(user["etf_savings"] or 0), 2) if user else 0.0
             cash_savings = round(float(user["cash_savings"] or 0), 2) if user else 0.0
+            # Sobald ein ETF-Plan eingerichtet ist, gehoert ETF nicht mehr in den
+            # gemeinsamen Monatscheck. Sonst wuerde eine flexible Cash-Bestaetigung den
+            # ETF-Sparplan doppelt oder zum falschen Zeitpunkt buchen.
+            etf_plan = get_app_etf_savings_plan(conn, user_id, etf_savings)
+            etf_to_book = 0.0 if etf_plan.get("configured") else etf_savings
             already_confirmed = conn.execute(
                 """SELECT 1 FROM investment_events
                      WHERE user_id = ?
@@ -1110,8 +1200,8 @@ def update_monthly_plan():
                      LIMIT 1""",
                 (user_id, month_key),
             ).fetchone()
-            if not already_confirmed and (etf_savings > 0 or cash_savings > 0):
-                new_investments = round(float(user["current_investments"] or 0) + etf_savings, 2)
+            if not already_confirmed and (etf_to_book > 0 or cash_savings > 0):
+                new_investments = round(float(user["current_investments"] or 0) + etf_to_book, 2)
                 conn.execute(
                     "UPDATE users SET current_investments = ? WHERE user_id = ?",
                     (new_investments, user_id),
@@ -1120,16 +1210,16 @@ def update_monthly_plan():
                 # Sparen ist eine Umschichtung, keine zweite Einnahme: Der Betrag verlaesst
                 # das Girokonto. ETF wandert ins Investment, Cash ins Tagesgeld. Dadurch bleibt
                 # das Nettovermoegen gleich und nur seine Verteilung aendert sich.
-                balances["giro"] = round(balances["giro"] - etf_savings - cash_savings, 2)
+                balances["giro"] = round(balances["giro"] - etf_to_book - cash_savings, 2)
                 balances["tagesgeld"] = round(balances["tagesgeld"] + cash_savings, 2)
                 save_app_cash_accounts(conn, user_id, balances)
-                if etf_savings > 0:
+                if etf_to_book > 0:
                     conn.execute(
                         """INSERT INTO investment_events
                            (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
                            VALUES (?, ?, 'in', 'etf', 'ETF-Sparrate', 'recurring_plan', 'app_monthly_plan',
                                    'Monatliche ETF-Sparrate in der App bestätigt')""",
-                        (user_id, etf_savings),
+                        (user_id, etf_to_book),
                     )
                 if cash_savings > 0:
                     conn.execute(
@@ -1158,6 +1248,42 @@ def update_monthly_plan():
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/etf-plan", methods=["POST", "OPTIONS"])
+def update_etf_plan():
+    """Pausiert, aktiviert oder bestaetigt den getrennten ETF-Sparplan."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    if action not in {"pause", "resume", "execute"}:
+        return jsonify({"ok": False, "error": "valid_etf_plan_action_required"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_etf_savings_plan_table(conn)
+        if action in {"pause", "resume"}:
+            row = conn.execute(
+                "SELECT 1 FROM app_etf_savings_plan WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"ok": False, "error": "etf_plan_not_configured"}), 400
+            conn.execute(
+                "UPDATE app_etf_savings_plan SET active = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (1 if action == "resume" else 0, user_id),
+            )
+        else:
+            result = record_due_etf_plan(conn, user_id, force=True)
+            if not result.get("ok"):
+                return jsonify(result), 400
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
     return jsonify({"ok": True, **live_data})
 
 
@@ -1394,6 +1520,50 @@ def update_profile():
                 (day or None, user_id),
             )
 
+        if "etf_plan" in payload:
+            # Erst konfigurieren, dann automatisch buchen: Bei bestehenden Kunden fehlen
+            # Ausfuehrungstag und Quellkonto. Ohne diese drei expliziten Angaben passiert nie
+            # still eine ETF-Buchung.
+            plan = payload.get("etf_plan") or {}
+            if not isinstance(plan, dict):
+                return jsonify({"ok": False, "error": "valid_etf_plan_required"}), 400
+            try:
+                execution_day = int(plan.get("execution_day") or 0)
+            except (TypeError, ValueError):
+                execution_day = 0
+            source_account = clean_text(plan.get("source_account")).lower()
+            mode = clean_text(plan.get("mode")).lower()
+            if not 1 <= execution_day <= 31:
+                return jsonify({"ok": False, "error": "etf_execution_day_out_of_range"}), 400
+            if source_account not in {"giro", "tagesgeld"}:
+                return jsonify({"ok": False, "error": "valid_etf_source_required"}), 400
+            if mode not in {"auto", "confirm"}:
+                return jsonify({"ok": False, "error": "valid_etf_mode_required"}), 400
+            ensure_app_etf_savings_plan_table(conn)
+            now = datetime.now()
+            # Kein rueckwirkendes Buchen beim Einrichten: Ist der gewuenschte Tag
+            # bereits vorbei, beginnt die Automatik erst mit dem naechsten Monat.
+            start_month = now.strftime("%Y-%m")
+            if execution_day < now.day:
+                start_month = (
+                    (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+                ).strftime("%Y-%m")
+            conn.execute(
+                """INSERT INTO app_etf_savings_plan
+                       (user_id, execution_day, source_account, mode, active, start_month, updated_at)
+                   VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       execution_day = excluded.execution_day,
+                       source_account = excluded.source_account,
+                       mode = excluded.mode,
+                       active = 1,
+                       start_month = CASE
+                         WHEN app_etf_savings_plan.start_month > excluded.start_month
+                         THEN app_etf_savings_plan.start_month ELSE excluded.start_month END,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (user_id, execution_day, source_account, mode, start_month),
+            )
+
         scheduled_savings = None
         # Sparrate gehoert zur Monatsplanung und darf nicht nur im Browser leben.
         # Sonst zeigt Rov.E bis zum naechsten Refresh einen anderen Betrag als
@@ -1438,7 +1608,9 @@ def update_profile():
             except ValueError:
                 return jsonify({"ok": False, "error": "valid_savings_amount_required"}), 400
             if (status and status["savings_status"] == "confirmed") or executed:
-                next_month = (datetime.now().replace(day=28) + timedelta(days=4)).strftime("%Y-%m")
+                next_month = (
+                    (datetime.now().replace(day=28) + timedelta(days=4)).replace(day=1)
+                ).strftime("%Y-%m")
                 ensure_app_scheduled_savings_table(conn)
                 conn.execute(
                     """INSERT INTO app_scheduled_savings

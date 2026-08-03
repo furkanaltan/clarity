@@ -758,19 +758,30 @@ def get_monthly_execution(user_id: int, report_month: str) -> dict:
         "savings_confirmed": False,
     }
     with get_db() as conn:
-        if not table_exists(conn, "app_monthly_plan_status"):
-            return execution
-        row = conn.execute(
-            """SELECT income_status, fixed_costs_status, savings_status
-                 FROM app_monthly_plan_status
-                WHERE user_id = ? AND month_key = ?""",
-            (user_id, report_month),
-        ).fetchone()
-    if not row:
-        return execution
-    execution["income_confirmed"] = row["income_status"] == "confirmed"
-    execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
-    execution["savings_confirmed"] = row["savings_status"] == "confirmed"
+        row = None
+        if table_exists(conn, "app_monthly_plan_status"):
+            row = conn.execute(
+                """SELECT income_status, fixed_costs_status, savings_status
+                     FROM app_monthly_plan_status
+                    WHERE user_id = ? AND month_key = ?""",
+                (user_id, report_month),
+            ).fetchone()
+        if row:
+            execution["income_confirmed"] = row["income_status"] == "confirmed"
+            execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
+            execution["savings_confirmed"] = row["savings_status"] == "confirmed"
+
+        # Ein automatisch oder bewusst erfasster ETF-Sparplan ist eine echte
+        # Monatsbewegung. Der Report darf ihn nicht als bloße Planung behandeln.
+        if table_exists(conn, "investment_events"):
+            execution["savings_confirmed"] = execution["savings_confirmed"] or conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ?
+                       AND source IN ('investiert_command', 'app_monthly_plan', 'app_etf_plan')
+                       AND strftime('%Y-%m', created_at) = ?
+                     LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone() is not None
     return execution
 
 

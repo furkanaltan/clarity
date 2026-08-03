@@ -642,6 +642,62 @@ def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict 
     return {"effectiveMonth": month_key, "etf": etf, "cash": cash}
 
 
+def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
+    """Speichert den Ausfuehrungsrhythmus eines ETF-Sparplans pro App-Konto.
+
+    Der Plan ist bewusst von der flexiblen Cash-Sparrate getrennt: ETF kann regelmaessig
+    laufen, waehrend jemand seine Tagesgeld-Ruecklage in einem Monat aussetzt.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_etf_savings_plan (
+            user_id        INTEGER PRIMARY KEY,
+            execution_day  INTEGER NOT NULL,
+            source_account TEXT NOT NULL CHECK(source_account IN ('giro', 'tagesgeld')),
+            mode           TEXT NOT NULL CHECK(mode IN ('auto', 'confirm')),
+            active         INTEGER NOT NULL DEFAULT 1,
+            start_month    TEXT NOT NULL,
+            updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings: float) -> dict:
+    """Liefert nur den Planstatus; die echte Buchung passiert in der App-API."""
+    ensure_app_etf_savings_plan_table(conn)
+    month_key = date.today().strftime("%Y-%m")
+    row = conn.execute(
+        """SELECT execution_day, source_account, mode, active, start_month
+             FROM app_etf_savings_plan WHERE user_id = ?""",
+        (user_id,),
+    ).fetchone()
+    executed = conn.execute(
+        """SELECT 1 FROM investment_events
+             WHERE user_id = ? AND source = 'app_etf_plan'
+               AND asset_type = 'etf'
+               AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+        (user_id, month_key),
+    ).fetchone() is not None
+    if not row:
+        return {
+            "configured": False,
+            "setupRequired": bool(etf_savings > 0),
+            "amount": round(float(etf_savings or 0), 2),
+            "executedThisMonth": executed,
+        }
+    return {
+        "configured": True,
+        "setupRequired": False,
+        "amount": round(float(etf_savings or 0), 2),
+        "executionDay": int(row["execution_day"]),
+        "sourceAccount": str(row["source_account"]),
+        "mode": str(row["mode"]),
+        "active": bool(row["active"]),
+        "startMonth": str(row["start_month"]),
+        "executedThisMonth": executed,
+    }
+
+
 def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
     """Speichert zusaetzliche App-Ziele zentral neben dem Telegram-Hauptziel."""
     conn.execute(
@@ -984,6 +1040,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     etf_savings = round(float(u.get("etf_savings") or 0), 2)
     cash_savings = round(float(u.get("cash_savings") or 0), 2)
     sparraten = etf_savings + cash_savings
+    etf_plan = get_app_etf_savings_plan(conn, user_id, etf_savings)
     fixed_costs = float(u.get("fixed_costs") or 0)
     monthly_expenses = float(conn.execute(
         """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
@@ -1067,6 +1124,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
+        "etfPlan": etf_plan,
         "score": score,
         "sts": {
             "konto": round(cash, 2),

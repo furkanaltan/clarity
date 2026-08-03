@@ -120,7 +120,7 @@ def savings_confirmed(conn: sqlite3.Connection, user_id: int, report_month: str)
     return conn.execute(
         """SELECT 1 FROM investment_events
              WHERE user_id = ?
-               AND source IN ('investiert_command', 'app_monthly_plan')
+               AND source IN ('investiert_command', 'app_monthly_plan', 'app_etf_plan')
                AND strftime('%Y-%m', created_at) = ?
              LIMIT 1""",
         (user_id, report_month),
