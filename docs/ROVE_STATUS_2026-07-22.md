@@ -1906,6 +1906,8 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   fett gesetzte Ueberschrift in der bisherigen ruhigen Titelgroesse.
 - Die grosse Vermoegenszahl wurde von 44 auf 40 px reduziert. Sie bleibt die wichtigste Zahl,
   wirkt aber nicht mehr wie ein zweiter Hero ueber der Seite.
+- Nach dem zweiten visuellen Feinschliff steht `Gesamtvermoegen` nun vor dem Datum; die Zahl liegt
+  bei 38 px. Das liest sich natuerlicher als Titel, Kontext, Wert und gibt der Kurve mehr Raum.
 - Geaenderte Datei: `work/rove-app/index.html`. Nur statisches Frontend, kein Service-Neustart.
 
 ## App: Zahltag aus Einstellungen in Monatsplan verschoben (03.08., noch zu deployen)
