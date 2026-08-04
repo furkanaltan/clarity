@@ -816,6 +816,44 @@ def get_monthly_execution(user_id: int, report_month: str) -> dict:
     return execution
 
 
+def get_report_savings_progress(user_id: int, report_month: str, execution: dict) -> dict:
+    """Return only savings-plan progress that the App can substantiate.
+
+    The investment summary intentionally includes all investment activity. That is
+    useful on the wealth page, but it must not turn a one-off investment or a
+    legacy booking into a completed monthly savings rate on the cover.
+    """
+    progress = {
+        "full_plan_confirmed": bool(execution.get("savings_confirmed")),
+        "full_plan_amount": 0.0,
+        "automatic_etf_amount": 0.0,
+    }
+    with get_db() as conn:
+        if not table_exists(conn, "investment_events"):
+            return progress
+        rows = conn.execute(
+            """SELECT source, COALESCE(SUM(amount), 0) AS amount
+                 FROM investment_events
+                WHERE user_id = ?
+                  AND direction != 'out'
+                  AND strftime('%Y-%m', created_at) = ?
+                  AND source IN ('app_monthly_plan', 'app_etf_plan')
+                GROUP BY source""",
+            (user_id, report_month),
+        ).fetchall()
+
+    amounts = {str(row["source"]): float(row["amount"] or 0) for row in rows}
+    progress["automatic_etf_amount"] = max(0.0, amounts.get("app_etf_plan", 0.0))
+    if progress["full_plan_confirmed"]:
+        # A confirmed plan can contain cash-only bookings, or cash plus the
+        # separately scheduled ETF plan. Both belong to the confirmed plan.
+        progress["full_plan_amount"] = max(
+            0.0,
+            amounts.get("app_monthly_plan", 0.0) + progress["automatic_etf_amount"],
+        )
+    return progress
+
+
 def get_latest_portfolio_snapshots(user_id: int) -> list:
     with get_db() as conn:
         if not table_exists(conn, "portfolio_snapshots"):
@@ -1050,6 +1088,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, savings_plan)
     investment_summary = get_investment_summary(user_id, report_month)
     monthly_execution = get_monthly_execution(user_id, report_month)
+    savings_progress = get_report_savings_progress(user_id, report_month, monthly_execution)
     wealth_history = get_wealth_history(user_id, report_month)
     portfolio_snapshots = get_latest_portfolio_snapshots(user_id)
     badges = get_user_badges(user_id)
@@ -1193,6 +1232,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "note": "Die Vermögenskurve wird ab dem zweiten Monatsabschluss sichtbar.",
                 "investment_summary": investment_summary,
                 "monthly_execution": monthly_execution,
+                "savings_progress": savings_progress,
                 "portfolio_snapshots": portfolio_snapshots,
             },
             "goal": {

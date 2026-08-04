@@ -628,15 +628,29 @@ def build_render_context(data: dict) -> dict:
 
     investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
     investment_total = float(investment_summary.get("net_contributions") or 0)
-    actual_savings = max(0.0, investment_total)
+    savings_progress = data["pages"]["wealth_journey"].get("savings_progress", {})
+    full_plan_amount = max(0.0, float(savings_progress.get("full_plan_amount") or 0))
+    automatic_etf_amount = max(0.0, float(savings_progress.get("automatic_etf_amount") or 0))
+    full_plan_confirmed = bool(savings_progress.get("full_plan_confirmed")) and full_plan_amount > 0
+    actual_savings = full_plan_amount if full_plan_confirmed else automatic_etf_amount
     invested_amount_raw = actual_savings
     wealth_copy = wealth_position_copy(net_worth, investments, cash, wealth_total)
-    if investment_total > 0:
-        month_savings_sentence = f"Du hast {money_text(investment_total)} investiert oder zurückgelegt."
+    if full_plan_confirmed:
+        month_savings_sentence = f"Du hast {money_text(actual_savings)} deiner Sparrate umgesetzt."
+        freedom_step_label = "Sparfortschritt"
+        freedom_step_subline = "diesen Monat bestätigt"
+    elif automatic_etf_amount > 0:
+        month_savings_sentence = f"Dein ETF-Sparplan wurde mit {money_text(automatic_etf_amount)} erfasst."
+        freedom_step_label = "ETF-Sparplan"
+        freedom_step_subline = "automatisch in Rov.E erfasst"
     elif savings_plan > 0:
         month_savings_sentence = f"Für deine Sparrate sind {money_text(savings_plan)} pro Monat geplant."
+        freedom_step_label = "Sparrate"
+        freedom_step_subline = "monatlich geplant · noch nicht bestätigt"
     else:
         month_savings_sentence = "Dein Monatsbild wird mit jeder Buchung klarer."
+        freedom_step_label = "Sparrate"
+        freedom_step_subline = "noch nicht geplant"
 
     # "Hebel"-Berechnung: Kategorie halbieren, freigesetzten Betrag hochrechnen
     half_target = strongest_amount / 2
@@ -762,9 +776,9 @@ def build_render_context(data: dict) -> dict:
         "next_month_name": h(next_month_name),
         "next_report_delivery_month_name": h(next_report_delivery_month_name),
         "month_short": h(month_short),
-        "freedom_step_label": "Sparfortschritt" if actual_savings > 0 else "Sparrate",
-        "freedom_step_text": f"+{money_text(actual_savings)}" if actual_savings > 0 else money_text(savings_plan),
-        "freedom_step_subline": "diesen Monat investiert oder zurückgelegt" if actual_savings > 0 else "monatlich geplant · noch nicht bestätigt",
+        "freedom_step_label": freedom_step_label,
+        "freedom_step_text": f"+{money_text(actual_savings)}" if actual_savings > 0 else "offen",
+        "freedom_step_subline": freedom_step_subline,
         "development_percent_text": (
             fmt_percent(cover.get("development_percent"), 1)
             if cover.get("development_percent") is not None else "ab Monat 2"
