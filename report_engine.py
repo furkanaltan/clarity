@@ -648,8 +648,8 @@ def get_app_property_equity(user_id: int) -> float:
     return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
 
 
-def get_report_goal(user_id: int, user) -> tuple[str, float]:
-    """Return the profile goal or, for App-first users, their first App goal.
+def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
+    """Return the report goal and its explicitly assigned goal-pot balance.
 
     Older Telegram users store their primary goal on ``users``. New App users
     store goals in ``app_goals`` instead. Reports must understand both paths.
@@ -657,13 +657,22 @@ def get_report_goal(user_id: int, user) -> tuple[str, float]:
     description = str(user["goal_description"] or "").strip() if "goal_description" in user.keys() else ""
     target_amount = row_float(user, "goal_amount")
     if description and target_amount > 0:
-        return description, target_amount
+        with get_db() as conn:
+            progress = 0.0
+            if table_exists(conn, "app_primary_goal_progress"):
+                row = conn.execute(
+                    """SELECT current_amount FROM app_primary_goal_progress
+                         WHERE user_id = ?""",
+                    (user_id,),
+                ).fetchone()
+                progress = float(row["current_amount"] or 0) if row else 0.0
+        return description, target_amount, min(max(0.0, progress), target_amount)
 
     with get_db() as conn:
         if not table_exists(conn, "app_goals"):
-            return "", 0.0
+            return "", 0.0, 0.0
         row = conn.execute(
-            """SELECT name, target_amount
+            """SELECT name, target_amount, current_amount
                  FROM app_goals
                 WHERE user_id = ? AND target_amount > 0
                 ORDER BY datetime(created_at), goal_id
@@ -671,8 +680,10 @@ def get_report_goal(user_id: int, user) -> tuple[str, float]:
             (user_id,),
         ).fetchone()
     if not row:
-        return "", 0.0
-    return str(row["name"] or "").strip(), float(row["target_amount"] or 0)
+        return "", 0.0, 0.0
+    target_amount = float(row["target_amount"] or 0)
+    progress = float(row["current_amount"] or 0)
+    return str(row["name"] or "").strip(), target_amount, min(max(0.0, progress), target_amount)
 
 
 def get_biggest_expense(user_id: int, report_month: str):
@@ -994,7 +1005,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
     property_equity = get_app_property_equity(user_id)
-    goal_description, target_amount = get_report_goal(user_id, user)
+    goal_description, target_amount, goal_current_amount = get_report_goal(user_id, user)
     clarity_points = row_int(user, "clarity_points")
 
     free_budget = income_total - fixed_costs
@@ -1035,8 +1046,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         for row in category_rows
     ]
     strongest_category = top_categories[0] if top_categories else None
-    goal_progress = (net_worth / target_amount * 100.0) if target_amount > 0 else 0.0
-    months_to_goal = calculate_goal_projection(target_amount, net_worth, savings_plan)
+    goal_progress = (goal_current_amount / target_amount * 100.0) if target_amount > 0 else 0.0
+    months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, savings_plan)
     investment_summary = get_investment_summary(user_id, report_month)
     monthly_execution = get_monthly_execution(user_id, report_month)
     wealth_history = get_wealth_history(user_id, report_month)
@@ -1142,7 +1153,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         "pages": {
             "cover": {
                 "period": month_label,
-                "freedom_step": investment_summary["net_contributions"] or savings_plan,
+                # A planned savings rate is not a completed step toward a goal.
+                "freedom_step": investment_summary["net_contributions"],
                 "development": net_worth_delta,
                 "development_percent": net_worth_delta_percent,
                 "development_text": development_text,
@@ -1186,6 +1198,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "goal": {
                 "description": goal_description or "Dein Ziel",
                 "target_amount": target_amount,
+                "current_amount": goal_current_amount,
                 "progress_percent": min(100.0, goal_progress),
                 "months_to_goal": months_to_goal,
                 "forecast_text": next_lever,
@@ -1232,9 +1245,6 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         p["month"]["best_decision"] = ai["best_decision"]
     if ai.get("focus"):
         p["month"]["focus"] = ai["focus"]
-    if ai.get("goal_honest"):
-        # PDF-Karte "Ehrlich gesagt" liest goal.forecast_text
-        p["goal"]["forecast_text"] = ai["goal_honest"]
     if ai.get("recap_good"):
         p["recap"]["what_went_well"] = ai["recap_good"]
     if ai.get("recap_attention"):

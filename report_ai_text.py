@@ -130,6 +130,8 @@ def _build_signals(data: dict) -> str:
         f"Groesste Einzelbuchung: {biggest.get('merchant', 'keine')} ({_eur(biggest.get('amount'))})",
         f"Ziel: {goal.get('description', 'kein Ziel')} ueber {_eur(goal.get('target_amount'))}, "
         f"{round(goal.get('progress_percent') or 0)}% erreicht, {goal_eta}",
+        f"Zieltopf: {_eur(goal.get('current_amount'))} direkt diesem Ziel zugewiesen. "
+        "Nur dieser Betrag ist Ziel-Fortschritt, niemals das gesamte Nettovermoegen.",
     ]
 
     budget = pages.get("budget") or {}
@@ -184,6 +186,9 @@ Wichtige Regeln:
 - Erfinde NIEMALS Budget-Grenzen (z.B. "Halte Lebensmittel unter 100 EUR"). Nenne nur
   Budgets, die in der Datenlage stehen. Sind KEINE Budgets aktiv, gib keine erfundenen
   Budget-Grenzen aus - beziehe dich dann auf das reale Ausgabeverhalten.
+- ZIEL: Als Ziel-Fortschritt gilt ausschliesslich der Zieltopf in der Datenlage,
+  niemals das gesamte Nettovermoegen. Ist die Sparrate noch nicht bestaetigt,
+  beschreibe sie als Planung; behaupte nie, sie sei verfehlt oder bereits umgesetzt.
 - Jedes Feld: 1-2 kurze Saetze, hoechstens ca. 140 Zeichen.
 - "focus" besonders knapp halten: ein kurzer Satz, hoechstens ca. 75 Zeichen.
 

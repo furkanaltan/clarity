@@ -402,7 +402,9 @@ def draw_score(c, data):
 def draw_goal(c, data):
     goal = data["pages"]["goal"]
     profile = data["profile"]
-    current = profile.get("net_worth", 0)
+    # Ziel-Fortschritt kommt ausschliesslich aus dem zugewiesenen Zieltopf.
+    # Das gesamte Nettovermoegen darf hier niemals als Zielstand erscheinen.
+    current = goal.get("current_amount", 0)
     target = goal.get("target_amount", 0)
     progress = safe_float(goal.get("progress_percent")) / 100
     remaining = max(0, safe_float(target) - safe_float(current))

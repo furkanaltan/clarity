@@ -125,7 +125,10 @@ def wealth_position_copy(
     if investments_pct >= 50:
         return {
             "headline": "Mehr als die Hälfte deines Vermögens ist bereits investiert.",
-            "sentence": "Mehr als die Hälfte deines Vermögens ist bereits investiert.",
+            "sentence": (
+                "Dein Vermögen verteilt sich auf Investments, Liquidität und "
+                "gegebenenfalls Immobilien-Eigenkapital."
+            ),
             "story_headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
             "story_sub": (
                 f"Deine {money_text(cash)} Liquidität bleibt verfügbar. "
@@ -134,7 +137,10 @@ def wealth_position_copy(
         }
     return {
         "headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
-        "sentence": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
+        "sentence": (
+            "Der Report zeigt dir, wie dein Vermögen zwischen Investments, "
+            "Liquidität und gegebenenfalls Immobilien-Eigenkapital verteilt ist."
+        ),
         "story_headline": f"{fmt_percent(investments_pct, 1)} deines Vermögens sind bereits investiert.",
         "story_sub": (
             f"Deine {money_text(cash)} Liquidität bleibt verfügbar. "
@@ -607,6 +613,7 @@ def build_render_context(data: dict) -> dict:
     goal_duration = format_month_duration(months_to_goal) if months_to_goal else "noch nicht berechenbar"
     savings_plan = profile.get("savings_plan") or 0
     goal_target = goal.get("target_amount") or 0
+    goal_current = goal.get("current_amount") or 0
     goal_pct = round(min(100.0, goal.get("progress_percent") or 0), 1)
 
     net_worth = story.get("net_worth") or profile.get("net_worth") or 0
@@ -620,8 +627,9 @@ def build_render_context(data: dict) -> dict:
     property_pct = round((property_equity / wealth_total * 100) if wealth_total > 0 else 0, 1)
 
     investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
-    investment_total = investment_summary.get("net_contributions", 0)
-    invested_amount_raw = investment_total or savings_plan
+    investment_total = float(investment_summary.get("net_contributions") or 0)
+    actual_savings = max(0.0, investment_total)
+    invested_amount_raw = actual_savings
     wealth_copy = wealth_position_copy(net_worth, investments, cash, wealth_total)
     if investment_total > 0:
         month_savings_sentence = f"Du hast {money_text(investment_total)} investiert oder zurückgelegt."
@@ -700,13 +708,13 @@ def build_render_context(data: dict) -> dict:
         f"Das hält dich stabil im {h(rank_name)}-Status."
     )
 
-    goal_gap = max(goal_target - net_worth, 0)
+    goal_gap = max(goal_target - goal_current, 0)
     if savings_plan > 0 and months_to_goal:
-        goal_honest_text = f"Bei {money_text(savings_plan)}/Monat liegt dein {h(goal_desc)} noch rund {h(goal_duration)} entfernt."
+        goal_honest_text = f"Mit deiner geplanten Sparrate von {money_text(savings_plan)}/Monat erreichst du dein {h(goal_desc)} in rund {h(goal_duration)}."
     else:
         goal_honest_text = "Sobald deine Sparrate sauber steht, wird die Zielprognose sichtbar."
     if freed_up_monthly > 0 and savings_plan > 0 and months_to_goal:
-        boosted_months = calculate_goal_projection(goal_target, net_worth, savings_plan + freed_up_monthly)
+        boosted_months = calculate_goal_projection(goal_target, goal_current, savings_plan + freed_up_monthly)
         years_saved = None
         if boosted_months is not None and months_to_goal:
             years_saved = round(max(0, months_to_goal - boosted_months) / 12, 1)
@@ -717,12 +725,9 @@ def build_render_context(data: dict) -> dict:
     else:
         goal_lever_text = "Sobald deine Sparrate steht, wird dein persönlicher Hebel sichtbar."
 
-    # KI-Texte haben Vorrang; ohne KI bleiben die Formel-Texte oben.
-    # h() escaped den KI-Output fuers HTML (Schutz vor stray < / &).
-    if ai.get("goal_honest"):
-        goal_honest_text = h(ai["goal_honest"])
-    if ai.get("goal_lever"):
-        goal_lever_text = h(ai["goal_lever"])
+    # Zielzeit und Zielhebel bleiben absichtlich deterministisch. Diese Aussagen
+    # hängen unmittelbar am Zieltopf und dürfen nicht von freiem KI-Text
+    # überschrieben werden.
 
     mband = milestone_band(net_worth)
     milestone_remaining = max(mband["to_amount"] - net_worth, 0)
@@ -757,7 +762,9 @@ def build_render_context(data: dict) -> dict:
         "next_month_name": h(next_month_name),
         "next_report_delivery_month_name": h(next_report_delivery_month_name),
         "month_short": h(month_short),
-        "freedom_step_text": money_text(cover.get("freedom_step") or 0, 0) if (cover.get("freedom_step") or 0) < 0 else f"+{money_text(cover.get('freedom_step') or 0)}",
+        "freedom_step_label": "Sparfortschritt" if actual_savings > 0 else "Sparrate",
+        "freedom_step_text": f"+{money_text(actual_savings)}" if actual_savings > 0 else money_text(savings_plan),
+        "freedom_step_subline": "diesen Monat investiert oder zurückgelegt" if actual_savings > 0 else "monatlich geplant · noch nicht bestätigt",
         "development_percent_text": (
             fmt_percent(cover.get("development_percent"), 1)
             if cover.get("development_percent") is not None else "ab Monat 2"
@@ -823,10 +830,11 @@ def build_render_context(data: dict) -> dict:
         "goal_pct_span": data_count_span(goal_pct, 1),
         "goal_pct_raw": goal_pct,
         "goal_target_amount": money_text(goal_target),
+        "goal_current_amount": money_text(goal_current),
         "net_worth_amount": money_text(net_worth),
         "goal_remaining_amount": money_text(goal_gap),
-        "goal_honest_text": goal_honest_text,
-        "goal_lever_text": goal_lever_text,
+        "goal_honest_text": h(goal_honest_text),
+        "goal_lever_text": h(goal_lever_text),
         "milestone_headline": milestone_headline,
         "milestone_from": money_text(mband["from_amount"]),
         "milestone_to": money_text(mband["to_amount"]),

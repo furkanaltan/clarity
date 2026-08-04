@@ -102,10 +102,10 @@ html,body { margin:0; padding:0; }
         </div>
       </div>
       <div style="flex:1; background:#FFFFFF; border:1px solid #BFDFF3; border-radius:22px; padding:26px 26px 28px; min-height:250px; display:flex; flex-direction:column;">
-        <div style="font-size:11px; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:#75757B;">Freiheits-Schritt</div>
+        <div style="font-size:11px; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:#75757B;">{{ freedom_step_label }}</div>
         <div style="margin-top:18px;">
           <div style="font-family:'Newsreader',serif; font-size:54px; line-height:1; color:#155681; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; white-space:nowrap;">{{ freedom_step_text }}</div>
-          <div style="font-family:'Newsreader',serif; font-size:20px; color:#75757B; margin-top:8px; line-height:1.35;">näher an deinem Ziel</div>
+          <div style="font-family:'Newsreader',serif; font-size:20px; color:#75757B; margin-top:8px; line-height:1.35;">{{ freedom_step_subline }}</div>
         </div>
       </div>
       <div style="flex:1; background:#FFFFFF; border:1px solid #BFDFF3; border-radius:22px; padding:26px 26px 28px; min-height:250px; display:flex; flex-direction:column;">
@@ -402,10 +402,10 @@ html,body { margin:0; padding:0; }
             <div style="font-size:13px; color:#9C9BA0;">erreicht</div>
           </div>
         </div>
-        <div style="margin-top:30px; height:12px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:3.4%; height:100%; border-radius:8px; background:#2AABEE;"></div></div>
+      <div style="margin-top:30px; height:12px; border-radius:8px; background:#F0EEE9; overflow:hidden;"><div style="width:{{ goal_pct_raw }}%; height:100%; border-radius:8px; background:#2AABEE;"></div></div>
         <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:32px;">
           <div style="background:#F7F6F3; border-radius:15px; padding:24px;"><div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Zielbetrag</div><div style="font-family:'Newsreader',serif; font-size:29px; margin-top:12px; font-variant-numeric:tabular-nums;">{{ goal_target_amount }}</div></div>
-          <div style="background:#EAF3FB; border-radius:15px; padding:24px; color:#16161A;"><div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#75757B;">Aktueller Stand</div><div style="font-family:'Newsreader',serif; font-size:29px; margin-top:12px; color:#155681; font-variant-numeric:tabular-nums;">{{ net_worth_amount }}</div></div>
+          <div style="background:#EAF3FB; border-radius:15px; padding:24px; color:#16161A;"><div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#75757B;">Im Zieltopf</div><div style="font-family:'Newsreader',serif; font-size:29px; margin-top:12px; color:#155681; font-variant-numeric:tabular-nums;">{{ goal_current_amount }}</div></div>
           <div style="background:#F7F6F3; border-radius:15px; padding:24px;"><div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Noch</div><div style="font-family:'Newsreader',serif; font-size:29px; margin-top:12px; font-variant-numeric:tabular-nums;">{{ goal_remaining_amount }}</div></div>
         </div>
       </div>
