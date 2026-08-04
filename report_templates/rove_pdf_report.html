@@ -384,10 +384,10 @@ html,body { margin:0; padding:0; }
   <!-- ============ 07 YOUR GOAL ============ -->
   <div data-screen-label="07 Your Goal" style="width:820px; height:1080px; background:#F7F6F3; padding:60px 60px 100px; display:flex; flex-direction:column;">
     <div style="display:flex; align-items:baseline; justify-content:space-between;">
-      <div style="display:flex; align-items:center; gap:12px; font-size:11px; font-weight:600; letter-spacing:0.26em; text-transform:uppercase; color:#8A8A90;">Your Goal</div>
+      <div style="display:flex; align-items:center; gap:12px; font-size:11px; font-weight:600; letter-spacing:0.26em; text-transform:uppercase; color:#8A8A90;">Dein Ziel</div>
       <div style="font-size:11px; letter-spacing:0.18em; color:#B4B3B0; text-transform:uppercase;">Wohin du willst</div>
     </div>
-    <div style="font-family:'Newsreader',serif; font-size:52px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">Dein {{ goal_desc }} rückt mit jedem Monat <span style="font-style:italic; color:#155681;">näher.</span></div>
+    <div style="font-family:'Newsreader',serif; font-size:52px; font-weight:400; letter-spacing:-0.02em; line-height:1.06; color:#16161A; margin-top:20px;">{{ goal_headline }}</div>
     
 
     <div style="flex:1; background:#FFFFFF; border:1px solid #E8E6E1; border-radius:22px; padding:46px 48px; display:flex; flex-direction:column; justify-content:space-between;">
@@ -414,12 +414,12 @@ html,body { margin:0; padding:0; }
         <div style="padding-right:36px;">
           <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Ehrlich gesagt</div>
           <div style="font-family:'Newsreader',serif; font-size:24px; line-height:1.4; margin-top:14px; color:#16161A;">{{ goal_honest_text }}</div>
-          <div style="font-size:14px; color:#75757B; line-height:1.65; margin-top:10px;">Das klingt fern — aber Tempo ist die eine Größe, die du selbst in der Hand hast.</div>
+          <div style="font-size:14px; color:#75757B; line-height:1.65; margin-top:10px;">{{ goal_context_text }}</div>
         </div>
         <div style="padding-left:36px; border-left:1px solid #EFEDE8;">
           <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#155681;">Dein Hebel</div>
-          <div style="font-family:'Newsreader',serif; font-size:24px; line-height:1.4; margin-top:14px; color:#16161A;">Schon <span style="color:#155681;">+128 €/Monat</span> bringt dich rund 7 Jahre früher ans Ziel.</div>
-          <div style="font-size:14px; color:#75757B; line-height:1.65; margin-top:10px;">Genau die Summe, die heute in {{ strongest_name }} liegt.</div>
+          <div style="font-family:'Newsreader',serif; font-size:24px; line-height:1.4; margin-top:14px; color:#16161A;">{{ goal_lever_text }}</div>
+          <div style="font-size:14px; color:#75757B; line-height:1.65; margin-top:10px;">{{ goal_lever_subtext }}</div>
         </div>
       </div>
     </div>

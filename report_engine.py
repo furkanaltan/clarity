@@ -1152,7 +1152,9 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         recap_good = f"Deine Sparplan-Konstanz ist sichtbar: {investment_summary['recurring_in']:.2f} EUR wurden planmäßig erfasst."
 
     needs_attention = "Noch fehlen Vergleichsmonate. Der Report wird mit jedem Monatsabschluss präziser."
-    if remaining_budget < 0:
+    if tracked_days < 3:
+        needs_attention = "Der Monat ist noch frisch. Tracke weiter, bevor du aus einzelnen Tagen Schlüsse ziehst."
+    elif remaining_budget < 0:
         needs_attention = "Dein Restbudget war negativ. Hier liegt der wichtigste Hebel."
     elif strongest_category:
         needs_attention = f"Behalte {strongest_category['category']} im Blick, weil diese Kategorie den Monat dominiert."

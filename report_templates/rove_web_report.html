@@ -422,7 +422,7 @@
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">07</div>
       <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Dein Ziel · Wohin du willst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 720px;">Dein {{ goal_desc }} rückt mit jedem Monat näher.</div>
+      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 720px;">{{ goal_headline }}</div>
 
       <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 52px 54px;">
         <div style="display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
@@ -446,12 +446,12 @@
           <div>
             <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Ehrlich gesagt</div>
             <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_honest_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">Das klingt fern — aber Tempo ist die eine Größe, die du selbst in der Hand hast.</div>
+            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_context_text }}</div>
           </div>
           <div>
             <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg>Dein Hebel</div>
             <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_lever_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">Genau die Summe, die heute in {{ strongest_name }} liegt.</div>
+            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_lever_subtext }}</div>
           </div>
         </div>
       </div>

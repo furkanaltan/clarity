@@ -615,6 +615,7 @@ def build_render_context(data: dict) -> dict:
     goal_target = goal.get("target_amount") or 0
     goal_current = goal.get("current_amount") or 0
     goal_pct = round(min(100.0, goal.get("progress_percent") or 0), 1)
+    tracked_days = int(meta.get("tracked_days") or 0)
 
     net_worth = story.get("net_worth") or profile.get("net_worth") or 0
     investments = story.get("investments") or profile.get("current_investments") or 0
@@ -723,11 +724,19 @@ def build_render_context(data: dict) -> dict:
     )
 
     goal_gap = max(goal_target - goal_current, 0)
-    if savings_plan > 0 and months_to_goal:
+    if goal_target > 0 and goal_pct >= 100:
+        goal_honest_text = "Dein Zieltopf ist vollständig gefüllt."
+    elif savings_plan > 0 and months_to_goal:
         goal_honest_text = f"Mit deiner geplanten Sparrate von {money_text(savings_plan)}/Monat erreichst du dein {h(goal_desc)} in rund {h(goal_duration)}."
     else:
         goal_honest_text = "Sobald deine Sparrate sauber steht, wird die Zielprognose sichtbar."
-    if freed_up_monthly > 0 and savings_plan > 0 and months_to_goal:
+    if goal_target > 0 and goal_pct >= 100:
+        goal_lever_text = "Lege dein nächstes Ziel bewusst fest."
+        goal_lever_subtext = "Dein bisheriger Zieltopf ist erreicht und bleibt klar vom Gesamtvermögen getrennt."
+    elif tracked_days < 3:
+        goal_lever_text = "Tracke noch ein paar Tage weiter, dann wird dein persönlicher Hebel belastbar."
+        goal_lever_subtext = "Noch zu früh für eine belastbare Kategorie-Empfehlung."
+    elif freed_up_monthly > 0 and savings_plan > 0 and months_to_goal:
         boosted_months = calculate_goal_projection(goal_target, goal_current, savings_plan + freed_up_monthly)
         years_saved = None
         if boosted_months is not None and months_to_goal:
@@ -736,8 +745,23 @@ def build_render_context(data: dict) -> dict:
             goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich rund {de_number(years_saved, 1)} Jahre früher ans Ziel."
         else:
             goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich spürbar früher ans Ziel."
+        goal_lever_subtext = f"Das entspricht etwa der Hälfte deiner Ausgaben in {h(strongest_name)}."
     else:
         goal_lever_text = "Sobald deine Sparrate steht, wird dein persönlicher Hebel sichtbar."
+        goal_lever_subtext = "Mit mehr Daten wird der nächste sinnvolle Schritt sichtbar."
+
+    if goal_target <= 0:
+        goal_headline = "Dein nächstes Ziel bekommt jetzt einen klaren Platz."
+        goal_context_text = "Lege ein Ziel an, damit Rov.E deinen Fortschritt getrennt vom Gesamtvermögen zeigen kann."
+    elif goal_pct >= 100:
+        goal_headline = f"Dein {h(goal_desc)} ist erreicht."
+        goal_context_text = "Der Zieltopf ist vollständig gefüllt. Zeit, den nächsten Schritt bewusst zu planen."
+    elif goal_current > 0:
+        goal_headline = f"Dein {h(goal_desc)} rückt mit jedem Beitrag näher."
+        goal_context_text = "Jeder Betrag im Zieltopf verkürzt die Strecke sichtbar."
+    else:
+        goal_headline = f"Dein {h(goal_desc)} hat jetzt einen klaren Startpunkt."
+        goal_context_text = "Der erste Betrag im Zieltopf macht deinen Fortschritt sichtbar."
 
     # Zielzeit und Zielhebel bleiben absichtlich deterministisch. Diese Aussagen
     # hängen unmittelbar am Zieltopf und dürfen nicht von freiem KI-Text
@@ -790,7 +814,7 @@ def build_render_context(data: dict) -> dict:
         "biggest_name": h(biggest_name),
         "strongest_amount_span": data_count_span(strongest_amount),
         "strongest_name": h(strongest_name),
-        "tracked_days": meta.get("tracked_days", 0),
+        "tracked_days": tracked_days,
         "invested_amount": money_text(invested_amount_raw),
         "month_savings_sentence": h(month_savings_sentence),
         "wealth_headline": h(wealth_copy["headline"]),
@@ -811,6 +835,8 @@ def build_render_context(data: dict) -> dict:
         ),
         "yearly_span": data_count_span(freed_up_yearly),
         "goal_desc": h(goal_desc),
+        "goal_headline": goal_headline,
+        "goal_context_text": goal_context_text,
         "investments_pct_raw": investments_pct,
         "investments_pct_text": fmt_percent(investments_pct, 1),
         "cash_pct_text": fmt_percent(cash_pct, 1),
@@ -849,6 +875,7 @@ def build_render_context(data: dict) -> dict:
         "goal_remaining_amount": money_text(goal_gap),
         "goal_honest_text": h(goal_honest_text),
         "goal_lever_text": h(goal_lever_text),
+        "goal_lever_subtext": goal_lever_subtext,
         "milestone_headline": milestone_headline,
         "milestone_from": money_text(mband["from_amount"]),
         "milestone_to": money_text(mband["to_amount"]),
