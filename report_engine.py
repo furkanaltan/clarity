@@ -648,6 +648,33 @@ def get_app_property_equity(user_id: int) -> float:
     return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
 
 
+def get_report_goal(user_id: int, user) -> tuple[str, float]:
+    """Return the profile goal or, for App-first users, their first App goal.
+
+    Older Telegram users store their primary goal on ``users``. New App users
+    store goals in ``app_goals`` instead. Reports must understand both paths.
+    """
+    description = str(user["goal_description"] or "").strip() if "goal_description" in user.keys() else ""
+    target_amount = row_float(user, "goal_amount")
+    if description and target_amount > 0:
+        return description, target_amount
+
+    with get_db() as conn:
+        if not table_exists(conn, "app_goals"):
+            return "", 0.0
+        row = conn.execute(
+            """SELECT name, target_amount
+                 FROM app_goals
+                WHERE user_id = ? AND target_amount > 0
+                ORDER BY datetime(created_at), goal_id
+                LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return "", 0.0
+    return str(row["name"] or "").strip(), float(row["target_amount"] or 0)
+
+
 def get_biggest_expense(user_id: int, report_month: str):
     start, end, _ = month_bounds(report_month)
     with get_db() as conn:
@@ -771,17 +798,10 @@ def get_monthly_execution(user_id: int, report_month: str) -> dict:
             execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
             execution["savings_confirmed"] = row["savings_status"] == "confirmed"
 
-        # Ein automatisch oder bewusst erfasster ETF-Sparplan ist eine echte
-        # Monatsbewegung. Der Report darf ihn nicht als bloße Planung behandeln.
-        if table_exists(conn, "investment_events"):
-            execution["savings_confirmed"] = execution["savings_confirmed"] or conn.execute(
-                """SELECT 1 FROM investment_events
-                     WHERE user_id = ?
-                       AND source IN ('investiert_command', 'app_monthly_plan', 'app_etf_plan')
-                       AND strftime('%Y-%m', created_at) = ?
-                     LIMIT 1""",
-                (user_id, report_month),
-            ).fetchone() is not None
+        # Ein ETF-Sparplan kann automatisch laufen, waehrend die flexible
+        # Cash-Sparrate noch offen ist. Deshalb gilt ausschliesslich die
+        # explizite Monatsplan-Bestaetigung als bestaetigte Gesamtsparrate.
+        # Die ETF-Bewegung erscheint separat als tatsaechliches Investment.
     return execution
 
 
@@ -974,8 +994,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
     property_equity = get_app_property_equity(user_id)
-    target_amount = row_float(user, "goal_amount")
-    goal_description = user["goal_description"] if "goal_description" in user.keys() else ""
+    goal_description, target_amount = get_report_goal(user_id, user)
     clarity_points = row_int(user, "clarity_points")
 
     free_budget = income_total - fixed_costs
