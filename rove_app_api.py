@@ -180,7 +180,11 @@ def reject_untrusted_browser_writes():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "service": "rove-app-api"})
+    return jsonify({
+        "ok": True,
+        "service": "rove-app-api",
+        "marketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
+    })
 
 
 @app.route("/v1/auth/request-code", methods=["OPTIONS"])

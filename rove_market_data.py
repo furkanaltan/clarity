@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -64,9 +65,25 @@ def _request_json(path: str, params: dict[str, object], api_key: str | None = No
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise ValueError("market_provider_auth_failed") from exc
+        if exc.code == 429:
+            raise ValueError("market_provider_rate_limit") from exc
+        raise ValueError("market_provider_unavailable") from exc
     except Exception as exc:
         raise ValueError("market_provider_unavailable") from exc
-    if not isinstance(data, dict) or data.get("status") == "error" or data.get("code"):
+    if not isinstance(data, dict):
+        raise ValueError("market_provider_unavailable")
+    try:
+        provider_code = int(data.get("code") or 0)
+    except (TypeError, ValueError):
+        provider_code = 0
+    if provider_code in {401, 403}:
+        raise ValueError("market_provider_auth_failed")
+    if provider_code == 429:
+        raise ValueError("market_provider_rate_limit")
+    if data.get("status") == "error" or provider_code:
         raise ValueError("market_symbol_not_found")
     return data
 
