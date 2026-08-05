@@ -32,6 +32,7 @@ from rove_app_state import (
     ensure_app_account_balances_table,
     ensure_app_cash_movements_table,
     ensure_app_contracts_table,
+    ensure_app_etf_position_plans_table,
     ensure_app_etf_savings_plan_table,
     ensure_app_goals_table,
     get_app_etf_savings_plan,
@@ -258,6 +259,11 @@ def investments_options():
 
 @app.route("/v1/portfolio-tracking", methods=["OPTIONS"])
 def portfolio_tracking_options():
+    return ("", 204)
+
+
+@app.route("/v1/etf-position-plan", methods=["OPTIONS"])
+def etf_position_plan_options():
     return ("", 204)
 
 
@@ -2160,6 +2166,86 @@ def configure_portfolio_tracking():
             "provider": quote.get("provider", "twelve_data"),
             **result,
         },
+        **live_data,
+    })
+
+
+@app.route("/v1/etf-position-plan", methods=["POST"])
+def update_etf_position_plan():
+    """Speichert Phase 1 eines eigenen Sparplans pro ETF, noch ohne Geldbewegung."""
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    try:
+        holding_id = int(payload.get("holding_id") or 0)
+        monthly_amount = round(float(payload.get("monthly_amount") or 0), 2)
+        execution_day = int(payload.get("execution_day") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "valid_etf_position_plan_required"}), 400
+    source_account = clean_text(payload.get("source_account")).lower()
+    mode = clean_text(payload.get("mode")).lower()
+    active_raw = payload.get("active", True)
+    if holding_id <= 0 or not 0 <= monthly_amount <= 100_000 or not 1 <= execution_day <= 31:
+        return jsonify({"ok": False, "error": "valid_etf_position_plan_required"}), 400
+    if source_account not in {"giro", "tagesgeld"}:
+        return jsonify({"ok": False, "error": "valid_etf_source_required"}), 400
+    if mode not in {"auto", "confirm"}:
+        return jsonify({"ok": False, "error": "valid_etf_mode_required"}), 400
+    if active_raw not in {True, False, 0, 1}:
+        return jsonify({"ok": False, "error": "valid_etf_active_required"}), 400
+
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        ensure_app_etf_position_plans_table(conn)
+        holding = conn.execute(
+            """SELECT id, instrument_label, COALESCE(instrument_type, 'etf') AS instrument_type
+                 FROM portfolio_holdings WHERE id = ? AND user_id = ? LIMIT 1""",
+            (holding_id, user_id),
+        ).fetchone()
+        if not holding or str(holding["instrument_type"]).lower() != "etf":
+            return jsonify({"ok": False, "error": "etf_holding_not_found"}), 404
+
+        now = datetime.now()
+        start_month = now.strftime("%Y-%m")
+        if execution_day < now.day:
+            start_month = (
+                (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+            ).strftime("%Y-%m")
+        conn.execute(
+            """INSERT INTO app_etf_position_plans
+                   (user_id, holding_id, monthly_amount, execution_day, source_account,
+                    mode, active, start_month, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id, holding_id) DO UPDATE SET
+                   monthly_amount = excluded.monthly_amount,
+                   execution_day = excluded.execution_day,
+                   source_account = excluded.source_account,
+                   mode = excluded.mode,
+                   active = excluded.active,
+                   start_month = CASE
+                     WHEN app_etf_position_plans.start_month > excluded.start_month
+                     THEN app_etf_position_plans.start_month ELSE excluded.start_month END,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (
+                user_id, holding_id, monthly_amount, execution_day, source_account,
+                mode, 1 if bool(active_raw) else 0, start_month,
+            ),
+        )
+        total = conn.execute(
+            """SELECT COALESCE(SUM(monthly_amount), 0) AS total
+                 FROM app_etf_position_plans WHERE user_id = ? AND active = 1""",
+            (user_id,),
+        ).fetchone()
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "positionPlanTotal": round(float(total["total"] or 0), 2),
+        "positionName": str(holding["instrument_label"]),
         **live_data,
     })
 

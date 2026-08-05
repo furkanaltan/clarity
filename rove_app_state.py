@@ -682,6 +682,30 @@ def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
+    """Speichert die geplante Rate getrennt je ETF-Depotposition.
+
+    Die Tabelle ist in Phase 1 reine Planung. Sie loest noch keine Kontobewegung
+    aus, damit mehrere ETF-Raten zuerst ohne finanzielles Risiko getestet werden.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_etf_position_plans (
+            user_id        INTEGER NOT NULL,
+            holding_id     INTEGER NOT NULL,
+            monthly_amount REAL NOT NULL DEFAULT 0.0,
+            execution_day  INTEGER NOT NULL,
+            source_account TEXT NOT NULL CHECK(source_account IN ('giro', 'tagesgeld')),
+            mode           TEXT NOT NULL CHECK(mode IN ('auto', 'confirm')),
+            active         INTEGER NOT NULL DEFAULT 1,
+            start_month    TEXT NOT NULL,
+            updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, holding_id),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY(holding_id) REFERENCES portfolio_holdings(id) ON DELETE CASCADE
+        )"""
+    )
+
+
 def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings: float) -> dict:
     """Liefert nur den Planstatus; die echte Buchung passiert in der App-API."""
     ensure_app_etf_savings_plan_table(conn)
@@ -1343,13 +1367,20 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     sonst bleibt total_invested der manuell gepflegte Stand. Fehlende Tabelle → []."""
     try:
         ensure_market_tracking_schema(conn)
+        ensure_app_etf_position_plans_table(conn)
         rows = conn.execute(
-            """SELECT instrument_label, instrument_type, total_invested, market_value,
-                      start_price, last_price, price_symbol, quantity, quote_currency,
-                      valuation_enabled, market_value_updated_at, market_data_provider
-               FROM portfolio_holdings
-               WHERE user_id = ?
-               ORDER BY COALESCE(market_value, total_invested, 0) DESC, instrument_label""",
+            """SELECT ph.id, ph.instrument_label, ph.instrument_type,
+                      ph.total_invested, ph.market_value, ph.start_price, ph.last_price,
+                      ph.price_symbol, ph.quantity, ph.quote_currency,
+                      ph.valuation_enabled, ph.market_value_updated_at, ph.market_data_provider,
+                      pp.monthly_amount AS plan_amount, pp.execution_day AS plan_day,
+                      pp.source_account AS plan_source, pp.mode AS plan_mode,
+                      pp.active AS plan_active, pp.start_month AS plan_start_month
+               FROM portfolio_holdings ph
+               LEFT JOIN app_etf_position_plans pp
+                 ON pp.user_id = ph.user_id AND pp.holding_id = ph.id
+               WHERE ph.user_id = ?
+               ORDER BY COALESCE(ph.market_value, ph.total_invested, 0) DESC, ph.instrument_label""",
             (user_id,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -1363,9 +1394,20 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
             # gepflegter Wert. Er darf deshalb direkt in der App korrigiert werden.
             "editable": True,
             "holding": True,
+            "holdingId": int(r["id"]),
             "assetType": r["instrument_type"] or "etf",
             "live": bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"]),
         }
+        if r["plan_day"] is not None:
+            pos["positionPlan"] = {
+                "configured": True,
+                "amount": round(max(0.0, float(r["plan_amount"] or 0)), 2),
+                "executionDay": int(r["plan_day"]),
+                "sourceAccount": str(r["plan_source"]),
+                "mode": str(r["plan_mode"]),
+                "active": bool(r["plan_active"]),
+                "startMonth": str(r["plan_start_month"]),
+            }
         if pos["live"]:
             pos.update({
                 "quantity": round(float(r["quantity"]), 8),
