@@ -154,7 +154,7 @@ def cors(resp):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     resp.headers["Vary"] = "Origin"
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -2303,6 +2303,59 @@ def update_investment_position():
     return jsonify({"ok": True, "position": {
         "asset_type": asset_type, "asset_name": stored_name, "value": target_value,
     }, **live_data})
+
+
+@app.route("/v1/investments", methods=["DELETE"])
+def delete_investment_position():
+    """Entfernt eine manuell in der App angelegte Position dauerhaft.
+
+    Kursverfolgte Depotpositionen bleiben absichtlich unangetastet: Dort kann ein
+    historischer Kauf bereits in Reports stehen. Fuer eine manuelle Testaktie ist
+    dagegen ein echtes Loeschen korrekt - inklusive Gesamtsumme und App-Refresh.
+    """
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    asset_type = clean_text(payload.get("asset_type")).lower()
+    asset_name = clean_text(payload.get("asset_name"))
+    if asset_type not in {"crypto", "stock"} or not asset_name:
+        return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
+
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        # Nur App-Korrekturen loeschen. Alte Bot-Historie wird nie still entfernt.
+        row = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                 FROM investment_events
+                WHERE user_id = ? AND asset_type = ?
+                  AND LOWER(TRIM(asset_name)) = LOWER(?)
+                  AND source = 'app'""",
+            (user_id, asset_type, asset_name),
+        ).fetchone()
+        net = round(max(0.0, float(row["net"] or 0)), 2)
+        if net < 0.01:
+            return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+
+        total_row = conn.execute(
+            "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        current_total = max(0.0, float(total_row["current_investments"] or 0))
+        conn.execute(
+            """DELETE FROM investment_events
+                WHERE user_id = ? AND asset_type = ?
+                  AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
+            (user_id, asset_type, asset_name),
+        )
+        conn.execute(
+            "UPDATE users SET current_investments = ? WHERE user_id = ?",
+            (round(max(0.0, current_total - net), 2), user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, "removed": {"asset_type": asset_type, "asset_name": asset_name}, **live_data})
 
 
 @app.route("/v1/reports/<report_month>/pdf", methods=["GET"])
