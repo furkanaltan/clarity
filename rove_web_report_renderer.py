@@ -588,6 +588,7 @@ def build_render_context(data: dict) -> dict:
     score = pages["score"]
     goal = pages["goal"]
     money_map = pages["money_map"]
+    budget_frame = pages.get("budget") or {}
     milestones = pages["milestones"]
     recap = pages["recap"]
     ai = data.get("ai_narratives") or {}
@@ -679,6 +680,35 @@ def build_render_context(data: dict) -> dict:
             "bar_color": colors["bar_color"],
             "text_color": colors["text_color"],
         })
+
+    budget_items = budget_frame.get("items") or []
+    budget_over_items = [item for item in budget_items if item.get("over")]
+    has_budget_status = bool(budget_frame.get("has_budgets")) and bool(budget_items)
+    budget_status_title = "Rov.E Budgetrahmen"
+    budget_status_text = ""
+    budget_status_subtext = ""
+    if has_budget_status and not budget_over_items:
+        budget_status_text = (
+            "Deinen gesetzten Rahmen hast du eingehalten."
+            if len(budget_items) == 1
+            else f"Du hast alle {len(budget_items)} gesetzten Rahmen eingehalten."
+        )
+        budget_status_subtext = (
+            f"{money_text(budget_frame.get('total_used') or 0)} von "
+            f"{money_text(budget_frame.get('total_limit') or 0)} in deinen Budgetkategorien genutzt."
+        )
+    elif has_budget_status:
+        first_over = budget_over_items[0]
+        category_name = category_label(first_over.get("category"))
+        over_amount = max(0.0, float(first_over.get("used") or 0) - float(first_over.get("limit") or 0))
+        if len(budget_over_items) == 1:
+            budget_status_text = f"Im Bereich {category_name} liegst du {money_text(over_amount)} über deinem Rahmen."
+        else:
+            budget_status_text = f"{len(budget_over_items)} deiner gesetzten Rahmen wurden überschritten."
+        kept_count = len(budget_items) - len(budget_over_items)
+        budget_status_subtext = (
+            f"{kept_count} von {len(budget_items)} gesetzten Rahmen eingehalten."
+        )
     biggest_share_pct = int(round((biggest_amount / total_expenses * 100) if total_expenses else 0))
 
     if invested_amount_raw >= strongest_amount * 2 and strongest_amount > 0:
@@ -850,6 +880,10 @@ def build_render_context(data: dict) -> dict:
         "invest_story_headline": invest_story_headline,
         "invest_story_sub": invest_story_sub,
         "money_map_categories": money_map_categories,
+        "has_budget_status": has_budget_status,
+        "budget_status_title": budget_status_title,
+        "budget_status_text": h(budget_status_text),
+        "budget_status_subtext": h(budget_status_subtext),
         "biggest_amount": money_text(biggest_amount),
         "biggest_share_pct": biggest_share_pct,
         "invest_vs_strongest_text": invest_vs_strongest_text,

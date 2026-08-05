@@ -352,9 +352,15 @@
           <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 14px;">Hier verändert ein kleiner Vorsatz am meisten. Nicht streichen — bewusst entscheiden.</div>
         </div>
         <div data-reveal="1" data-delay="100" style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 20px; padding: 36px 40px; display: flex; flex-direction: column; justify-content: center;">
+          {% if has_budget_status %}
+          <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l3.2 3.2L13 4.5"></path></svg>{{ budget_status_title }}</div>
+          <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.35; margin-top: 16px;">{{ budget_status_text }}</div>
+          <div style="font-size: 14px; color: #9EA4A0; line-height: 1.6; margin-top: 12px;">{{ budget_status_subtext }}</div>
+          {% else %}
           <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="8,1.5 10,6 15,6 11,9 12.5,14 8,11 3.5,14 5,9 1,6 6,6"></polygon></svg>Beste Entscheidung</div>
           <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.35; margin-top: 16px;">{{ invested_amount }} bewusst zur Seite gelegt.</div>
           <div style="font-size: 14px; color: #9EA4A0; line-height: 1.6; margin-top: 12px;">{{ invest_vs_strongest_text }}</div>
+          {% endif %}
         </div>
       </div>
     </div>

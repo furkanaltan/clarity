@@ -299,9 +299,15 @@ html,body { margin:0; padding:0; }
         <div style="font-size:14px; color:#75757B; line-height:1.65; margin-top:16px;">Hier verändert ein kleiner Vorsatz am meisten. Nicht streichen — bewusst entscheiden.</div>
       </div>
       <div style="background:#EAF3FB; border-radius:20px; padding:32px 34px; display:flex; flex-direction:column; justify-content:center; color:#16161A;">
+        {% if has_budget_status %}
+        <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#155681;">{{ budget_status_title }}</div>
+        <div style="font-family:'Newsreader',serif; font-size:25px; line-height:1.35; margin-top:16px;">{{ budget_status_text }}</div>
+        <div style="font-size:14px; color:#75757B; line-height:1.6; margin-top:12px;">{{ budget_status_subtext }}</div>
+        {% else %}
         <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#155681;">Beste Entscheidung</div>
         <div style="font-family:'Newsreader',serif; font-size:25px; line-height:1.35; margin-top:16px;">{{ invested_amount }} bewusst zur Seite gelegt.</div>
         <div style="font-size:14px; color:#75757B; line-height:1.6; margin-top:12px;">{{ invest_vs_strongest_text }}</div>
+        {% endif %}
       </div>
     </div>
 
