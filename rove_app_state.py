@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rove_score import calculate_score
+from rove_market_data import ensure_market_tracking_schema
 
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
@@ -986,6 +987,19 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
     except sqlite3.OperationalError:
         pass          # Tabelle entsteht erst beim ersten Schreibvorgang der App (gleiche
                       # defensive Leseart wie get_app_cash_accounts)
+    try:
+        for row in conn.execute(
+            """SELECT date(created_at) AS d,
+                      SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END) AS s
+                 FROM investment_events
+                WHERE user_id = ? AND event_type = 'market_valuation'
+                  AND date(created_at) >= ?
+                GROUP BY d""",
+            (user_id, grenze),
+        ).fetchall():
+            deltas[row["d"]] = deltas.get(row["d"], 0.0) + float(row["s"] or 0)
+    except sqlite3.OperationalError:
+        pass
     return deltas
 
 
@@ -1325,14 +1339,17 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     liegen als manual_adjustment in investment_events. Beide Tabellen sind nur die
     Aufschluesselung; users.current_investments bleibt die verbindliche Gesamtsumme.
 
-    v = total_invested (eingezahlte Summe), chg = Kursentwicklung seit Start (nur wenn beide
-    Kurse da sind; sonst zeigt die App ehrlich nur den Betrag). Fehlende Tabelle → []."""
+    v = automatischer Marktwert, sobald eine Position mit Stueckzahl konfiguriert ist;
+    sonst bleibt total_invested der manuell gepflegte Stand. Fehlende Tabelle → []."""
     try:
+        ensure_market_tracking_schema(conn)
         rows = conn.execute(
-            """SELECT instrument_label, total_invested, start_price, last_price
+            """SELECT instrument_label, instrument_type, total_invested, market_value,
+                      start_price, last_price, price_symbol, quantity, quote_currency,
+                      valuation_enabled, market_value_updated_at
                FROM portfolio_holdings
                WHERE user_id = ?
-               ORDER BY COALESCE(total_invested, 0) DESC, instrument_label""",
+               ORDER BY COALESCE(market_value, total_invested, 0) DESC, instrument_label""",
             (user_id,),
         ).fetchall()
     except sqlite3.OperationalError:
@@ -1341,12 +1358,21 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     for r in rows:
         pos = {
             "n": r["instrument_label"],
-            "v": round(float(r["total_invested"] or 0), 2),
+            "v": round(float(r["market_value"] if r["market_value"] is not None else r["total_invested"] or 0), 2),
             # Ohne Broker-Anbindung ist der angezeigte Depotwert ein manuell
             # gepflegter Wert. Er darf deshalb direkt in der App korrigiert werden.
             "editable": True,
             "holding": True,
+            "assetType": r["instrument_type"] or "etf",
+            "live": bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"]),
         }
+        if pos["live"]:
+            pos.update({
+                "quantity": round(float(r["quantity"]), 8),
+                "symbol": r["price_symbol"],
+                "currency": r["quote_currency"] or "EUR",
+                "updatedAt": r["market_value_updated_at"],
+            })
         sp, lp = r["start_price"], r["last_price"]
         if sp and lp:
             pct = (float(lp) - float(sp)) / float(sp) * 100.0
@@ -1359,6 +1385,11 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
                       COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
                  FROM investment_events
                 WHERE user_id = ? AND asset_type = 'stock'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM portfolio_holdings ph
+                       WHERE ph.user_id = investment_events.user_id
+                         AND LOWER(TRIM(ph.instrument_label)) = LOWER(TRIM(investment_events.asset_name))
+                  )
                 GROUP BY LOWER(TRIM(asset_name))
                 ORDER BY net DESC, name""",
             (user_id,),

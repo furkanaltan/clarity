@@ -18,6 +18,7 @@ import telebot
 import openai
 from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
+from rove_market_data import refresh_all_market_positions
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -4135,28 +4136,46 @@ def save_portfolio_total_invested(user_id: int, instrument_key: str, amount: flo
 
 
 def update_all_portfolio_prices() -> int:
-    """Taeglicher Job: holt fuer jedes Holding mit price_symbol den aktuellen Kurs.
-    Ueberspringt Holdings ohne price_symbol (z.B. rohe ISIN-Eintraege) stillschweigend."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, price_symbol FROM portfolio_holdings WHERE price_symbol IS NOT NULL"
-        )
-        rows = cursor.fetchall()
+    """Taeglicher Job fuer ETF- und Aktienpositionen.
 
-    updated = 0
-    for row in rows:
+    Nur explizit konfigurierte Positionen mit Stueckzahl werden als Marktwert
+    verbucht. Alte Proxy-Kurse bleiben damit reine Information und veraendern
+    niemals unbemerkt das Vermoegen.
+    """
+    result = refresh_all_market_positions(DB_NAME)
+    if result["failed"]:
+        logger.warning(
+            "Portfolio-Kurse teilweise fehlgeschlagen: %s von %s (%s)",
+            result["failed"], result["total"], result.get("failures", []),
+        )
+    # Bestehende Beta-Positionen ohne Stueckzahl behalten ihre bisherige
+    # Prozentanzeige. Sie werden erst nach bewusster Einrichtung wertwirksam.
+    with get_db() as conn:
+        try:
+            legacy_rows = conn.execute(
+                """SELECT id, price_symbol FROM portfolio_holdings
+                    WHERE price_symbol IS NOT NULL
+                      AND COALESCE(valuation_enabled, 0) = 0"""
+            ).fetchall()
+        except sqlite3.OperationalError:
+            legacy_rows = conn.execute(
+                "SELECT id, price_symbol FROM portfolio_holdings WHERE price_symbol IS NOT NULL"
+            ).fetchall()
+    legacy_updated = 0
+    for row in legacy_rows:
         quote = fetch_price_quote(row["price_symbol"])
         if not quote:
             continue
         with get_db() as conn:
             conn.execute(
-                "UPDATE portfolio_holdings SET last_price = ?, last_checked_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (quote["close"], row["id"])
+                """UPDATE portfolio_holdings SET last_price = ?,
+                          last_checked_at = CURRENT_TIMESTAMP
+                    WHERE id = ?""",
+                (quote["close"], row["id"]),
             )
             conn.commit()
-        updated += 1
-    return updated
+        legacy_updated += 1
+    return int(result["updated"]) + legacy_updated
 
 
 def build_portfolio_performance_answer(user_id: int) -> str:

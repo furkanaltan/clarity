@@ -43,6 +43,13 @@ from rove_app_state import (
     ensure_app_properties_table,
 )
 from rove_score import award_tracking_points, reverse_tracking_points_for_deleted_expense
+from rove_market_data import (
+    apply_market_quote,
+    ensure_market_tracking_schema,
+    fetch_eur_quote,
+    normalize_currency,
+    normalize_symbol,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -241,6 +248,11 @@ def property_options():
 
 @app.route("/v1/investments", methods=["OPTIONS"])
 def investments_options():
+    return ("", 204)
+
+
+@app.route("/v1/portfolio-tracking", methods=["OPTIONS"])
+def portfolio_tracking_options():
     return ("", 204)
 
 
@@ -984,6 +996,8 @@ def current_app_state():
     """Aktualisiert die vom Bot gefuehrten Bereiche einer gekoppelten App."""
     token = token_from_request()
     with db() as conn:
+        ensure_market_tracking_schema(conn)
+        conn.commit()
         begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
@@ -2037,6 +2051,113 @@ def update_property():
     return jsonify({"ok": True, **live_data})
 
 
+@app.route("/v1/portfolio-tracking", methods=["POST"])
+def configure_portfolio_tracking():
+    """Enable exact daily valuation for one existing ETF or stock position."""
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    label = clean_text(payload.get("asset_name"))
+    instrument_type = clean_text(payload.get("asset_type"), "stock").lower()
+    symbol = normalize_symbol(payload.get("price_symbol"))
+    currency = normalize_currency(payload.get("quote_currency"))
+    try:
+        quantity = round(float(str(payload.get("quantity") or "0").replace(",", ".")), 8)
+    except (TypeError, ValueError):
+        quantity = 0.0
+    if instrument_type not in {"etf", "stock"} or not label or not symbol or not currency:
+        return jsonify({"ok": False, "error": "valid_market_position_required"}), 400
+    if quantity <= 0 or quantity > 1_000_000_000:
+        return jsonify({"ok": False, "error": "valid_market_quantity_required"}), 400
+
+    # Authorize before calling the external provider, otherwise this endpoint
+    # could be abused as an unauthenticated market-data proxy.
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+    try:
+        quote = fetch_eur_quote(symbol, currency)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 422
+
+    with db() as conn:
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        holding = conn.execute(
+            """SELECT id, instrument_key, COALESCE(market_value, total_invested, 0) AS value
+                 FROM portfolio_holdings
+                WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
+                LIMIT 1""",
+            (user_id, label),
+        ).fetchone()
+        if not holding:
+            manual = conn.execute(
+                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS value
+                     FROM investment_events
+                    WHERE user_id = ? AND asset_type = 'stock'
+                      AND LOWER(TRIM(asset_name)) = LOWER(?)""",
+                (user_id, label),
+            ).fetchone()
+            baseline = round(max(0.0, float(manual["value"] or 0)), 2)
+            if baseline <= 0:
+                return jsonify({"ok": False, "error": "market_position_not_found"}), 404
+            key_hash = hashlib.sha256(f"{user_id}:{label.lower()}".encode("utf-8")).hexdigest()[:16]
+            cursor = conn.execute(
+                """INSERT INTO portfolio_holdings
+                   (user_id, instrument_key, instrument_label, isin, price_symbol,
+                    monthly_contribution, total_invested, start_price, last_price,
+                    instrument_type, quantity, quote_currency, valuation_enabled,
+                    last_checked_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 1,
+                           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                (
+                    user_id, f"live_{key_hash}", label, symbol, symbol, baseline,
+                    quote["native_price"], quote["native_price"], instrument_type,
+                    quantity, currency,
+                ),
+            )
+            holding_id = int(cursor.lastrowid)
+        else:
+            holding_id = int(holding["id"])
+            conn.execute(
+                """UPDATE portfolio_holdings
+                      SET instrument_type = ?,
+                          start_price = CASE
+                              WHEN UPPER(COALESCE(price_symbol, '')) != ? THEN ?
+                              ELSE COALESCE(start_price, ?)
+                          END,
+                          price_symbol = ?, quantity = ?,
+                          quote_currency = ?, valuation_enabled = 1,
+                          updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND user_id = ?""",
+                (
+                    instrument_type, symbol, quote["native_price"], quote["native_price"],
+                    symbol, quantity, currency, holding_id, user_id,
+                ),
+            )
+        conn.commit()
+
+        result = apply_market_quote(conn, holding_id, quote, expected_symbol=symbol)
+        live_data = build_live_app_data(conn, user_id)
+
+    return jsonify({
+        "ok": True,
+        "position": {
+            "asset_type": instrument_type,
+            "asset_name": label,
+            "price_symbol": symbol,
+            "quantity": quantity,
+            "quote_currency": currency,
+            **result,
+        },
+        **live_data,
+    })
+
+
 @app.route("/v1/investments", methods=["POST"])
 def update_investment_position():
     """Setzt manuelle Krypto-, Aktien- oder bestehende ETF-Werte ohne Doppelzaehlung."""
@@ -2055,6 +2176,17 @@ def update_investment_position():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        live_holding = conn.execute(
+            """SELECT 1 FROM portfolio_holdings
+                WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
+                  AND valuation_enabled = 1
+                LIMIT 1""",
+            (user_id, asset_name),
+        ).fetchone()
+        if live_holding:
+            return jsonify({"ok": False, "error": "market_position_is_live"}), 409
 
         # Ein bestehendes ETF-Holding darf nicht als neue Aktienposition daneben
         # angelegt werden. Die Korrektur aktualisiert deshalb genau das Depot-Holding.
