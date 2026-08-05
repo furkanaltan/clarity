@@ -1346,7 +1346,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         rows = conn.execute(
             """SELECT instrument_label, instrument_type, total_invested, market_value,
                       start_price, last_price, price_symbol, quantity, quote_currency,
-                      valuation_enabled, market_value_updated_at
+                      valuation_enabled, market_value_updated_at, market_data_provider
                FROM portfolio_holdings
                WHERE user_id = ?
                ORDER BY COALESCE(market_value, total_invested, 0) DESC, instrument_label""",
@@ -1372,6 +1372,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
                 "symbol": r["price_symbol"],
                 "currency": r["quote_currency"] or "EUR",
                 "updatedAt": r["market_value_updated_at"],
+                "provider": r["market_data_provider"] or "twelve_data",
             })
         sp, lp = r["start_price"], r["last_price"]
         if sp and lp:

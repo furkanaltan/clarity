@@ -18,6 +18,7 @@ from pathlib import Path
 
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+LEEWAY_BASE_URL = "https://api.leeway.tech/api/v1/public"
 SUPPORTED_QUOTE_CURRENCIES = frozenset({"EUR", "USD", "GBP", "CHF"})
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._:/-]{0,31}$")
 
@@ -36,6 +37,7 @@ def ensure_market_tracking_schema(conn: sqlite3.Connection) -> None:
         ("quote_currency", "ALTER TABLE portfolio_holdings ADD COLUMN quote_currency TEXT"),
         ("market_value", "ALTER TABLE portfolio_holdings ADD COLUMN market_value REAL"),
         ("market_value_updated_at", "ALTER TABLE portfolio_holdings ADD COLUMN market_value_updated_at DATETIME"),
+        ("market_data_provider", "ALTER TABLE portfolio_holdings ADD COLUMN market_data_provider TEXT"),
         ("valuation_enabled", "ALTER TABLE portfolio_holdings ADD COLUMN valuation_enabled INTEGER NOT NULL DEFAULT 0"),
     )
     for name, ddl in migrations:
@@ -70,6 +72,8 @@ def _request_json(path: str, params: dict[str, object], api_key: str | None = No
             raise ValueError("market_provider_auth_failed") from exc
         if exc.code == 429:
             raise ValueError("market_provider_rate_limit") from exc
+        if exc.code in {400, 404, 422}:
+            raise ValueError("market_symbol_not_found") from exc
         raise ValueError("market_provider_unavailable") from exc
     except Exception as exc:
         raise ValueError("market_provider_unavailable") from exc
@@ -88,27 +92,103 @@ def _request_json(path: str, params: dict[str, object], api_key: str | None = No
     return data
 
 
+def _leeway_symbol(symbol: str, currency: str) -> str:
+    """Translate a user-facing exchange suffix into Leeway's SYMBOL.EXCHANGE form."""
+    clean = normalize_symbol(symbol)
+    if ":" in clean:
+        ticker, exchange = clean.rsplit(":", 1)
+        exchange = {"XETR": "XETRA"}.get(exchange, exchange)
+        return f"{ticker}.{exchange}"
+    if "." in clean:
+        return clean
+    return f"{clean}.XETRA" if currency == "EUR" else clean
+
+
+def _request_leeway_quote(symbol: str, currency: str, token: str | None = None) -> dict:
+    key = (token or os.getenv("LEEWAY_API_TOKEN") or "").strip()
+    if not key:
+        raise ValueError("market_europe_provider_missing")
+    provider_symbol = _leeway_symbol(symbol, currency)
+    query = urllib.parse.urlencode({"apitoken": key})
+    request = urllib.request.Request(
+        f"{LEEWAY_BASE_URL}/live/{urllib.parse.quote(provider_symbol)}?{query}",
+        headers={"User-Agent": "Rov.E/1.0", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise ValueError("market_europe_provider_auth_failed") from exc
+        if exc.code == 429:
+            raise ValueError("market_provider_rate_limit") from exc
+        if exc.code in {400, 404, 422}:
+            raise ValueError("market_symbol_not_found") from exc
+        raise ValueError("market_provider_unavailable") from exc
+    except Exception as exc:
+        raise ValueError("market_provider_unavailable") from exc
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    if not isinstance(data, dict):
+        raise ValueError("market_symbol_not_found")
+    price = next(
+        (data.get(key) for key in ("close", "price", "last", "c") if data.get(key) is not None),
+        None,
+    )
+    try:
+        native_price = float(price)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("market_symbol_not_found") from exc
+    if native_price <= 0:
+        raise ValueError("market_symbol_not_found")
+    provider_currency = str(data.get("currency") or currency).strip().upper()
+    if provider_currency and provider_currency != currency:
+        raise ValueError("market_currency_mismatch")
+    return {
+        "symbol": provider_symbol,
+        "currency": currency,
+        "native_price": native_price,
+        "provider": "leeway",
+    }
+
+
 def fetch_eur_quote(
     symbol: str,
     quote_currency: str,
     api_key: str | None = None,
     fx_cache: dict[str, float] | None = None,
+    leeway_token: str | None = None,
 ) -> dict:
     """Return the latest verified price and its EUR equivalent."""
     clean_symbol = normalize_symbol(symbol)
     clean_currency = normalize_currency(quote_currency)
     if not clean_symbol or not clean_currency:
         raise ValueError("valid_market_position_required")
-    quote = _request_json("/quote", {"symbol": clean_symbol}, api_key)
-    provider_currency = str(quote.get("currency") or "").strip().upper()
-    if provider_currency and provider_currency != clean_currency:
-        raise ValueError("market_currency_mismatch")
     try:
-        native_price = float(quote["close"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("market_symbol_not_found") from exc
-    if native_price <= 0:
-        raise ValueError("market_symbol_not_found")
+        quote = _request_json("/quote", {"symbol": clean_symbol}, api_key)
+        provider_currency = str(quote.get("currency") or "").strip().upper()
+        if provider_currency and provider_currency != clean_currency:
+            raise ValueError("market_currency_mismatch")
+        try:
+            native_price = float(quote["close"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("market_symbol_not_found") from exc
+        if native_price <= 0:
+            raise ValueError("market_symbol_not_found")
+        provider = "twelve_data"
+        resolved_symbol = clean_symbol
+    except ValueError as twelve_error:
+        if str(twelve_error) == "market_currency_mismatch":
+            raise
+        try:
+            fallback = _request_leeway_quote(clean_symbol, clean_currency, leeway_token)
+        except ValueError as fallback_error:
+            if str(fallback_error) == "market_europe_provider_missing":
+                raise twelve_error
+            raise fallback_error
+        native_price = fallback["native_price"]
+        provider = fallback["provider"]
+        resolved_symbol = fallback["symbol"]
 
     fx_rate = 1.0
     if clean_currency != "EUR":
@@ -125,9 +205,11 @@ def fetch_eur_quote(
                 fx_cache[clean_currency] = fx_rate
     return {
         "symbol": clean_symbol,
+        "resolved_symbol": resolved_symbol,
         "currency": clean_currency,
         "native_price": round(native_price, 8),
         "eur_price": round(native_price * fx_rate, 8),
+        "provider": provider,
     }
 
 
@@ -173,10 +255,11 @@ def apply_market_quote(
 
     conn.execute(
         """UPDATE portfolio_holdings
-              SET last_price = ?, market_value = ?, last_checked_at = CURRENT_TIMESTAMP,
+              SET last_price = ?, market_value = ?, market_data_provider = ?,
+                  last_checked_at = CURRENT_TIMESTAMP,
                   market_value_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?""",
-        (quote["native_price"], market_value, holding_id),
+        (quote["native_price"], market_value, quote.get("provider", "twelve_data"), holding_id),
     )
     conn.execute(
         "UPDATE users SET current_investments = ? WHERE user_id = ?",
@@ -186,11 +269,11 @@ def apply_market_quote(
         conn.execute(
             """INSERT INTO investment_events
                (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
-               VALUES (?, ?, ?, ?, ?, 'market_valuation', 'twelve_data', ?)""",
+               VALUES (?, ?, ?, ?, ?, 'market_valuation', ?, ?)""",
             (
                 row["user_id"], abs(delta), "in" if delta > 0 else "out", "market",
-                row["instrument_label"],
-                f"Taegliche Kursbewertung {quote['symbol']} in EUR",
+                row["instrument_label"], quote.get("provider", "twelve_data"),
+                f"Taegliche Kursbewertung {quote.get('resolved_symbol', quote['symbol'])} in EUR",
             ),
         )
     conn.commit()

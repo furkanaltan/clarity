@@ -184,6 +184,7 @@ def health():
         "ok": True,
         "service": "rove-app-api",
         "marketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
+        "europeMarketDataConfigured": bool(os.getenv("LEEWAY_API_TOKEN", "").strip()),
     })
 
 
@@ -2156,6 +2157,7 @@ def configure_portfolio_tracking():
             "price_symbol": symbol,
             "quantity": quantity,
             "quote_currency": currency,
+            "provider": quote.get("provider", "twelve_data"),
             **result,
         },
         **live_data,
