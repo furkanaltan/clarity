@@ -1444,6 +1444,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
             "n": row["name"],
             "v": round(float(row["net"]), 2),
             "editable": True,
+            "assetType": "stock",
         }
         for row in stock_rows
         if row["net"] is not None and float(row["net"]) > 0

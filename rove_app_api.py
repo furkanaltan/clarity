@@ -2270,6 +2270,7 @@ def update_investment_position():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         ensure_market_tracking_schema(conn)
         conn.commit()
+        begin_write(conn)
         live_holding = conn.execute(
             """SELECT 1 FROM portfolio_holdings
                 WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
@@ -2294,7 +2295,78 @@ def update_investment_position():
             except sqlite3.OperationalError:
                 holding = None
             if not holding:
-                return jsonify({"ok": False, "error": "etf_holding_not_found"}), 404
+                # Wurde dieselbe Position in der App versehentlich als Aktie angelegt,
+                # wird nur diese App-Korrektur in ein ETF-Holding umgewandelt. Der
+                # Gesamtwert bleibt dabei im unzugeordneten Bestand erhalten und wird
+                # nicht ein zweites Mal zum Vermoegen addiert.
+                app_stock = conn.execute(
+                    """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                         FROM investment_events
+                        WHERE user_id = ? AND asset_type = 'stock' AND source = 'app'
+                          AND LOWER(TRIM(asset_name)) = LOWER(?)""",
+                    (user_id, asset_name),
+                ).fetchone()
+                if float(app_stock["net"] or 0) > 0:
+                    conn.execute(
+                        """DELETE FROM investment_events
+                            WHERE user_id = ? AND asset_type = 'stock' AND source = 'app'
+                              AND LOWER(TRIM(asset_name)) = LOWER(?)""",
+                        (user_id, asset_name),
+                    )
+                total_row = conn.execute(
+                    "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+                ).fetchone()
+                current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
+                crypto_row = conn.execute(
+                    """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                         FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
+                    (user_id,),
+                ).fetchone()
+                stocks_row = conn.execute(
+                    """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                         FROM investment_events WHERE user_id = ? AND asset_type = 'stock'""",
+                    (user_id,),
+                ).fetchone()
+                etf_row = conn.execute(
+                    """SELECT COALESCE(SUM(total_invested), 0) AS total
+                         FROM portfolio_holdings
+                        WHERE user_id = ? AND LOWER(COALESCE(instrument_type, 'etf')) = 'etf'""",
+                    (user_id,),
+                ).fetchone()
+                crypto_total = max(0.0, float(crypto_row["net"] or 0))
+                stocks_total = max(0.0, float(stocks_row["net"] or 0))
+                etf_total = max(0.0, float(etf_row["total"] or 0))
+                unassigned = max(0.0, current_total - crypto_total - stocks_total - etf_total)
+                total_delta = round(max(0.0, target_value - unassigned), 2)
+                key_hash = hashlib.sha256(
+                    f"{user_id}:{asset_name.lower()}".encode("utf-8")
+                ).hexdigest()[:16]
+                cursor = conn.execute(
+                    """INSERT INTO portfolio_holdings
+                           (user_id, instrument_key, instrument_label, isin,
+                            monthly_contribution, total_invested, instrument_type,
+                            valuation_enabled, updated_at)
+                       VALUES (?, ?, ?, '', 0, ?, 'etf', 0, CURRENT_TIMESTAMP)""",
+                    (user_id, f"app_etf_{key_hash}", asset_name, target_value),
+                )
+                if total_delta >= 0.01:
+                    conn.execute(
+                        """INSERT INTO investment_events
+                           (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                           VALUES (?, ?, 'in', 'etf', ?, 'manual_adjustment', 'app',
+                                   'Neue manuelle ETF-Position')""",
+                        (user_id, total_delta, asset_name),
+                    )
+                    conn.execute(
+                        "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                        (round(current_total + total_delta, 2), user_id),
+                    )
+                live_data = build_live_app_data(conn, user_id)
+                conn.commit()
+                return jsonify({"ok": True, "position": {
+                    "id": int(cursor.lastrowid), "asset_type": "etf",
+                    "asset_name": asset_name, "value": target_value,
+                }, **live_data})
             current_value = round(max(0.0, float(holding["value"] or 0)), 2)
             delta = round(target_value - current_value, 2)
             total_row = conn.execute(
@@ -2306,7 +2378,8 @@ def update_investment_position():
             if abs(delta) >= 0.01:
                 conn.execute(
                     """UPDATE portfolio_holdings
-                           SET total_invested = ?, updated_at = CURRENT_TIMESTAMP
+                           SET total_invested = ?, instrument_type = 'etf',
+                               updated_at = CURRENT_TIMESTAMP
                          WHERE user_id = ? AND instrument_key = ?""",
                     (target_value, user_id, holding["instrument_key"]),
                 )
@@ -2356,7 +2429,8 @@ def update_investment_position():
             try:
                 etf_row = conn.execute(
                     """SELECT COALESCE(SUM(total_invested), 0) AS total
-                         FROM portfolio_holdings WHERE user_id = ?""",
+                         FROM portfolio_holdings
+                        WHERE user_id = ? AND LOWER(COALESCE(instrument_type, 'etf')) = 'etf'""",
                     (user_id,),
                 ).fetchone()
                 etf_total = max(0.0, float(etf_row["total"] or 0))
