@@ -6,6 +6,7 @@ und laeuft weiter. Authentifizierung erfolgt ueber den privaten /app-State-Token
 app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenbank.
 """
 
+import base64
 import json
 import gzip
 import hashlib
@@ -74,9 +75,16 @@ AUTH_SESSION_TTL_DAYS = int(os.getenv("ROVE_APP_AUTH_SESSION_TTL_DAYS", "180"))
 AUTH_ATTEMPT_WINDOW_SECONDS = 15 * 60
 AUTH_ATTEMPT_LIMIT = 5
 _auth_attempts: dict[str, list[float]] = {}
+SCREENSHOT_ATTEMPT_WINDOW_SECONDS = 24 * 60 * 60
+SCREENSHOT_ATTEMPT_LIMIT = int(os.getenv("ROVE_SCREENSHOT_DAILY_LIMIT", "10"))
+_screenshot_attempts: dict[int, list[float]] = {}
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 AUTH_SECRET = os.getenv("ROVE_APP_AUTH_SECRET", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+SCREENSHOT_MODEL = os.getenv("ROVE_SCREENSHOT_MODEL", "gpt-4o-mini").strip()
+SCREENSHOT_MAX_BYTES = int(os.getenv("ROVE_SCREENSHOT_MAX_BYTES", str(5 * 1024 * 1024)))
+SCREENSHOT_MAX_ROWS = int(os.getenv("ROVE_SCREENSHOT_MAX_ROWS", "20"))
 # Nur fuer interne Server-zu-Server-Hinweise, niemals an den Browser ausliefern.
 INTERNAL_PUSH_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 LOGIN_FROM_EMAIL = os.getenv("ROVE_LOGIN_FROM_EMAIL", "info@getrove.de").strip()
@@ -113,6 +121,7 @@ BOT_TO_APP_CATEGORY = {
 ACCOUNT_KEYS = frozenset(ACCOUNT_META)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_BYTES + 512 * 1024
 
 
 def db() -> sqlite3.Connection:
@@ -186,6 +195,7 @@ def health():
         "service": "rove-app-api",
         "marketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
         "europeMarketDataConfigured": bool(os.getenv("LEEWAY_API_TOKEN", "").strip()),
+        "screenshotImportConfigured": bool(OPENAI_API_KEY),
     })
 
 
@@ -199,6 +209,12 @@ def auth_options():
 
 @app.route("/v1/expenses", methods=["OPTIONS"])
 def expenses_options():
+    return ("", 204)
+
+
+@app.route("/v1/import/screenshot", methods=["OPTIONS"])
+@app.route("/v1/import/screenshot/commit", methods=["OPTIONS"])
+def screenshot_import_options():
     return ("", 204)
 
 
@@ -315,6 +331,151 @@ def clean_text(value: object, fallback: str = "") -> str:
     return text[:80] if text else fallback
 
 
+def screenshot_mime_type(payload: bytes) -> str | None:
+    """Vertraut nicht dem Dateinamen oder dem vom Browser gelieferten MIME-Typ."""
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def parse_screenshot_date(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    # Ein Bank-Screenshot darf keine erfundene Zukunftsbuchung erzeugen.
+    if parsed.date() > (datetime.now().date() + timedelta(days=1)):
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def screenshot_row_key(user_id: int, image_digest: str, index: int, row: dict) -> str:
+    material = "|".join((
+        str(user_id), image_digest, str(index), str(row.get("date") or ""),
+        str(row.get("merchant") or ""), f"{float(row.get('amount') or 0):.2f}",
+    ))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def request_screenshot_analysis(image_bytes: bytes, mime_type: str) -> dict:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("screenshot_import_not_configured")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    prompt = f"""Du liest einen Screenshot mit Bankumsaetzen fuer eine deutsche Finanz-App.
+Heute ist {today}.
+
+Extrahiere ausschliesslich sichtbare, tatsaechliche Umsatzzeilen. Ignoriere Kontostaende,
+verfuegbare Betraege, Werbetexte, Summen, vorgemerkte Gesamtwerte und Navigation.
+Erfinde keine Werte. Ein Minus, 'Lastschrift', 'Kartenzahlung' oder eine Belastung ist expense.
+Eine Gutschrift oder Einzahlung ist income. Wenn die Richtung nicht sicher erkennbar ist,
+setze confidence unter 0.6. Gib Datumswerte als YYYY-MM-DD aus; ist das Jahr nicht sichtbar,
+verwende das aktuelle Jahr nur dann, wenn der Screenshot eindeutig den aktuellen Zeitraum zeigt,
+sonst null.
+
+Erlaubte Kategorien fuer Ausgaben:
+Lebensmittel, Mobilitaet, Restaurant, Abos, Shopping, Freizeit, Drogerie, Gesundheit,
+Pflege, Sonstiges.
+
+Antworte als reines JSON:
+{{"transactions":[{{"date":"YYYY-MM-DD oder null","merchant":"kurzer Name",
+"amount":12.34,"direction":"expense oder income","category":"eine erlaubte Kategorie",
+"confidence":0.0}}]}}
+Maximal {SCREENSHOT_MAX_ROWS} Zeilen. Betraege immer positiv und exakt wie im Bild."""
+    body = {
+        "model": SCREENSHOT_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+                    "detail": "high",
+                }},
+            ],
+        }],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 1800,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=40) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise RuntimeError("screenshot_rate_limited") from exc
+        if exc.code in {401, 403}:
+            raise RuntimeError("screenshot_provider_auth_failed") from exc
+        raise RuntimeError("screenshot_provider_unavailable") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError("screenshot_provider_unavailable") from exc
+
+    try:
+        content = response_data["choices"][0]["message"]["content"]
+        return json.loads(content)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("screenshot_invalid_response") from exc
+
+
+def normalize_screenshot_rows(raw: object) -> list[dict]:
+    rows = raw if isinstance(raw, list) else []
+    normalized: list[dict] = []
+    for row in rows[:SCREENSHOT_MAX_ROWS]:
+        if not isinstance(row, dict):
+            continue
+        try:
+            amount = round(abs(float(row.get("amount") or 0)), 2)
+            confidence = min(1.0, max(0.0, float(row.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            continue
+        merchant = clean_text(row.get("merchant"))
+        direction = str(row.get("direction") or "").strip().lower()
+        if not merchant or amount <= 0 or amount > 1_000_000 or direction not in {"expense", "income"}:
+            continue
+        category = clean_text(row.get("category"), "Sonstiges")
+        if category not in APP_TO_BOT_CATEGORY:
+            category = "Sonstiges"
+        normalized.append({
+            "date": parse_screenshot_date(row.get("date")),
+            "merchant": merchant,
+            "amount": amount,
+            "direction": direction,
+            "category": category,
+            "confidence": round(confidence, 2),
+        })
+    return normalized
+
+
+def probable_expense_duplicate(
+    conn: sqlite3.Connection, user_id: int, row: dict
+) -> bool:
+    booking_date = row.get("date") or datetime.now().strftime("%Y-%m-%d")
+    candidates = conn.execute(
+        """SELECT merchant FROM expenses
+            WHERE user_id = ? AND ABS(amount - ?) < 0.005
+              AND date(created_at) = date(?)""",
+        (user_id, float(row["amount"]), booking_date),
+    ).fetchall()
+    wanted = normalize_category_rule_alias(row.get("merchant"))
+    return any(normalize_category_rule_alias(item["merchant"]) == wanted for item in candidates)
+
+
 def normalize_category_rule_alias(value: object) -> str:
     """Gleiche robuste Händler-Normalisierung wie der Telegram-Bot.
 
@@ -422,6 +583,21 @@ def auth_attempt_allowed(email: str) -> bool:
         return False
     attempts.append(now)
     _auth_attempts[key] = attempts
+    return True
+
+
+def screenshot_attempt_allowed(user_id: int) -> bool:
+    """Kostenbremse pro Nutzer; ein Neustart setzt nur das In-Memory-Fenster zurueck."""
+    now = time.monotonic()
+    attempts = [
+        stamp for stamp in _screenshot_attempts.get(user_id, [])
+        if now - stamp < SCREENSHOT_ATTEMPT_WINDOW_SECONDS
+    ]
+    if len(attempts) >= SCREENSHOT_ATTEMPT_LIMIT:
+        _screenshot_attempts[user_id] = attempts
+        return False
+    attempts.append(now)
+    _screenshot_attempts[user_id] = attempts
     return True
 
 
@@ -2516,6 +2692,156 @@ def delete_investment_position():
         conn.commit()
 
     return jsonify({"ok": True, "removed": {"asset_type": asset_type, "asset_name": asset_name}, **live_data})
+
+
+@app.route("/v1/import/screenshot", methods=["POST"])
+def analyze_screenshot_import():
+    """Liest Bankumsatz-Zeilen, speichert aber weder Bild noch Buchung."""
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        upload = request.files.get("image")
+        if not upload:
+            return jsonify({"ok": False, "error": "screenshot_required"}), 400
+        image_bytes = upload.stream.read(SCREENSHOT_MAX_BYTES + 1)
+        if not image_bytes or len(image_bytes) > SCREENSHOT_MAX_BYTES:
+            return jsonify({"ok": False, "error": "screenshot_too_large"}), 413
+        mime_type = screenshot_mime_type(image_bytes)
+        if not mime_type:
+            return jsonify({"ok": False, "error": "screenshot_format_unsupported"}), 415
+        # Nur echte Analyseversuche zaehlen. Eine falsche Datei oder ein zu grosses
+        # Bild soll dem Nutzer keinen seiner begrenzten Tagesversuche wegnehmen.
+        if not screenshot_attempt_allowed(user_id):
+            return jsonify({"ok": False, "error": "screenshot_daily_limit"}), 429
+
+        try:
+            result = request_screenshot_analysis(image_bytes, mime_type)
+        except RuntimeError as exc:
+            error = str(exc)
+            status = 503
+            if error == "screenshot_rate_limited":
+                status = 429
+            elif error == "screenshot_import_not_configured":
+                status = 503
+            return jsonify({"ok": False, "error": error}), status
+
+        rows = normalize_screenshot_rows(result.get("transactions"))
+        image_digest = hashlib.sha256(image_bytes).hexdigest()
+        expenses = []
+        ignored_income_count = 0
+        for index, row in enumerate(rows):
+            if row["direction"] != "expense":
+                ignored_income_count += 1
+                continue
+            row["importKey"] = screenshot_row_key(user_id, image_digest, index, row)
+            row["probableDuplicate"] = probable_expense_duplicate(conn, user_id, row)
+            row["selected"] = row["confidence"] >= 0.6 and not row["probableDuplicate"]
+            expenses.append(row)
+
+    return jsonify({
+        "ok": True,
+        "transactions": expenses,
+        "ignoredIncomeCount": ignored_income_count,
+        "imageStored": False,
+    })
+
+
+@app.route("/v1/import/screenshot/commit", methods=["POST"])
+def commit_screenshot_import():
+    """Bucht bestaetigte Screenshot-Zeilen atomar und idempotent vom Giro."""
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("transactions")
+    if not isinstance(requested, list) or not requested or len(requested) > SCREENSHOT_MAX_ROWS:
+        return jsonify({"ok": False, "error": "valid_transactions_required"}), 400
+
+    cleaned = []
+    for row in requested:
+        if not isinstance(row, dict):
+            return jsonify({"ok": False, "error": "invalid_transaction"}), 400
+        try:
+            amount = round(abs(float(row.get("amount") or 0)), 2)
+        except (TypeError, ValueError):
+            amount = 0
+        merchant = clean_text(row.get("merchant"))
+        category = clean_text(row.get("category"), "Sonstiges")
+        import_key = str(row.get("importKey") or "").strip().lower()
+        booking_date = parse_screenshot_date(row.get("date"))
+        if (
+            amount <= 0 or amount > 1_000_000 or not merchant
+            or category not in APP_TO_BOT_CATEGORY
+            or not re.fullmatch(r"[a-f0-9]{32}", import_key)
+        ):
+            return jsonify({"ok": False, "error": "invalid_transaction"}), 400
+        cleaned.append({
+            "amount": amount,
+            "merchant": merchant,
+            "category": category,
+            "import_key": import_key,
+            "date": booking_date,
+        })
+
+    token = token_from_request()
+    inserted = []
+    skipped = []
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_app_cash_movements_table(conn)
+        balances = app_cash_accounts(conn, user_id)
+        for row in cleaned:
+            description = f"Via Rov.E Screenshot · {row['import_key']}"
+            existing = conn.execute(
+                "SELECT id FROM expenses WHERE user_id = ? AND description = ? LIMIT 1",
+                (user_id, description),
+            ).fetchone()
+            if existing:
+                skipped.append({"importKey": row["import_key"], "reason": "already_imported"})
+                continue
+
+            bot_category = category_rule_for_merchant(conn, user_id, row["merchant"])
+            bot_category = bot_category or APP_TO_BOT_CATEGORY[row["category"]]
+            created_at = (
+                f"{row['date']} 12:00:00" if row["date"]
+                else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+            cur = conn.execute(
+                """INSERT INTO expenses
+                       (user_id, amount, category, merchant, description, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, row["amount"], bot_category, row["merchant"], description, created_at),
+            )
+            expense_id = int(cur.lastrowid)
+            balances["giro"] = round(balances["giro"] - row["amount"], 2)
+            conn.execute(
+                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
+                   VALUES (?, 'card', ?, ?)""",
+                (user_id, row["amount"], expense_id),
+            )
+            award_tracking_points(conn, user_id, expense_id=expense_id)
+            inserted.append({
+                "id": expense_id,
+                "importKey": row["import_key"],
+                "amount": row["amount"],
+                "merchant": row["merchant"],
+            })
+
+        save_app_cash_accounts(conn, user_id, balances)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({
+        "ok": True,
+        "inserted": inserted,
+        "skipped": skipped,
+        "accounts": balances,
+        "available": live_data["sts"]["available"],
+    })
 
 
 @app.route("/v1/reports/<report_month>/pdf", methods=["GET"])
