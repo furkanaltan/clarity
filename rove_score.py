@@ -267,8 +267,12 @@ def calculate_score(
 
     confirmed = savings_confirmed(conn, user_id, report_month)
     savings = savings_points(savings_ratio, confirmed)
-    consistency_target = min(30, max(7, (min(days, 90) + 2) // 3))
-    consistency = min(25, round(25 * tracked_days / consistency_target))
+    consistency_target = 30
+    consistency_age_cap = 8 if days < 30 else 16 if days < 60 else 22 if days < 90 else 25
+    consistency = min(
+        consistency_age_cap,
+        round(25 * min(tracked_days, consistency_target) / consistency_target),
+    )
 
     structure = 0
     if fixed > 0:
@@ -322,8 +326,19 @@ def calculate_score(
         if confirmed else
         "Bestätige deine Sparrate im Monatsplan, sobald sie wirklich ausgeführt wurde."
     )
-    consistency_why = f"Du hast an {tracked_days} Tagen getrackt. Fuer den vollen Faktor zaehlen aktuell {consistency_target} aktive Tage."
-    consistency_lever = "Ein echter Tracking-Tag zaehlt mehr als viele kleine Buchungen an einem Tag."
+    if days < 90:
+        consistency_why = (
+            f"Du hast an {tracked_days} Tagen getrackt. Nach {days} Tagen kann Rov.E "
+            f"deine Konstanz aktuell bis {consistency_age_cap}/25 bewerten."
+        )
+        consistency_lever = (
+            f"Volle 25 Punkte gibt es ab 90 Tagen und {consistency_target} aktiven Tracking-Tagen."
+        )
+    else:
+        consistency_why = f"Du hast an {tracked_days} der letzten 90 Tage mindestens eine Ausgabe dokumentiert."
+        consistency_lever = (
+            f"Für volle 25 Punkte zählen {consistency_target} echte Tracking-Tage innerhalb von 90 Tagen."
+        )
     if fixed > 0 and cash >= fixed * 3:
         structure_why = "Dein Cash-Puffer deckt mindestens drei Monate Fixkosten."
     elif fixed > 0 and cash >= fixed:
@@ -367,6 +382,7 @@ def calculate_score(
         "next_unlock_level": 0,
         "data_confidence": confidence,
         "consistency_target": consistency_target,
+        "consistency_age_cap": consistency_age_cap,
         "spendable_budget": spendable_budget,
         "desc": description,
         "next_lever": weakest["n"],
