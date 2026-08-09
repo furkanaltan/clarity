@@ -6,6 +6,7 @@ state. This module keeps the calculation independent from Flask and bot handlers
 from __future__ import annotations
 
 import sqlite3
+from calendar import monthrange
 from datetime import date, timedelta
 
 
@@ -189,6 +190,17 @@ def savings_points(savings_ratio: float, confirmed: bool) -> int:
     return 0
 
 
+def data_confidence(days: int, tracked_days: int) -> tuple[str, str]:
+    """Describe reliability separately from the financial score itself."""
+    if days < 14 or tracked_days < 4:
+        return "Im Aufbau", "Rov.E lernt deinen Alltag noch kennen."
+    if days < 30 or tracked_days < 10:
+        return "Wachsend", "Dein Bild wird mit jedem echten Tracking-Tag belastbarer."
+    if days < 90 or tracked_days < 30:
+        return "Solide", "Dein Score stützt sich bereits auf mehrere Wochen echter Daten."
+    return "Belastbar", "Dein Score basiert auf einer laengerfristigen Finanzroutine."
+
+
 def _factor(key: str, name: str, points: int, tint: str, why: str, lever: str) -> dict:
     return {
         "key": key,
@@ -225,44 +237,80 @@ def calculate_score(
 
     income = _number(user, "income") + _number(user, "other_income")
     fixed = _number(user, "fixed_costs")
-    free_budget = income - fixed
-    remaining = free_budget - total_expenses
     savings_amount = _number(user, "etf_savings") + _number(user, "cash_savings")
     savings_ratio = savings_amount / income if income > 0 else 0.0
+    spendable_budget = income - fixed - savings_amount
+    remaining = spendable_budget - total_expenses
     cash = _number(user, "current_cash")
+    tracked_days = tracking_days_90(conn, user_id, today)
+    days = platform_days(conn, user_id, today)
 
     budget = 0
-    if free_budget > 0:
-        budget = 25 if remaining / free_budget >= 0.30 else max(0, int(25 * (remaining / free_budget) / 0.30))
+    expected_spend = 0.0
+    pace_ratio = 0.0
+    if spendable_budget > 0 and tracked_days > 0:
+        elapsed_ratio = (
+            today.day / monthrange(today.year, today.month)[1]
+            if report_month == today.strftime("%Y-%m")
+            else 1.0
+        )
+        expected_spend = spendable_budget * elapsed_ratio
+        pace_ratio = total_expenses / expected_spend if expected_spend > 0 else 0.0
+        if pace_ratio <= 1.0:
+            budget = 25
+        elif pace_ratio <= 1.10:
+            budget = 20
+        elif pace_ratio <= 1.25:
+            budget = 12
+        elif pace_ratio <= 1.50:
+            budget = 6
 
     confirmed = savings_confirmed(conn, user_id, report_month)
     savings = savings_points(savings_ratio, confirmed)
-    tracked_days = tracking_days_90(conn, user_id, today)
-    consistency = min(25, int(25 * min(tracked_days, 90) / 90))
+    consistency_target = min(30, max(7, (min(days, 90) + 2) // 3))
+    consistency = min(25, round(25 * tracked_days / consistency_target))
 
     structure = 0
-    if fixed > 0 and cash >= fixed * 3:
-        structure += 10
-    if savings_ratio >= 0.15:
-        structure += 8
-    if free_budget > 0:
-        structure += 7
+    if fixed > 0:
+        buffer_months = cash / fixed
+        if buffer_months >= 3:
+            structure += 15
+        elif buffer_months >= 2:
+            structure += 12
+        elif buffer_months >= 1:
+            structure += 8
+        elif cash > 0:
+            structure += 3
+    if income > 0 and _int(user, "onboarding_step") >= 10:
+        structure += 5
+    if spendable_budget > 0:
+        structure += 5
 
-    days = platform_days(conn, user_id, today)
-    cap, days_to_unlock, next_unlock_level = score_cap(days)
     raw_total = budget + savings + consistency + structure
-    total = min(max(raw_total, start_score(user) if days == 0 else min(start_score(user), cap)), cap)
+    total = min(100, max(0, raw_total))
+    # A critical monthly shortfall must stay visible in the overall result. Strong
+    # structure or tracking cannot turn an overspent month into a Manager score.
+    if spendable_budget <= 0:
+        total = min(total, 54)
+    elif remaining < 0:
+        total = min(total, 64)
     rank_name, rank_icon = score_rank(total)
 
-    if free_budget <= 0:
-        budget_why = "Ohne positiven Betrag nach Fixkosten kann Rov.E diesen Faktor noch nicht fair bewerten."
-        budget_lever = "Prüfe zuerst Einkommen und Fixkosten im Profil."
+    if tracked_days == 0:
+        budget_why = "Noch keine echte Ausgabe erfasst. Deshalb bewertet Rov.E deine Budget-Kontrolle noch nicht."
+        budget_lever = "Mit der ersten Buchung beginnt die laufende Einordnung."
+    elif spendable_budget <= 0:
+        budget_why = "Nach Fixkosten und geplanter Sparrate bleibt aktuell kein positiver Ausgabenrahmen."
+        budget_lever = "Prüfe Einkommen, Fixkosten und Sparrate im Monatsplan."
     elif remaining < 0:
-        budget_why = f"Deine variablen Ausgaben liegen {abs(remaining):.0f} € über dem Betrag nach Fixkosten."
-        budget_lever = "Ein klarer Budgettopf mit zu viel Druck ist der direkteste Hebel."
+        budget_why = f"Deine Konsumausgaben liegen {abs(remaining):.0f} € über dem Rahmen nach Fixkosten und Sparrate."
+        budget_lever = "Halte die nächsten Ausgaben bewusst klein, damit deine Sparrate nicht weiter unter Druck gerät."
+    elif pace_ratio > 1.0:
+        budget_why = f"Du hast {total_expenses:.0f} € ausgegeben. Für den heutigen Monatsstand wären rund {expected_spend:.0f} € im Plan."
+        budget_lever = "Der Monat ist noch im Rahmen, aber dein aktuelles Ausgabentempo ist zu hoch."
     else:
-        budget_why = f"Nach deinen variablen Ausgaben bleiben {remaining:.0f} € innerhalb des Betrags nach Fixkosten."
-        budget_lever = "Halte diesen Rahmen bis Monatsende stabil."
+        budget_why = f"Von deinem Ausgabenrahmen nach Fixkosten und Sparrate sind noch {remaining:.0f} € frei."
+        budget_lever = "Halte dieses Tempo bis Monatsende stabil."
 
     savings_why = (
         f"{savings_amount:.0f} € monatliche Sparrate entsprechen {savings_ratio * 100:.0f} % deines Einkommens."
@@ -274,15 +322,15 @@ def calculate_score(
         if confirmed else
         "Bestätige deine Sparrate im Monatsplan, sobald sie wirklich ausgeführt wurde."
     )
-    consistency_why = f"Du hast an {tracked_days} der letzten 90 Tage mindestens eine Ausgabe dokumentiert."
-    consistency_lever = "Ein echter Tracking-Tag zählt mehr als viele kleine Buchungen an einem Tag."
+    consistency_why = f"Du hast an {tracked_days} Tagen getrackt. Fuer den vollen Faktor zaehlen aktuell {consistency_target} aktive Tage."
+    consistency_lever = "Ein echter Tracking-Tag zaehlt mehr als viele kleine Buchungen an einem Tag."
     if fixed > 0 and cash >= fixed * 3:
         structure_why = "Dein Cash-Puffer deckt mindestens drei Monate Fixkosten."
     elif fixed > 0 and cash >= fixed:
         structure_why = "Dein Cash-Puffer deckt mindestens einen Monat Fixkosten."
     else:
         structure_why = "Dein Cash-Puffer liegt noch unter einem Monat Fixkosten."
-    structure_lever = "Ein verlässlicher Puffer und eine feste Sparquote stärken diesen Bereich."
+    structure_lever = "Ein verlässlicher Cash-Puffer und vollständige Basisdaten stärken diesen Bereich."
 
     factors = [
         _factor("budget", "Budget-Kontrolle", budget, "#35D07F", budget_why, budget_lever),
@@ -291,15 +339,9 @@ def calculate_score(
         _factor("structure", "Finanzielle Struktur", structure, "#8B7DF5", structure_why, structure_lever),
     ]
     weakest = min(factors, key=lambda factor: factor["points"])
-    if days < 30:
-        phase = "Aufbauphase"
-        description = f"Dein Score wird mit echten Daten bis {cap}/100 freigeschaltet."
-    elif days < 90:
-        phase = "Proof-Phase"
-        description = "Deine Routinen werden gerade über mehrere Monate bestätigt."
-    else:
-        phase = "Verifiziert"
-        description = "Dein Score basiert auf deiner laufenden Finanzroutine."
+    confidence, confidence_note = data_confidence(days, tracked_days)
+    phase = confidence
+    description = f"Datengrundlage: {days} Tage, davon {tracked_days} aktive Tracking-Tage. {confidence_note}"
 
     return {
         "value": total,
@@ -310,7 +352,7 @@ def calculate_score(
         "rank_icon": rank_icon,
         "rank_emoji": rank_icon,
         "phase": phase,
-        "cap": cap,
+        "cap": 100,
         "platform_days": days,
         "proof_days": days,
         "tracking_days_90": tracked_days,
@@ -321,8 +363,11 @@ def calculate_score(
         "consistency": consistency,
         "structure": structure,
         "start_score": start_score(user),
-        "days_to_unlock": days_to_unlock,
-        "next_unlock_level": next_unlock_level,
+        "days_to_unlock": 0,
+        "next_unlock_level": 0,
+        "data_confidence": confidence,
+        "consistency_target": consistency_target,
+        "spendable_budget": spendable_budget,
         "desc": description,
         "next_lever": weakest["n"],
         "factors": factors,
