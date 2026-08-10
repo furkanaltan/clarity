@@ -16,6 +16,7 @@ import io
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import time
 import urllib.error
@@ -27,6 +28,7 @@ from pathlib import Path
 from flask import Flask, jsonify, make_response, request, send_file
 from rove_app_state import (
     ACCOUNT_META,
+    PUBLIC_APP_STATE_DIR,
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
     _build_tx,
@@ -59,6 +61,9 @@ from rove_market_data import (
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
+PUBLIC_REPORT_DIR = Path(
+    os.getenv("ROVE_REPORT_PUBLIC_DIR", str(APP_DIR / "public" / "reports"))
+)
 
 _configured_origins = os.getenv("ROVE_APP_ALLOWED_ORIGINS")
 if not _configured_origins:
@@ -73,6 +78,7 @@ PAIR_ATTEMPT_WINDOW_SECONDS = 5 * 60
 PAIR_ATTEMPT_LIMIT = 8
 _pair_attempts: dict[str, list[float]] = {}
 AUTH_CODE_TTL_MINUTES = int(os.getenv("ROVE_APP_AUTH_CODE_TTL_MINUTES", "10"))
+ACCOUNT_DELETE_CODE_TTL_MINUTES = int(os.getenv("ROVE_ACCOUNT_DELETE_CODE_TTL_MINUTES", "10"))
 AUTH_SESSION_TTL_DAYS = int(os.getenv("ROVE_APP_AUTH_SESSION_TTL_DAYS", "180"))
 AUTH_ATTEMPT_WINDOW_SECONDS = 15 * 60
 AUTH_ATTEMPT_LIMIT = 5
@@ -337,6 +343,12 @@ def report_pdf_options(report_month: str):
 
 @app.route("/v1/data-export", methods=["OPTIONS"])
 def data_export_options():
+    return ("", 204)
+
+
+@app.route("/v1/account/delete-code", methods=["OPTIONS"])
+@app.route("/v1/account", methods=["OPTIONS"])
+def account_delete_options():
     return ("", 204)
 
 
@@ -713,8 +725,21 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_account_delete_codes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            code_hash   TEXT NOT NULL,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at  TEXT NOT NULL,
+            attempts    INTEGER NOT NULL DEFAULT 0,
+            consumed_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_login_codes_email ON app_login_codes(email, consumed_at, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sessions_hash ON app_sessions(token_hash, revoked_at, expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_delete_codes_user ON app_account_delete_codes(user_id, consumed_at, expires_at)")
 
 
 def latest_score(conn: sqlite3.Connection, user_id: int) -> tuple[int, str]:
@@ -790,6 +815,49 @@ def send_login_email(email: str, code: str) -> None:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "ignore")[:300]
         raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+
+
+def send_account_delete_email(email: str, code: str) -> None:
+    if not BREVO_API_KEY:
+        raise RuntimeError("brevo_not_configured")
+    payload = {
+        "sender": {"name": LOGIN_FROM_NAME, "email": LOGIN_FROM_EMAIL},
+        "to": [{"email": email}],
+        "subject": "Rov.E Konto löschen - Bestätigungscode",
+        "textContent": (
+            f"Dein Code für die endgültige Löschung deines Rov.E Kontos lautet: {code}\n\n"
+            f"Der Code ist {ACCOUNT_DELETE_CODE_TTL_MINUTES} Minuten gültig. "
+            "Wenn du die Löschung nicht angefordert hast, ignoriere diese E-Mail."
+        ),
+        "htmlContent": (
+            "<html><body style=\"font-family:Arial,sans-serif;color:#111\">"
+            "<p>Dein Code für die endgültige Löschung deines Rov.E Kontos lautet:</p>"
+            f"<p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">{code}</p>"
+            f"<p>Der Code ist {ACCOUNT_DELETE_CODE_TTL_MINUTES} Minuten gültig.</p>"
+            "<p style=\"color:#666\">Wenn du die Löschung nicht angefordert hast, "
+            "ignoriere diese E-Mail.</p></body></html>"
+        ),
+        "tags": ["rove-account-delete"],
+    }
+    req = urllib.request.Request(
+        BREVO_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"brevo_status_{response.status}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError("brevo_unavailable") from exc
 
 
 def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None:
@@ -3061,6 +3129,214 @@ def download_data_export():
     payload.seek(0)
     filename = f"RovE_Datenexport_{datetime.now().strftime('%Y-%m-%d')}.zip"
     return send_file(payload, mimetype="application/zip", as_attachment=True, download_name=filename)
+
+
+@app.route("/v1/account/delete-code", methods=["POST"])
+def request_account_delete_code():
+    """Sendet einen separaten Code fuer die irreversible Kontoloeschung."""
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        token_user_id = user_from_token(conn, token)
+        session = session_user_from_cookie(conn)
+        if not token_user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if not session:
+            return jsonify({"ok": False, "error": "reauthentication_required"}), 401
+        session_user_id, _session_id = session
+        if session_user_id != token_user_id:
+            return jsonify({"ok": False, "error": "account_mismatch"}), 403
+
+        account = conn.execute(
+            "SELECT email FROM app_accounts WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (token_user_id,),
+        ).fetchone()
+        if not account or not normalize_email(account["email"]):
+            return jsonify({"ok": False, "error": "verified_email_required"}), 409
+        recent = conn.execute(
+            """SELECT COUNT(*) FROM app_account_delete_codes
+                WHERE user_id = ?
+                  AND datetime(created_at) >= datetime('now', 'localtime', '-15 minutes')""",
+            (token_user_id,),
+        ).fetchone()[0]
+        if int(recent or 0) >= 3:
+            return jsonify({"ok": False, "error": "too_many_delete_code_requests"}), 429
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        code_hash = keyed_hash(f"delete:{token_user_id}:{code}")
+        conn.execute(
+            "UPDATE app_account_delete_codes SET consumed_at = CURRENT_TIMESTAMP "
+            "WHERE user_id = ? AND consumed_at IS NULL",
+            (token_user_id,),
+        )
+        cur = conn.execute(
+            """INSERT INTO app_account_delete_codes (user_id, code_hash, expires_at)
+               VALUES (?, ?, ?)""",
+            (
+                token_user_id,
+                code_hash,
+                (datetime.now() + timedelta(minutes=ACCOUNT_DELETE_CODE_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        delete_code_id = int(cur.lastrowid)
+        email = normalize_email(account["email"])
+        conn.commit()
+
+    try:
+        send_account_delete_email(email, code)
+    except RuntimeError as exc:
+        with db() as conn:
+            conn.execute(
+                "UPDATE app_account_delete_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (delete_code_id,),
+            )
+            conn.commit()
+        app.logger.warning("Kontoloeschcode konnte nicht gesendet werden: %s", exc)
+        return jsonify({"ok": False, "error": "delete_code_delivery_failed"}), 502
+    return jsonify({"ok": True, "sent": True})
+
+
+def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[str]:
+    """Entfernt nutzerbezogene Dateien nur aus den bekannten Rov.E-Verzeichnissen."""
+    errors: list[str] = []
+    for token in state_tokens:
+        state_path = PUBLIC_APP_STATE_DIR / f"{token}.json"
+        try:
+            if state_path.is_file():
+                state_path.unlink()
+        except OSError as exc:
+            errors.append(f"state:{type(exc).__name__}")
+
+    try:
+        public_report_root = PUBLIC_REPORT_DIR.resolve()
+    except OSError:
+        public_report_root = PUBLIC_REPORT_DIR
+    for html_path in html_paths:
+        try:
+            report_dir = Path(html_path).resolve().parent
+            if report_dir.parent == public_report_root and report_dir.is_dir():
+                shutil.rmtree(report_dir)
+        except OSError as exc:
+            errors.append(f"web_report:{type(exc).__name__}")
+
+    for pdf_path in REPORTS_DIR.glob(f"rove_report_{user_id}_*.pdf"):
+        try:
+            if pdf_path.is_file():
+                pdf_path.unlink()
+        except OSError as exc:
+            errors.append(f"pdf:{type(exc).__name__}")
+    for archive_path in REPORTS_ARCHIVE_DIR.glob(f"rove_report_{user_id}_*.pdf.gz"):
+        try:
+            if archive_path.is_file():
+                archive_path.unlink()
+        except OSError as exc:
+            errors.append(f"pdf_archive:{type(exc).__name__}")
+    return errors
+
+
+@app.route("/v1/account", methods=["DELETE"])
+def delete_account():
+    """Loescht das App-Konto und alle direkt zugeordneten Rov.E-Finanzdaten."""
+    payload = request.get_json(silent=True) or {}
+    phrase = str(payload.get("confirmation") or "").strip().upper()
+    code = re.sub(r"\D", "", str(payload.get("code") or ""))[:6]
+    if phrase not in {"LÖSCHEN", "LOESCHEN"}:
+        return jsonify({"ok": False, "error": "delete_confirmation_required"}), 400
+    if len(code) != 6:
+        return jsonify({"ok": False, "error": "valid_delete_code_required"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        token_user_id = user_from_token(conn, token)
+        session = session_user_from_cookie(conn)
+        if not token_user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if not session:
+            return jsonify({"ok": False, "error": "reauthentication_required"}), 401
+        session_user_id, _session_id = session
+        if session_user_id != token_user_id:
+            return jsonify({"ok": False, "error": "account_mismatch"}), 403
+
+        delete_code = conn.execute(
+            """SELECT id, code_hash, attempts
+                 FROM app_account_delete_codes
+                WHERE user_id = ?
+                  AND consumed_at IS NULL
+                  AND datetime(expires_at) >= datetime('now', 'localtime')
+                ORDER BY datetime(created_at) DESC, id DESC LIMIT 1""",
+            (token_user_id,),
+        ).fetchone()
+        if not delete_code:
+            return jsonify({"ok": False, "error": "delete_code_expired"}), 401
+        if int(delete_code["attempts"] or 0) >= 5:
+            return jsonify({"ok": False, "error": "too_many_delete_code_attempts"}), 429
+        expected_hash = keyed_hash(f"delete:{token_user_id}:{code}")
+        if not hmac.compare_digest(str(delete_code["code_hash"]), expected_hash):
+            conn.execute(
+                "UPDATE app_account_delete_codes SET attempts = attempts + 1 WHERE id = ?",
+                (delete_code["id"],),
+            )
+            conn.commit()
+            return jsonify({"ok": False, "error": "invalid_delete_code"}), 401
+
+        account_rows = conn.execute(
+            "SELECT id, email FROM app_accounts WHERE user_id = ?", (token_user_id,)
+        ).fetchall()
+        account_ids = [int(row["id"]) for row in account_rows]
+        emails = [normalize_email(row["email"]) for row in account_rows if normalize_email(row["email"])]
+        state_tokens = [
+            str(row["token"]) for row in conn.execute(
+                "SELECT token FROM app_state_links WHERE user_id = ?", (token_user_id,)
+            )
+        ]
+        html_paths = [
+            str(row["html_path"]) for row in conn.execute(
+                "SELECT html_path FROM report_links WHERE user_id = ?", (token_user_id,)
+            )
+        ] if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='report_links'"
+        ).fetchone() else []
+
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
+        for email in emails:
+            conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
+
+        # Diese Kindtabelle muss vor portfolio_holdings weg; danach entfernt die dynamische
+        # user_id-Schleife auch neue, spaeter hinzukommende Rov.E-Tabellen automatisch.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_etf_position_plans'"
+        ).fetchone():
+            conn.execute("DELETE FROM app_etf_position_plans WHERE user_id = ?", (token_user_id,))
+
+        tables = [str(row[0]) for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )]
+        excluded = {"users", "app_accounts", "app_sessions", "app_login_codes"}
+        for table in tables:
+            if table in excluded:
+                continue
+            columns = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")')}
+            if "user_id" not in columns:
+                continue
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            conn.execute(f"DELETE FROM {quoted_table} WHERE user_id = ?", (token_user_id,))
+
+        conn.execute("DELETE FROM app_accounts WHERE user_id = ?", (token_user_id,))
+        conn.execute("DELETE FROM users WHERE user_id = ?", (token_user_id,))
+        conn.commit()
+
+    cleanup_errors = remove_deleted_account_files(token_user_id, state_tokens, html_paths)
+    if cleanup_errors:
+        app.logger.error("Kontodaten geloescht, Dateibereinigung unvollstaendig: %s", cleanup_errors)
+    resp = make_response(jsonify({"ok": True, "deleted": True, "cleanupPending": bool(cleanup_errors)}))
+    resp.delete_cookie(SESSION_COOKIE_NAME, path="/app-api/")
+    return resp
 
 
 @app.route("/v1/expenses", methods=["POST"])
