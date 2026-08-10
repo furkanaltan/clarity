@@ -7,6 +7,7 @@ app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenban
 """
 
 import base64
+import csv
 import json
 import gzip
 import hashlib
@@ -19,6 +20,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -119,6 +121,36 @@ BOT_TO_APP_CATEGORY = {
     "SONSTIGES": "Sonstiges",
 }
 ACCOUNT_KEYS = frozenset(ACCOUNT_META)
+
+# Bewusste Positivliste fuer den Nutzerexport. Interne Zugangsdaten wie Login-Codes,
+# Session-Hashes, State-Tokens und Push-Schluessel gehoeren weder in einen Finanzexport
+# noch auf das Endgeraet des Nutzers.
+DATA_EXPORT_TABLES = (
+    ("profil", "users"),
+    ("buchungen", "expenses"),
+    ("budgets", "category_budgets"),
+    ("kategorie_regeln", "user_category_rules"),
+    ("kontostaende", "app_account_balances"),
+    ("kontobewegungen", "app_cash_movements"),
+    ("vertraege", "app_contracts"),
+    ("ziele", "app_goals"),
+    ("hauptziel_fortschritt", "app_primary_goal_progress"),
+    ("immobilien", "app_properties"),
+    ("investments", "portfolio_holdings"),
+    ("investment_bewegungen", "investment_events"),
+    ("portfolio_verlauf", "portfolio_snapshots"),
+    ("monatsplaene", "app_monthly_plan_status"),
+    ("geplante_sparraten", "app_scheduled_savings"),
+    ("etf_sparplan", "app_etf_savings_plan"),
+    ("etf_positionsplaene", "app_etf_position_plans"),
+    ("score_verlauf", "score_history"),
+    ("rove_points", "rove_point_events"),
+    ("badges", "user_badges"),
+    ("monatssnapshots", "monthly_snapshots"),
+    ("reports", "report_jobs"),
+    ("zugangsstatus", "user_access"),
+    ("push_zustellungen", "app_push_delivery_log"),
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_BYTES + 512 * 1024
@@ -300,6 +332,11 @@ def contracts_options():
 
 @app.route("/v1/reports/<report_month>/pdf", methods=["OPTIONS"])
 def report_pdf_options(report_month: str):
+    return ("", 204)
+
+
+@app.route("/v1/data-export", methods=["OPTIONS"])
+def data_export_options():
     return ("", 204)
 
 
@@ -2878,6 +2915,152 @@ def download_report_pdf(report_month: str):
         payload.seek(0)
         return send_file(payload, mimetype="application/pdf", as_attachment=False, download_name=filename)
     return jsonify({"ok": False, "error": "report_file_missing"}), 404
+
+
+def export_table_rows(conn: sqlite3.Connection, table: str, user_id: int) -> tuple[list[str], list[dict]]:
+    """Liest nur Tabellen aus DATA_EXPORT_TABLES und nur Zeilen des angemeldeten Nutzers."""
+    allowed = {table_name for _filename, table_name in DATA_EXPORT_TABLES}
+    if table not in allowed:
+        raise ValueError("export_table_not_allowed")
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    if not exists:
+        return [], []
+    columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")]
+    if "user_id" not in columns:
+        return [], []
+    rows = [dict(row) for row in conn.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,))]
+    return columns, rows
+
+
+def safe_csv_value(value: object) -> object:
+    """Verhindert, dass frei eingegebene Texte beim Oeffnen als Tabellenformel laufen."""
+    if value is None:
+        return ""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
+
+
+def add_csv_to_export(archive: zipfile.ZipFile, filename: str, columns: list[str], rows: list[dict]) -> None:
+    if not columns:
+        return
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([safe_csv_value(row.get(column)) for column in columns])
+    archive.writestr(f"daten/{filename}.csv", output.getvalue().encode("utf-8-sig"))
+
+
+@app.route("/v1/data-export", methods=["GET"])
+def download_data_export():
+    """Erzeugt einen vollstaendigen, kurzlebigen Rov.E-Datenexport direkt im Arbeitsspeicher."""
+    token = token_from_request()
+    with db() as conn:
+        ensure_auth_tables(conn)
+        token_user_id = user_from_token(conn, token)
+        session = session_user_from_cookie(conn)
+        if not token_user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if not session:
+            return jsonify({"ok": False, "error": "reauthentication_required"}), 401
+        session_user_id, _session_id = session
+        if session_user_id != token_user_id:
+            return jsonify({"ok": False, "error": "account_mismatch"}), 403
+
+        identity = conn.execute(
+            """SELECT email, display_name, verified_at, created_at, updated_at
+                 FROM app_accounts WHERE user_id = ? ORDER BY id DESC LIMIT 1""",
+            (token_user_id,),
+        ).fetchone()
+        exported_tables: dict[str, list[dict]] = {}
+        exported_columns: dict[str, list[str]] = {}
+        for filename, table in DATA_EXPORT_TABLES:
+            columns, rows = export_table_rows(conn, table, token_user_id)
+            exported_columns[filename] = columns
+            exported_tables[filename] = rows
+        conn.commit()
+
+    generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    account_data = dict(identity) if identity else {}
+    complete_export = {
+        "export_version": 1,
+        "generated_at": generated_at,
+        "account": account_data,
+        "data": exported_tables,
+    }
+    payload = io.BytesIO()
+    included_reports: list[str] = []
+    missing_reports: list[str] = []
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "README.txt",
+            (
+                "Rov.E Datenexport\n"
+                "=================\n\n"
+                f"Erstellt: {generated_at}\n\n"
+                "daten.json enthaelt den vollstaendigen maschinenlesbaren Export.\n"
+                "Der Ordner daten enthaelt dieselben Bereiche zusaetzlich als CSV-Dateien.\n"
+                "Der Ordner reports enthaelt alle auf dem Server vorhandenen statischen PDF-Reports.\n"
+                "Abgelaufene Weblinks sowie Sicherheitsdaten wie Login-Codes, Sessions und Tokens\n"
+                "sind aus Sicherheitsgruenden nicht enthalten.\n"
+            ).encode("utf-8"),
+        )
+        archive.writestr(
+            "daten.json",
+            json.dumps(complete_export, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        if account_data:
+            archive.writestr(
+                "daten/konto.json",
+                json.dumps(account_data, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+        for filename, _table in DATA_EXPORT_TABLES:
+            add_csv_to_export(
+                archive,
+                filename,
+                exported_columns.get(filename, []),
+                exported_tables.get(filename, []),
+            )
+
+        sent_months = sorted({
+            str(row.get("report_month") or "")
+            for row in exported_tables.get("reports", [])
+            if row.get("status") == "sent" and re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", str(row.get("report_month") or ""))
+        })
+        for report_month in sent_months:
+            source_name = f"rove_report_{token_user_id}_{report_month}.pdf"
+            pdf_path = REPORTS_DIR / source_name
+            archive_path = REPORTS_ARCHIVE_DIR / f"{source_name}.gz"
+            target_name = f"reports/Rov.E_Report_{report_month}.pdf"
+            if pdf_path.is_file():
+                archive.write(pdf_path, target_name)
+                included_reports.append(report_month)
+            elif archive_path.is_file():
+                with gzip.open(archive_path, "rb") as compressed:
+                    archive.writestr(target_name, compressed.read())
+                included_reports.append(report_month)
+            else:
+                missing_reports.append(report_month)
+
+        archive.writestr(
+            "export_info.json",
+            json.dumps(
+                {
+                    "generated_at": generated_at,
+                    "included_reports": included_reports,
+                    "missing_report_files": missing_reports,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8"),
+        )
+
+    payload.seek(0)
+    filename = f"RovE_Datenexport_{datetime.now().strftime('%Y-%m-%d')}.zip"
+    return send_file(payload, mimetype="application/zip", as_attachment=True, download_name=filename)
 
 
 @app.route("/v1/expenses", methods=["POST"])
