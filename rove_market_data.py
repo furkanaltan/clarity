@@ -104,11 +104,16 @@ def _leeway_symbol(symbol: str, currency: str) -> str:
     return f"{clean}.XETRA" if currency == "EUR" else clean
 
 
-def _request_leeway_quote(symbol: str, currency: str, token: str | None = None) -> dict:
-    key = (token or os.getenv("LEEWAY_API_TOKEN") or "").strip()
-    if not key:
-        raise ValueError("market_europe_provider_missing")
-    provider_symbol = _leeway_symbol(symbol, currency)
+def _leeway_symbol_candidates(symbol: str, currency: str) -> tuple[str, ...]:
+    """Return likely exchanges without overriding an exchange chosen by the user."""
+    clean = normalize_symbol(symbol)
+    primary = _leeway_symbol(clean, currency)
+    if currency == "EUR" and ":" not in clean and "." not in clean:
+        return primary, f"{clean}.F"
+    return (primary,)
+
+
+def _request_single_leeway_quote(provider_symbol: str, currency: str, key: str) -> dict:
     query = urllib.parse.urlencode({"apitoken": key})
     request = urllib.request.Request(
         f"{LEEWAY_BASE_URL}/live/{urllib.parse.quote(provider_symbol)}?{query}",
@@ -150,6 +155,21 @@ def _request_leeway_quote(symbol: str, currency: str, token: str | None = None) 
         "native_price": native_price,
         "provider": "leeway",
     }
+
+
+def _request_leeway_quote(symbol: str, currency: str, token: str | None = None) -> dict:
+    key = (token or os.getenv("LEEWAY_API_TOKEN") or "").strip()
+    if not key:
+        raise ValueError("market_europe_provider_missing")
+    last_not_found: ValueError | None = None
+    for provider_symbol in _leeway_symbol_candidates(symbol, currency):
+        try:
+            return _request_single_leeway_quote(provider_symbol, currency, key)
+        except ValueError as exc:
+            if str(exc) != "market_symbol_not_found":
+                raise
+            last_not_found = exc
+    raise ValueError("market_symbol_not_found") from last_not_found
 
 
 def fetch_eur_quote(
