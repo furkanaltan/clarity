@@ -95,6 +95,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 SCREENSHOT_MODEL = os.getenv("ROVE_SCREENSHOT_MODEL", "gpt-4o-mini").strip()
 SCREENSHOT_MAX_BYTES = int(os.getenv("ROVE_SCREENSHOT_MAX_BYTES", str(5 * 1024 * 1024)))
 SCREENSHOT_MAX_ROWS = int(os.getenv("ROVE_SCREENSHOT_MAX_ROWS", "20"))
+ADMIN_USER_IDS = frozenset(
+    int(value.strip())
+    for value in os.getenv("ROVE_ADMIN_USER_IDS", "").split(",")
+    if value.strip().isdigit()
+)
 # Nur fuer interne Server-zu-Server-Hinweise, niemals an den Browser ausliefern.
 INTERNAL_PUSH_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 LOGIN_FROM_EMAIL = os.getenv("ROVE_LOGIN_FROM_EMAIL", "info@getrove.de").strip()
@@ -244,6 +249,7 @@ def health():
 @app.route("/v1/auth/me", methods=["OPTIONS"])
 @app.route("/v1/auth/logout", methods=["OPTIONS"])
 @app.route("/v1/onboarding", methods=["OPTIONS"])
+@app.route("/v1/admin/overview", methods=["OPTIONS"])
 def auth_options():
     return ("", 204)
 
@@ -375,6 +381,24 @@ def user_from_token(conn: sqlite3.Connection, token: str) -> int | None:
         (token,),
     ).fetchone()
     return int(row["user_id"]) if row else None
+
+
+def is_admin_user(user_id: int) -> bool:
+    return user_id in ADMIN_USER_IDS
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone() is not None
+
+
+def scalar_count(conn: sqlite3.Connection, query: str, params: tuple = ()) -> int:
+    try:
+        row = conn.execute(query, params).fetchone()
+        return int(row[0] or 0) if row else 0
+    except sqlite3.OperationalError:
+        return 0
 
 
 def clean_text(value: object, fallback: str = "") -> str:
@@ -1394,6 +1418,108 @@ def current_app_state():
         conn.commit()
 
     return jsonify({"ok": True, **state})
+
+
+@app.route("/v1/admin/overview", methods=["GET"])
+def admin_overview():
+    """Kompakte Betriebsdaten fuer das mobile Admin-Kontrollzentrum."""
+    token = token_from_request()
+    with db() as conn:
+        ensure_auth_tables(conn)
+        token_user_id = user_from_token(conn, token)
+        session = session_user_from_cookie(conn)
+        if not token_user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if not session or session[0] != token_user_id:
+            return jsonify({"ok": False, "error": "reauthentication_required"}), 401
+        if not is_admin_user(token_user_id):
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+
+        integrity_row = conn.execute("PRAGMA quick_check(1)").fetchone()
+        database_ok = bool(integrity_row and str(integrity_row[0]).lower() == "ok")
+        access_rows = conn.execute(
+            "SELECT status, COUNT(*) FROM user_access GROUP BY status"
+        ).fetchall() if table_exists(conn, "user_access") else []
+        access_counts = {str(row[0]): int(row[1]) for row in access_rows}
+        report_rows = conn.execute(
+            "SELECT status, COUNT(*) FROM report_jobs GROUP BY status"
+        ).fetchall() if table_exists(conn, "report_jobs") else []
+        report_counts = {str(row[0]): int(row[1]) for row in report_rows}
+
+        accounts_total = scalar_count(conn, "SELECT COUNT(*) FROM app_accounts")
+        accounts_new_7d = scalar_count(
+            conn,
+            "SELECT COUNT(*) FROM app_accounts WHERE datetime(created_at) >= datetime('now', '-7 days')",
+        )
+        expenses_today = scalar_count(
+            conn, "SELECT COUNT(*) FROM expenses WHERE date(created_at) = date('now', 'localtime')"
+        )
+        expenses_month = scalar_count(
+            conn,
+            "SELECT COUNT(*) FROM expenses WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')",
+        )
+        push_devices = scalar_count(
+            conn, "SELECT COUNT(*) FROM app_push_subscriptions"
+        ) if table_exists(conn, "app_push_subscriptions") else 0
+        overdue_reports = scalar_count(
+            conn,
+            """SELECT COUNT(*) FROM report_jobs
+                 WHERE status = 'pending' AND datetime(scheduled_at) < datetime('now', '-30 minutes')""",
+        ) if table_exists(conn, "report_jobs") else 0
+        report_failures = sum(
+            count for status, count in report_counts.items()
+            if status.lower() in {"failed", "error"}
+        )
+
+    backup_dir = APP_DIR / "backups" / "automatic"
+    backups = sorted(backup_dir.glob("*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+    latest_backup = backups[0] if backups else None
+    backup_age_hours = (
+        round((time.time() - latest_backup.stat().st_mtime) / 3600, 1)
+        if latest_backup else None
+    )
+    disk = shutil.disk_usage(APP_DIR)
+    disk_used_percent = round((disk.used / disk.total) * 100, 1) if disk.total else 0.0
+
+    alerts = []
+    if not database_ok:
+        alerts.append({"level": "critical", "title": "Datenbankprüfung fehlgeschlagen"})
+    if latest_backup is None or (backup_age_hours is not None and backup_age_hours > 30):
+        alerts.append({"level": "critical", "title": "Automatisches Backup ist überfällig"})
+    if report_failures:
+        alerts.append({"level": "critical", "title": f"{report_failures} Report-Job(s) fehlgeschlagen"})
+    if overdue_reports:
+        alerts.append({"level": "warning", "title": f"{overdue_reports} Report-Job(s) überfällig"})
+    if disk_used_percent >= 85:
+        alerts.append({"level": "critical", "title": f"Speicherplatz zu {disk_used_percent:g} % belegt"})
+    elif disk_used_percent >= 75:
+        alerts.append({"level": "warning", "title": f"Speicherplatz zu {disk_used_percent:g} % belegt"})
+
+    return jsonify({
+        "ok": True,
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "health": {
+            "api": True,
+            "database": database_ok,
+            "backup": bool(latest_backup and backup_age_hours is not None and backup_age_hours <= 30),
+            "diskUsedPercent": disk_used_percent,
+        },
+        "users": {
+            "accounts": accounts_total,
+            "new7d": accounts_new_7d,
+            "active": sum(access_counts.get(status, 0) for status in ("approved", "app_only")),
+            "status": access_counts,
+            "pushDevices": push_devices,
+        },
+        "activity": {"expensesToday": expenses_today, "expensesMonth": expenses_month},
+        "reports": {"status": report_counts, "failed": report_failures, "overdue": overdue_reports},
+        "backup": {
+            "available": latest_backup is not None,
+            "ageHours": backup_age_hours,
+            "file": latest_backup.name if latest_backup else "",
+        },
+        "alerts": alerts,
+    })
 
 
 @app.route("/v1/monthly-plan", methods=["POST"])

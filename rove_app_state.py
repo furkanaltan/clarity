@@ -1289,9 +1289,9 @@ def _identity(conn: sqlite3.Connection, user_id: int) -> dict:
             (user_id,),
         ).fetchone()
     except sqlite3.OperationalError:
-        return {"email": "", "name": ""}
+        return {"email": "", "name": "", "isAdmin": False}
     if not row:
-        return {"email": "", "name": ""}
+        return {"email": "", "name": "", "isAdmin": False}
 
     email = str(row["email"] or "").strip()
     try:
@@ -1300,7 +1300,12 @@ def _identity(conn: sqlite3.Connection, user_id: int) -> dict:
         name = ""              # Spalte existiert in aelteren Datenbanken noch nicht
     if not name and "@" in email:
         name = email.split("@", 1)[0].replace(".", " ").replace("_", " ").strip().title()
-    return {"email": email, "name": name}
+    admin_ids = {
+        int(value.strip())
+        for value in os.getenv("ROVE_ADMIN_USER_IDS", "").split(",")
+        if value.strip().isdigit()
+    }
+    return {"email": email, "name": name, "isAdmin": user_id in admin_ids}
 
 
 def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
