@@ -1871,7 +1871,7 @@ def get_command_token(text: str) -> str:
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
     "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
-    "/announce_rename", "/announce_app_migration",
+    "/announce_rename", "/announce_app_migration", "/appwechsel",
 }
 
 BETA_NUDGE_TEXT = (
@@ -4827,7 +4827,7 @@ def build_app_migration_preview(rows: list) -> str:
         f"{identities}\n\n"
         f"{APP_MIGRATION_ANNOUNCEMENT_TEXT}\n\n"
         "Zum Senden:\n"
-        "`/announce_app_migration send`"
+        "`/appwechsel send`"
     )
 
 
@@ -4878,8 +4878,8 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/nudge_inactive send – Beta-Check senden\n"
             "/announce_rename – Vorschau der Rov.E-Ankündigung\n"
             "/announce_rename send – Ankündigung an alle freigegebenen Nutzer senden\n"
-            "/announce_app_migration – App-Wechsel als Vorschau\n"
-            "/announce_app_migration send – nur nicht migrierte Nutzer informieren\n"
+            "/appwechsel – App-Wechsel als Vorschau\n"
+            "/appwechsel send – nur nicht migrierte Nutzer informieren\n"
             "/testrecap – Abend-Recap an dich testen\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
@@ -5027,7 +5027,7 @@ def handle_admin_command(message, cmd: str) -> bool:
         )
         return True
 
-    if cmd == "/announce_app_migration":
+    if cmd in {"/announce_app_migration", "/appwechsel"}:
         rows = get_app_migration_candidates()
         parts = message.text.split(maxsplit=1)
         should_send = len(parts) > 1 and parts[1].strip().lower() == "send"
@@ -5115,7 +5115,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'portfolio', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename', 'announce_app_migration', 'app'
+    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename', 'announce_app_migration', 'appwechsel', 'app'
 ])
 def handle_commands(message):
     uid = message.chat.id
