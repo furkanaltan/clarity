@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Rov.E market valuation every day at 22:30 Europe/Berlin
+
+[Timer]
+OnCalendar=*-*-* 22:30:00 Europe/Berlin
+Persistent=true
+AccuracySec=1min
+Unit=rove-market-refresh.service
+
+[Install]
+WantedBy=timers.target
