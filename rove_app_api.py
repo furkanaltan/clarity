@@ -250,6 +250,9 @@ def health():
 @app.route("/v1/auth/logout", methods=["OPTIONS"])
 @app.route("/v1/onboarding", methods=["OPTIONS"])
 @app.route("/v1/admin/overview", methods=["OPTIONS"])
+@app.route("/v1/admin/invitations", methods=["OPTIONS"])
+@app.route("/v1/admin/invitations/<int:invitation_id>", methods=["OPTIONS"])
+@app.route("/v1/admin/access/<int:target_user_id>", methods=["OPTIONS"])
 def auth_options():
     return ("", 204)
 
@@ -373,11 +376,13 @@ def user_from_token(conn: sqlite3.Connection, token: str) -> int | None:
     if not token:
         return None
     row = conn.execute(
-        """SELECT user_id
-             FROM app_state_links
-            WHERE token = ?
-              AND status = 'active'
-              AND datetime(expires_at) >= datetime('now', 'localtime')""",
+        """SELECT l.user_id
+             FROM app_state_links l
+             LEFT JOIN user_access a ON a.user_id = l.user_id
+            WHERE l.token = ?
+              AND l.status = 'active'
+              AND COALESCE(a.status, 'approved') IN ('approved', 'app_only')
+              AND datetime(l.expires_at) >= datetime('now', 'localtime')""",
         (token,),
     ).fetchone()
     return int(row["user_id"]) if row else None
@@ -399,6 +404,39 @@ def scalar_count(conn: sqlite3.Connection, query: str, params: tuple = ()) -> in
         return int(row[0] or 0) if row else 0
     except sqlite3.OperationalError:
         return 0
+
+
+def ensure_admin_tables(conn: sqlite3.Connection) -> None:
+    """Nachvollziehbares Protokoll fuer manuelle Beta-Zugriffsentscheidungen."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_admin_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_user_id   INTEGER NOT NULL,
+            action          TEXT NOT NULL,
+            target_user_id  INTEGER,
+            target_email    TEXT DEFAULT '',
+            details         TEXT DEFAULT '',
+            created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_app_admin_events_created ON app_admin_events(created_at)"
+    )
+
+
+def authenticated_admin(conn: sqlite3.Connection):
+    """Prueft App-Token, E-Mail-Session und Adminrolle fuer jeden Admin-Endpunkt."""
+    ensure_auth_tables(conn)
+    token_user_id = user_from_token(conn, token_from_request())
+    session = session_user_from_cookie(conn)
+    if not token_user_id:
+        return None, (jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401)
+    if not session or session[0] != token_user_id:
+        return None, (jsonify({"ok": False, "error": "reauthentication_required"}), 401)
+    if not is_admin_user(token_user_id):
+        return None, (jsonify({"ok": False, "error": "forbidden"}), 403)
+    ensure_admin_tables(conn)
+    return token_user_id, None
 
 
 def clean_text(value: object, fallback: str = "") -> str:
@@ -945,8 +983,10 @@ def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None
         """SELECT s.id AS session_id, a.user_id
              FROM app_sessions s
              JOIN app_accounts a ON a.id = s.account_id
+             LEFT JOIN user_access ua ON ua.user_id = a.user_id
             WHERE s.token_hash = ?
               AND s.revoked_at IS NULL
+              AND COALESCE(ua.status, 'approved') IN ('approved', 'app_only')
               AND datetime(s.expires_at) >= datetime('now', 'localtime')""",
         (token_hash,),
     ).fetchone()
@@ -1081,6 +1121,11 @@ def verify_login_code():
         if account:
             account_id = int(account["id"])
             user_id = int(account["user_id"])
+            access = conn.execute(
+                "SELECT status FROM user_access WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if access and str(access["status"] or "") not in {"approved", "app_only"}:
+                return jsonify({"ok": False, "error": "access_not_active"}), 403
         elif str(row["flow"] or "") == APP_REGISTRATION_FLOW:
             invitation = conn.execute(
                 """SELECT id FROM app_invitations
@@ -1423,17 +1468,10 @@ def current_app_state():
 @app.route("/v1/admin/overview", methods=["GET"])
 def admin_overview():
     """Kompakte Betriebsdaten fuer das mobile Admin-Kontrollzentrum."""
-    token = token_from_request()
     with db() as conn:
-        ensure_auth_tables(conn)
-        token_user_id = user_from_token(conn, token)
-        session = session_user_from_cookie(conn)
-        if not token_user_id:
-            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-        if not session or session[0] != token_user_id:
-            return jsonify({"ok": False, "error": "reauthentication_required"}), 401
-        if not is_admin_user(token_user_id):
-            return jsonify({"ok": False, "error": "forbidden"}), 403
+        token_user_id, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
 
         integrity_row = conn.execute("PRAGMA quick_check(1)").fetchone()
         database_ok = bool(integrity_row and str(integrity_row[0]).lower() == "ok")
@@ -1470,6 +1508,50 @@ def admin_overview():
             count for status, count in report_counts.items()
             if status.lower() in {"failed", "error"}
         )
+        invitation_rows = conn.execute(
+            """SELECT id, email, created_at, expires_at
+                 FROM app_invitations
+                WHERE consumed_at IS NULL
+                  AND datetime(expires_at) >= datetime('now', 'localtime')
+                ORDER BY datetime(created_at) DESC LIMIT 30"""
+        ).fetchall()
+        managed_rows = conn.execute(
+            """SELECT ua.user_id, ua.status, ua.requested_at, ua.approved_at,
+                      ua.display_name AS access_name, ua.username,
+                      aa.email, aa.display_name AS account_name, aa.source
+                 FROM user_access ua
+                 LEFT JOIN app_accounts aa ON aa.id = (
+                     SELECT MAX(a2.id) FROM app_accounts a2 WHERE a2.user_id = ua.user_id
+                 )
+                WHERE ua.status IN ('pending', 'approved', 'app_only', 'revoked')
+                ORDER BY CASE ua.status WHEN 'pending' THEN 0 WHEN 'revoked' THEN 1 ELSE 2 END,
+                         datetime(COALESCE(NULLIF(ua.requested_at, ''), ua.approved_at)) DESC
+                LIMIT 60"""
+        ).fetchall()
+
+        invitations = [
+            {
+                "id": int(row["id"]),
+                "email": str(row["email"] or ""),
+                "createdAt": str(row["created_at"] or ""),
+                "expiresAt": str(row["expires_at"] or ""),
+            }
+            for row in invitation_rows
+        ]
+        managed_users = []
+        for row in managed_rows:
+            display_name = str(row["account_name"] or row["access_name"] or "").strip()
+            username = str(row["username"] or "").strip()
+            email = str(row["email"] or "").strip()
+            managed_users.append({
+                "userId": int(row["user_id"]),
+                "status": str(row["status"] or "pending"),
+                "name": display_name or username or email or "Unbekannt",
+                "email": email,
+                "source": str(row["source"] or ("telegram" if username else "")),
+                "requestedAt": str(row["requested_at"] or ""),
+                "isSelf": int(row["user_id"]) == token_user_id,
+            })
 
     backup_dir = APP_DIR / "backups" / "automatic"
     backups = sorted(backup_dir.glob("*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -1510,7 +1592,9 @@ def admin_overview():
             "active": sum(access_counts.get(status, 0) for status in ("approved", "app_only")),
             "status": access_counts,
             "pushDevices": push_devices,
+            "managed": managed_users,
         },
+        "invitations": invitations,
         "activity": {"expensesToday": expenses_today, "expensesMonth": expenses_month},
         "reports": {"status": report_counts, "failed": report_failures, "overdue": overdue_reports},
         "backup": {
@@ -1520,6 +1604,154 @@ def admin_overview():
         },
         "alerts": alerts,
     })
+
+
+@app.route("/v1/admin/invitations", methods=["POST"])
+def admin_create_invitation():
+    """Bereitet einen zeitlich begrenzten App-only Beta-Zugang vor."""
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    try:
+        valid_days = int(payload.get("days", 14))
+    except (TypeError, ValueError):
+        valid_days = 14
+    if not email:
+        return jsonify({"ok": False, "error": "valid_email_required"}), 400
+    if not 1 <= valid_days <= 90:
+        return jsonify({"ok": False, "error": "invalid_invitation_days"}), 400
+
+    with db() as conn:
+        admin_user_id, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
+        if conn.execute("SELECT 1 FROM app_accounts WHERE email = ?", (email,)).fetchone():
+            return jsonify({"ok": False, "error": "account_already_exists"}), 409
+        expires_at = (datetime.now() + timedelta(days=valid_days)).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """INSERT INTO app_invitations (email, expires_at, consumed_at)
+               VALUES (?, ?, NULL)
+               ON CONFLICT(email) DO UPDATE SET
+                   created_at = CURRENT_TIMESTAMP,
+                   expires_at = excluded.expires_at,
+                   consumed_at = NULL""",
+            (email, expires_at),
+        )
+        row = conn.execute(
+            "SELECT id, created_at FROM app_invitations WHERE email = ?", (email,)
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO app_admin_events
+               (admin_user_id, action, target_email, details)
+               VALUES (?, 'invitation_created', ?, ?)""",
+            (admin_user_id, email, json.dumps({"days": valid_days})),
+        )
+        conn.commit()
+    return jsonify({
+        "ok": True,
+        "invitation": {
+            "id": int(row["id"]), "email": email,
+            "createdAt": str(row["created_at"] or ""), "expiresAt": expires_at,
+        },
+    })
+
+
+@app.route("/v1/admin/invitations/<int:invitation_id>", methods=["DELETE"])
+def admin_delete_invitation(invitation_id: int):
+    """Zieht eine noch nicht verwendete Beta-Einladung zurueck."""
+    with db() as conn:
+        admin_user_id, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
+        row = conn.execute(
+            "SELECT email, consumed_at FROM app_invitations WHERE id = ?", (invitation_id,)
+        ).fetchone()
+        if not row or row["consumed_at"]:
+            return jsonify({"ok": False, "error": "invitation_not_found"}), 404
+        conn.execute("DELETE FROM app_invitations WHERE id = ?", (invitation_id,))
+        conn.execute(
+            """INSERT INTO app_admin_events
+               (admin_user_id, action, target_email)
+               VALUES (?, 'invitation_withdrawn', ?)""",
+            (admin_user_id, str(row["email"] or "")),
+        )
+        conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/v1/admin/access/<int:target_user_id>", methods=["POST"])
+def admin_update_access(target_user_id: int):
+    """Gibt einen vorhandenen Zugang frei oder sperrt ihn mit echter API-Wirkung."""
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    if action not in {"approve", "revoke"}:
+        return jsonify({"ok": False, "error": "invalid_admin_action"}), 400
+
+    with db() as conn:
+        admin_user_id, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
+        if target_user_id == admin_user_id:
+            return jsonify({"ok": False, "error": "cannot_change_own_access"}), 409
+        target = conn.execute(
+            "SELECT user_id FROM users WHERE user_id = ?", (target_user_id,)
+        ).fetchone()
+        if not target:
+            return jsonify({"ok": False, "error": "user_not_found"}), 404
+        account = conn.execute(
+            """SELECT email, source FROM app_accounts
+                 WHERE user_id = ? ORDER BY id DESC LIMIT 1""", (target_user_id,)
+        ).fetchone()
+        email = str(account["email"] or "") if account else ""
+
+        if action == "approve":
+            next_status = "app_only" if account and str(account["source"] or "") == "app" else "approved"
+            conn.execute(
+                """INSERT INTO user_access (user_id, status, approved_at, approved_by, revoked_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP, ?, '')
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       status = excluded.status,
+                       approved_at = excluded.approved_at,
+                       approved_by = excluded.approved_by,
+                       revoked_at = ''""",
+                (target_user_id, next_status, admin_user_id),
+            )
+            conn.execute(
+                """UPDATE app_state_links SET status = 'active'
+                    WHERE user_id = ? AND status = 'revoked'
+                      AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                (target_user_id,),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO user_access (user_id, status, revoked_at, approved_by)
+                   VALUES (?, 'revoked', CURRENT_TIMESTAMP, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       status = 'revoked',
+                       revoked_at = CURRENT_TIMESTAMP,
+                       approved_by = excluded.approved_by""",
+                (target_user_id, admin_user_id),
+            )
+            conn.execute(
+                """UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP
+                    WHERE account_id IN (SELECT id FROM app_accounts WHERE user_id = ?)
+                      AND revoked_at IS NULL""",
+                (target_user_id,),
+            )
+            conn.execute(
+                "UPDATE app_state_links SET status = 'revoked' WHERE user_id = ? AND status = 'active'",
+                (target_user_id,),
+            )
+            if table_exists(conn, "app_push_subscriptions"):
+                conn.execute("DELETE FROM app_push_subscriptions WHERE user_id = ?", (target_user_id,))
+
+        conn.execute(
+            """INSERT INTO app_admin_events
+               (admin_user_id, action, target_user_id, target_email)
+               VALUES (?, ?, ?, ?)""",
+            (admin_user_id, f"access_{action}", target_user_id, email),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "status": next_status if action == "approve" else "revoked"})
 
 
 @app.route("/v1/monthly-plan", methods=["POST"])
