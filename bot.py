@@ -1861,6 +1861,13 @@ def get_actor_id(message) -> int:
     return message.from_user.id if getattr(message, "from_user", None) else message.chat.id
 
 
+def get_command_token(text: str) -> str:
+    """Normalisiert Telegram-Befehle inklusive optionalem @Botnamen und Argumenten."""
+    if not text or not text.strip().startswith("/"):
+        return ""
+    return text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+
+
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
     "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
@@ -5112,7 +5119,7 @@ def handle_admin_command(message, cmd: str) -> bool:
 ])
 def handle_commands(message):
     uid = message.chat.id
-    cmd = message.text.split()[0].lower()
+    cmd = get_command_token(message.text)
     u = get_or_create_user(uid)
 
     if handle_admin_command(message, cmd):
@@ -5535,6 +5542,12 @@ def handle_msg(message):
 
     text_input = message.text.strip()
     text_lower = text_input.lower()
+
+    # Telegram kann unbekannte oder noch nicht im Client-Menue sichtbare Befehle als normalen
+    # Text an diesen Catch-all liefern. Admin-Kommandos muessen vor jeder Finanzlogik abzweigen.
+    command_token = get_command_token(text_input)
+    if command_token in ADMIN_COMMANDS and handle_admin_command(message, command_token):
+        return
 
 
     u = get_or_create_user(uid)
