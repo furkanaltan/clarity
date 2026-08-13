@@ -6535,33 +6535,6 @@ def setup_monthly_report_scheduler():
 
     scheduler = BackgroundScheduler(timezone="Europe/Berlin")
     scheduler.add_job(
-        create_monthly_report_jobs,
-        trigger=CronTrigger(day=1, hour=7, minute=55, timezone="Europe/Berlin"),
-        id="create_monthly_report_jobs",
-        replace_existing=True,
-        misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        process_due_report_jobs,
-        trigger="interval",
-        seconds=REPORT_WORKER_INTERVAL_SECONDS,
-        id="process_due_report_jobs",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        ensure_monthly_report_jobs,
-        trigger=CronTrigger(day="1-2", minute=5, timezone="Europe/Berlin"),
-        id="ensure_monthly_report_jobs",
-        replace_existing=True,
-        misfire_grace_time=REPORT_CREATION_MISFIRE_GRACE_SECONDS,
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
         send_evening_recaps,
         trigger=CronTrigger(hour=20, minute=30, timezone="Europe/Berlin"),
         id="send_evening_recaps",
@@ -6570,31 +6543,8 @@ def setup_monthly_report_scheduler():
         coalesce=True,
         max_instances=1,
     )
-    scheduler.add_job(
-        cleanup_expired_web_reports,
-        trigger=CronTrigger(hour=3, minute=10, timezone="Europe/Berlin"),
-        id="cleanup_expired_web_reports",
-        replace_existing=True,
-        misfire_grace_time=3600,
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        archive_old_pdf_reports,
-        trigger=CronTrigger(hour=3, minute=20, timezone="Europe/Berlin"),
-        id="archive_old_pdf_reports",
-        replace_existing=True,
-        misfire_grace_time=3600,
-        coalesce=True,
-        max_instances=1,
-    )
     scheduler.start()
-    ensure_monthly_report_jobs()
-    logger.info(
-        "Report-Queue aktiv: Jobs am 1. um 07:55, Versandfenster "
-        f"{REPORT_SEND_WINDOW_START_HOUR}:00-{REPORT_SEND_WINDOW_END_HOUR}:00, "
-        f"Worker alle {REPORT_WORKER_INTERVAL_SECONDS}s, Batch {REPORT_WORKER_BATCH_SIZE}."
-    )
+    logger.info("Telegram-Abend-Recap aktiv; App-Reports laufen im eigenen systemd-Worker.")
     return scheduler
 
 # ====================== GRACEFUL SHUTDOWN ======================

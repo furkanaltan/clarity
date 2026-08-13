@@ -1,0 +1,12 @@
+[Unit]
+Description=Create Rov.E monthly App report jobs on day 1 with day 2 safety run
+
+[Timer]
+OnCalendar=*-*-01 07:55:00 Europe/Berlin
+OnCalendar=*-*-02 08:05:00 Europe/Berlin
+Persistent=true
+AccuracySec=1min
+Unit=rove-report-enqueue.service
+
+[Install]
+WantedBy=timers.target

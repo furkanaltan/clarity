@@ -1590,7 +1590,22 @@ def send_report_push(user_id: int, report_month: str) -> None:
         logger.warning("Report-Push fuer User %s fehlgeschlagen: %s", user_id, exc)
 
 
-def send_report_to_user(user_id: int, report_month: str, bot):
+def has_verified_app_account(user_id: int) -> bool:
+    """Migrated Telegram users become App users once their App login is verified."""
+    try:
+        with get_db() as conn:
+            account = conn.execute(
+                """SELECT 1 FROM app_accounts
+                    WHERE user_id = ? AND TRIM(COALESCE(verified_at, '')) != ''
+                    LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+        return bool(account)
+    except sqlite3.OperationalError:
+        return False
+
+
+def send_report_to_user(user_id: int, report_month: str, bot=None):
     report_data = build_report_data(user_id, report_month)
     tracked_days = report_data["meta"]["tracked_days"]
 
@@ -1608,15 +1623,10 @@ def send_report_to_user(user_id: int, report_month: str, bot):
     except Exception as e:
         logger.warning("Rov.E Web-Report konnte nicht erzeugt werden: %s", e)
 
-    with get_db() as conn:
-        try:
-            account = conn.execute(
-                "SELECT source FROM app_accounts WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-                (user_id,),
-            ).fetchone()
-            app_only = bool(account and str(account["source"] or "") == "app")
-        except sqlite3.OperationalError:
-            app_only = False
+    app_only = has_verified_app_account(user_id)
+
+    if not app_only and bot is None:
+        raise ReportSkipped("Kein verifiziertes App-Konto fuer die Report-Zustellung")
 
     if not app_only and web_report and web_report.get("url"):
         expires_label = web_report["expires_at"].strftime("%d.%m.%Y")
