@@ -6276,7 +6276,7 @@ def get_active_user_ids() -> list:
                FROM users u
                LEFT JOIN user_access a ON a.user_id = u.user_id
                WHERE u.onboarding_step = ?
-               AND COALESCE(a.status, 'approved') = 'approved'""",
+               AND COALESCE(a.status, 'approved') IN ('approved', 'app_only')""",
             (STEP_NORMAL,)
         )
         return [row["user_id"] for row in cursor.fetchall()]

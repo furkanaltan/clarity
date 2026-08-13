@@ -83,6 +83,8 @@ AUTH_SESSION_TTL_DAYS = int(os.getenv("ROVE_APP_AUTH_SESSION_TTL_DAYS", "180"))
 AUTH_ATTEMPT_WINDOW_SECONDS = 15 * 60
 AUTH_ATTEMPT_LIMIT = 5
 _auth_attempts: dict[str, list[float]] = {}
+APP_REGISTRATION_FLOW = "app_registration"
+APP_USER_ID_BASE = 8_000_000_000_000_000
 SCREENSHOT_ATTEMPT_WINDOW_SECONDS = 24 * 60 * 60
 SCREENSHOT_ATTEMPT_LIMIT = int(os.getenv("ROVE_SCREENSHOT_DAILY_LIMIT", "10"))
 _screenshot_attempts: dict[int, list[float]] = {}
@@ -241,6 +243,7 @@ def health():
 @app.route("/v1/auth/verify-code", methods=["OPTIONS"])
 @app.route("/v1/auth/me", methods=["OPTIONS"])
 @app.route("/v1/auth/logout", methods=["OPTIONS"])
+@app.route("/v1/onboarding", methods=["OPTIONS"])
 def auth_options():
     return ("", 204)
 
@@ -701,6 +704,8 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(app_accounts)")}
     if "display_name" not in columns:
         conn.execute("ALTER TABLE app_accounts ADD COLUMN display_name TEXT")
+    if "source" not in columns:
+        conn.execute("ALTER TABLE app_accounts ADD COLUMN source TEXT NOT NULL DEFAULT 'telegram'")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS app_login_codes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -711,6 +716,26 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
             expires_at   TEXT NOT NULL,
             attempts     INTEGER NOT NULL DEFAULT 0,
             consumed_at  TEXT
+        )"""
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(app_login_codes)")}
+    if "flow" not in columns:
+        conn.execute("ALTER TABLE app_login_codes ADD COLUMN flow TEXT NOT NULL DEFAULT 'login'")
+    if "invitation_id" not in columns:
+        conn.execute("ALTER TABLE app_login_codes ADD COLUMN invitation_id INTEGER")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_invitations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            email       TEXT NOT NULL UNIQUE,
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            expires_at  TEXT NOT NULL,
+            consumed_at TEXT
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_user_sequence (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )"""
     )
     conn.execute(
@@ -740,6 +765,30 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_login_codes_email ON app_login_codes(email, consumed_at, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sessions_hash ON app_sessions(token_hash, revoked_at, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_delete_codes_user ON app_account_delete_codes(user_id, consumed_at, expires_at)")
+
+
+def create_app_only_user(conn: sqlite3.Connection, email: str) -> tuple[int, int]:
+    """Legt die minimale zentrale Identitaet an; Finanzdaten folgen erst im Onboarding."""
+    sequence = conn.execute("INSERT INTO app_user_sequence DEFAULT VALUES")
+    user_id = APP_USER_ID_BASE + int(sequence.lastrowid)
+    conn.execute(
+        """INSERT INTO users
+           (user_id, onboarding_step, current_month, fixed_costs_details)
+           VALUES (?, 0, ?, '{}')""",
+        (user_id, datetime.now().strftime("%Y-%m")),
+    )
+    conn.execute(
+        """INSERT INTO user_access
+           (user_id, status, approved_at, display_name, username, note)
+           VALUES (?, 'app_only', CURRENT_TIMESTAMP, '', '', 'App-only Beta')""",
+        (user_id,),
+    )
+    account = conn.execute(
+        """INSERT INTO app_accounts (email, user_id, verified_at, source)
+           VALUES (?, ?, CURRENT_TIMESTAMP, 'app')""",
+        (email, user_id),
+    )
+    return user_id, int(account.lastrowid)
 
 
 def latest_score(conn: sqlite3.Connection, user_id: int) -> tuple[int, str]:
@@ -902,6 +951,7 @@ def request_login_code():
     payload = request.get_json(silent=True) or {}
     email = normalize_email(payload.get("email"))
     pairing_code = clean_pairing_code(payload.get("pairing_code"))
+    registration = payload.get("registration") is True
     if not email:
         return jsonify({"ok": False, "error": "valid_email_required"}), 400
     if not auth_attempt_allowed(email):
@@ -916,7 +966,22 @@ def request_login_code():
     with db() as conn:
         ensure_auth_tables(conn)
         account = conn.execute("SELECT id FROM app_accounts WHERE email = ?", (email,)).fetchone()
-        if not account:
+        invitation_id = None
+        flow = "login"
+        if registration:
+            if account:
+                return jsonify({"ok": False, "error": "account_already_exists"}), 409
+            invitation = conn.execute(
+                """SELECT id FROM app_invitations
+                    WHERE email = ? AND consumed_at IS NULL
+                      AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                (email,),
+            ).fetchone()
+            if not invitation:
+                return jsonify({"ok": False, "error": "invitation_required"}), 403
+            invitation_id = int(invitation["id"])
+            flow = APP_REGISTRATION_FLOW
+        elif not account:
             if not pairing_code:
                 return jsonify({"ok": False, "error": "pairing_code_required"}), 409
             linked = conn.execute(
@@ -929,13 +994,16 @@ def request_login_code():
             if not linked:
                 return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
         conn.execute(
-            """INSERT INTO app_login_codes (email, code_hash, pairing_code, expires_at)
-               VALUES (?, ?, ?, ?)""",
+            """INSERT INTO app_login_codes
+               (email, code_hash, pairing_code, expires_at, flow, invitation_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 email,
                 code_hash,
                 pairing_code or None,
                 (datetime.now() + timedelta(minutes=AUTH_CODE_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S"),
+                flow,
+                invitation_id,
             ),
         )
         conn.commit()
@@ -946,7 +1014,7 @@ def request_login_code():
         app.logger.warning("Login-Code an %s konnte nicht gesendet werden: %s", email, exc)
         return jsonify({"ok": False, "error": str(exc)}), 502
 
-    return jsonify({"ok": True, "sent": True, "needsPairing": not bool(account)})
+    return jsonify({"ok": True, "sent": True, "needsPairing": not bool(account) and not registration})
 
 
 @app.route("/v1/auth/verify-code", methods=["POST"])
@@ -965,7 +1033,7 @@ def verify_login_code():
     with db() as conn:
         ensure_auth_tables(conn)
         row = conn.execute(
-            """SELECT id, pairing_code, attempts
+            """SELECT id, pairing_code, attempts, flow, invitation_id
                  FROM app_login_codes
                 WHERE email = ?
                   AND consumed_at IS NULL
@@ -985,9 +1053,25 @@ def verify_login_code():
             return jsonify({"ok": False, "error": "invalid_code"}), 401
 
         account = conn.execute("SELECT id, user_id FROM app_accounts WHERE email = ?", (email,)).fetchone()
+        new_account = False
         if account:
             account_id = int(account["id"])
             user_id = int(account["user_id"])
+        elif str(row["flow"] or "") == APP_REGISTRATION_FLOW:
+            invitation = conn.execute(
+                """SELECT id FROM app_invitations
+                    WHERE id = ? AND email = ? AND consumed_at IS NULL
+                      AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                (row["invitation_id"], email),
+            ).fetchone()
+            if not invitation:
+                return jsonify({"ok": False, "error": "invitation_expired"}), 409
+            user_id, account_id = create_app_only_user(conn, email)
+            conn.execute(
+                "UPDATE app_invitations SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (invitation["id"],),
+            )
+            new_account = True
         else:
             pairing_code = str(row["pairing_code"] or "")
             linked = conn.execute(
@@ -1019,7 +1103,12 @@ def verify_login_code():
         conn.commit()
         state_url = create_state_url_for_user(conn, user_id)
 
-    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
+    resp = make_response(jsonify({
+        "ok": True,
+        "state_url": state_url,
+        "new_account": new_account,
+        "onboarding_required": new_account,
+    }))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -1783,6 +1872,214 @@ def ensure_payday_column(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     if "payday" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN payday INTEGER")
+
+
+def onboarding_amount(value: object, maximum: float = 10_000_000.0) -> float | None:
+    try:
+        amount = round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    return amount if 0 <= amount <= maximum else None
+
+
+@app.route("/v1/onboarding", methods=["POST"])
+def complete_app_onboarding():
+    """Schreibt ein eingeladenes App-only-Profil einmalig in die produktive Datenbasis."""
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+
+    name = clean_text(payload.get("name"))[:40]
+    income = onboarding_amount(payload.get("income"))
+    other_income = onboarding_amount(payload.get("other_income"))
+    etf_savings = onboarding_amount(payload.get("etf_savings"), 100_000.0)
+    cash_savings = onboarding_amount(payload.get("cash_savings"), 100_000.0)
+    wealth = payload.get("wealth") if isinstance(payload.get("wealth"), dict) else {}
+    amounts = {
+        key: onboarding_amount(wealth.get(key))
+        for key in ("giro", "tagesgeld", "bargeld", "etf", "krypto", "property_value", "property_debt")
+    }
+    try:
+        payday = int(payload.get("payday") or 0)
+    except (TypeError, ValueError):
+        payday = 0
+    if (
+        income is None or other_income is None or etf_savings is None or cash_savings is None
+        or any(value is None for value in amounts.values())
+        or (payday and not 1 <= payday <= 31)
+    ):
+        return jsonify({"ok": False, "error": "invalid_onboarding_values"}), 400
+
+    contracts = payload.get("contracts")
+    goals = payload.get("goals")
+    if not isinstance(contracts, list) or len(contracts) > 50:
+        return jsonify({"ok": False, "error": "invalid_onboarding_contracts"}), 400
+    if not isinstance(goals, list) or len(goals) > 10:
+        return jsonify({"ok": False, "error": "invalid_onboarding_goals"}), 400
+
+    cleaned_contracts = []
+    for index, contract in enumerate(contracts):
+        if not isinstance(contract, dict):
+            return jsonify({"ok": False, "error": "invalid_onboarding_contract"}), 400
+        contract_name = clean_text(contract.get("name"))[:80]
+        category = clean_text(contract.get("category"))
+        amount = onboarding_amount(contract.get("amount"), 1_000_000.0)
+        if not contract_name or category not in CONTRACT_CATEGORIES or amount is None or amount <= 0:
+            return jsonify({"ok": False, "error": "invalid_onboarding_contract"}), 400
+        cleaned_contracts.append({
+            "id": f"onboarding_{index + 1}_{secrets.token_hex(4)}",
+            "name": contract_name,
+            "category": category,
+            "amount": amount,
+            "icon": clean_text(contract.get("icon"), "doc")[:24],
+            "tint": clean_text(contract.get("tint"), "#8FA8BC")[:16],
+            "cancelable": 1 if bool(contract.get("cancelable", True)) else 0,
+        })
+
+    cleaned_goals = []
+    for index, goal in enumerate(goals):
+        if not isinstance(goal, dict):
+            return jsonify({"ok": False, "error": "invalid_onboarding_goal"}), 400
+        goal_name = clean_text(goal.get("name"))[:80]
+        target = onboarding_amount(goal.get("target"))
+        current = onboarding_amount(goal.get("current"))
+        if not goal_name or target is None or target <= 0 or current is None:
+            return jsonify({"ok": False, "error": "invalid_onboarding_goal"}), 400
+        cleaned_goals.append({
+            "id": f"onboarding_{index + 1}_{secrets.token_hex(4)}",
+            "name": goal_name,
+            "target": target,
+            "current": min(current, target),
+            "icon": clean_text(goal.get("icon"), "coins")[:24],
+            "tint": clean_text(goal.get("tint"), "#2AABEE")[:16],
+        })
+
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_auth_tables(conn)
+        account = conn.execute(
+            "SELECT source FROM app_accounts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        user = conn.execute(
+            "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not account or str(account["source"] or "") != "app":
+            return jsonify({"ok": False, "error": "app_registration_required"}), 403
+        if user and int(user["onboarding_step"] or 0) >= 10:
+            return jsonify({"ok": False, "error": "onboarding_already_completed"}), 409
+
+        ensure_payday_column(conn)
+        conn.execute(
+            """UPDATE users SET income = ?, other_income = ?, fixed_costs = 0,
+                      fixed_costs_details = '{}', etf_savings = ?, cash_savings = ?,
+                      current_investments = ?, current_cash = ?, onboarding_step = 10,
+                      current_month = ?
+                WHERE user_id = ?""",
+            (
+                income, other_income, etf_savings, cash_savings,
+                round(amounts["etf"] + amounts["krypto"], 2),
+                round(amounts["giro"] + amounts["tagesgeld"] + amounts["bargeld"], 2),
+                datetime.now().strftime("%Y-%m"), user_id,
+            ),
+        )
+        conn.execute("UPDATE users SET payday = ? WHERE user_id = ?", (payday or None, user_id))
+        conn.execute(
+            """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ?""",
+            (name or None, user_id),
+        )
+        conn.execute(
+            "UPDATE user_access SET display_name = ?, note = 'App-only Beta' WHERE user_id = ?",
+            (name, user_id),
+        )
+
+        ensure_app_account_balances_table(conn)
+        save_app_cash_accounts(conn, user_id, {
+            "giro": amounts["giro"],
+            "tagesgeld": amounts["tagesgeld"],
+            "bargeld": amounts["bargeld"],
+        })
+
+        ensure_app_contracts_table(conn)
+        conn.execute("DELETE FROM app_contracts WHERE user_id = ?", (user_id,))
+        for contract in cleaned_contracts:
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, icon, tint, cancelable)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, contract["id"], f"app_{contract['id']}", contract["name"],
+                    contract["category"], contract["amount"], contract["icon"],
+                    contract["tint"], contract["cancelable"],
+                ),
+            )
+        sync_app_contract_details(conn, user_id)
+
+        ensure_app_goals_table(conn)
+        conn.execute("DELETE FROM app_goals WHERE user_id = ?", (user_id,))
+        for goal in cleaned_goals:
+            conn.execute(
+                """INSERT INTO app_goals
+                   (user_id, goal_id, name, target_amount, current_amount, icon, tint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id, goal["id"], goal["name"], goal["target"], goal["current"],
+                    goal["icon"], goal["tint"],
+                ),
+            )
+
+        ensure_app_properties_table(conn)
+        conn.execute("DELETE FROM app_properties WHERE user_id = ?", (user_id,))
+        if amounts["property_value"] > 0:
+            conn.execute(
+                """INSERT INTO app_properties (user_id, market_value, remaining_debt)
+                   VALUES (?, ?, ?)""",
+                (user_id, amounts["property_value"], amounts["property_debt"]),
+            )
+
+        conn.execute("DELETE FROM investment_events WHERE user_id = ? AND source = 'app_onboarding'", (user_id,))
+        for asset_type, amount, label in (
+            ("etf", amounts["etf"], "ETF & Investments"),
+            ("crypto", amounts["krypto"], "Krypto"),
+        ):
+            if amount > 0:
+                conn.execute(
+                    """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                       VALUES (?, ?, 'in', ?, ?, 'initial_balance', 'app_onboarding', 'Startwert aus App-Onboarding')""",
+                    (user_id, amount, asset_type, label),
+                )
+
+        ensure_app_etf_savings_plan_table(conn)
+        conn.execute("DELETE FROM app_etf_savings_plan WHERE user_id = ?", (user_id,))
+        if etf_savings > 0:
+            plan = payload.get("etf_plan") if isinstance(payload.get("etf_plan"), dict) else {}
+            try:
+                execution_day = int(plan.get("execution_day") or 1)
+            except (TypeError, ValueError):
+                execution_day = 1
+            source_account = clean_text(plan.get("source_account"), "giro").lower()
+            mode = clean_text(plan.get("mode"), "auto").lower()
+            if not 1 <= execution_day <= 31 or source_account not in {"giro", "tagesgeld"} or mode not in {"auto", "confirm"}:
+                return jsonify({"ok": False, "error": "invalid_onboarding_etf_plan"}), 400
+            now = datetime.now()
+            start_month = now.strftime("%Y-%m")
+            if now.day > execution_day:
+                next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+                start_month = next_month.strftime("%Y-%m")
+            conn.execute(
+                """INSERT INTO app_etf_savings_plan
+                   (user_id, execution_day, source_account, mode, active, start_month)
+                   VALUES (?, ?, ?, ?, 1, ?)""",
+                (user_id, execution_day, source_account, mode, start_month),
+            )
+
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    return jsonify({"ok": True, "onboardingRequired": False, **live_data})
 
 
 @app.route("/v1/profile", methods=["OPTIONS"])

@@ -1608,7 +1608,17 @@ def send_report_to_user(user_id: int, report_month: str, bot):
     except Exception as e:
         logger.warning("Rov.E Web-Report konnte nicht erzeugt werden: %s", e)
 
-    if web_report and web_report.get("url"):
+    with get_db() as conn:
+        try:
+            account = conn.execute(
+                "SELECT source FROM app_accounts WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            app_only = bool(account and str(account["source"] or "") == "app")
+        except sqlite3.OperationalError:
+            app_only = False
+
+    if not app_only and web_report and web_report.get("url"):
         expires_label = web_report["expires_at"].strftime("%d.%m.%Y")
         bot.send_message(
             user_id,
@@ -1621,18 +1631,19 @@ def send_report_to_user(user_id: int, report_month: str, bot):
         )
 
     file_path, tracked_days = build_pdf(user_id, report_month, report_data=report_data)
-    with open(file_path, "rb") as f:
-        bot.send_document(
-            user_id,
-            f,
-            visible_file_name=file_path.name,
-            caption=(
-                "Dein Rov.E Report ist fertig.\n\n"
-                "Er zeigt dir, was in diesem Monat wirklich passiert ist - "
-                "klar, ruhig und ohne unnötige Zahlen.\n\n"
-                "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
+    if not app_only:
+        with open(file_path, "rb") as f:
+            bot.send_document(
+                user_id,
+                f,
+                visible_file_name=file_path.name,
+                caption=(
+                    "Dein Rov.E Report ist fertig.\n\n"
+                    "Er zeigt dir, was in diesem Monat wirklich passiert ist - "
+                    "klar, ruhig und ohne unnötige Zahlen.\n\n"
+                    "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
+                )
             )
-        )
 
     send_report_push(user_id, report_month)
 

@@ -1145,6 +1145,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         if (history := _build_budgets(conn, user_id, month_key))
     }
     return {
+        "onboardingRequired": int(u.get("onboarding_step") or 0) < 10,
         "netWorth": round(net_worth, 2),
         "series": net_series,
         "histDates": net_hist_dates,
