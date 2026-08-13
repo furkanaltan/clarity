@@ -5108,7 +5108,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'portfolio', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename', 'app'
+    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename', 'announce_app_migration', 'app'
 ])
 def handle_commands(message):
     uid = message.chat.id
