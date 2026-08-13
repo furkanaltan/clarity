@@ -1864,7 +1864,7 @@ def get_actor_id(message) -> int:
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
     "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
-    "/announce_rename",
+    "/announce_rename", "/announce_app_migration",
 }
 
 BETA_NUDGE_TEXT = (
@@ -1888,6 +1888,17 @@ RENAME_ANNOUNCEMENT_TEXT = (
     "Für dich ändert sich nichts an der Nutzung.\n"
     "Du kannst weiter wie gewohnt Ausgaben schreiben, Fragen stellen und deinen Report bekommen.\n\n"
     "Nur Name und Profilbild werden Schritt für Schritt angepasst."
+)
+
+APP_MIGRATION_ANNOUNCEMENT_TEXT = (
+    "Rov.E zieht vollständig in die App um.\n\n"
+    "Bitte nutze ab sofort die App für neue Buchungen, Budgets, Ziele und Reports. "
+    "Deine bisherigen Daten bleiben erhalten.\n\n"
+    "So wechselst du:\n"
+    "1. Sende hier `/app`.\n"
+    "2. Öffne den persönlichen Link.\n"
+    "3. Melde dich einmalig mit deiner E-Mail-Adresse an.\n\n"
+    "Telegram bleibt während der kurzen Übergangszeit noch erreichbar und wird danach abgeschaltet."
 )
 
 
@@ -4765,6 +4776,26 @@ def get_approved_users_for_announcement() -> list:
         ).fetchall()
 
 
+def get_app_migration_candidates() -> list:
+    """Only notify approved Telegram users who have not completed an App login."""
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT u.user_id, ua.display_name, ua.username
+                 FROM users u
+                 LEFT JOIN user_access ua ON ua.user_id = u.user_id
+                WHERE u.onboarding_step = ?
+                  AND COALESCE(ua.status, 'approved') = 'approved'
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM app_accounts aa
+                       WHERE aa.user_id = u.user_id
+                         AND TRIM(COALESCE(aa.verified_at, '')) != ''
+                  )
+                ORDER BY u.user_id""",
+            (STEP_NORMAL,),
+        ).fetchall()
+
+
 def build_announce_rename_preview(rows: list) -> str:
     if not rows:
         return "Keine freigegebenen Nutzer gefunden. Es würde niemand angeschrieben."
@@ -4773,6 +4804,23 @@ def build_announce_rename_preview(rows: list) -> str:
         f"{RENAME_ANNOUNCEMENT_TEXT}\n\n"
         "Zum Senden:\n"
         "`/announce_rename send`"
+    )
+
+
+def build_app_migration_preview(rows: list) -> str:
+    if not rows:
+        return "Alle freigegebenen Telegram-Nutzer haben bereits ein verifiziertes App-Konto."
+    identities = "\n".join(
+        f"- {format_admin_identity(row)} · {row['user_id']}" for row in rows[:20]
+    )
+    if len(rows) > 20:
+        identities += f"\n- ... und {len(rows) - 20} weitere"
+    return (
+        f"Ich würde {len(rows)} noch nicht migrierte Nutzer anschreiben:\n\n"
+        f"{identities}\n\n"
+        f"{APP_MIGRATION_ANNOUNCEMENT_TEXT}\n\n"
+        "Zum Senden:\n"
+        "`/announce_app_migration send`"
     )
 
 
@@ -4823,6 +4871,8 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/nudge_inactive send – Beta-Check senden\n"
             "/announce_rename – Vorschau der Rov.E-Ankündigung\n"
             "/announce_rename send – Ankündigung an alle freigegebenen Nutzer senden\n"
+            "/announce_app_migration – App-Wechsel als Vorschau\n"
+            "/announce_app_migration send – nur nicht migrierte Nutzer informieren\n"
             "/testrecap – Abend-Recap an dich testen\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
@@ -4967,6 +5017,39 @@ def handle_admin_command(message, cmd: str) -> bool:
         bot.send_message(
             uid,
             f"Rename-Ankündigung versendet.\n\nGesendet: {sent}\nFehlgeschlagen: {failed}"
+        )
+        return True
+
+    if cmd == "/announce_app_migration":
+        rows = get_app_migration_candidates()
+        parts = message.text.split(maxsplit=1)
+        should_send = len(parts) > 1 and parts[1].strip().lower() == "send"
+
+        if not should_send:
+            bot.send_message(uid, build_app_migration_preview(rows), parse_mode="Markdown")
+            return True
+
+        if not rows:
+            bot.send_message(uid, "Alle freigegebenen Telegram-Nutzer sind bereits in der App.")
+            return True
+
+        sent = 0
+        failed = 0
+        for row in rows:
+            try:
+                bot.send_message(
+                    row["user_id"],
+                    APP_MIGRATION_ANNOUNCEMENT_TEXT,
+                    parse_mode="Markdown",
+                )
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.info("App-Migration an %s nicht gesendet: %s", row["user_id"], e)
+
+        bot.send_message(
+            uid,
+            f"App-Migration versendet.\n\nGesendet: {sent}\nFehlgeschlagen: {failed}",
         )
         return True
 
