@@ -3535,6 +3535,10 @@ def delete_investment_position():
     token = token_from_request()
     asset_type = clean_text(payload.get("asset_type")).lower()
     asset_name = clean_text(payload.get("asset_name"))
+    try:
+        holding_id = max(0, int(payload.get("holding_id") or 0))
+    except (TypeError, ValueError):
+        holding_id = 0
     if asset_type not in {"crypto", "stock", "etf"} or not asset_name:
         return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
 
@@ -3545,15 +3549,25 @@ def delete_investment_position():
 
         if asset_type == "etf":
             ensure_market_tracking_schema(conn)
-            holding = conn.execute(
-                """SELECT id FROM portfolio_holdings
-                     WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
-                       AND instrument_key LIKE 'app_etf_%' AND valuation_enabled = 0
-                     LIMIT 1""",
-                (user_id, asset_name),
-            ).fetchone()
+            if holding_id:
+                holding = conn.execute(
+                    """SELECT id, instrument_label FROM portfolio_holdings
+                         WHERE id = ? AND user_id = ?
+                           AND instrument_key LIKE 'app_etf_%' AND valuation_enabled = 0
+                         LIMIT 1""",
+                    (holding_id, user_id),
+                ).fetchone()
+            else:
+                holding = conn.execute(
+                    """SELECT id, instrument_label FROM portfolio_holdings
+                         WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
+                           AND instrument_key LIKE 'app_etf_%' AND valuation_enabled = 0
+                         LIMIT 1""",
+                    (user_id, asset_name),
+                ).fetchone()
             if not holding:
                 return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+            stored_name = str(holding["instrument_label"] or asset_name)
 
             # Nur der Nettoanteil der App-Ereignisse hat die verbindliche Gesamtsumme
             # tatsaechlich erhoeht. Ein ETF kann auch lediglich einen schon vorhandenen
@@ -3564,7 +3578,7 @@ def delete_investment_position():
                      FROM investment_events
                     WHERE user_id = ? AND asset_type = 'etf'
                       AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
-                (user_id, asset_name),
+                (user_id, stored_name),
             ).fetchone()
             net = round(max(0.0, float(event_row["net"] or 0)), 2)
             total_row = conn.execute(
@@ -3580,7 +3594,7 @@ def delete_investment_position():
                 """DELETE FROM investment_events
                     WHERE user_id = ? AND asset_type = 'etf'
                       AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
-                (user_id, asset_name),
+                (user_id, stored_name),
             )
             conn.execute(
                 "DELETE FROM portfolio_holdings WHERE id = ? AND user_id = ?",
@@ -3593,7 +3607,7 @@ def delete_investment_position():
             live_data = build_live_app_data(conn, user_id)
             conn.commit()
             return jsonify({"ok": True, "removed": {
-                "asset_type": asset_type, "asset_name": asset_name,
+                "asset_type": asset_type, "asset_name": stored_name,
             }, **live_data})
 
         # Nur App-Korrekturen loeschen. Alte Bot-Historie wird nie still entfernt.
