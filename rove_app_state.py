@@ -522,6 +522,50 @@ ACCOUNT_META = {
     "bargeld": {"name": "Bargeld", "icon": "wallet", "tint": "#B08D57"},
 }
 
+# Stabile Schluessel fuer die rein visuelle Reihenfolge der Vermoegenskacheln.
+# Namen sind Texte fuer die UI und koennen sich aendern; diese Keys bleiben dauerhaft stabil.
+ASSET_ORDER_KEYS = (
+    "cash:giro",
+    "cash:tagesgeld",
+    "cash:bargeld",
+    "asset:investments",
+    "asset:crypto",
+    "asset:property",
+    "asset:valuables",
+)
+
+
+def ensure_app_asset_order_table(conn: sqlite3.Connection) -> None:
+    """Speichert nur die Darstellungspraeferenz, niemals Finanzwerte."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_asset_order (
+            user_id       INTEGER NOT NULL,
+            asset_key     TEXT NOT NULL,
+            sort_position INTEGER NOT NULL,
+            updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, asset_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def get_app_asset_order(conn: sqlite3.Connection, user_id: int) -> list[str]:
+    """Liest eine gueltige Reihenfolge; ohne Praeferenz bleibt die bisherige Sortierung aktiv."""
+    ensure_app_asset_order_table(conn)
+    rows = conn.execute(
+        """SELECT asset_key FROM app_asset_order
+             WHERE user_id = ?
+             ORDER BY sort_position, asset_key""",
+        (user_id,),
+    ).fetchall()
+    allowed = set(ASSET_ORDER_KEYS)
+    result: list[str] = []
+    for row in rows:
+        key = str(row["asset_key"] or "")
+        if key in allowed and key not in result:
+            result.append(key)
+    return result
+
 
 def ensure_app_account_balances_table(conn: sqlite3.Connection) -> None:
     """Speichert die Cash-Aufteilung der App, ohne das bestehende Bot-Modell zu brechen."""
@@ -1151,21 +1195,22 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),
         "payday": _payday_block(conn, user_id, u, income),
+        "assetOrder": get_app_asset_order(conn, user_id),
         "assets": [a for a in (
-            {"name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
+            {"assetKey": "cash:giro", "name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
              "value": cash_accounts["giro"],
              "sub": "verfuegbar" if has_cash_accounts else "aus dem Bot"} if (cash_accounts["giro"] or has_cash_accounts) else None,
-            {"name": "Tagesgeld", "source": "bot", "icon": "coins", "tint": "#35D07F",
+            {"assetKey": "cash:tagesgeld", "name": "Tagesgeld", "source": "bot", "icon": "coins", "tint": "#35D07F",
              "value": cash_accounts["tagesgeld"], "sub": "Rücklage"} if (cash_accounts["tagesgeld"] or has_cash_accounts) else None,
-            {"name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
+            {"assetKey": "cash:bargeld", "name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
              "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
-            {"name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
+            {"assetKey": "asset:investments", "name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
              "value": round(etf, 2), "sub": etf_sub,
              **({"positions": etf_positions} if etf_positions else {})} if etf else None,
-            {"name": "Krypto", "source": "bot", "icon": "bitcoin", "tint": "#F7931A",
+            {"assetKey": "asset:crypto", "name": "Krypto", "source": "bot", "icon": "bitcoin", "tint": "#F7931A",
              "value": round(crypto, 2), "sub": crypto_sub,
              **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
-            {"name": "Immobilie", "source": "app", "icon": "house", "tint": "#D8B66A",
+            {"assetKey": "asset:property", "name": "Immobilie", "source": "app", "icon": "house", "tint": "#D8B66A",
              "value": property_data["equity"], "sub": "Eigenkapital",
              "real": {
                  "marktwert": property_data["market_value"],

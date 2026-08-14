@@ -28,6 +28,7 @@ from pathlib import Path
 from flask import Flask, jsonify, make_response, request, send_file
 from rove_app_state import (
     ACCOUNT_META,
+    ASSET_ORDER_KEYS,
     PUBLIC_APP_STATE_DIR,
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
@@ -35,6 +36,7 @@ from rove_app_state import (
     build_app_state,
     build_live_app_data,
     ensure_app_account_balances_table,
+    ensure_app_asset_order_table,
     ensure_app_cash_movements_table,
     ensure_app_contracts_table,
     ensure_app_etf_position_plans_table,
@@ -309,6 +311,7 @@ def budgets_options():
 
 
 @app.route("/v1/accounts", methods=["OPTIONS"])
+@app.route("/v1/asset-order", methods=["OPTIONS"])
 def accounts_options():
     return ("", 204)
 
@@ -2996,6 +2999,38 @@ def update_property():
         conn.commit()
 
     return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/asset-order", methods=["POST"])
+def update_asset_order():
+    """Speichert ausschliesslich die Reihenfolge der Vermoegenskacheln."""
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("order")
+    token = token_from_request()
+    allowed = set(ASSET_ORDER_KEYS)
+
+    if not isinstance(requested, list) or not requested or len(requested) > len(allowed):
+        return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
+    order = [clean_text(value) for value in requested]
+    if any(key not in allowed for key in order) or len(set(order)) != len(order):
+        return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
+
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_asset_order_table(conn)
+        conn.execute("DELETE FROM app_asset_order WHERE user_id = ?", (user_id,))
+        conn.executemany(
+            """INSERT INTO app_asset_order
+               (user_id, asset_key, sort_position, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+            [(user_id, key, position) for position, key in enumerate(order)],
+        )
+        conn.commit()
+
+    return jsonify({"ok": True, "assetOrder": order})
 
 
 @app.route("/v1/portfolio-tracking", methods=["POST"])
