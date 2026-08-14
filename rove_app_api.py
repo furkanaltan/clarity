@@ -3446,7 +3446,7 @@ def update_investment_position():
                     """INSERT INTO investment_events
                        (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
                        VALUES (?, ?, ?, 'etf', ?, 'manual_adjustment', 'app', 'Manuelle ETF-Wertkorrektur')""",
-                    (abs(delta), "in" if delta > 0 else "out", holding["instrument_label"]),
+                    (user_id, abs(delta), "in" if delta > 0 else "out", holding["instrument_label"]),
                 )
                 conn.execute(
                     "UPDATE users SET current_investments = ? WHERE user_id = ?",
@@ -3528,20 +3528,73 @@ def delete_investment_position():
     """Entfernt eine manuell in der App angelegte Position dauerhaft.
 
     Kursverfolgte Depotpositionen bleiben absichtlich unangetastet: Dort kann ein
-    historischer Kauf bereits in Reports stehen. Fuer eine manuelle Testaktie ist
+    historischer Kauf bereits in Reports stehen. Fuer manuelle App-Positionen ist
     dagegen ein echtes Loeschen korrekt - inklusive Gesamtsumme und App-Refresh.
     """
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
     asset_type = clean_text(payload.get("asset_type")).lower()
     asset_name = clean_text(payload.get("asset_name"))
-    if asset_type not in {"crypto", "stock"} or not asset_name:
+    if asset_type not in {"crypto", "stock", "etf"} or not asset_name:
         return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
 
     with db() as conn:
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        if asset_type == "etf":
+            ensure_market_tracking_schema(conn)
+            holding = conn.execute(
+                """SELECT id FROM portfolio_holdings
+                     WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
+                       AND instrument_key LIKE 'app_etf_%' AND valuation_enabled = 0
+                     LIMIT 1""",
+                (user_id, asset_name),
+            ).fetchone()
+            if not holding:
+                return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+
+            # Nur der Nettoanteil der App-Ereignisse hat die verbindliche Gesamtsumme
+            # tatsaechlich erhoeht. Ein ETF kann auch lediglich einen schon vorhandenen
+            # unzugeordneten Bestand benannt haben; dann wird beim Loeschen kein Geld
+            # vernichtet, sondern der Betrag erscheint wieder als Restbestand.
+            event_row = conn.execute(
+                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                     FROM investment_events
+                    WHERE user_id = ? AND asset_type = 'etf'
+                      AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
+                (user_id, asset_name),
+            ).fetchone()
+            net = round(max(0.0, float(event_row["net"] or 0)), 2)
+            total_row = conn.execute(
+                "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            current_total = max(0.0, float(total_row["current_investments"] or 0))
+            ensure_app_etf_position_plans_table(conn)
+            conn.execute(
+                "DELETE FROM app_etf_position_plans WHERE user_id = ? AND holding_id = ?",
+                (user_id, int(holding["id"])),
+            )
+            conn.execute(
+                """DELETE FROM investment_events
+                    WHERE user_id = ? AND asset_type = 'etf'
+                      AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
+                (user_id, asset_name),
+            )
+            conn.execute(
+                "DELETE FROM portfolio_holdings WHERE id = ? AND user_id = ?",
+                (int(holding["id"]), user_id),
+            )
+            conn.execute(
+                "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                (round(max(0.0, current_total - net), 2), user_id),
+            )
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+            return jsonify({"ok": True, "removed": {
+                "asset_type": asset_type, "asset_name": asset_name,
+            }, **live_data})
 
         # Nur App-Korrekturen loeschen. Alte Bot-Historie wird nie still entfernt.
         row = conn.execute(
