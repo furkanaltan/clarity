@@ -24,6 +24,7 @@ import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, make_response, request, send_file
 from rove_app_state import (
@@ -164,6 +165,7 @@ DATA_EXPORT_TABLES = (
     ("monatssnapshots", "monthly_snapshots"),
     ("reports", "report_jobs"),
     ("zugangsstatus", "user_access"),
+    ("push_einstellungen", "app_push_preferences"),
     ("push_zustellungen", "app_push_delivery_log"),
 )
 
@@ -2086,6 +2088,30 @@ def ensure_push_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_push_preferences_table(conn: sqlite3.Connection) -> None:
+    """Kleine nutzerbezogene Push-Praeferenz, getrennt von Geraete-Abonnements."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_push_preferences (
+            user_id                    INTEGER PRIMARY KEY,
+            tracking_reminder_enabled  INTEGER NOT NULL DEFAULT 0,
+            timezone                   TEXT NOT NULL DEFAULT 'Europe/Berlin',
+            updated_at                 TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def valid_push_timezone(value: object) -> str | None:
+    timezone = str(value or "").strip()[:80]
+    if not timezone:
+        return None
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return timezone
+
+
 def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: str,
                       tag: str = "rove", url: str = "./") -> int:
     """Schickt eine Benachrichtigung an alle Geraete eines Nutzers. Gibt die Anzahl Zustellungen zurueck.
@@ -2134,6 +2160,7 @@ def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: 
 @app.route("/v1/push/key", methods=["OPTIONS"])
 @app.route("/v1/push/subscribe", methods=["OPTIONS"])
 @app.route("/v1/push/unsubscribe", methods=["OPTIONS"])
+@app.route("/v1/push/preferences", methods=["OPTIONS"])
 def push_options():
     return ("", 204)
 
@@ -2159,6 +2186,8 @@ def push_subscribe():
     keys = payload.get("keys") or {}
     p256dh = str(keys.get("p256dh") or "").strip()
     auth = str(keys.get("auth") or "").strip()
+    timezone = valid_push_timezone(payload.get("timezone")) or "Europe/Berlin"
+    tracking_reminder = payload.get("trackingReminder")
     if not endpoint or not p256dh or not auth:
         return jsonify({"ok": False, "error": "subscription_incomplete"}), 400
 
@@ -2169,6 +2198,7 @@ def push_subscribe():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         ensure_push_table(conn)
+        ensure_push_preferences_table(conn)
         # Derselbe Endpunkt kann nach einem Geraetewechsel einem anderen Konto gehoeren.
         conn.execute(
             """INSERT INTO app_push_subscriptions (user_id, endpoint, p256dh, auth)
@@ -2177,8 +2207,23 @@ def push_subscribe():
                  user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth""",
             (user_id, endpoint, p256dh, auth),
         )
+        existing = conn.execute(
+            "SELECT tracking_reminder_enabled FROM app_push_preferences WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        enabled = int(bool(tracking_reminder)) if isinstance(tracking_reminder, bool) else int(existing[0] if existing else 0)
+        conn.execute(
+            """INSERT INTO app_push_preferences
+                   (user_id, tracking_reminder_enabled, timezone, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   tracking_reminder_enabled = excluded.tracking_reminder_enabled,
+                   timezone = excluded.timezone,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (user_id, enabled, timezone),
+        )
         conn.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "trackingReminder": bool(enabled), "timezone": timezone})
 
 
 @app.route("/v1/push/unsubscribe", methods=["POST"])
@@ -2201,6 +2246,48 @@ def push_unsubscribe():
             conn.execute("DELETE FROM app_push_subscriptions WHERE user_id = ?", (user_id,))
         conn.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/v1/push/preferences", methods=["GET", "POST"])
+def push_preferences():
+    """Liest oder aendert optionale Push-Hinweise; das Push-Abo selbst bleibt separat."""
+    payload = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
+    token = token_from_request()
+    with db() as conn:
+        if request.method == "POST":
+            begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_push_preferences_table(conn)
+        row = conn.execute(
+            "SELECT tracking_reminder_enabled, timezone FROM app_push_preferences WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        enabled = bool(row["tracking_reminder_enabled"]) if row else False
+        timezone = str(row["timezone"] or "Europe/Berlin") if row else "Europe/Berlin"
+        if request.method == "POST":
+            if "trackingReminder" in payload and not isinstance(payload.get("trackingReminder"), bool):
+                return jsonify({"ok": False, "error": "invalid_tracking_reminder"}), 400
+            if "trackingReminder" in payload:
+                enabled = bool(payload["trackingReminder"])
+            if "timezone" in payload:
+                supplied_timezone = valid_push_timezone(payload.get("timezone"))
+                if not supplied_timezone:
+                    return jsonify({"ok": False, "error": "invalid_timezone"}), 400
+                timezone = supplied_timezone
+            conn.execute(
+                """INSERT INTO app_push_preferences
+                       (user_id, tracking_reminder_enabled, timezone, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       tracking_reminder_enabled = excluded.tracking_reminder_enabled,
+                       timezone = excluded.timezone,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (user_id, int(enabled), timezone),
+            )
+            conn.commit()
+    return jsonify({"ok": True, "trackingReminder": enabled, "timezone": timezone})
 
 
 @app.route("/v1/internal/push", methods=["POST"])
