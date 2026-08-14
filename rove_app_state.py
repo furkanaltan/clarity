@@ -265,6 +265,10 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             "a": -abs(float(r["amount"] or 0)),
             "c": CATEGORY_COLORS.get(cat, "#6E7B8C"),
             "i": (name[:1] or "?").upper(),
+            # Rein darstellende Kontozuordnung fuer die Cashflow-Analyse. Alte Bot-
+            # Buchungen besitzen keine eigene Kontospalte und folgen deshalb wie bisher
+            # dem Girokonto; bar bezahlte App-Ausgaben werden unten eindeutig markiert.
+            "account": "bargeld" if r["id"] in cash_paid_expense_ids else "giro",
         }
         if r["id"] in cash_paid_expense_ids:
             # Ohne dieses Flag waere nach einem Refresh nicht mehr erkennbar, dass die Ausgabe
@@ -284,6 +288,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
                 "a": abs(float(m["amount"] or 0)),
                 "c": INCOME_TINT,
                 "i": "€",
+                "account": "giro",
             }))
             continue
         if m["kind"] == "fixed":
@@ -299,6 +304,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
                 "a": -abs(float(m["amount"] or 0)),
                 "c": FIXED_TINT,
                 "i": "F",
+                "account": "giro",
             }))
             continue
         if m["kind"] != "withdrawal":
@@ -315,6 +321,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             "c": CASH_TINT,
             "i": "B",
             "transfer": True,
+            "account": "giro",
         }))
     entries.sort(key=lambda entry: entry[0], reverse=True)
 
