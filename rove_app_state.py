@@ -330,6 +330,9 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     today_iso = date.today().isoformat()
     for created, item in entries:
         day_key = (created or "")[:10]
+        # Maschinenlesbares Datum fuer faire Zeitvergleiche in der App. Das sichtbare
+        # Tageslabel bleibt unveraendert; alte Clients ignorieren das additive Feld.
+        item["date"] = day_key if len(day_key) == 10 else ""
         if day_key == today_iso:
             day_label = "Heute"
         elif len(day_key) == 10:
@@ -1188,10 +1191,12 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     # Die App-Navigation kann bis zu drei abgeschlossene Monate zurueckgehen. Diese
     # Buchungen sind bewusst nur lesbar: Der laufende Monat bleibt die einzige Stelle,
     # an der der Nutzer etwas aendern kann.
+    # Drei Monate bleiben in der Cashflow-Navigation sichtbar. Der vierte Monat wird
+    # nur als Vergleichsbasis fuer den aeltesten sichtbaren Analysemonat mitgeliefert.
+    # Leere Listen bleiben erhalten, damit die App 0 EUR von "nicht geladen" trennt.
     tx_history = {
-        month_key: history
-        for month_key in _previous_month_keys()
-        if (history := _build_tx(conn, user_id, month_key))
+        month_key: _build_tx(conn, user_id, month_key)
+        for month_key in _previous_month_keys(4)
     }
     budget_history = {
         month_key: history
