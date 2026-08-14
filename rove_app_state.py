@@ -258,6 +258,9 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # holt sie danach aus der DB zurueck (Bug 25.07.).
             "sid": r["id"],
             "n": name,
+            # Unsichtbares Suchfeld fuer den Cashflow. Die Darstellung bleibt bewusst beim
+            # vertrauten Haendlernamen; Verwendungszweck/Beschreibung ist nur auffindbar.
+            "desc": (r["description"] or "").strip(),
             "cat": cat,
             "a": -abs(float(r["amount"] or 0)),
             "c": CATEGORY_COLORS.get(cat, "#6E7B8C"),
