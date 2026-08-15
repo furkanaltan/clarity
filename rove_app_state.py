@@ -623,6 +623,8 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
             amount     REAL NOT NULL DEFAULT 0.0,
             expense_id INTEGER,
             label      TEXT,
+            source_account_id INTEGER,
+            target_account_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
@@ -632,6 +634,10 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(app_cash_movements)")}
     if "label" not in columns:
         conn.execute("ALTER TABLE app_cash_movements ADD COLUMN label TEXT")
+    if "source_account_id" not in columns:
+        conn.execute("ALTER TABLE app_cash_movements ADD COLUMN source_account_id INTEGER")
+    if "target_account_id" not in columns:
+        conn.execute("ALTER TABLE app_cash_movements ADD COLUMN target_account_id INTEGER")
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_app_cash_movements_user
              ON app_cash_movements (user_id, created_at)"""
@@ -730,6 +736,7 @@ def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
             user_id        INTEGER PRIMARY KEY,
             execution_day  INTEGER NOT NULL,
             source_account TEXT NOT NULL CHECK(source_account IN ('giro', 'tagesgeld')),
+            source_account_id INTEGER,
             mode           TEXT NOT NULL CHECK(mode IN ('auto', 'confirm')),
             active         INTEGER NOT NULL DEFAULT 1,
             start_month    TEXT NOT NULL,
@@ -737,6 +744,9 @@ def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(app_etf_savings_plan)")}
+    if "source_account_id" not in columns:
+        conn.execute("ALTER TABLE app_etf_savings_plan ADD COLUMN source_account_id INTEGER")
 
 
 def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
@@ -752,6 +762,7 @@ def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
             monthly_amount REAL NOT NULL DEFAULT 0.0,
             execution_day  INTEGER NOT NULL,
             source_account TEXT NOT NULL CHECK(source_account IN ('giro', 'tagesgeld')),
+            source_account_id INTEGER,
             mode           TEXT NOT NULL CHECK(mode IN ('auto', 'confirm')),
             active         INTEGER NOT NULL DEFAULT 1,
             start_month    TEXT NOT NULL,
@@ -761,6 +772,9 @@ def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(holding_id) REFERENCES portfolio_holdings(id) ON DELETE CASCADE
         )"""
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(app_etf_position_plans)")}
+    if "source_account_id" not in columns:
+        conn.execute("ALTER TABLE app_etf_position_plans ADD COLUMN source_account_id INTEGER")
 
 
 def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings: float) -> dict:

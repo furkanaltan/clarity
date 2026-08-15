@@ -28,6 +28,53 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+
+
+def ensure_financial_account_reference_schema(conn: sqlite3.Connection) -> None:
+    """Add Sprint-2 account references without rebuilding legacy tables.
+
+    SQLite cannot add a foreign key to an existing table with ``ALTER TABLE``.
+    Rebuilding live money tables would be disproportionate here, so every write
+    additionally resolves account IDs with ``id + user_id``. The new columns stay
+    nullable; historical rows are deliberately not guessed.
+    """
+    additions = {
+        "expenses": (("account_id", "INTEGER"),),
+        "app_cash_movements": (
+            ("source_account_id", "INTEGER"),
+            ("target_account_id", "INTEGER"),
+        ),
+        "app_etf_savings_plan": (("source_account_id", "INTEGER"),),
+        "app_etf_position_plans": (("source_account_id", "INTEGER"),),
+    }
+    for table, columns in additions.items():
+        if not table_exists(conn, table):
+            continue
+        existing = table_columns(conn, table)
+        for column, ddl in columns:
+            if column not in existing:
+                conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {ddl}')
+
+    if table_exists(conn, "expenses"):
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expenses_user_account "
+            "ON expenses(user_id, account_id)"
+        )
+    if table_exists(conn, "app_cash_movements"):
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cash_movements_user_source "
+            "ON app_cash_movements(user_id, source_account_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cash_movements_user_target "
+            "ON app_cash_movements(user_id, target_account_id)"
+        )
+
+
 def ensure_financial_accounts_schema(conn: sqlite3.Connection) -> None:
     """Create only the additive Sprint-1 tables and validate their shape."""
     conn.execute(
@@ -153,6 +200,15 @@ def get_financial_account(
     ).fetchone()
 
 
+def require_financial_account(
+    conn: sqlite3.Connection, user_id: int, account_id: int
+) -> sqlite3.Row:
+    account = get_financial_account(conn, user_id, account_id)
+    if not account or str(account["status"]) != "active":
+        raise LookupError("financial_account_not_found")
+    return account
+
+
 def get_legacy_financial_account(
     conn: sqlite3.Connection, user_id: int, legacy_key: str
 ) -> sqlite3.Row | None:
@@ -181,6 +237,13 @@ def resolve_account_role(
             WHERE r.user_id = ? AND r.role = ?""",
         (user_id, role),
     ).fetchone()
+
+
+def require_account_role(conn: sqlite3.Connection, user_id: int, role: str) -> sqlite3.Row:
+    account = resolve_account_role(conn, user_id, role)
+    if not account or str(account["status"]) != "active":
+        raise LookupError("financial_account_role_not_configured")
+    return account
 
 
 def set_account_role(
@@ -272,6 +335,109 @@ def update_financial_account_balance(
     if cur.rowcount != 1:
         raise LookupError("financial_account_not_found")
     return mirror_financial_accounts_to_legacy(conn, user_id)
+
+
+def adjust_financial_account_balance(
+    conn: sqlite3.Connection,
+    user_id: int,
+    account_id: int,
+    delta: float,
+    *,
+    require_funds: bool = False,
+) -> dict[str, float]:
+    """Apply one user-bound delta and mirror all legacy aggregates once."""
+    if not conn.in_transaction:
+        raise RuntimeError("financial_account_write_requires_transaction")
+    account = require_financial_account(conn, user_id, account_id)
+    current = round(float(account["balance"] or 0.0), 2)
+    updated = round(current + float(delta), 2)
+    if require_funds and updated < -0.0049:
+        raise ValueError("financial_account_balance_insufficient")
+    if str(account["account_type"]) in {"savings", "wallet"} and updated < -0.0049:
+        raise ValueError("financial_account_balance_insufficient")
+    return update_financial_account_balance(conn, user_id, account_id, max(0.0, updated)
+                                            if abs(updated) < 0.005 else updated)
+
+
+def apply_financial_account_deltas(
+    conn: sqlite3.Connection,
+    user_id: int,
+    deltas: Mapping[int, float],
+    *,
+    require_funds_for: set[int] | None = None,
+) -> dict[str, float]:
+    """Validate all deltas first, then update and mirror exactly once."""
+    if not conn.in_transaction:
+        raise RuntimeError("financial_account_write_requires_transaction")
+    required = require_funds_for or set()
+    updates: dict[int, float] = {}
+    for raw_account_id, raw_delta in deltas.items():
+        account_id = int(raw_account_id)
+        account = require_financial_account(conn, user_id, account_id)
+        updated = round(float(account["balance"] or 0.0) + float(raw_delta), 2)
+        if account_id in required and updated < -0.0049:
+            raise ValueError("financial_account_balance_insufficient")
+        if str(account["account_type"]) in {"savings", "wallet"} and updated < -0.0049:
+            raise ValueError("financial_account_balance_insufficient")
+        updates[account_id] = 0.0 if abs(updated) < 0.005 else updated
+    for account_id, balance in updates.items():
+        cur = conn.execute(
+            """UPDATE app_financial_accounts SET balance = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND user_id = ? AND status = 'active'""",
+            (balance, account_id, user_id),
+        )
+        if cur.rowcount != 1:
+            raise LookupError("financial_account_not_found")
+    return mirror_financial_accounts_to_legacy(conn, user_id)
+
+
+def transfer_financial_account_balance(
+    conn: sqlite3.Connection,
+    user_id: int,
+    source_account_id: int,
+    target_account_id: int,
+    amount: float,
+    *,
+    require_source_funds: bool = True,
+) -> dict[str, float]:
+    """Move cash between two accounts and mirror only after both updates."""
+    if not conn.in_transaction:
+        raise RuntimeError("financial_account_write_requires_transaction")
+    source = require_financial_account(conn, user_id, source_account_id)
+    target = require_financial_account(conn, user_id, target_account_id)
+    if int(source["id"]) == int(target["id"]):
+        raise ValueError("financial_accounts_must_differ")
+    value = round(abs(float(amount)), 2)
+    if value <= 0:
+        raise ValueError("financial_account_amount_required")
+    source_after = round(float(source["balance"] or 0.0) - value, 2)
+    if require_source_funds and source_after < -0.0049:
+        raise ValueError("financial_account_balance_insufficient")
+    if str(source["account_type"]) in {"savings", "wallet"} and source_after < -0.0049:
+        raise ValueError("financial_account_balance_insufficient")
+    conn.execute(
+        """UPDATE app_financial_accounts SET balance = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND user_id = ? AND status = 'active'""",
+        (source_after, source_account_id, user_id),
+    )
+    conn.execute(
+        """UPDATE app_financial_accounts SET balance = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND user_id = ? AND status = 'active'""",
+        (round(float(target["balance"] or 0.0) + value, 2), target_account_id, user_id),
+    )
+    return mirror_financial_accounts_to_legacy(conn, user_id)
+
+
+def set_legacy_financial_account_balance(
+    conn: sqlite3.Connection, user_id: int, legacy_key: str, balance: float
+) -> tuple[int, dict[str, float]]:
+    account = get_legacy_financial_account(conn, user_id, legacy_key)
+    if not account or str(account["status"]) != "active":
+        raise LookupError("legacy_financial_account_not_found")
+    balances = update_financial_account_balance(
+        conn, user_id, int(account["id"]), round(float(balance), 2)
+    )
+    return int(account["id"]), balances
 
 
 def roles_summary(conn: sqlite3.Connection, user_id: int) -> Mapping[str, int]:

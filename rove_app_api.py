@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import contextmanager, closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -59,7 +60,19 @@ from rove_market_data import (
     normalize_currency,
     normalize_symbol,
 )
-from rove_financial_accounts import delete_financial_account_data
+from rove_financial_accounts import (
+    FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    adjust_financial_account_balance,
+    apply_financial_account_deltas,
+    delete_financial_account_data,
+    ensure_financial_account_reference_schema,
+    get_legacy_financial_account,
+    is_feature_enabled,
+    require_account_role,
+    require_financial_account,
+    set_legacy_financial_account_balance,
+    transfer_financial_account_balance,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -176,14 +189,19 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_BYTES + 512 * 1024
 
 
-def db() -> sqlite3.Connection:
+@contextmanager
+def db():
     # Wartezeit statt Sofortabbruch: seit begin_write() die Schreibsperre vorzieht,
     # treffen parallele Buchungen aufeinander. Der zweite Request soll kurz warten
     # und dann den bereits gesenkten Stand lesen, nicht mit "database is locked"
     # abbrechen. 15 s ist grosszuegig — ein Endpunkt haelt die Sperre wenige ms.
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
-    return conn
+    # sqlite3.Connection.__exit__ commits or rolls back but does not close the
+    # file handle. Closing explicitly prevents one leaked connection per API call.
+    with closing(conn):
+        with conn:
+            yield conn
 
 
 def begin_write(conn: sqlite3.Connection) -> None:
@@ -1323,6 +1341,99 @@ def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dic
     )
 
 
+def multi_cash_accounts_enabled(conn: sqlite3.Connection, user_id: int) -> bool:
+    """Read the Sprint-2 pilot flag without changing flag-off money paths."""
+    return is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
+
+
+def prepare_multi_cash_write(conn: sqlite3.Connection) -> None:
+    """Ensure only additive nullable reference columns for a flagged write."""
+    ensure_app_cash_movements_table(conn)
+    ensure_financial_account_reference_schema(conn)
+
+
+def legacy_financial_account_id(
+    conn: sqlite3.Connection, user_id: int, legacy_key: str
+) -> int:
+    account = get_legacy_financial_account(conn, user_id, legacy_key)
+    if not account or str(account["status"]) != "active":
+        raise LookupError("legacy_financial_account_not_found")
+    return int(account["id"])
+
+
+def role_financial_account_id(conn: sqlite3.Connection, user_id: int, role: str) -> int:
+    return int(require_account_role(conn, user_id, role)["id"])
+
+
+def apply_stored_account_deltas(
+    conn: sqlite3.Connection,
+    user_id: int,
+    deltas: dict[int, float],
+    *,
+    require_funds_for: set[int] | None = None,
+) -> dict[str, float]:
+    """Reverse saved account references without corrupting a flag-off legacy period.
+
+    With the pilot enabled, Financial Accounts are the source of truth. After a
+    rollback, legacy writes intentionally remain the source of truth and may have
+    advanced while Financial Accounts stayed unchanged. A reversal still targets
+    the originally saved account, but calculates from the current legacy balance
+    and updates only that matching compatibility account. It must never mirror a
+    stale full Financial-Account snapshot over newer legacy writes.
+    """
+    required = require_funds_for or set()
+    if multi_cash_accounts_enabled(conn, user_id):
+        return apply_financial_account_deltas(
+            conn, user_id, deltas, require_funds_for=required
+        )
+
+    balances = app_cash_accounts(conn, user_id)
+    updates: list[tuple[int, str, float]] = []
+    seen_keys: set[str] = set()
+    for raw_account_id, raw_delta in deltas.items():
+        account_id = int(raw_account_id)
+        account = require_financial_account(conn, user_id, account_id)
+        legacy_key = str(account["legacy_key"] or "")
+        if legacy_key not in ACCOUNT_KEYS or legacy_key in seen_keys:
+            raise ValueError("stored_account_not_legacy_compatible")
+        updated = round(float(balances[legacy_key]) + float(raw_delta), 2)
+        if account_id in required and updated < -0.0049:
+            raise ValueError("financial_account_balance_insufficient")
+        if str(account["account_type"]) in {"savings", "wallet"} and updated < -0.0049:
+            raise ValueError("financial_account_balance_insufficient")
+        updates.append((account_id, legacy_key, 0.0 if abs(updated) < 0.005 else updated))
+        seen_keys.add(legacy_key)
+
+    for account_id, legacy_key, updated in updates:
+        cur = conn.execute(
+            """UPDATE app_financial_accounts
+                  SET balance = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ? AND status = 'active'""",
+            (updated, account_id, user_id),
+        )
+        if cur.rowcount != 1:
+            raise LookupError("financial_account_not_found")
+        balances[legacy_key] = updated
+    save_app_cash_accounts(conn, user_id, balances)
+    return balances
+
+
+def adjust_stored_account_balance(
+    conn: sqlite3.Connection,
+    user_id: int,
+    account_id: int,
+    delta: float,
+    *,
+    require_funds: bool = False,
+) -> dict[str, float]:
+    return apply_stored_account_deltas(
+        conn,
+        user_id,
+        {int(account_id): float(delta)},
+        require_funds_for={int(account_id)} if require_funds else set(),
+    )
+
+
 def _etf_plan_due_day(today: datetime, configured_day: int) -> int:
     """31. wird in kurzen Monaten fair als letzter Kalendertag behandelt."""
     first_next = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -1340,7 +1451,7 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
         return {"ok": False, "error": "user_not_found"}
     amount = round(float(user["etf_savings"] or 0), 2)
     plan = conn.execute(
-        """SELECT execution_day, source_account, mode, active, start_month
+        """SELECT execution_day, source_account, source_account_id, mode, active, start_month
              FROM app_etf_savings_plan WHERE user_id = ?""",
         (user_id,),
     ).fetchone()
@@ -1369,11 +1480,34 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
         return {"ok": True, "alreadyRecorded": True, "amount": amount}
 
     source = str(plan["source_account"])
-    balances = app_cash_accounts(conn, user_id)
-    if source == "tagesgeld" and balances["tagesgeld"] + 0.009 < amount:
-        return {"ok": False, "error": "etf_plan_source_insufficient"}
-    balances[source] = round(balances[source] - amount, 2)
-    save_app_cash_accounts(conn, user_id, balances)
+    if multi_cash_accounts_enabled(conn, user_id):
+        prepare_multi_cash_write(conn)
+        source_id = int(plan["source_account_id"] or 0)
+        if source_id:
+            source_account = require_financial_account(conn, user_id, source_id)
+            if str(source_account["legacy_key"] or "") != source:
+                raise ValueError("etf_plan_source_account_mismatch")
+        else:
+            source_id = legacy_financial_account_id(conn, user_id, source)
+            conn.execute(
+                """UPDATE app_etf_savings_plan SET source_account_id = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE user_id = ?""",
+                (source_id, user_id),
+            )
+        try:
+            balances = adjust_financial_account_balance(
+                conn, user_id, source_id, -amount, require_funds=(source == "tagesgeld")
+            )
+        except ValueError as exc:
+            if str(exc) == "financial_account_balance_insufficient":
+                return {"ok": False, "error": "etf_plan_source_insufficient"}
+            raise
+    else:
+        balances = app_cash_accounts(conn, user_id)
+        if source == "tagesgeld" and balances["tagesgeld"] + 0.009 < amount:
+            return {"ok": False, "error": "etf_plan_source_insufficient"}
+        balances[source] = round(balances[source] - amount, 2)
+        save_app_cash_accounts(conn, user_id, balances)
 
     investments = round(float(user["current_investments"] or 0) + amount, 2)
     conn.execute("UPDATE users SET current_investments = ? WHERE user_id = ?", (investments, user_id))
@@ -1790,6 +1924,10 @@ def update_monthly_plan():
         apply_due_scheduled_savings(conn, user_id)
         ensure_app_monthly_plan_table(conn)
         ensure_app_cash_movements_table(conn)
+        ensure_financial_account_reference_schema(conn)
+        pilot = multi_cash_accounts_enabled(conn, user_id)
+        if pilot:
+            prepare_multi_cash_write(conn)
         month_key = datetime.now().strftime("%Y-%m")
         field, status = field_by_action[action]
 
@@ -1811,7 +1949,8 @@ def update_monthly_plan():
         if action in ("reopen_income", "reopen_fixed_costs", "reopen_savings"):
             if action == "reopen_income":
                 zeile = conn.execute(
-                    """SELECT id, amount FROM app_cash_movements
+                    """SELECT id, amount, source_account_id, target_account_id
+                         FROM app_cash_movements
                          WHERE user_id = ? AND kind = 'income'
                            AND strftime('%Y-%m', created_at) = ?
                            AND lower(COALESCE(label, '')) LIKE '%gehalt%'
@@ -1821,7 +1960,8 @@ def update_monthly_plan():
                 richtung = -1        # Gehalt zurueckgenommen: Geld verlaesst das Giro wieder
             elif action == "reopen_fixed_costs":
                 zeile = conn.execute(
-                    """SELECT id, amount FROM app_cash_movements
+                    """SELECT id, amount, source_account_id, target_account_id
+                         FROM app_cash_movements
                          WHERE user_id = ? AND kind = 'fixed'
                            AND strftime('%Y-%m', created_at) = ?
                          ORDER BY id DESC LIMIT 1""",
@@ -1858,9 +1998,22 @@ def update_monthly_plan():
                     # die spaetere Aenderung zuerst geklaert hat.
                     if investments + 0.009 < etf_amount or balances["tagesgeld"] + 0.009 < cash_amount:
                         return jsonify({"ok": False, "error": "savings_already_moved"}), 400
-                    balances["giro"] = round(balances["giro"] + etf_amount + cash_amount, 2)
-                    balances["tagesgeld"] = round(balances["tagesgeld"] - cash_amount, 2)
-                    save_app_cash_accounts(conn, user_id, balances)
+                    if pilot:
+                        giro_id = legacy_financial_account_id(conn, user_id, "giro")
+                        tagesgeld_id = legacy_financial_account_id(conn, user_id, "tagesgeld")
+                        balances = apply_financial_account_deltas(
+                            conn,
+                            user_id,
+                            {
+                                giro_id: etf_amount + cash_amount,
+                                tagesgeld_id: -cash_amount,
+                            },
+                            require_funds_for={tagesgeld_id},
+                        )
+                    else:
+                        balances["giro"] = round(balances["giro"] + etf_amount + cash_amount, 2)
+                        balances["tagesgeld"] = round(balances["tagesgeld"] - cash_amount, 2)
+                        save_app_cash_accounts(conn, user_id, balances)
                     conn.execute(
                         "UPDATE users SET current_investments = ? WHERE user_id = ?",
                         (round(investments - etf_amount, 2), user_id),
@@ -1884,9 +2037,19 @@ def update_monthly_plan():
                 richtung = 0
             if zeile:
                 betrag = round(abs(float(zeile["amount"] or 0)), 2)
-                balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
-                balances["giro"] = round(balances["giro"] + richtung * betrag, 2)
-                save_app_cash_accounts(conn, user_id, balances)
+                saved_account_id = (
+                    int(zeile["target_account_id"] or 0)
+                    if action == "reopen_income"
+                    else int(zeile["source_account_id"] or 0)
+                )
+                if saved_account_id:
+                    balances = adjust_stored_account_balance(
+                        conn, user_id, saved_account_id, richtung * betrag
+                    )
+                else:
+                    balances = app_cash_accounts(conn, user_id)
+                    balances["giro"] = round(balances["giro"] + richtung * betrag, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
                 conn.execute(
                     "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
                     (zeile["id"], user_id),
@@ -1910,13 +2073,25 @@ def update_monthly_plan():
                     (user_id, month_key),
                 ).fetchone()
                 if not schon_da and betrag > 0:
-                    balances["giro"] = round(balances["giro"] + betrag, 2)
-                    save_app_cash_accounts(conn, user_id, balances)
-                    conn.execute(
-                        """INSERT INTO app_cash_movements (user_id, kind, amount, label)
-                           VALUES (?, 'income', ?, 'Gehalt')""",
-                        (user_id, betrag),
-                    )
+                    if pilot:
+                        target_account_id = role_financial_account_id(conn, user_id, "income")
+                        balances = adjust_financial_account_balance(
+                            conn, user_id, target_account_id, betrag
+                        )
+                        conn.execute(
+                            """INSERT INTO app_cash_movements
+                                   (user_id, kind, amount, label, target_account_id)
+                               VALUES (?, 'income', ?, 'Gehalt', ?)""",
+                            (user_id, betrag, target_account_id),
+                        )
+                    else:
+                        balances["giro"] = round(balances["giro"] + betrag, 2)
+                        save_app_cash_accounts(conn, user_id, balances)
+                        conn.execute(
+                            """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+                               VALUES (?, 'income', ?, 'Gehalt')""",
+                            (user_id, betrag),
+                        )
             else:
                 betrag = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
                 schon_da = conn.execute(
@@ -1931,13 +2106,25 @@ def update_monthly_plan():
                     # Nutzer bestaetigt sie nur. Wir erfinden kein Geld und blockieren auch nicht
                     # die Wahrheit, wenn das Konto knapp ist — gleiche Haltung wie beim Loeschen
                     # einer Einnahme.
-                    balances["giro"] = round(balances["giro"] - betrag, 2)
-                    save_app_cash_accounts(conn, user_id, balances)
-                    conn.execute(
-                        """INSERT INTO app_cash_movements (user_id, kind, amount, label)
-                           VALUES (?, 'fixed', ?, 'Fixkosten')""",
-                        (user_id, betrag),
-                    )
+                    if pilot:
+                        source_account_id = role_financial_account_id(conn, user_id, "fixed_cost")
+                        balances = adjust_financial_account_balance(
+                            conn, user_id, source_account_id, -betrag
+                        )
+                        conn.execute(
+                            """INSERT INTO app_cash_movements
+                                   (user_id, kind, amount, label, source_account_id)
+                               VALUES (?, 'fixed', ?, 'Fixkosten', ?)""",
+                            (user_id, betrag, source_account_id),
+                        )
+                    else:
+                        balances["giro"] = round(balances["giro"] - betrag, 2)
+                        save_app_cash_accounts(conn, user_id, balances)
+                        conn.execute(
+                            """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+                               VALUES (?, 'fixed', ?, 'Fixkosten')""",
+                            (user_id, betrag),
+                        )
         conn.execute(
             """INSERT INTO app_monthly_plan_status (user_id, month_key)
                VALUES (?, ?)
@@ -1975,9 +2162,21 @@ def update_monthly_plan():
                 # Sparen ist eine Umschichtung, keine zweite Einnahme: Der Betrag verlaesst
                 # das Girokonto. ETF wandert ins Investment, Cash ins Tagesgeld. Dadurch bleibt
                 # das Nettovermoegen gleich und nur seine Verteilung aendert sich.
-                balances["giro"] = round(balances["giro"] - etf_to_book - cash_savings, 2)
-                balances["tagesgeld"] = round(balances["tagesgeld"] + cash_savings, 2)
-                save_app_cash_accounts(conn, user_id, balances)
+                if pilot:
+                    giro_id = legacy_financial_account_id(conn, user_id, "giro")
+                    tagesgeld_id = legacy_financial_account_id(conn, user_id, "tagesgeld")
+                    balances = apply_financial_account_deltas(
+                        conn,
+                        user_id,
+                        {
+                            giro_id: -(etf_to_book + cash_savings),
+                            tagesgeld_id: cash_savings,
+                        },
+                    )
+                else:
+                    balances["giro"] = round(balances["giro"] - etf_to_book - cash_savings, 2)
+                    balances["tagesgeld"] = round(balances["tagesgeld"] + cash_savings, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
                 if etf_to_book > 0:
                     conn.execute(
                         """INSERT INTO investment_events
@@ -2520,11 +2719,15 @@ def complete_app_onboarding():
             if now.day > execution_day:
                 next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
                 start_month = next_month.strftime("%Y-%m")
+            source_account_id = None
+            if multi_cash_accounts_enabled(conn, user_id):
+                prepare_multi_cash_write(conn)
+                source_account_id = legacy_financial_account_id(conn, user_id, source_account)
             conn.execute(
                 """INSERT INTO app_etf_savings_plan
-                   (user_id, execution_day, source_account, mode, active, start_month)
-                   VALUES (?, ?, ?, ?, 1, ?)""",
-                (user_id, execution_day, source_account, mode, start_month),
+                   (user_id, execution_day, source_account, source_account_id, mode, active, start_month)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (user_id, execution_day, source_account, source_account_id, mode, start_month),
             )
 
         live_data = build_live_app_data(conn, user_id)
@@ -2603,6 +2806,10 @@ def update_profile():
                 return jsonify({"ok": False, "error": "valid_etf_active_required"}), 400
             active = 1 if bool(active_raw) else 0
             ensure_app_etf_savings_plan_table(conn)
+            source_account_id = None
+            if multi_cash_accounts_enabled(conn, user_id):
+                prepare_multi_cash_write(conn)
+                source_account_id = legacy_financial_account_id(conn, user_id, source_account)
             now = datetime.now()
             # Kein rueckwirkendes Buchen beim Einrichten: Ist der gewuenschte Tag
             # bereits vorbei, beginnt die Automatik erst mit dem naechsten Monat.
@@ -2613,18 +2820,21 @@ def update_profile():
                 ).strftime("%Y-%m")
             conn.execute(
                 """INSERT INTO app_etf_savings_plan
-                       (user_id, execution_day, source_account, mode, active, start_month, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                       (user_id, execution_day, source_account, source_account_id,
+                        mode, active, start_month, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                    ON CONFLICT(user_id) DO UPDATE SET
                        execution_day = excluded.execution_day,
                        source_account = excluded.source_account,
+                       source_account_id = excluded.source_account_id,
                        mode = excluded.mode,
                        active = excluded.active,
                        start_month = CASE
                          WHEN app_etf_savings_plan.start_month > excluded.start_month
                          THEN app_etf_savings_plan.start_month ELSE excluded.start_month END,
                        updated_at = CURRENT_TIMESTAMP""",
-                (user_id, execution_day, source_account, mode, active, start_month),
+                (user_id, execution_day, source_account, source_account_id,
+                 mode, active, start_month),
             )
 
         scheduled_savings = None
@@ -2952,6 +3162,9 @@ def update_accounts():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        pilot = multi_cash_accounts_enabled(conn, user_id)
+        if pilot:
+            prepare_multi_cash_write(conn)
         balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
         try:
             amount = round(abs(float(payload.get("amount") or 0)), 2)
@@ -2965,23 +3178,44 @@ def update_accounts():
                 return jsonify({"ok": False, "error": "valid_transfer_accounts_required"}), 400
             if amount <= 0 or amount > balances[source]:
                 return jsonify({"ok": False, "error": "transfer_amount_not_available"}), 400
-            balances[source] = round(balances[source] - amount, 2)
-            balances[target] = round(balances[target] + amount, 2)
+            source_account_id = None
+            target_account_id = None
+            if pilot:
+                source_account_id = legacy_financial_account_id(conn, user_id, source)
+                target_account_id = legacy_financial_account_id(conn, user_id, target)
+                balances = transfer_financial_account_balance(
+                    conn, user_id, source_account_id, target_account_id, amount
+                )
+            else:
+                balances[source] = round(balances[source] - amount, 2)
+                balances[target] = round(balances[target] + amount, 2)
             # Nur eine echte Abhebung wird als Buchungszeile gemerkt (die App schickt dafuer
             # log:"withdrawal"). Ein normales Umbuchen im Konten-Detail bleibt bewusst still —
             # sonst tauchten in der Buchungsliste ploetzlich Zeilen auf, die es dort nie gab.
             if clean_text(payload.get("log")).lower() == "withdrawal" and source == "giro" and target == "bargeld":
                 ensure_app_cash_movements_table(conn)
-                conn.execute(
-                    """INSERT INTO app_cash_movements (user_id, kind, amount)
-                       VALUES (?, 'withdrawal', ?)""",
-                    (user_id, amount),
-                )
+                if pilot:
+                    conn.execute(
+                        """INSERT INTO app_cash_movements
+                               (user_id, kind, amount, source_account_id, target_account_id)
+                           VALUES (?, 'withdrawal', ?, ?, ?)""",
+                        (user_id, amount, source_account_id, target_account_id),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO app_cash_movements (user_id, kind, amount)
+                           VALUES (?, 'withdrawal', ?)""",
+                        (user_id, amount),
+                    )
         elif action == "set":
             account = clean_text(payload.get("account")).lower()
             if account not in ACCOUNT_KEYS or amount > 10_000_000:
                 return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
             balances[account] = amount
+            if pilot:
+                _account_id, balances = set_legacy_financial_account_balance(
+                    conn, user_id, account, amount
+                )
         elif action == "adjust":
             account = clean_text(payload.get("account")).lower()
             direction = clean_text(payload.get("direction"), "add").lower()
@@ -2991,10 +3225,15 @@ def update_accounts():
             if balances[account] + delta < 0 or balances[account] + delta > 10_000_000:
                 return jsonify({"ok": False, "error": "account_adjustment_not_available"}), 400
             balances[account] = round(balances[account] + delta, 2)
+            if pilot:
+                _account_id, balances = set_legacy_financial_account_balance(
+                    conn, user_id, account, balances[account]
+                )
         else:
             return jsonify({"ok": False, "error": "valid_account_action_required"}), 400
 
-        save_app_cash_accounts(conn, user_id, balances)
+        if not pilot:
+            save_app_cash_accounts(conn, user_id, balances)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -3269,6 +3508,11 @@ def update_etf_position_plan():
         if not holding or str(holding["instrument_type"]).lower() != "etf":
             return jsonify({"ok": False, "error": "etf_holding_not_found"}), 404
 
+        source_account_id = None
+        if multi_cash_accounts_enabled(conn, user_id):
+            prepare_multi_cash_write(conn)
+            source_account_id = legacy_financial_account_id(conn, user_id, source_account)
+
         now = datetime.now()
         start_month = now.strftime("%Y-%m")
         if execution_day < now.day:
@@ -3278,12 +3522,13 @@ def update_etf_position_plan():
         conn.execute(
             """INSERT INTO app_etf_position_plans
                    (user_id, holding_id, monthly_amount, execution_day, source_account,
-                    mode, active, start_month, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    source_account_id, mode, active, start_month, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(user_id, holding_id) DO UPDATE SET
                    monthly_amount = excluded.monthly_amount,
                    execution_day = excluded.execution_day,
                    source_account = excluded.source_account,
+                   source_account_id = excluded.source_account_id,
                    mode = excluded.mode,
                    active = excluded.active,
                    start_month = CASE
@@ -3292,7 +3537,7 @@ def update_etf_position_plan():
                    updated_at = CURRENT_TIMESTAMP""",
             (
                 user_id, holding_id, monthly_amount, execution_day, source_account,
-                mode, 1 if bool(active_raw) else 0, start_month,
+                source_account_id, mode, 1 if bool(active_raw) else 0, start_month,
             ),
         )
         total = conn.execute(
@@ -3745,7 +3990,13 @@ def commit_screenshot_import():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_cash_movements_table(conn)
+        pilot = multi_cash_accounts_enabled(conn, user_id)
+        screenshot_account_id = None
+        if pilot:
+            prepare_multi_cash_write(conn)
+            screenshot_account_id = role_financial_account_id(conn, user_id, "screenshot")
         balances = app_cash_accounts(conn, user_id)
+        total_applied = 0.0
         for row in cleaned:
             description = f"Via Rov.E Screenshot · {row['import_key']}"
             existing = conn.execute(
@@ -3762,19 +4013,37 @@ def commit_screenshot_import():
                 f"{row['date']} 12:00:00" if row["date"]
                 else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             )
-            cur = conn.execute(
-                """INSERT INTO expenses
-                       (user_id, amount, category, merchant, description, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, row["amount"], bot_category, row["merchant"], description, created_at),
-            )
+            if pilot:
+                cur = conn.execute(
+                    """INSERT INTO expenses
+                           (user_id, amount, category, merchant, description, created_at, account_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, row["amount"], bot_category, row["merchant"], description,
+                     created_at, screenshot_account_id),
+                )
+            else:
+                cur = conn.execute(
+                    """INSERT INTO expenses
+                           (user_id, amount, category, merchant, description, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (user_id, row["amount"], bot_category, row["merchant"], description, created_at),
+                )
             expense_id = int(cur.lastrowid)
-            balances["giro"] = round(balances["giro"] - row["amount"], 2)
-            conn.execute(
-                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-                   VALUES (?, 'card', ?, ?)""",
-                (user_id, row["amount"], expense_id),
-            )
+            total_applied = round(total_applied + row["amount"], 2)
+            if pilot:
+                conn.execute(
+                    """INSERT INTO app_cash_movements
+                           (user_id, kind, amount, expense_id, source_account_id)
+                       VALUES (?, 'card', ?, ?, ?)""",
+                    (user_id, row["amount"], expense_id, screenshot_account_id),
+                )
+            else:
+                balances["giro"] = round(balances["giro"] - row["amount"], 2)
+                conn.execute(
+                    """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
+                       VALUES (?, 'card', ?, ?)""",
+                    (user_id, row["amount"], expense_id),
+                )
             award_tracking_points(conn, user_id, expense_id=expense_id)
             inserted.append({
                 "id": expense_id,
@@ -3783,7 +4052,12 @@ def commit_screenshot_import():
                 "merchant": row["merchant"],
             })
 
-        save_app_cash_accounts(conn, user_id, balances)
+        if pilot and total_applied > 0:
+            balances = adjust_financial_account_balance(
+                conn, user_id, screenshot_account_id, -total_applied
+            )
+        elif not pilot:
+            save_app_cash_accounts(conn, user_id, balances)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -4228,17 +4502,36 @@ def create_expense():
         # Vor dem INSERT pruefen: Ein return innerhalb des DB-Kontexts wuerde einen bereits
         # eingefuegten Datensatz sonst normal committen, obwohl die Zahlung abgelehnt wurde.
         ensure_app_cash_movements_table(conn)
+        pilot = multi_cash_accounts_enabled(conn, user_id)
+        if pilot:
+            prepare_multi_cash_write(conn)
         account_key = "bargeld" if paid_cash else "giro"
         movement_kind = "payment" if paid_cash else "card"
         balances = app_cash_accounts(conn, user_id)
         if paid_cash and amount > balances[account_key]:
             return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
 
-        cur = conn.execute(
-            """INSERT INTO expenses (user_id, amount, category, merchant, description)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, amount, bot_category, merchant, description),
-        )
+        account_id = None
+        if pilot:
+            account_id = (
+                legacy_financial_account_id(conn, user_id, "bargeld")
+                if paid_cash else role_financial_account_id(conn, user_id, "expense")
+            )
+            account = require_financial_account(conn, user_id, account_id)
+            if paid_cash and amount > float(account["balance"] or 0.0) + 0.009:
+                return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
+            cur = conn.execute(
+                """INSERT INTO expenses
+                       (user_id, amount, category, merchant, description, account_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, amount, bot_category, merchant, description, account_id),
+            )
+        else:
+            cur = conn.execute(
+                """INSERT INTO expenses (user_id, amount, category, merchant, description)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, amount, bot_category, merchant, description),
+            )
         expense_id = cur.lastrowid
         # Jede App-Ausgabe senkt dauerhaft das Konto, aus dem sie bezahlt wurde. Ohne diese
         # Kontowirkung sprang der Girostand nach dem naechsten App-Refresh auf den alten Wert
@@ -4246,13 +4539,24 @@ def create_expense():
         # Giro darf ins Minus gehen (z. B. 100 EUR Kontostand minus 600 EUR Ausgabe =
         # -500 EUR). Beim Loeschen wird exakt derselbe Betrag wieder gutgeschrieben.
         account_applied = round(amount, 2)
-        balances[account_key] = round(balances[account_key] - account_applied, 2)
-        save_app_cash_accounts(conn, user_id, balances)
-        conn.execute(
-            """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, movement_kind, account_applied, expense_id),
-        )
+        if pilot:
+            balances = adjust_financial_account_balance(
+                conn, user_id, account_id, -account_applied, require_funds=paid_cash
+            )
+            conn.execute(
+                """INSERT INTO app_cash_movements
+                       (user_id, kind, amount, expense_id, source_account_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, movement_kind, account_applied, expense_id, account_id),
+            )
+        else:
+            balances[account_key] = round(balances[account_key] - account_applied, 2)
+            save_app_cash_accounts(conn, user_id, balances)
+            conn.execute(
+                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
+                   VALUES (?, ?, ?, ?)""",
+                (user_id, movement_kind, account_applied, expense_id),
+            )
         cash_applied = account_applied if paid_cash else 0.0
         giro_applied = 0.0 if paid_cash else account_applied
         reward = award_tracking_points(conn, user_id, expense_id=expense_id)
@@ -4309,13 +4613,26 @@ def create_income():
         # gelesen unter der Sperre aus begin_write() — sonst geht eine von zwei
         # gleichzeitigen Einnahmen beim Girostand verloren
         balances = app_cash_accounts(conn, user_id)
-        balances["giro"] = round(balances["giro"] + applied, 2)
-        save_app_cash_accounts(conn, user_id, balances)
-        cur = conn.execute(
-            """INSERT INTO app_cash_movements (user_id, kind, amount, label)
-               VALUES (?, 'income', ?, ?)""",
-            (user_id, applied, label),
-        )
+        if multi_cash_accounts_enabled(conn, user_id):
+            prepare_multi_cash_write(conn)
+            target_account_id = role_financial_account_id(conn, user_id, "income")
+            balances = adjust_financial_account_balance(
+                conn, user_id, target_account_id, applied
+            )
+            cur = conn.execute(
+                """INSERT INTO app_cash_movements
+                       (user_id, kind, amount, label, target_account_id)
+                   VALUES (?, 'income', ?, ?, ?)""",
+                (user_id, applied, label, target_account_id),
+            )
+        else:
+            balances["giro"] = round(balances["giro"] + applied, 2)
+            save_app_cash_accounts(conn, user_id, balances)
+            cur = conn.execute(
+                """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+                   VALUES (?, 'income', ?, ?)""",
+                (user_id, applied, label),
+            )
         movement_id = cur.lastrowid
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
@@ -4383,17 +4700,18 @@ def delete_expense(expense_id: int):
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_cash_movements_table(conn)
+        ensure_financial_account_reference_schema(conn)
         # Die Erstattung unten liest den Kontostand und rechnet von dort hoch. Ohne die
         # Sperre aus begin_write() koennte eine parallele Buchung dazwischenschreiben und
         # die Gutschrift wieder verschlucken.
         cash_movement = conn.execute(
-            """SELECT id, kind, amount FROM app_cash_movements
+            """SELECT id, kind, amount, source_account_id FROM app_cash_movements
                  WHERE user_id = ? AND kind IN ('payment', 'card') AND expense_id = ?""",
             (user_id, expense_id),
         ).fetchone()
 
         expense = conn.execute(
-            "SELECT created_at FROM expenses WHERE id = ? AND user_id = ?",
+            "SELECT created_at, account_id FROM expenses WHERE id = ? AND user_id = ?",
             (expense_id, user_id),
         ).fetchone()
         if not expense:
@@ -4417,11 +4735,21 @@ def delete_expense(expense_id: int):
         refunded_giro = 0.0
         if cash_movement:
             refund = round(max(0.0, float(cash_movement["amount"] or 0)), 2)
+            saved_account_id = int(
+                cash_movement["source_account_id"] or expense["account_id"] or 0
+            )
             target = "bargeld" if cash_movement["kind"] == "payment" else "giro"
             if refund > 0:
-                balances = app_cash_accounts(conn, user_id)
-                balances[target] = round(balances[target] + refund, 2)
-                save_app_cash_accounts(conn, user_id, balances)
+                if saved_account_id:
+                    saved_account = require_financial_account(conn, user_id, saved_account_id)
+                    target = str(saved_account["legacy_key"] or target)
+                    balances = adjust_stored_account_balance(
+                        conn, user_id, saved_account_id, refund
+                    )
+                else:
+                    balances = app_cash_accounts(conn, user_id)
+                    balances[target] = round(balances[target] + refund, 2)
+                    save_app_cash_accounts(conn, user_id, balances)
             if target == "bargeld":
                 refunded_cash = refund
             else:
@@ -4465,8 +4793,10 @@ def delete_cash_movement(movement_id: int):
         # Auch hier gilt die Sperre aus begin_write(): die Rueckbuchung unten rechnet
         # vom gelesenen Stand aus, und die Bargeld-Pruefung darf nicht auf einem Wert
         # entscheiden, den ein paralleler Request gerade veraendert.
+        ensure_financial_account_reference_schema(conn)
         row = conn.execute(
-            "SELECT id, kind, amount FROM app_cash_movements WHERE id = ? AND user_id = ?",
+            """SELECT id, kind, amount, source_account_id, target_account_id
+                 FROM app_cash_movements WHERE id = ? AND user_id = ?""",
             (movement_id, user_id),
         ).fetchone()
         if not row:
@@ -4479,7 +4809,31 @@ def delete_cash_movement(movement_id: int):
 
         amount = round(abs(float(row["amount"] or 0)), 2)
         balances = app_cash_accounts(conn, user_id)
-        if kind == "fixed":
+        source_account_id = int(row["source_account_id"] or 0)
+        target_account_id = int(row["target_account_id"] or 0)
+        used_financial_reference = False
+        if kind == "fixed" and source_account_id:
+            balances = adjust_stored_account_balance(
+                conn, user_id, source_account_id, amount
+            )
+            used_financial_reference = True
+        elif kind == "income" and target_account_id:
+            balances = adjust_stored_account_balance(
+                conn, user_id, target_account_id, -amount
+            )
+            used_financial_reference = True
+        elif kind == "withdrawal" and source_account_id and target_account_id:
+            target = require_financial_account(conn, user_id, target_account_id)
+            if amount > float(target["balance"] or 0.0) + 0.009:
+                return jsonify({"ok": False, "error": "cash_already_spent"}), 400
+            balances = apply_stored_account_deltas(
+                conn,
+                user_id,
+                {source_account_id: amount, target_account_id: -amount},
+                require_funds_for={target_account_id},
+            )
+            used_financial_reference = True
+        elif kind == "fixed":
             # Fixkosten-Abbuchung zurueckgenommen (im Monatscheck versehentlich bestaetigt):
             # das Geld kommt aufs Girokonto zurueck. Der Monatscheck-Status bleibt davon
             # unberuehrt — beim naechsten Bestaetigen greift die Doppelbuchungssperre nicht
@@ -4498,7 +4852,8 @@ def delete_cash_movement(movement_id: int):
                 return jsonify({"ok": False, "error": "cash_already_spent"}), 400
             balances["bargeld"] = round(balances["bargeld"] - amount, 2)
             balances["giro"] = round(balances["giro"] + amount, 2)
-        save_app_cash_accounts(conn, user_id, balances)
+        if not used_financial_reference:
+            save_app_cash_accounts(conn, user_id, balances)
         conn.execute(
             "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
             (movement_id, user_id),
