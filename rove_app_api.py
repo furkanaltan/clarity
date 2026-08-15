@@ -62,16 +62,22 @@ from rove_market_data import (
 )
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    archive_financial_account,
     adjust_financial_account_balance,
     apply_financial_account_deltas,
+    create_financial_account,
     delete_financial_account_data,
     ensure_financial_account_reference_schema,
     get_legacy_financial_account,
     is_feature_enabled,
+    list_financial_accounts,
+    rename_financial_account,
     require_account_role,
     require_financial_account,
+    set_account_role,
     set_legacy_financial_account_balance,
     transfer_financial_account_balance,
+    update_financial_account_balance,
 )
 
 
@@ -1346,6 +1352,19 @@ def multi_cash_accounts_enabled(conn: sqlite3.Connection, user_id: int) -> bool:
     return is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
 
 
+def require_multi_cash_pilot(conn: sqlite3.Connection, user_id: int):
+    if not multi_cash_accounts_enabled(conn, user_id):
+        return jsonify({"ok": False, "error": "multi_cash_accounts_not_enabled"}), 404
+    prepare_multi_cash_write(conn)
+    return None
+
+
+def financial_account_error(exc: Exception):
+    code = str(exc)
+    status = 404 if code == "financial_account_not_found" else 400
+    return jsonify({"ok": False, "error": code}), status
+
+
 def prepare_multi_cash_write(conn: sqlite3.Connection) -> None:
     """Ensure only additive nullable reference columns for a flagged write."""
     ensure_app_cash_movements_table(conn)
@@ -1363,6 +1382,23 @@ def legacy_financial_account_id(
 
 def role_financial_account_id(conn: sqlite3.Connection, user_id: int, role: str) -> int:
     return int(require_account_role(conn, user_id, role)["id"])
+
+
+def resolve_etf_source_account(
+    conn: sqlite3.Connection, user_id: int, payload: dict, legacy_source: str
+) -> tuple[str, int | None]:
+    """Resolve a pilot ETF source while retaining the legacy type aggregate."""
+    if not multi_cash_accounts_enabled(conn, user_id):
+        return legacy_source, None
+    prepare_multi_cash_write(conn)
+    raw_id = payload.get("source_account_id", payload.get("sourceAccountId"))
+    if raw_id not in (None, ""):
+        account = require_financial_account(conn, user_id, int(raw_id))
+        account_type = str(account["account_type"])
+        if account_type not in {"checking", "savings"}:
+            raise ValueError("valid_etf_source_required")
+        return ("giro" if account_type == "checking" else "tagesgeld"), int(account["id"])
+    return legacy_source, legacy_financial_account_id(conn, user_id, legacy_source)
 
 
 def apply_stored_account_deltas(
@@ -1485,7 +1521,8 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
         source_id = int(plan["source_account_id"] or 0)
         if source_id:
             source_account = require_financial_account(conn, user_id, source_id)
-            if str(source_account["legacy_key"] or "") != source:
+            expected_source = "giro" if str(source_account["account_type"]) == "checking" else "tagesgeld"
+            if str(source_account["account_type"]) not in {"checking", "savings"} or expected_source != source:
                 raise ValueError("etf_plan_source_account_mismatch")
         else:
             source_id = legacy_financial_account_id(conn, user_id, source)
@@ -2793,7 +2830,7 @@ def update_profile():
                 execution_day = int(plan.get("execution_day") or 0)
             except (TypeError, ValueError):
                 execution_day = 0
-            source_account = clean_text(plan.get("source_account")).lower()
+            source_account = clean_text(plan.get("source_account"), "giro").lower()
             mode = clean_text(plan.get("mode")).lower()
             active_raw = plan.get("active", True)
             if not 1 <= execution_day <= 31:
@@ -2806,10 +2843,12 @@ def update_profile():
                 return jsonify({"ok": False, "error": "valid_etf_active_required"}), 400
             active = 1 if bool(active_raw) else 0
             ensure_app_etf_savings_plan_table(conn)
-            source_account_id = None
-            if multi_cash_accounts_enabled(conn, user_id):
-                prepare_multi_cash_write(conn)
-                source_account_id = legacy_financial_account_id(conn, user_id, source_account)
+            try:
+                source_account, source_account_id = resolve_etf_source_account(
+                    conn, user_id, plan, source_account
+                )
+            except (TypeError, ValueError, LookupError) as exc:
+                return financial_account_error(exc)
             now = datetime.now()
             # Kein rueckwirkendes Buchen beim Einrichten: Ist der gewuenschte Tag
             # bereits vorbei, beginnt die Automatik erst mit dem naechsten Monat.
@@ -3176,7 +3215,7 @@ def update_accounts():
             target = clean_text(payload.get("to")).lower()
             if source not in ACCOUNT_KEYS or target not in ACCOUNT_KEYS or source == target:
                 return jsonify({"ok": False, "error": "valid_transfer_accounts_required"}), 400
-            if amount <= 0 or amount > balances[source]:
+            if amount <= 0 or (amount > balances[source] and (not pilot or source != "giro")):
                 return jsonify({"ok": False, "error": "transfer_amount_not_available"}), 400
             source_account_id = None
             target_account_id = None
@@ -3184,7 +3223,8 @@ def update_accounts():
                 source_account_id = legacy_financial_account_id(conn, user_id, source)
                 target_account_id = legacy_financial_account_id(conn, user_id, target)
                 balances = transfer_financial_account_balance(
-                    conn, user_id, source_account_id, target_account_id, amount
+                    conn, user_id, source_account_id, target_account_id, amount,
+                    require_source_funds=source != "giro",
                 )
             else:
                 balances[source] = round(balances[source] - amount, 2)
@@ -3238,6 +3278,132 @@ def update_accounts():
         conn.commit()
 
     return jsonify({"ok": True, "accounts": balances, **live_data})
+
+
+@app.route("/v1/financial-accounts", methods=["POST"])
+def create_financial_account_endpoint():
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    try:
+        balance = round(float(payload.get("balance") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_financial_account_balance"}), 400
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if error := require_multi_cash_pilot(conn, user_id):
+            return error
+        try:
+            account_id, _balances = create_financial_account(
+                conn, user_id, clean_text(payload.get("type")).lower(),
+                clean_text(payload.get("name")), balance,
+            )
+        except (ValueError, LookupError) as exc:
+            return financial_account_error(exc)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, "accountId": account_id, **live_data})
+
+
+@app.route("/v1/financial-accounts/<int:account_id>", methods=["PATCH"])
+def update_financial_account_endpoint(account_id: int):
+    payload = request.get_json(silent=True) or {}
+    action = clean_text(payload.get("action")).lower()
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if error := require_multi_cash_pilot(conn, user_id):
+            return error
+        try:
+            if action == "rename":
+                rename_financial_account(conn, user_id, account_id, clean_text(payload.get("name")))
+            elif action == "set_balance":
+                balance = round(float(payload.get("balance")), 2)
+                if abs(balance) > 10_000_000:
+                    raise ValueError("invalid_financial_account_balance")
+                account = require_financial_account(conn, user_id, account_id)
+                if str(account["account_type"]) in {"savings", "wallet"} and balance < -0.0049:
+                    raise ValueError("financial_account_balance_insufficient")
+                update_financial_account_balance(conn, user_id, account_id, balance)
+            elif action == "archive":
+                archive_financial_account(conn, user_id, account_id)
+            else:
+                return jsonify({"ok": False, "error": "valid_financial_account_action_required"}), 400
+        except (TypeError, ValueError, LookupError) as exc:
+            return financial_account_error(exc)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/financial-accounts/transfer", methods=["POST"])
+def transfer_financial_accounts_endpoint():
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    try:
+        source_id = int(payload.get("sourceAccountId") or 0)
+        target_id = int(payload.get("targetAccountId") or 0)
+        amount = round(float(payload.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "valid_financial_account_transfer_required"}), 400
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if error := require_multi_cash_pilot(conn, user_id):
+            return error
+        try:
+            # Girokonten duerfen wie im bestehenden Rov.E-Modell ins Minus gehen.
+            # Tagesgeld und Wallet bleiben durch die typabhaengige Primitive geschuetzt.
+            transfer_financial_account_balance(
+                conn, user_id, source_id, target_id, amount, require_source_funds=False
+            )
+        except (ValueError, LookupError) as exc:
+            return financial_account_error(exc)
+        ensure_app_cash_movements_table(conn)
+        conn.execute(
+            """INSERT INTO app_cash_movements
+                   (user_id, kind, amount, label, source_account_id, target_account_id)
+               VALUES (?, 'transfer', ?, 'Umbuchung', ?, ?)""",
+            (user_id, amount, source_id, target_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/financial-account-roles", methods=["POST"])
+def update_financial_account_role_endpoint():
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    try:
+        account_id = int(payload.get("accountId") or 0)
+    except (TypeError, ValueError):
+        account_id = 0
+    role = clean_text(payload.get("role")).lower()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if error := require_multi_cash_pilot(conn, user_id):
+            return error
+        try:
+            account = require_financial_account(conn, user_id, account_id)
+            if str(account["account_type"]) != "checking":
+                raise ValueError("financial_account_role_requires_checking")
+            set_account_role(conn, user_id, role, account_id)
+        except (ValueError, LookupError) as exc:
+            return financial_account_error(exc)
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
 
 
 def fixed_costs_total(details: dict) -> float:
@@ -3336,19 +3502,23 @@ def update_asset_order():
     payload = request.get_json(silent=True) or {}
     requested = payload.get("order")
     token = token_from_request()
-    allowed = set(ASSET_ORDER_KEYS)
-
-    if not isinstance(requested, list) or not requested or len(requested) > len(allowed):
-        return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
-    order = [clean_text(value) for value in requested]
-    if any(key not in allowed for key in order) or len(set(order)) != len(order):
-        return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
 
     with db() as conn:
         begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        allowed = set(ASSET_ORDER_KEYS)
+        if multi_cash_accounts_enabled(conn, user_id):
+            allowed.update(
+                f"cash-account:{int(account['id'])}"
+                for account in list_financial_accounts(conn, user_id)
+            )
+        if not isinstance(requested, list) or not requested or len(requested) > len(allowed):
+            return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
+        order = [clean_text(value) for value in requested]
+        if any(key not in allowed for key in order) or len(set(order)) != len(order):
+            return jsonify({"ok": False, "error": "valid_asset_order_required"}), 400
         ensure_app_asset_order_table(conn)
         conn.execute("DELETE FROM app_asset_order WHERE user_id = ?", (user_id,))
         conn.executemany(
@@ -3481,7 +3651,7 @@ def update_etf_position_plan():
         execution_day = int(payload.get("execution_day") or 0)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "valid_etf_position_plan_required"}), 400
-    source_account = clean_text(payload.get("source_account")).lower()
+    source_account = clean_text(payload.get("source_account"), "giro").lower()
     mode = clean_text(payload.get("mode")).lower()
     active_raw = payload.get("active", True)
     if holding_id <= 0 or not 0 <= monthly_amount <= 100_000 or not 1 <= execution_day <= 31:
@@ -3508,10 +3678,12 @@ def update_etf_position_plan():
         if not holding or str(holding["instrument_type"]).lower() != "etf":
             return jsonify({"ok": False, "error": "etf_holding_not_found"}), 404
 
-        source_account_id = None
-        if multi_cash_accounts_enabled(conn, user_id):
-            prepare_multi_cash_write(conn)
-            source_account_id = legacy_financial_account_id(conn, user_id, source_account)
+        try:
+            source_account, source_account_id = resolve_etf_source_account(
+                conn, user_id, payload, source_account
+            )
+        except (TypeError, ValueError, LookupError) as exc:
+            return financial_account_error(exc)
 
         now = datetime.now()
         start_month = now.strftime("%Y-%m")

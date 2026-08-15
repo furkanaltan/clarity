@@ -264,6 +264,73 @@ def set_account_role(
     )
 
 
+def create_financial_account(
+    conn: sqlite3.Connection,
+    user_id: int,
+    account_type: str,
+    name: str,
+    balance: float,
+) -> tuple[int, dict[str, float]]:
+    """Create one manual EUR account and mirror the compatibility aggregates."""
+    if not conn.in_transaction:
+        raise RuntimeError("financial_account_write_requires_transaction")
+    clean_type = str(account_type or "").strip().lower()
+    clean_name = " ".join(str(name or "").split())
+    value = round(float(balance), 2)
+    if clean_type not in ACCOUNT_TYPES:
+        raise ValueError("invalid_financial_account_type")
+    if not clean_name or len(clean_name) > 60:
+        raise ValueError("invalid_financial_account_name")
+    if abs(value) > 10_000_000:
+        raise ValueError("invalid_financial_account_balance")
+    if clean_type in {"savings", "wallet"} and value < -0.0049:
+        raise ValueError("financial_account_balance_insufficient")
+    cur = conn.execute(
+        """INSERT INTO app_financial_accounts
+               (user_id, account_type, name, currency, balance, legacy_key, source, status)
+           VALUES (?, ?, ?, 'EUR', ?, NULL, 'manual', 'active')""",
+        (user_id, clean_type, clean_name, 0.0 if abs(value) < 0.005 else value),
+    )
+    balances = mirror_financial_accounts_to_legacy(conn, user_id)
+    return int(cur.lastrowid), balances
+
+
+def rename_financial_account(
+    conn: sqlite3.Connection, user_id: int, account_id: int, name: str
+) -> None:
+    clean_name = " ".join(str(name or "").split())
+    if not clean_name or len(clean_name) > 60:
+        raise ValueError("invalid_financial_account_name")
+    cur = conn.execute(
+        """UPDATE app_financial_accounts
+              SET name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND status = 'active'""",
+        (clean_name, account_id, user_id),
+    )
+    if cur.rowcount != 1:
+        raise LookupError("financial_account_not_found")
+
+
+def archive_financial_account(
+    conn: sqlite3.Connection, user_id: int, account_id: int
+) -> None:
+    account = require_financial_account(conn, user_id, account_id)
+    if abs(float(account["balance"] or 0.0)) >= 0.005:
+        raise ValueError("financial_account_balance_must_be_zero")
+    if conn.execute(
+        "SELECT 1 FROM app_financial_account_roles WHERE user_id = ? AND account_id = ?",
+        (user_id, account_id),
+    ).fetchone():
+        raise ValueError("financial_account_has_roles")
+    conn.execute(
+        """UPDATE app_financial_accounts
+              SET status = 'archived', archived_at = CURRENT_TIMESTAMP,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND status = 'active'""",
+        (account_id, user_id),
+    )
+
+
 def financial_accounts_total(conn: sqlite3.Connection, user_id: int) -> float:
     row = conn.execute(
         """SELECT COALESCE(SUM(balance), 0.0)
@@ -408,13 +475,16 @@ def transfer_financial_account_balance(
     if int(source["id"]) == int(target["id"]):
         raise ValueError("financial_accounts_must_differ")
     value = round(abs(float(amount)), 2)
-    if value <= 0:
+    if value <= 0 or value > 10_000_000:
         raise ValueError("financial_account_amount_required")
     source_after = round(float(source["balance"] or 0.0) - value, 2)
+    target_after = round(float(target["balance"] or 0.0) + value, 2)
     if require_source_funds and source_after < -0.0049:
         raise ValueError("financial_account_balance_insufficient")
     if str(source["account_type"]) in {"savings", "wallet"} and source_after < -0.0049:
         raise ValueError("financial_account_balance_insufficient")
+    if abs(source_after) > 10_000_000 or abs(target_after) > 10_000_000:
+        raise ValueError("invalid_financial_account_balance")
     conn.execute(
         """UPDATE app_financial_accounts SET balance = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ? AND user_id = ? AND status = 'active'""",
@@ -423,7 +493,7 @@ def transfer_financial_account_balance(
     conn.execute(
         """UPDATE app_financial_accounts SET balance = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ? AND user_id = ? AND status = 'active'""",
-        (round(float(target["balance"] or 0.0) + value, 2), target_account_id, user_id),
+        (target_after, target_account_id, user_id),
     )
     return mirror_financial_accounts_to_legacy(conn, user_id)
 

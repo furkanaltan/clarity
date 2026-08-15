@@ -32,6 +32,12 @@ from pathlib import Path
 
 from rove_score import calculate_score
 from rove_market_data import ensure_market_tracking_schema
+from rove_financial_accounts import (
+    FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    is_feature_enabled,
+    list_financial_accounts,
+    roles_summary,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
@@ -232,11 +238,15 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     """
     month_key = month_key or date.today().strftime("%Y-%m")
     rows = conn.execute(
-        """SELECT id, amount, category, merchant, description, created_at FROM expenses
+        """SELECT id, amount, category, merchant, description, created_at, account_id FROM expenses
            WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?
            ORDER BY created_at DESC""",
         (user_id, month_key),
     ).fetchall()
+    account_names = {
+        int(row["id"]): str(row["name"])
+        for row in list_financial_accounts(conn, user_id, include_archived=True)
+    }
     # Bargeld-Bewegungen liegen NICHT in expenses (siehe ensure_app_cash_movements_table):
     # eine Abhebung ist keine Ausgabe, und ob eine Ausgabe bar bezahlt wurde, kann die
     # Bot-Tabelle nicht abbilden. Beides kommt hier dazu, damit die Buchungsliste den
@@ -270,6 +280,11 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # dem Girokonto; bar bezahlte App-Ausgaben werden unten eindeutig markiert.
             "account": "bargeld" if r["id"] in cash_paid_expense_ids else "giro",
         }
+        if r["account_id"] is not None:
+            item["accountId"] = int(r["account_id"])
+            item["accountName"] = account_names.get(int(r["account_id"]), "Archiviertes Konto")
+        else:
+            item["accountName"] = "Frühere Buchung"
         if r["id"] in cash_paid_expense_ids:
             # Ohne dieses Flag waere nach einem Refresh nicht mehr erkennbar, dass die Ausgabe
             # aus dem Portemonnaie kam — die App wuerde sie beim Loeschen dem Girokonto
@@ -281,6 +296,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # Einnahmen tragen wie Abhebungen eine `csid`, keine `sid` — sie stehen nicht in
             # `expenses`. Ein `sid` wuerde die App beim Loeschen auf DELETE /v1/expenses/<id>
             # schicken und dort eine fremde Ausgabe mit derselben Nummer treffen.
+            target_id = m["target_account_id"] if "target_account_id" in m.keys() else None
             entries.append((m["created_at"] or "", {
                 "csid": m["id"],
                 "n": _movement_label(m, "Einnahme"),
@@ -289,6 +305,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
                 "c": INCOME_TINT,
                 "i": "€",
                 "account": "giro",
+                **({"accountId": int(target_id), "accountName": account_names.get(int(target_id), "Archiviertes Konto")} if target_id else {"accountName": "Frühere Buchung"}),
             }))
             continue
         if m["kind"] == "fixed":
@@ -305,6 +322,19 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
                 "c": FIXED_TINT,
                 "i": "F",
                 "account": "giro",
+            }))
+            continue
+        if m["kind"] == "transfer":
+            source_id = m["source_account_id"]
+            target_id = m["target_account_id"]
+            entries.append((m["created_at"] or "", {
+                "csid": m["id"], "n": _movement_label(m, "Umbuchung"),
+                "cat": "Umbuchung", "a": -abs(float(m["amount"] or 0)),
+                "c": "#2AABEE", "i": "↔", "transfer": True,
+                "accountId": int(source_id) if source_id else None,
+                "accountName": account_names.get(int(source_id), "Frühere Buchung") if source_id else "Frühere Buchung",
+                "targetAccountId": int(target_id) if target_id else None,
+                "targetAccountName": account_names.get(int(target_id), "Frühere Buchung") if target_id else "Frühere Buchung",
             }))
             continue
         if m["kind"] != "withdrawal":
@@ -572,6 +602,11 @@ def get_app_asset_order(conn: sqlite3.Connection, user_id: int) -> list[str]:
         (user_id,),
     ).fetchall()
     allowed = set(ASSET_ORDER_KEYS)
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        allowed.update(
+            f"cash-account:{int(account['id'])}"
+            for account in list_financial_accounts(conn, user_id)
+        )
     result: list[str] = []
     for row in rows:
         key = str(row["asset_key"] or "")
@@ -782,7 +817,7 @@ def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings
     ensure_app_etf_savings_plan_table(conn)
     month_key = date.today().strftime("%Y-%m")
     row = conn.execute(
-        """SELECT execution_day, source_account, mode, active, start_month
+        """SELECT execution_day, source_account, source_account_id, mode, active, start_month
              FROM app_etf_savings_plan WHERE user_id = ?""",
         (user_id,),
     ).fetchone()
@@ -806,6 +841,7 @@ def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings
         "amount": round(float(etf_savings or 0), 2),
         "executionDay": int(row["execution_day"]),
         "sourceAccount": str(row["source_account"]),
+        "sourceAccountId": int(row["source_account_id"]) if row["source_account_id"] else None,
         "mode": str(row["mode"]),
         "active": bool(row["active"]),
         "startMonth": str(row["start_month"]),
@@ -1217,6 +1253,46 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         for month_key in _previous_month_keys()
         if (history := _build_budgets(conn, user_id, month_key))
     }
+    multi_cash = is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
+    role_map = roles_summary(conn, user_id) if multi_cash else {}
+    roles_by_account: dict[int, list[str]] = {}
+    for role, account_id in role_map.items():
+        roles_by_account.setdefault(int(account_id), []).append(str(role))
+    account_visuals = {
+        "checking": ("bank", "#2AABEE", "Girokonto"),
+        "savings": ("coins", "#35D07F", "Tagesgeld"),
+        "wallet": ("wallet", "#B08D57", "Bargeld / Wallet"),
+    }
+    financial_accounts = []
+    dynamic_cash_assets = []
+    if multi_cash:
+        for account in list_financial_accounts(conn, user_id):
+            account_id = int(account["id"])
+            account_type = str(account["account_type"])
+            icon, tint, type_label = account_visuals[account_type]
+            sort_key = f"cash-account:{account_id}"
+            roles = sorted(roles_by_account.get(account_id, []))
+            financial_accounts.append({
+                "id": account_id, "type": account_type, "name": str(account["name"]),
+                "balance": round(float(account["balance"] or 0), 2),
+                "currency": str(account["currency"]), "status": str(account["status"]),
+                "legacyKey": account["legacy_key"], "roles": roles, "sortKey": sort_key,
+            })
+            dynamic_cash_assets.append({
+                "assetKey": sort_key, "financialAccountId": account_id,
+                "accountType": account_type, "name": str(account["name"]),
+                "source": "financial-account", "icon": icon, "tint": tint,
+                "value": round(float(account["balance"] or 0), 2), "sub": type_label,
+                "roles": roles,
+            })
+    static_cash_assets = [a for a in (
+        {"assetKey": "cash:giro", "name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
+         "value": cash_accounts["giro"], "sub": "verfuegbar" if has_cash_accounts else "aus dem Bot"} if (cash_accounts["giro"] or has_cash_accounts) else None,
+        {"assetKey": "cash:tagesgeld", "name": "Tagesgeld", "source": "bot", "icon": "coins", "tint": "#35D07F",
+         "value": cash_accounts["tagesgeld"], "sub": "Rücklage"} if (cash_accounts["tagesgeld"] or has_cash_accounts) else None,
+        {"assetKey": "cash:bargeld", "name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
+         "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
+    ) if a]
     return {
         "onboardingRequired": int(u.get("onboarding_step") or 0) < 10,
         "netWorth": round(net_worth, 2),
@@ -1224,15 +1300,10 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),
         "payday": _payday_block(conn, user_id, u, income),
+        "features": {FEATURE_MULTI_CASH_ACCOUNTS_V1: multi_cash},
+        "financialAccounts": financial_accounts,
         "assetOrder": get_app_asset_order(conn, user_id),
-        "assets": [a for a in (
-            {"assetKey": "cash:giro", "name": "Girokonto", "source": "bot", "icon": "bank", "tint": "#2AABEE",
-             "value": cash_accounts["giro"],
-             "sub": "verfuegbar" if has_cash_accounts else "aus dem Bot"} if (cash_accounts["giro"] or has_cash_accounts) else None,
-            {"assetKey": "cash:tagesgeld", "name": "Tagesgeld", "source": "bot", "icon": "coins", "tint": "#35D07F",
-             "value": cash_accounts["tagesgeld"], "sub": "Rücklage"} if (cash_accounts["tagesgeld"] or has_cash_accounts) else None,
-            {"assetKey": "cash:bargeld", "name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
-             "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
+        "assets": (dynamic_cash_assets if multi_cash else static_cash_assets) + [a for a in (
             {"assetKey": "asset:investments", "name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
              "value": round(etf, 2), "sub": etf_sub,
              **({"positions": etf_positions} if etf_positions else {})} if etf else None,
@@ -1454,7 +1525,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
                       ph.price_symbol, ph.quantity, ph.quote_currency,
                       ph.valuation_enabled, ph.market_value_updated_at, ph.market_data_provider,
                       pp.monthly_amount AS plan_amount, pp.execution_day AS plan_day,
-                      pp.source_account AS plan_source, pp.mode AS plan_mode,
+                      pp.source_account AS plan_source, pp.source_account_id AS plan_source_id, pp.mode AS plan_mode,
                       pp.active AS plan_active, pp.start_month AS plan_start_month
                FROM portfolio_holdings ph
                LEFT JOIN app_etf_position_plans pp
@@ -1484,6 +1555,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
                 "amount": round(max(0.0, float(r["plan_amount"] or 0)), 2),
                 "executionDay": int(r["plan_day"]),
                 "sourceAccount": str(r["plan_source"]),
+                "sourceAccountId": int(r["plan_source_id"]) if r["plan_source_id"] else None,
                 "mode": str(r["plan_mode"]),
                 "active": bool(r["plan_active"]),
                 "startMonth": str(r["plan_start_month"]),
