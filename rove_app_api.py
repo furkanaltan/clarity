@@ -59,6 +59,7 @@ from rove_market_data import (
     normalize_currency,
     normalize_symbol,
 )
+from rove_financial_accounts import delete_financial_account_data
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -148,6 +149,8 @@ DATA_EXPORT_TABLES = (
     ("kategorie_regeln", "user_category_rules"),
     ("kontostaende", "app_account_balances"),
     ("kontobewegungen", "app_cash_movements"),
+    ("financial_accounts", "app_financial_accounts"),
+    ("financial_account_roles", "app_financial_account_roles"),
     ("vertraege", "app_contracts"),
     ("ziele", "app_goals"),
     ("hauptziel_fortschritt", "app_primary_goal_progress"),
@@ -4158,10 +4161,17 @@ def delete_account():
         ).fetchone():
             conn.execute("DELETE FROM app_etf_position_plans WHERE user_id = ?", (token_user_id,))
 
+        # Rollen zuerst entfernen. Damit bleibt die Loeschung auch dann korrekt, wenn
+        # Foreign Keys fuer diese Verbindung spaeter global aktiviert werden.
+        delete_financial_account_data(conn, token_user_id)
+
         tables = [str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )]
-        excluded = {"users", "app_accounts", "app_sessions", "app_login_codes"}
+        excluded = {
+            "users", "app_accounts", "app_sessions", "app_login_codes",
+            "app_financial_account_roles", "app_financial_accounts", "app_user_features",
+        }
         for table in tables:
             if table in excluded:
                 continue
