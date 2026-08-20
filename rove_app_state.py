@@ -1293,8 +1293,21 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         {"assetKey": "cash:bargeld", "name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
          "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
     ) if a]
+    onboarding_step = int(u.get("onboarding_step") or 0)
+    onboarding_required = onboarding_step < 10
+    onboarding_status = (
+        "completed" if onboarding_step >= 10
+        else "partial" if onboarding_step > 0
+        else "incomplete"
+    )
     return {
-        "onboardingRequired": int(u.get("onboarding_step") or 0) < 10,
+        "onboardingRequired": onboarding_required,
+        "onboarding": {
+            "required": onboarding_required,
+            "status": onboarding_status,
+            "step": onboarding_step,
+            "completed": onboarding_step >= 10,
+        },
         "netWorth": round(net_worth, 2),
         "series": net_series,
         "histDates": net_hist_dates,

@@ -2677,6 +2677,14 @@ def onboarding_amount(value: object, maximum: float = 10_000_000.0) -> float | N
     return amount if 0 <= amount <= maximum else None
 
 
+def optional_profile_amount(value: object, maximum: float = 1_000_000.0) -> float | None:
+    try:
+        amount = round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return None
+    return amount if 0 <= amount <= maximum else None
+
+
 @app.route("/v1/onboarding", methods=["POST"])
 def complete_app_onboarding():
     """Schreibt ein eingeladenes App-only-Profil einmalig in die produktive Datenbasis."""
@@ -2798,8 +2806,14 @@ def complete_app_onboarding():
         })
 
         ensure_app_contracts_table(conn)
-        conn.execute("DELETE FROM app_contracts WHERE user_id = ?", (user_id,))
         for contract in cleaned_contracts:
+            duplicate = conn.execute(
+                """SELECT 1 FROM app_contracts
+                     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
+                (user_id, contract["name"]),
+            ).fetchone()
+            if duplicate:
+                continue
             conn.execute(
                 """INSERT INTO app_contracts
                    (user_id, contract_id, detail_key, name, category, amount, icon, tint, cancelable)
@@ -2813,8 +2827,14 @@ def complete_app_onboarding():
         sync_app_contract_details(conn, user_id)
 
         ensure_app_goals_table(conn)
-        conn.execute("DELETE FROM app_goals WHERE user_id = ?", (user_id,))
         for goal in cleaned_goals:
+            duplicate = conn.execute(
+                """SELECT 1 FROM app_goals
+                     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
+                (user_id, goal["name"]),
+            ).fetchone()
+            if duplicate:
+                continue
             conn.execute(
                 """INSERT INTO app_goals
                    (user_id, goal_id, name, target_amount, current_amount, icon, tint)
@@ -2826,20 +2846,30 @@ def complete_app_onboarding():
             )
 
         ensure_app_properties_table(conn)
-        conn.execute("DELETE FROM app_properties WHERE user_id = ?", (user_id,))
         if amounts["property_value"] > 0:
             conn.execute(
-                """INSERT INTO app_properties (user_id, market_value, remaining_debt)
-                   VALUES (?, ?, ?)""",
+                """INSERT INTO app_properties (user_id, market_value, remaining_debt, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     market_value = excluded.market_value,
+                     remaining_debt = excluded.remaining_debt,
+                     updated_at = CURRENT_TIMESTAMP""",
                 (user_id, amounts["property_value"], amounts["property_debt"]),
             )
 
-        conn.execute("DELETE FROM investment_events WHERE user_id = ? AND source = 'app_onboarding'", (user_id,))
         for asset_type, amount, label in (
             ("etf", amounts["etf"], "ETF & Investments"),
             ("crypto", amounts["krypto"], "Krypto"),
         ):
             if amount > 0:
+                existing = conn.execute(
+                    """SELECT 1 FROM investment_events
+                         WHERE user_id = ? AND source = 'app_onboarding'
+                           AND asset_type = ? LIMIT 1""",
+                    (user_id, asset_type),
+                ).fetchone()
+                if existing:
+                    continue
                 conn.execute(
                     """INSERT INTO investment_events
                        (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
@@ -2848,7 +2878,6 @@ def complete_app_onboarding():
                 )
 
         ensure_app_etf_savings_plan_table(conn)
-        conn.execute("DELETE FROM app_etf_savings_plan WHERE user_id = ?", (user_id,))
         if etf_savings > 0:
             plan = payload.get("etf_plan") if isinstance(payload.get("etf_plan"), dict) else {}
             try:
@@ -2870,8 +2899,16 @@ def complete_app_onboarding():
                 source_account_id = legacy_financial_account_id(conn, user_id, source_account)
             conn.execute(
                 """INSERT INTO app_etf_savings_plan
-                   (user_id, execution_day, source_account, source_account_id, mode, active, start_month)
-                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                   (user_id, execution_day, source_account, source_account_id, mode, active, start_month, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     execution_day = excluded.execution_day,
+                     source_account = excluded.source_account,
+                     source_account_id = excluded.source_account_id,
+                     mode = excluded.mode,
+                     active = excluded.active,
+                     start_month = excluded.start_month,
+                     updated_at = CURRENT_TIMESTAMP""",
                 (user_id, execution_day, source_account, source_account_id, mode, start_month),
             )
 
@@ -2925,6 +2962,24 @@ def update_profile():
             conn.execute(
                 "UPDATE users SET payday = ? WHERE user_id = ?",
                 (day or None, user_id),
+            )
+
+        profile_income_updates = {}
+        if "income" in payload:
+            income = optional_profile_amount(payload.get("income"))
+            if income is None:
+                return jsonify({"ok": False, "error": "valid_income_required"}), 400
+            profile_income_updates["income"] = income
+        if "other_income" in payload:
+            other_income = optional_profile_amount(payload.get("other_income"))
+            if other_income is None:
+                return jsonify({"ok": False, "error": "valid_other_income_required"}), 400
+            profile_income_updates["other_income"] = other_income
+        if profile_income_updates:
+            assignments = ", ".join(f"{key} = ?" for key in profile_income_updates)
+            conn.execute(
+                f"UPDATE users SET {assignments} WHERE user_id = ?",
+                (*profile_income_updates.values(), user_id),
             )
 
         if "etf_plan" in payload:
