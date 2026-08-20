@@ -44,6 +44,7 @@ def repair_candidates(conn: sqlite3.Connection) -> list[dict]:
     ).fetchall()
     result: list[dict] = []
     for event in events:
+        plan_source = "position_plan"
         plans = conn.execute(
             """SELECT pp.holding_id, pp.monthly_amount, pp.start_month,
                       ph.instrument_label, COALESCE(ph.instrument_type, 'etf') AS instrument_type,
@@ -59,6 +60,37 @@ def repair_candidates(conn: sqlite3.Connection) -> list[dict]:
                 ORDER BY pp.holding_id""",
             (int(event["user_id"]), float(event["amount"] or 0), str(event["event_month"])),
         ).fetchall()
+        active_position_plans = int(conn.execute(
+            "SELECT COUNT(*) FROM app_etf_position_plans WHERE user_id = ? AND active = 1",
+            (int(event["user_id"]),),
+        ).fetchone()[0])
+        if not plans and active_position_plans == 0:
+            # Alte Nutzer hatten nur einen globalen ETF-Plan. Wenn dessen Betrag
+            # und der historische Holding-Sparbetrag exakt zu genau einem Live-ETF
+            # passen, ist dieselbe Zuordnung belegbar und kann fuer kuenftige Monate
+            # als echter Positionsplan uebernommen werden.
+            plans = conn.execute(
+                """SELECT ph.id AS holding_id, ph.monthly_contribution AS monthly_amount,
+                          sp.start_month, ph.instrument_label,
+                          COALESCE(ph.instrument_type, 'etf') AS instrument_type,
+                          COALESCE(ph.valuation_enabled, 0) AS valuation_enabled,
+                          ph.quantity, ph.price_symbol
+                     FROM portfolio_holdings ph
+                     JOIN users u ON u.user_id = ph.user_id
+                     JOIN app_etf_savings_plan sp ON sp.user_id = ph.user_id
+                    WHERE ph.user_id = ? AND sp.active = 1
+                      AND sp.start_month <= ?
+                      AND ABS(COALESCE(u.etf_savings, 0) - ?) < 0.005
+                      AND ABS(COALESCE(ph.monthly_contribution, 0) - ?) < 0.005
+                      AND LOWER(COALESCE(ph.instrument_type, 'etf')) = 'etf'
+                    ORDER BY ph.id""",
+                (
+                    int(event["user_id"]), str(event["event_month"]),
+                    float(event["amount"] or 0), float(event["amount"] or 0),
+                ),
+            ).fetchall()
+            if plans:
+                plan_source = "legacy_holding"
         status = "ready"
         reason = ""
         holding = plans[0] if len(plans) == 1 else None
@@ -89,6 +121,8 @@ def repair_candidates(conn: sqlite3.Connection) -> list[dict]:
             "old_name": str(event["asset_name"] or ""),
             "holding_id": int(holding["holding_id"]) if holding else None,
             "holding_name": str(holding["instrument_label"]) if holding else "",
+            "plan_source": plan_source if holding else "",
+            "create_position_plan": bool(holding and plan_source == "legacy_holding"),
             "status": status,
             "reason": reason,
         })
@@ -109,11 +143,37 @@ def run(db_path: Path, *, apply: bool) -> dict:
             conn.commit()
         candidates = repair_candidates(conn)
         changed = 0
+        plans_created = 0
         if apply:
             conn.execute("BEGIN IMMEDIATE")
             for item in candidates:
                 if item["status"] != "ready":
                     continue
+                if item["create_position_plan"]:
+                    global_plan = conn.execute(
+                        """SELECT execution_day, source_account, source_account_id,
+                                  mode, active, start_month
+                             FROM app_etf_savings_plan
+                            WHERE user_id = ? AND active = 1 LIMIT 1""",
+                        (item["user_id"],),
+                    ).fetchone()
+                    if not global_plan:
+                        raise RuntimeError("global_etf_plan_missing_during_repair")
+                    cursor = conn.execute(
+                        """INSERT INTO app_etf_position_plans
+                               (user_id, holding_id, monthly_amount, execution_day,
+                                source_account, source_account_id, mode, active, start_month,
+                                updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                           ON CONFLICT(user_id, holding_id) DO NOTHING""",
+                        (
+                            item["user_id"], item["holding_id"], item["amount"],
+                            int(global_plan["execution_day"]), str(global_plan["source_account"]),
+                            global_plan["source_account_id"], str(global_plan["mode"]),
+                            int(global_plan["active"]), str(global_plan["start_month"]),
+                        ),
+                    )
+                    plans_created += int(cursor.rowcount)
                 cursor = conn.execute(
                     """UPDATE investment_events
                           SET holding_id = ?, asset_name = ?,
@@ -140,6 +200,7 @@ def run(db_path: Path, *, apply: bool) -> dict:
             "blocked": sum(item["status"] == "blocked" for item in candidates),
             "skipped": sum(item["status"] == "skipped" for item in candidates),
             "changed": changed,
+            "position_plans_created": plans_created,
         },
         "candidates": candidates,
         "integrity_check": integrity,

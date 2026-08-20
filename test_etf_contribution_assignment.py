@@ -374,6 +374,61 @@ class EtfContributionAssignmentTests(unittest.TestCase):
         self.assertEqual(ambiguous["summary"]["blocked"], 1)
         self.assertEqual(ambiguous["candidates"][0]["reason"], "ambiguous_position_plans")
 
+    def test_repair_promotes_unique_legacy_holding_plan(self):
+        with closing(self.connect()) as conn:
+            before_user = conn.execute(
+                "SELECT current_cash,current_investments FROM users WHERE user_id=1"
+            ).fetchone()
+            before_cash = float(before_user["current_cash"])
+            before_investments = float(before_user["current_investments"])
+            holding_id = self._holding(conn, "sp500", "S&P 500", 8400)
+            conn.execute(
+                "UPDATE portfolio_holdings SET monthly_contribution=300 WHERE id=?",
+                (holding_id,),
+            )
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id,amount,direction,asset_type,asset_name,event_type,source,created_at)
+                   VALUES (1,300,'in','etf','ETF-Sparplan','recurring_plan','app_etf_plan',?)""",
+                (f"{datetime.now():%Y-%m}-15 10:00:00",),
+            )
+            conn.commit()
+
+        dry = run_repair(self.db_path, apply=False)
+        self.assertEqual(dry["summary"]["ready"], 1)
+        self.assertEqual(dry["candidates"][0]["holding_id"], holding_id)
+        self.assertEqual(dry["candidates"][0]["plan_source"], "legacy_holding")
+        self.assertTrue(dry["candidates"][0]["create_position_plan"])
+
+        applied = run_repair(self.db_path, apply=True)
+        again = run_repair(self.db_path, apply=True)
+        self.assertEqual(applied["summary"]["changed"], 1)
+        self.assertEqual(applied["summary"]["position_plans_created"], 1)
+        self.assertEqual(again["summary"]["changed"], 0)
+        self.assertEqual(again["summary"]["position_plans_created"], 0)
+        with closing(self.connect()) as conn:
+            plan = conn.execute(
+                """SELECT monthly_amount,execution_day,source_account,mode,active,start_month
+                     FROM app_etf_position_plans WHERE user_id=1 AND holding_id=?""",
+                (holding_id,),
+            ).fetchone()
+            event = conn.execute(
+                "SELECT holding_id,event_type,amount FROM investment_events"
+            ).fetchone()
+            user = conn.execute(
+                "SELECT current_cash,current_investments FROM users WHERE user_id=1"
+            ).fetchone()
+            self.assertEqual(float(plan["monthly_amount"]), 300)
+            self.assertEqual(int(plan["execution_day"]), 15)
+            self.assertEqual(plan["source_account"], "giro")
+            self.assertEqual(plan["mode"], "auto")
+            self.assertEqual(int(plan["active"]), 1)
+            self.assertEqual(int(event["holding_id"]), holding_id)
+            self.assertEqual(event["event_type"], "recurring_plan_pending")
+            self.assertEqual(float(event["amount"]), 300)
+            self.assertEqual(float(user["current_cash"]), before_cash)
+            self.assertEqual(float(user["current_investments"]), before_investments)
+
     def test_schema_migration_is_backup_first_and_idempotent(self):
         schema_path = Path(self.temp.name) / "schema.db"
         create_db(schema_path)
