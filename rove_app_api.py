@@ -4095,13 +4095,15 @@ def delete_investment_position():
                 "asset_type": asset_type, "asset_name": stored_name,
             }, **live_data})
 
-        # Nur App-Korrekturen loeschen. Alte Bot-Historie wird nie still entfernt.
+        # Krypto und manuelle Aktien koennen auch aus der frueheren Bot-Zeit stammen.
+        # Statt deren Historie zu vernichten, schliesst eine Gegenbuchung die aktive
+        # Position auf 0. Dadurch verschwindet sie aus dem State, bleibt in alten
+        # Reports aber weiterhin nachvollziehbar.
         row = conn.execute(
             """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
                  FROM investment_events
                 WHERE user_id = ? AND asset_type = ?
-                  AND LOWER(TRIM(asset_name)) = LOWER(?)
-                  AND source = 'app'""",
+                  AND LOWER(TRIM(asset_name)) = LOWER(?)""",
             (user_id, asset_type, asset_name),
         ).fetchone()
         net = round(max(0.0, float(row["net"] or 0)), 2)
@@ -4113,10 +4115,12 @@ def delete_investment_position():
         ).fetchone()
         current_total = max(0.0, float(total_row["current_investments"] or 0))
         conn.execute(
-            """DELETE FROM investment_events
-                WHERE user_id = ? AND asset_type = ?
-                  AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
-            (user_id, asset_type, asset_name),
+            """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name,
+                    event_type, source, note)
+               VALUES (?, ?, 'out', ?, ?, 'manual_removal', 'app',
+                       'Position in der App entfernt')""",
+            (user_id, net, asset_type, asset_name),
         )
         conn.execute(
             "UPDATE users SET current_investments = ? WHERE user_id = ?",

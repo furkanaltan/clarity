@@ -340,6 +340,33 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM investment_events WHERE source='leeway' AND asset_name='Test ETF'"
             ).fetchone()[0], 1)
 
+    def test_legacy_crypto_can_be_removed_with_a_compensating_event(self):
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, source)
+                   VALUES (1, 120, 'in', 'crypto', 'Bitcoin', 'telegram')"""
+            )
+            conn.commit()
+
+        response = self.request("DELETE", "/v1/investments", json={
+            "asset_type": "crypto", "asset_name": "Bitcoin",
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertAlmostEqual(float(conn.execute(
+                "SELECT current_investments FROM users WHERE user_id=1"
+            ).fetchone()[0]), 380, places=2)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM investment_events WHERE source='telegram' AND asset_name='Bitcoin'"
+            ).fetchone()[0], 1)
+            net = float(conn.execute(
+                """SELECT SUM(CASE WHEN direction='out' THEN -amount ELSE amount END)
+                     FROM investment_events
+                    WHERE user_id=1 AND asset_type='crypto' AND asset_name='Bitcoin'"""
+            ).fetchone()[0])
+            self.assertAlmostEqual(net, 0, places=2)
+
     def test_property_delete_is_user_bound(self):
         with closing(self.connect()) as conn:
             api.ensure_app_properties_table(conn)
