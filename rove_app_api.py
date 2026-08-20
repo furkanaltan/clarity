@@ -3496,6 +3496,22 @@ def update_property():
     return jsonify({"ok": True, **live_data})
 
 
+@app.route("/v1/property", methods=["DELETE"])
+def delete_property():
+    """Entfernt nur den Vermoegenswert; bestehende Vertraege bleiben bewusst erhalten."""
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_properties_table(conn)
+        conn.execute("DELETE FROM app_properties WHERE user_id = ?", (user_id,))
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
+
+
 @app.route("/v1/asset-order", methods=["POST"])
 def update_asset_order():
     """Speichert ausschliesslich die Reihenfolge der Vermoegenskacheln."""

@@ -283,6 +283,30 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             self.assertEqual(legacy["financialAccounts"], [])
             self.assertTrue(any(asset["assetKey"] == "cash:giro" for asset in legacy["assets"]))
 
+    def test_property_delete_is_user_bound(self):
+        with closing(self.connect()) as conn:
+            api.ensure_app_properties_table(conn)
+            conn.execute(
+                """INSERT INTO app_properties
+                       (user_id, market_value, remaining_debt, monthly_rate, house_fee)
+                   VALUES (1, 250000, 175000, 900, 250)"""
+            )
+            conn.commit()
+
+        foreign = self.request("DELETE", "/v1/property", token="other-token")
+        self.assertEqual(foreign.status_code, 200, foreign.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_properties WHERE user_id=1"
+            ).fetchone()[0], 1)
+
+        deleted = self.request("DELETE", "/v1/property")
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_properties WHERE user_id=1"
+            ).fetchone()[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
