@@ -1539,8 +1539,16 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         return []
     out = []
     for r in rows:
+        instrument_type = str(r["instrument_type"] or "etf").lower()
         is_live = bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"])
-        contribution = holding_contribution_summary(conn, user_id, int(r["id"]))
+        # Sparplanbeitraege gehoeren ausschliesslich zu ETFs. Die gemeinsame
+        # Investment-Schublade enthaelt auch Aktien; fuer sie darf der strikte
+        # ETF-Helfer nicht aufgerufen werden, sonst bricht /v1/state komplett ab.
+        contribution = (
+            holding_contribution_summary(conn, user_id, int(r["id"]))
+            if instrument_type == "etf"
+            else {"contributed": 0.0, "pending": 0.0}
+        )
         holding_value = float(
             r["market_value"]
             if is_live and r["market_value"] is not None
@@ -1561,7 +1569,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
             "editable": True,
             "holding": True,
             "holdingId": int(r["id"]),
-            "assetType": r["instrument_type"] or "etf",
+            "assetType": instrument_type,
             "live": is_live,
         }
         if r["plan_day"] is not None:

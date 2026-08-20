@@ -183,6 +183,35 @@ class EtfContributionAssignmentTests(unittest.TestCase):
             self.assertEqual(float(second_holding["quantity"]), 80)
             self.assertEqual(float(second_holding["market_value"]), 8000)
 
+    def test_mixed_etf_and_stock_portfolio_keeps_state_available(self):
+        with closing(self.connect()) as conn:
+            etf_id = self._holding(conn, "sp500", "S&P 500", 8400)
+            self._position_plan(conn, etf_id, 300)
+            conn.execute(
+                """INSERT INTO portfolio_holdings
+                       (user_id, instrument_key, instrument_label, total_invested,
+                        instrument_type, quantity, price_symbol, quote_currency,
+                        market_value, valuation_enabled, last_price)
+                   VALUES (1, 'under-armour', 'Under Armour', 1400, 'stock', 100,
+                           'U9R.F', 'EUR', 1400, 1, 14)"""
+            )
+            conn.execute("UPDATE users SET current_investments=9800 WHERE user_id=1")
+            api.record_due_etf_plan(conn, 1, force=True)
+            conn.commit()
+
+            positions = _etf_positions(conn, 1)
+            by_name = {position["n"]: position for position in positions}
+            current = float(conn.execute(
+                "SELECT current_investments FROM users WHERE user_id=1"
+            ).fetchone()[0])
+
+            self.assertEqual(current, 10100)
+            self.assertEqual(by_name["S&P 500"]["v"], 8700)
+            self.assertEqual(by_name["S&P 500"]["pendingContribution"], 300)
+            self.assertEqual(by_name["Under Armour"]["v"], 1400)
+            self.assertEqual(by_name["Under Armour"]["pendingContribution"], 0)
+            self.assertEqual(by_name["Under Armour"]["assetType"], "stock")
+
     def test_manual_holding_adds_to_existing_manual_value(self):
         with closing(self.connect()) as conn:
             holding_id = self._holding(conn, "manual", "Manual ETF", 1000, live=False)
