@@ -264,9 +264,18 @@ def classify_users(conn: sqlite3.Connection) -> dict:
     app_only: list[int] = []
     migrated: list[int] = []
     for user_id in users:
-        has_app_session = table_exists(conn, "app_sessions") and one(
-            conn, "SELECT COUNT(*) FROM app_sessions WHERE user_id = ?", (user_id,)
-        ) > 0
+        has_app_session = (
+            table_exists(conn, "app_sessions")
+            and table_exists(conn, "app_accounts")
+            and one(
+                conn,
+                """SELECT COUNT(*) FROM app_sessions s
+                     JOIN app_accounts a ON a.id = s.account_id
+                    WHERE a.user_id = ? AND s.revoked_at IS NULL""",
+                (user_id,),
+            )
+            > 0
+        )
         has_expenses = table_exists(conn, "expenses") and one(
             conn, "SELECT COUNT(*) FROM expenses WHERE user_id = ?", (user_id,)
         ) > 0
