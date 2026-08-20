@@ -16,6 +16,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from rove_investment_contributions import (
+    ensure_investment_contribution_schema,
+    reconcile_pending_contribution,
+)
+
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 LEEWAY_BASE_URL = "https://api.leeway.tech/api/v1/public"
@@ -239,9 +244,11 @@ def apply_market_quote(
     quote: dict,
     *,
     expected_symbol: str | None = None,
+    reconcile_pending: bool = False,
 ) -> dict:
     """Apply one quote atomically and adjust the user's aggregate by the delta only."""
     ensure_market_tracking_schema(conn)
+    ensure_investment_contribution_schema(conn)
     conn.execute("BEGIN IMMEDIATE")
     row = conn.execute(
         """SELECT id, user_id, instrument_label, price_symbol, quantity,
@@ -271,7 +278,16 @@ def apply_market_quote(
     if not total_row:
         conn.rollback()
         raise ValueError("market_user_not_found")
+    absorbed = 0.0
+    if reconcile_pending and delta > 0:
+        absorbed = reconcile_pending_contribution(
+            conn, int(row["user_id"]), int(holding_id), delta
+        )
+        total_row = conn.execute(
+            "SELECT current_investments FROM users WHERE user_id = ?", (row["user_id"],)
+        ).fetchone()
     new_total = round(max(0.0, float(total_row["current_investments"] or 0) + delta), 2)
+    valuation_delta = round(delta - absorbed, 2) if delta > 0 else delta
 
     conn.execute(
         """UPDATE portfolio_holdings
@@ -285,19 +301,27 @@ def apply_market_quote(
         "UPDATE users SET current_investments = ? WHERE user_id = ?",
         (new_total, row["user_id"]),
     )
-    if abs(delta) >= 0.01:
+    if abs(valuation_delta) >= 0.01:
         conn.execute(
             """INSERT INTO investment_events
-               (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
-               VALUES (?, ?, ?, ?, ?, 'market_valuation', ?, ?)""",
+               (user_id, amount, direction, asset_type, asset_name, event_type,
+                source, note, holding_id)
+               VALUES (?, ?, ?, ?, ?, 'market_valuation', ?, ?, ?)""",
             (
-                row["user_id"], abs(delta), "in" if delta > 0 else "out", "market",
+                row["user_id"], abs(valuation_delta),
+                "in" if valuation_delta > 0 else "out", "market",
                 row["instrument_label"], quote.get("provider", "twelve_data"),
                 f"Taegliche Kursbewertung {quote.get('resolved_symbol', quote['symbol'])} in EUR",
+                int(holding_id),
             ),
         )
     conn.commit()
-    return {"market_value": market_value, "delta": delta, "investment_total": new_total}
+    return {
+        "market_value": market_value,
+        "delta": valuation_delta,
+        "pending_absorbed": absorbed,
+        "investment_total": new_total,
+    }
 
 
 def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None) -> dict:

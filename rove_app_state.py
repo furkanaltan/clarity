@@ -32,6 +32,10 @@ from pathlib import Path
 
 from rove_score import calculate_score
 from rove_market_data import ensure_market_tracking_schema
+from rove_investment_contributions import (
+    ensure_investment_contribution_schema,
+    holding_contribution_summary,
+)
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
     is_feature_enabled,
@@ -785,11 +789,7 @@ def ensure_app_etf_savings_plan_table(conn: sqlite3.Connection) -> None:
 
 
 def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
-    """Speichert die geplante Rate getrennt je ETF-Depotposition.
-
-    Die Tabelle ist in Phase 1 reine Planung. Sie loest noch keine Kontobewegung
-    aus, damit mehrere ETF-Raten zuerst ohne finanzielles Risiko getestet werden.
-    """
+    """Speichert die ausführbare monatliche Rate je ETF-Depotposition."""
     conn.execute(
         """CREATE TABLE IF NOT EXISTS app_etf_position_plans (
             user_id        INTEGER NOT NULL,
@@ -1519,6 +1519,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     try:
         ensure_market_tracking_schema(conn)
         ensure_app_etf_position_plans_table(conn)
+        ensure_investment_contribution_schema(conn)
         rows = conn.execute(
             """SELECT ph.id, ph.instrument_label, ph.instrument_type,
                       ph.total_invested, ph.market_value, ph.start_price, ph.last_price,
@@ -1538,16 +1539,30 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         return []
     out = []
     for r in rows:
+        is_live = bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"])
+        contribution = holding_contribution_summary(conn, user_id, int(r["id"]))
+        holding_value = float(
+            r["market_value"]
+            if is_live and r["market_value"] is not None
+            else r["total_invested"] or 0
+        )
+        pending_contribution = contribution["pending"] if is_live else 0.0
         pos = {
             "n": r["instrument_label"],
-            "v": round(float(r["market_value"] if r["market_value"] is not None else r["total_invested"] or 0), 2),
+            # Bei Live-Holdings ist v der echte Marktwert plus eine reale, bereits
+            # gebuchte Sparplanzahlung, fuer die noch keine neue Stueckzahl vorliegt.
+            # Beide Komponenten werden separat mitgeliefert und exakt einmal summiert.
+            "v": round(holding_value + pending_contribution, 2),
+            "marketValue": round(holding_value, 2) if is_live else None,
+            "contributions": contribution["contributed"],
+            "pendingContribution": pending_contribution,
             # Ohne Broker-Anbindung ist der angezeigte Depotwert ein manuell
             # gepflegter Wert. Er darf deshalb direkt in der App korrigiert werden.
             "editable": True,
             "holding": True,
             "holdingId": int(r["id"]),
             "assetType": r["instrument_type"] or "etf",
-            "live": bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"]),
+            "live": is_live,
         }
         if r["plan_day"] is not None:
             pos["positionPlan"] = {

@@ -60,6 +60,10 @@ from rove_market_data import (
     normalize_currency,
     normalize_symbol,
 )
+from rove_investment_contributions import (
+    ensure_investment_contribution_schema,
+    record_holding_contribution,
+)
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
     archive_financial_account,
@@ -1480,6 +1484,8 @@ def _etf_plan_due_day(today: datetime, configured_day: int) -> int:
 def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool = False) -> dict:
     """Erfasst einen ETF-Sparplan einmal pro Monat in Rov.E, nie bei Bank oder Broker."""
     ensure_app_etf_savings_plan_table(conn)
+    ensure_app_etf_position_plans_table(conn)
+    ensure_investment_contribution_schema(conn)
     user = conn.execute(
         "SELECT current_investments, etf_savings FROM users WHERE user_id = ?", (user_id,)
     ).fetchone()
@@ -1491,49 +1497,131 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
              FROM app_etf_savings_plan WHERE user_id = ?""",
         (user_id,),
     ).fetchone()
-    if not plan or amount <= 0:
+    if amount <= 0:
         return {"ok": False, "error": "etf_plan_not_configured"}
 
     now = datetime.now()
     month_key = now.strftime("%Y-%m")
-    if not bool(plan["active"]):
-        return {"ok": False, "error": "etf_plan_paused"}
-    if str(plan["start_month"]) > month_key:
-        return {"ok": False, "error": "etf_plan_starts_later"}
-    if not force:
-        if str(plan["mode"]) != "auto":
-            return {"ok": False, "error": "etf_plan_needs_confirmation"}
-        if now.day < _etf_plan_due_day(now, int(plan["execution_day"])):
-            return {"ok": False, "error": "etf_plan_not_due"}
-
-    exists = conn.execute(
-        """SELECT 1 FROM investment_events
-             WHERE user_id = ? AND source = 'app_etf_plan' AND asset_type = 'etf'
-               AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
-        (user_id, month_key),
+    has_holdings = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='portfolio_holdings'"
     ).fetchone()
-    if exists:
-        return {"ok": True, "alreadyRecorded": True, "amount": amount}
+    position_rows = []
+    if has_holdings:
+        position_rows = conn.execute(
+            """SELECT pp.holding_id, pp.monthly_amount, pp.execution_day,
+                      pp.source_account, pp.source_account_id, pp.mode,
+                      ph.instrument_label, COALESCE(ph.instrument_type, 'etf') AS instrument_type
+                 FROM app_etf_position_plans pp
+                 JOIN portfolio_holdings ph
+                   ON ph.id = pp.holding_id AND ph.user_id = pp.user_id
+                WHERE pp.user_id = ? AND pp.active = 1 AND pp.monthly_amount > 0
+                  AND pp.start_month <= ?
+                ORDER BY pp.holding_id""",
+            (user_id, month_key),
+        ).fetchall()
+    position_total = round(sum(float(row["monthly_amount"] or 0) for row in position_rows), 2)
+    positions_match = bool(position_rows) and abs(position_total - amount) < 0.005
 
-    source = str(plan["source_account"])
+    allocations: list[dict] = []
+    if positions_match:
+        for row in position_rows:
+            if str(row["instrument_type"]).lower() != "etf":
+                return {"ok": False, "error": "etf_position_plan_invalid"}
+            if not force:
+                if str(row["mode"]) != "auto":
+                    continue
+                if now.day < _etf_plan_due_day(now, int(row["execution_day"])):
+                    continue
+            already = conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ? AND holding_id = ?
+                       AND source = 'app_etf_plan' AND asset_type = 'etf'
+                       AND event_type IN ('recurring_plan', 'recurring_plan_pending')
+                       AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+                (user_id, int(row["holding_id"]), month_key),
+            ).fetchone()
+            if already:
+                continue
+            allocations.append({
+                "holding_id": int(row["holding_id"]),
+                "name": str(row["instrument_label"]),
+                "amount": round(float(row["monthly_amount"] or 0), 2),
+                "source": str(row["source_account"]),
+                "source_id": int(row["source_account_id"] or 0),
+            })
+        if not allocations:
+            recorded = conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ? AND holding_id IS NOT NULL
+                       AND source = 'app_etf_plan' AND asset_type = 'etf'
+                       AND event_type IN ('recurring_plan', 'recurring_plan_pending')
+                       AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+                (user_id, month_key),
+            ).fetchone()
+            if recorded:
+                return {"ok": True, "alreadyRecorded": True, "amount": 0.0}
+            if not force and any(str(row["mode"]) != "auto" for row in position_rows):
+                return {"ok": False, "error": "etf_plan_needs_confirmation"}
+            return {"ok": False, "error": "etf_plan_not_due"}
+    else:
+        if not plan:
+            return {"ok": False, "error": "etf_plan_not_configured"}
+        if not bool(plan["active"]):
+            return {"ok": False, "error": "etf_plan_paused"}
+        if str(plan["start_month"]) > month_key:
+            return {"ok": False, "error": "etf_plan_starts_later"}
+        if not force:
+            if str(plan["mode"]) != "auto":
+                return {"ok": False, "error": "etf_plan_needs_confirmation"}
+            if now.day < _etf_plan_due_day(now, int(plan["execution_day"])):
+                return {"ok": False, "error": "etf_plan_not_due"}
+        exists = conn.execute(
+            """SELECT 1 FROM investment_events
+                 WHERE user_id = ? AND holding_id IS NULL
+                   AND source = 'app_etf_plan' AND asset_type = 'etf'
+                   AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+            (user_id, month_key),
+        ).fetchone()
+        if exists:
+            return {"ok": True, "alreadyRecorded": True, "amount": amount}
+        allocations = [{
+            "holding_id": None,
+            "name": "ETF-Sparplan",
+            "amount": amount,
+            "source": str(plan["source_account"]),
+            "source_id": int(plan["source_account_id"] or 0),
+        }]
+
+    total_amount = round(sum(item["amount"] for item in allocations), 2)
     if multi_cash_accounts_enabled(conn, user_id):
         prepare_multi_cash_write(conn)
-        source_id = int(plan["source_account_id"] or 0)
-        if source_id:
-            source_account = require_financial_account(conn, user_id, source_id)
-            expected_source = "giro" if str(source_account["account_type"]) == "checking" else "tagesgeld"
-            if str(source_account["account_type"]) not in {"checking", "savings"} or expected_source != source:
-                raise ValueError("etf_plan_source_account_mismatch")
-        else:
-            source_id = legacy_financial_account_id(conn, user_id, source)
-            conn.execute(
-                """UPDATE app_etf_savings_plan SET source_account_id = ?, updated_at = CURRENT_TIMESTAMP
-                     WHERE user_id = ?""",
-                (source_id, user_id),
-            )
+        deltas: dict[int, float] = {}
+        require_funds_for: set[int] = set()
+        for item in allocations:
+            source = item["source"]
+            source_id = int(item["source_id"] or 0)
+            if source_id:
+                source_account = require_financial_account(conn, user_id, source_id)
+                account_type = str(source_account["account_type"])
+                expected_source = "giro" if account_type == "checking" else "tagesgeld"
+                if account_type not in {"checking", "savings"} or expected_source != source:
+                    raise ValueError("etf_plan_source_account_mismatch")
+            else:
+                source_id = legacy_financial_account_id(conn, user_id, source)
+                table = "app_etf_position_plans" if item["holding_id"] else "app_etf_savings_plan"
+                condition = "user_id = ? AND holding_id = ?" if item["holding_id"] else "user_id = ?"
+                params = (source_id, user_id, item["holding_id"]) if item["holding_id"] else (source_id, user_id)
+                conn.execute(
+                    f"UPDATE {table} SET source_account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE {condition}",
+                    params,
+                )
+                item["source_id"] = source_id
+            deltas[source_id] = round(deltas.get(source_id, 0.0) - item["amount"], 2)
+            if source == "tagesgeld":
+                require_funds_for.add(source_id)
         try:
-            balances = adjust_financial_account_balance(
-                conn, user_id, source_id, -amount, require_funds=(source == "tagesgeld")
+            balances = apply_financial_account_deltas(
+                conn, user_id, deltas, require_funds_for=require_funds_for
             )
         except ValueError as exc:
             if str(exc) == "financial_account_balance_insufficient":
@@ -1541,23 +1629,35 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
             raise
     else:
         balances = app_cash_accounts(conn, user_id)
-        if source == "tagesgeld" and balances["tagesgeld"] + 0.009 < amount:
+        by_source = {"giro": 0.0, "tagesgeld": 0.0}
+        for item in allocations:
+            by_source[item["source"]] = round(by_source[item["source"]] + item["amount"], 2)
+        if balances["tagesgeld"] + 0.009 < by_source["tagesgeld"]:
             return {"ok": False, "error": "etf_plan_source_insufficient"}
-        balances[source] = round(balances[source] - amount, 2)
+        balances["giro"] = round(balances["giro"] - by_source["giro"], 2)
+        balances["tagesgeld"] = round(balances["tagesgeld"] - by_source["tagesgeld"], 2)
         save_app_cash_accounts(conn, user_id, balances)
 
-    investments = round(float(user["current_investments"] or 0) + amount, 2)
+    investments = round(float(user["current_investments"] or 0) + total_amount, 2)
     conn.execute("UPDATE users SET current_investments = ? WHERE user_id = ?", (investments, user_id))
-    booking_note = (
-        f"Automatisch in Rov.E erfasst · Quelle: {source}"
-        if not force else f"In Rov.E erfasst · Quelle: {source}"
-    )
-    conn.execute(
-        """INSERT INTO investment_events
-               (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
-           VALUES (?, ?, 'in', 'etf', 'ETF-Sparplan', 'recurring_plan', 'app_etf_plan', ?)""",
-        (user_id, amount, booking_note),
-    )
+    for item in allocations:
+        booking_note = (
+            f"Automatisch in Rov.E erfasst · Quelle: {item['source']}"
+            if not force else f"In Rov.E erfasst · Quelle: {item['source']}"
+        )
+        if item["holding_id"]:
+            record_holding_contribution(
+                conn, user_id, item["holding_id"], item["amount"], note=booking_note
+            )
+        else:
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type,
+                        source, note, holding_id)
+                   VALUES (?, ?, 'in', 'etf', 'ETF-Sparplan', 'recurring_plan',
+                           'app_etf_plan', ?, NULL)""",
+                (user_id, item["amount"], booking_note),
+            )
     conn.execute(
         """INSERT INTO portfolio_snapshots (user_id, amount, scope, source, note)
            VALUES (?, ?, 'investments', 'app_etf_plan', 'Stand nach ETF-Sparplan')""",
@@ -1568,7 +1668,15 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
            VALUES (?, ?, 'cash', 'app_etf_plan', 'Stand nach ETF-Sparplan')""",
         (user_id, round(sum(balances.values()), 2)),
     )
-    return {"ok": True, "amount": amount, "source": source}
+    return {
+        "ok": True,
+        "amount": total_amount,
+        "source": allocations[0]["source"] if len(allocations) == 1 else "multiple",
+        "allocations": [
+            {"holdingId": item["holding_id"], "name": item["name"], "amount": item["amount"]}
+            for item in allocations
+        ],
+    }
 
 
 @app.route("/v1/pair", methods=["POST"])
@@ -3585,7 +3693,8 @@ def configure_portfolio_tracking():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         holding = conn.execute(
-            """SELECT id, instrument_key, COALESCE(market_value, total_invested, 0) AS value
+            """SELECT id, instrument_key, quantity, valuation_enabled,
+                      COALESCE(market_value, total_invested, 0) AS value
                  FROM portfolio_holdings
                 WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
                 LIMIT 1""",
@@ -3618,8 +3727,11 @@ def configure_portfolio_tracking():
                 ),
             )
             holding_id = int(cursor.lastrowid)
+            quantity_increased = False
         else:
             holding_id = int(holding["id"])
+            previous_quantity = float(holding["quantity"] or 0)
+            quantity_increased = bool(holding["valuation_enabled"]) and quantity > previous_quantity
             conn.execute(
                 """UPDATE portfolio_holdings
                       SET instrument_type = ?,
@@ -3638,7 +3750,13 @@ def configure_portfolio_tracking():
             )
         conn.commit()
 
-        result = apply_market_quote(conn, holding_id, quote, expected_symbol=symbol)
+        result = apply_market_quote(
+            conn,
+            holding_id,
+            quote,
+            expected_symbol=symbol,
+            reconcile_pending=quantity_increased,
+        )
         live_data = build_live_app_data(conn, user_id)
 
     return jsonify({
@@ -3658,7 +3776,7 @@ def configure_portfolio_tracking():
 
 @app.route("/v1/etf-position-plan", methods=["POST"])
 def update_etf_position_plan():
-    """Speichert Phase 1 eines eigenen Sparplans pro ETF, noch ohne Geldbewegung."""
+    """Speichert den ausführbaren Sparplan einer konkreten ETF-Position."""
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
     try:
