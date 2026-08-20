@@ -197,16 +197,14 @@ def type_sums_match_legacy(conn: sqlite3.Connection, user_id: int) -> dict[str, 
     return out
 
 
-def state_builds(user_id: int, db_path: Path) -> bool:
+def state_builds(conn: sqlite3.Connection, user_id: int) -> tuple[bool, str]:
     try:
-        import rove_app_state
+        from rove_app_state import build_live_app_data
 
-        rove_app_state.DB_PATH = db_path
-        with rove_app_state.db() as conn:
-            rove_app_state.build_live_app_data(conn, user_id)
-        return True
-    except Exception:
-        return False
+        build_live_app_data(conn, user_id)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def private_snapshot(db_path: Path, user_id: int, before: dict, after: dict) -> Path:
@@ -240,12 +238,13 @@ def validate_preconditions(conn: sqlite3.Connection, user_id: int) -> list[str]:
     return errors
 
 
-def inspect_user(conn: sqlite3.Connection, db_path: Path, user_id: int) -> dict:
+def inspect_user(conn: sqlite3.Connection, user_id: int) -> dict:
     snapshot = capture_user_snapshot(conn, user_id)
     financial_total_ok = (
         table_exists(conn, "app_financial_accounts")
         and abs(financial_accounts_total(conn, user_id) - snapshot.current_cash) <= CENT_TOLERANCE
     )
+    state_ok, state_error = state_builds(conn, user_id)
     return {
         "user_id": user_id,
         "feature_enabled": is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1),
@@ -258,7 +257,8 @@ def inspect_user(conn: sqlite3.Connection, db_path: Path, user_id: int) -> dict:
         "current_investments_present": snapshot.current_investments >= 0,
         "property_present": snapshot.property_equity >= 0,
         "net_worth_present": True,
-        "state_builds": state_builds(user_id, db_path),
+        "state_builds": state_ok,
+        "state_error": state_error,
     }
 
 
@@ -275,7 +275,7 @@ def prepare_and_enable_user(conn: sqlite3.Connection, db_path: Path, user_id: in
         set_legacy_account_balances_from_legacy(conn, user_id)
         ensure_default_roles(conn, user_id)
 
-        prepared = inspect_user(conn, db_path, user_id)
+        prepared = inspect_user(conn, user_id)
         if not prepared["financial_matches_current_cash"]:
             raise RuntimeError("financial_sum_after_prepare_differs")
         if not all(prepared["type_sums_match_legacy"].values()):
@@ -284,7 +284,7 @@ def prepare_and_enable_user(conn: sqlite3.Connection, db_path: Path, user_id: in
             raise RuntimeError("roles_invalid_after_prepare")
 
         set_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1, True)
-        after = inspect_user(conn, db_path, user_id)
+        after = inspect_user(conn, user_id)
         if not after["feature_enabled"]:
             raise RuntimeError("feature_enable_failed")
         if not after["legacy_matches_current_cash"] or not after["financial_matches_current_cash"]:
@@ -352,8 +352,20 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
 
         active_ids = active_app_tester_ids(conn)
         enabled_ids = enabled_multi_account_ids(conn)
-        selected = users or [user_id for user_id in active_ids if user_id not in set(enabled_ids)]
-        selected = selected[:limit]
+        raw_candidates = users or [user_id for user_id in active_ids if user_id not in set(enabled_ids)]
+        ready_candidates: list[int] = []
+        skipped_candidates: list[dict] = []
+        for user_id in raw_candidates:
+            errors = validate_preconditions(conn, user_id)
+            if errors:
+                skipped_candidates.append({
+                    "user_id": user_id,
+                    "status": "skipped",
+                    "reason": ";".join(errors),
+                })
+            else:
+                ready_candidates.append(user_id)
+        selected = (raw_candidates if users else ready_candidates)[:limit]
         result = {
             "mode": "apply" if apply else "dry-run",
             "database": str(db_path.resolve()),
@@ -361,6 +373,7 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
             "enabled_before": len([user_id for user_id in active_ids if user_id in set(enabled_ids)]),
             "already_enabled_user_ids": [user_id for user_id in active_ids if user_id in set(enabled_ids)],
             "candidate_user_ids": selected,
+            "skipped_candidate_users": skipped_candidates,
             "inactive_or_blocked_users_untouched": inactive_or_blocked_count(conn, set(active_ids)),
             "users": [],
         }
@@ -372,7 +385,7 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
                     "user_id": user_id,
                     "status": "ready" if not errors else "blocked",
                     "reason": ";".join(errors),
-                    "current_state": inspect_user(conn, db_path, user_id) if not errors else {},
+                    "current_state": inspect_user(conn, user_id) if not errors else {},
                 })
         else:
             for user_id in selected:
@@ -383,7 +396,7 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
 
         enabled_after = enabled_multi_account_ids(conn)
         result["enabled_after"] = len([user_id for user_id in active_ids if user_id in set(enabled_after)])
-        result["pilot_regression"] = inspect_user(conn, db_path, DEFAULT_PILOT_USER_ID)
+        result["pilot_regression"] = inspect_user(conn, DEFAULT_PILOT_USER_ID)
         result["sqlite"] = sqlite_checks(conn)
         blockers = [
             row for row in result["users"]
