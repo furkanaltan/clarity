@@ -367,6 +367,43 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             ).fetchone()[0])
             self.assertAlmostEqual(net, 0, places=2)
 
+    def test_complete_crypto_tile_removal_reduces_investment_total_atomically(self):
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, source)
+                   VALUES (1, 120, 'in', 'crypto', 'Bitcoin', 'telegram'),
+                          (1, 80, 'in', 'crypto', 'Ethereum', 'app'),
+                          (1, 20, 'out', 'crypto', 'Bitcoin', 'app'),
+                          (1, 50, 'in', 'stock', 'Apple', 'app')"""
+            )
+            conn.commit()
+
+        response = self.request("DELETE", "/v1/investments", json={
+            "asset_type": "crypto", "delete_all": True,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["removed"]["positions"], 2)
+        self.assertAlmostEqual(response.get_json()["removed"]["value"], 180, places=2)
+        with closing(self.connect()) as conn:
+            self.assertAlmostEqual(float(conn.execute(
+                "SELECT current_investments FROM users WHERE user_id=1"
+            ).fetchone()[0]), 320, places=2)
+            crypto_rows = conn.execute(
+                """SELECT asset_name,
+                          SUM(CASE WHEN direction='out' THEN -amount ELSE amount END) AS net
+                     FROM investment_events
+                    WHERE user_id=1 AND asset_type='crypto'
+                    GROUP BY asset_name"""
+            ).fetchall()
+            self.assertTrue(crypto_rows)
+            self.assertTrue(all(abs(float(row["net"] or 0)) < 0.001 for row in crypto_rows))
+            self.assertAlmostEqual(float(conn.execute(
+                """SELECT SUM(CASE WHEN direction='out' THEN -amount ELSE amount END)
+                     FROM investment_events
+                    WHERE user_id=1 AND asset_type='stock'"""
+            ).fetchone()[0]), 50, places=2)
+
     def test_property_delete_is_user_bound(self):
         with closing(self.connect()) as conn:
             api.ensure_app_properties_table(conn)

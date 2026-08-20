@@ -3971,17 +3971,72 @@ def delete_investment_position():
     token = token_from_request()
     asset_type = clean_text(payload.get("asset_type")).lower()
     asset_name = clean_text(payload.get("asset_name"))
+    delete_all = payload.get("delete_all") is True
     try:
         holding_id = max(0, int(payload.get("holding_id") or 0))
     except (TypeError, ValueError):
         holding_id = 0
-    if asset_type not in {"crypto", "stock", "etf"} or not asset_name:
+    if (
+        asset_type not in {"crypto", "stock", "etf"}
+        or (not asset_name and not (delete_all and asset_type == "crypto"))
+    ):
         return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
 
     with db() as conn:
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        begin_write(conn)
+
+        if delete_all and asset_type == "crypto":
+            rows = conn.execute(
+                """SELECT COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name,
+                          COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                     FROM investment_events
+                    WHERE user_id = ? AND asset_type = 'crypto'
+                    GROUP BY COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto')""",
+                (user_id,),
+            ).fetchall()
+            active_positions = [
+                (str(row["name"]), round(float(row["net"] or 0), 2))
+                for row in rows
+                if float(row["net"] or 0) >= 0.01
+            ]
+            total_removed = round(sum(value for _, value in active_positions), 2)
+            if total_removed < 0.01:
+                return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+
+            total_row = conn.execute(
+                "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
+            if total_removed > current_total + 0.009:
+                return jsonify({"ok": False, "error": "investment_total_inconsistent"}), 409
+
+            for position_name, position_value in active_positions:
+                conn.execute(
+                    """INSERT INTO investment_events
+                           (user_id, amount, direction, asset_type, asset_name,
+                            event_type, source, note)
+                       VALUES (?, ?, 'out', 'crypto', ?, 'manual_removal', 'app',
+                               'Krypto-Kachel in der App entfernt')""",
+                    (user_id, position_value, position_name),
+                )
+            conn.execute(
+                "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                (round(current_total - total_removed, 2), user_id),
+            )
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+            return jsonify({
+                "ok": True,
+                "removed": {
+                    "asset_type": "crypto",
+                    "positions": len(active_positions),
+                    "value": total_removed,
+                },
+                **live_data,
+            })
 
         if holding_id:
             ensure_market_tracking_schema(conn)
