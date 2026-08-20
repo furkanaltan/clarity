@@ -283,6 +283,63 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             self.assertEqual(legacy["financialAccounts"], [])
             self.assertTrue(any(asset["assetKey"] == "cash:giro" for asset in legacy["assets"]))
 
+    def test_live_holding_can_be_removed_without_erasing_market_history(self):
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """CREATE TABLE portfolio_holdings (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       user_id INTEGER NOT NULL,
+                       instrument_key TEXT NOT NULL,
+                       instrument_label TEXT NOT NULL,
+                       isin TEXT NOT NULL,
+                       price_symbol TEXT,
+                       monthly_contribution REAL NOT NULL DEFAULT 0,
+                       total_invested REAL,
+                       start_price REAL,
+                       last_price REAL,
+                       last_checked_at DATETIME,
+                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                       UNIQUE(user_id, instrument_key)
+                   )"""
+            )
+            api.ensure_market_tracking_schema(conn)
+            cursor = conn.execute(
+                """INSERT INTO portfolio_holdings
+                       (user_id, instrument_key, instrument_label, isin, total_invested,
+                        market_value, instrument_type, quantity, price_symbol,
+                        quote_currency, valuation_enabled)
+                   VALUES (1, 'live_test', 'Test ETF', '', 900, 1250, 'etf', 10,
+                           'TEST', 'EUR', 1)"""
+            )
+            holding_id = int(cursor.lastrowid)
+            conn.execute("UPDATE users SET current_investments=1500 WHERE user_id=1")
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, source)
+                   VALUES (1, 900, 'in', 'etf', 'Test ETF', 'app'),
+                          (1, 350, 'in', 'market', 'Test ETF', 'leeway')"""
+            )
+            conn.commit()
+
+        response = self.request("DELETE", "/v1/investments", json={
+            "asset_type": "etf", "asset_name": "Test ETF", "holding_id": holding_id,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM portfolio_holdings WHERE id=?", (holding_id,)
+            ).fetchone()[0], 0)
+            self.assertAlmostEqual(float(conn.execute(
+                "SELECT current_investments FROM users WHERE user_id=1"
+            ).fetchone()[0]), 250, places=2)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM investment_events WHERE source='app' AND asset_name='Test ETF'"
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM investment_events WHERE source='leeway' AND asset_name='Test ETF'"
+            ).fetchone()[0], 1)
+
     def test_property_delete_is_user_bound(self):
         with closing(self.connect()) as conn:
             api.ensure_app_properties_table(conn)

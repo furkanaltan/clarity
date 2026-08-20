@@ -3961,11 +3961,11 @@ def update_investment_position():
 
 @app.route("/v1/investments", methods=["DELETE"])
 def delete_investment_position():
-    """Entfernt eine manuell in der App angelegte Position dauerhaft.
+    """Entfernt eine Position aus dem aktuellen Vermoegensstand.
 
-    Kursverfolgte Depotpositionen bleiben absichtlich unangetastet: Dort kann ein
-    historischer Kauf bereits in Reports stehen. Fuer manuelle App-Positionen ist
-    dagegen ein echtes Loeschen korrekt - inklusive Gesamtsumme und App-Refresh.
+    Historische Buchungen und Marktbewegungen bleiben fuer Reports erhalten. Die
+    konkrete Holding, ihr Sparplan und ihr aktueller Wert werden dagegen sauber
+    aus dem aktiven Depot entfernt.
     """
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
@@ -3982,6 +3982,55 @@ def delete_investment_position():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        if holding_id:
+            ensure_market_tracking_schema(conn)
+            holding = conn.execute(
+                """SELECT id, instrument_label,
+                          LOWER(COALESCE(instrument_type, 'etf')) AS instrument_type,
+                          COALESCE(market_value, total_invested, 0) AS current_value
+                     FROM portfolio_holdings
+                    WHERE id = ? AND user_id = ? LIMIT 1""",
+                (holding_id, user_id),
+            ).fetchone()
+            if not holding:
+                return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+
+            stored_name = str(holding["instrument_label"] or asset_name)
+            stored_type = str(holding["instrument_type"] or asset_type).lower()
+            current_value = round(max(0.0, float(holding["current_value"] or 0)), 2)
+            total_row = conn.execute(
+                "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            current_total = max(0.0, float(total_row["current_investments"] or 0))
+
+            ensure_app_etf_position_plans_table(conn)
+            conn.execute(
+                "DELETE FROM app_etf_position_plans WHERE user_id = ? AND holding_id = ?",
+                (user_id, int(holding["id"])),
+            )
+            # App-Korrekturen duerfen die geloeschte Position nicht beim naechsten
+            # State-Aufbau erneut als manuelle Aktie erscheinen lassen. Historische
+            # Sparplan- und Marktbewegungen bleiben dagegen bewusst erhalten.
+            conn.execute(
+                """DELETE FROM investment_events
+                    WHERE user_id = ? AND asset_type = ?
+                      AND LOWER(TRIM(asset_name)) = LOWER(?) AND source = 'app'""",
+                (user_id, stored_type, stored_name),
+            )
+            conn.execute(
+                "DELETE FROM portfolio_holdings WHERE id = ? AND user_id = ?",
+                (int(holding["id"]), user_id),
+            )
+            conn.execute(
+                "UPDATE users SET current_investments = ? WHERE user_id = ?",
+                (round(max(0.0, current_total - current_value), 2), user_id),
+            )
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+            return jsonify({"ok": True, "removed": {
+                "asset_type": stored_type, "asset_name": stored_name,
+            }, **live_data})
 
         if asset_type == "etf":
             ensure_market_tracking_schema(conn)
