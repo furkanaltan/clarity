@@ -155,7 +155,7 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
     if story.get("story_version") != 2 or story.get("page_count") != 10:
         fail("story_v2_identity_missing_or_inconsistent")
     central_facts = {
-        "net_worth": data.get("report_truth", {}).get("wealth", {}).get("net_worth"),
+        "net_worth": data.get("report_truth", {}).get("wealth", {}).get("total"),
         "consumption": data.get("report_truth", {}).get("expenses", {}).get("total_consumption"),
         "investment_contributions": data.get("report_truth", {}).get("investments", {}).get("contributions"),
         "goals": data.get("report_truth", {}).get("goals", {}).get("goals", []),
