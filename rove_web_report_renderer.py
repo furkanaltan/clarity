@@ -572,8 +572,46 @@ def _localize_story_text(value) -> str:
     return re.sub(r"(?<![\d.,])(\d+(?:\.\d{2}))\s+EUR\b", replace_amount, text)
 
 
+def _pre_truth_story_render_context(data: dict) -> dict:
+    """Keep pre-V2 report snapshots renderable without inventing a new story."""
+    meta = data.get("meta") or {}
+    pages = data.get("pages") or {}
+    report_month = str(meta.get("report_month") or "")
+    month_label, next_month_label = month_names(report_month)
+    recap = pages.get("recap") or {}
+    return {
+        "page_count": 0,
+        "month_label": month_label,
+        "next_month_label": next_month_label,
+        "facts": [],
+        "flow": [],
+        "categories": [],
+        "merchants": [],
+        "changes": [],
+        "allocation": [],
+        "contributions": [],
+        "contribution_more_count": 0,
+        "goal": {"available": False, "name": "Dein Ziel", "current": "—", "target": "—", "remaining": "—", "progress_raw": 0},
+        "score": 0,
+        "insight": {"type": "legacy_snapshot", "text": "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten.", "tone": "neutral", "safe_to_coach": False},
+        "next_steps": [],
+        "recap_good": str(recap.get("what_went_well") or ""),
+        "recap_attention": str(recap.get("needs_attention") or ""),
+        "metrics": {},
+        "pages": {},
+        "wealth_total": "—",
+        "consumption_total": "—",
+        "contribution_total": "—",
+        "cash_total": "—",
+        "income_total": "—",
+        "fixed_costs_total": "—",
+    }
+
+
 def build_story_render_context(data: dict) -> dict:
     """Build presentation-only fields from the immutable Story V2 payload."""
+    if not data.get("report_truth") and not data.get("report_story_v2"):
+        return _pre_truth_story_render_context(data)
     story = story_from_snapshot_data(data)
     pages = story["pages"]
     report_month = str((data.get("meta") or {}).get("report_month") or story.get("report_month") or "")

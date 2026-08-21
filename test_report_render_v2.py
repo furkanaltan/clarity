@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from report_story_v2 import build_report_story_v2
-from rove_web_report_renderer import build_render_context, render_template
+from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
 from test_report_story_v2 import standard_payload
 
 
@@ -36,6 +36,12 @@ class ReportRenderV2Tests(unittest.TestCase):
 
         self.assertIn('data-count="15000"', context["net_worth_span"])
         self.assertEqual(context["report"]["wealth_total"], "15.000 €")
+
+    def test_pre_truth_snapshot_uses_neutral_presentation_context(self):
+        context = build_story_render_context({"meta": {"report_month": "2026-07"}, "pages": {}})
+
+        self.assertEqual(context["month_label"], "Juli 2026")
+        self.assertEqual(context["wealth_total"], "—")
 
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
