@@ -730,7 +730,8 @@ def build_report_story_v2(report_data: dict) -> dict:
 def story_from_snapshot_data(report_data: dict) -> dict:
     """Reuse an embedded story or derive it from the same immutable payload."""
     embedded = report_data.get("report_story_v2")
-    has_current_wealth_shape = (report_data.get("report_truth") or {}).get("wealth", {}).get("total") is not None
-    if embedded and embedded.get("story_version") == REPORT_STORY_VERSION and has_current_wealth_shape:
+    truth = report_data.get("report_truth")
+    has_current_wealth_shape = (truth or {}).get("wealth", {}).get("total") is not None
+    if embedded and embedded.get("story_version") == REPORT_STORY_VERSION and (not truth or has_current_wealth_shape):
         return deepcopy(embedded)
     return build_report_story_v2(report_data)

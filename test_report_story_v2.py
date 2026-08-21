@@ -6,6 +6,7 @@ from report_story_v2 import (
     REPORT_STORY_VERSION,
     build_report_story_v2,
     get_report_wealth,
+    story_from_snapshot_data,
 )
 
 
@@ -134,6 +135,13 @@ class ReportStoryV2Tests(unittest.TestCase):
         self.assertTrue(story["quality"]["previous_month_available"])
         changes = story["pages"]["page_5"]["supporting_metrics"]
         self.assertNotIn("score", {change["type"] for change in changes})
+
+    def test_pre_truth_snapshot_keeps_its_embedded_story(self):
+        data = {"report_story_v2": build_report_story_v2(standard_payload())}
+
+        story = story_from_snapshot_data(data)
+
+        self.assertEqual(story["story_version"], REPORT_STORY_VERSION)
 
     def test_standard_story_has_exactly_ten_distinct_pages(self):
         story = build_report_story_v2(standard_payload())
