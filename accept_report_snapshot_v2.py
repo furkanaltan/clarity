@@ -154,8 +154,11 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
     story = data.get("report_story_v2") or report_story_v2.story_from_snapshot_data(data)
     if story.get("story_version") != 2 or story.get("page_count") != 10:
         fail("story_v2_identity_missing_or_inconsistent")
+    wealth_total = data.get("report_truth", {}).get("wealth", {}).get("total")
+    if wealth_total is None:
+        wealth_total = (((story.get("pages") or {}).get("page_6") or {}).get("primary_metric") or {}).get("value")
     central_facts = {
-        "net_worth": data.get("report_truth", {}).get("wealth", {}).get("total"),
+        "net_worth": wealth_total,
         "consumption": data.get("report_truth", {}).get("expenses", {}).get("total_consumption"),
         "investment_contributions": data.get("report_truth", {}).get("investments", {}).get("contributions"),
         "goals": data.get("report_truth", {}).get("goals", {}).get("goals", []),
