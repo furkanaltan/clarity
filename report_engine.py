@@ -1431,28 +1431,33 @@ def _report_cash_truth(user_id: int) -> dict:
 def _report_goal_truth(user_id: int, primary_description: str, primary_target: float,
                        primary_current: float) -> dict:
     goals = []
+    primary = None
+    if primary_target > 0:
+        primary = {
+            "id": "primary",
+            "name": primary_description or "Dein Ziel",
+            "target_amount": round(primary_target, 2),
+            "current_amount": round(primary_current, 2),
+            "is_primary": True,
+        }
+        goals.append(primary)
     with get_db() as conn:
         if table_exists(conn, "app_goals"):
             columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)").fetchall()}
             rows = conn.execute("SELECT * FROM app_goals WHERE user_id = ?", (user_id,)).fetchall()
             for row in rows:
                 goal_id = row["goal_id"] if "goal_id" in columns else row["id"]
-                goals.append({
+                item = {
                     "id": str(goal_id),
                     "name": str(row["name"] or ""),
                     "target_amount": round(float(row["target_amount"] or 0), 2),
                     "current_amount": round(float(row["current_amount"] or 0), 2),
                     "is_primary": bool(row["is_primary"]) if "is_primary" in columns else False,
-                })
-    if not goals and primary_target > 0:
-        goals.append({
-            "id": None,
-            "name": primary_description,
-            "target_amount": round(primary_target, 2),
-            "current_amount": round(primary_current, 2),
-            "is_primary": True,
-        })
-    return {"primary": goals[0] if goals else None, "goals": goals}
+                }
+                goals.append(item)
+                if primary is None and item["is_primary"]:
+                    primary = item
+    return {"primary": primary, "goals": goals}
 
 
 def _report_investment_truth(user_id: int, report_month: str) -> dict:
@@ -1463,7 +1468,8 @@ def _report_investment_truth(user_id: int, report_month: str) -> dict:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_holdings)").fetchall()}
             selected = [name for name in (
                 "id", "instrument_label", "instrument_type", "isin", "price_symbol",
-                "monthly_contribution", "total_invested", "last_price", "last_checked_at"
+                "monthly_contribution", "total_invested", "market_value", "quantity",
+                "quote_currency", "valuation_enabled", "last_price", "last_checked_at"
             ) if name in columns]
             if selected:
                 rows = conn.execute(
@@ -1497,6 +1503,97 @@ def _report_investment_truth(user_id: int, report_month: str) -> dict:
     }
 
 
+def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
+    """Build one allocation that reconciles exactly to the frozen wealth total."""
+    cash_total = round(float(cash.get("current_cash") or 0), 2)
+    investment_total = round(float(profile.get("current_investments") or 0), 2)
+    property_equity = round(float(profile.get("property_equity") or 0), 2)
+    allocation = []
+
+    accounts = cash.get("accounts") or []
+    if accounts:
+        for account in accounts:
+            amount = round(float(account.get("balance") or 0), 2)
+            if amount > 0:
+                allocation.append({
+                    "key": f"cash:{account.get('id')}",
+                    "label": str(account.get("name") or "Cash"),
+                    "asset_class": str(account.get("account_type") or "cash"),
+                    "amount": amount,
+                    "source": "financial_account",
+                })
+    elif cash_total > 0:
+        allocation.append({
+            "key": "cash",
+            "label": "Cash",
+            "asset_class": "cash",
+            "amount": cash_total,
+            "source": "legacy_cash",
+        })
+
+    holding_groups = {}
+    for holding in investments.get("holdings") or []:
+        live_value = holding.get("market_value")
+        use_live = bool(holding.get("valuation_enabled")) and live_value is not None
+        amount = live_value if use_live else holding.get("total_invested")
+        amount = round(max(0.0, float(amount or 0)), 2)
+        if amount <= 0:
+            continue
+        asset_class = str(holding.get("instrument_type") or "investment").lower()
+        label = {"etf": "ETFs", "stock": "Aktien", "crypto": "Krypto"}.get(asset_class, "Investments")
+        holding_groups[label] = round(holding_groups.get(label, 0.0) + amount, 2)
+
+    grouped_total = round(sum(holding_groups.values()), 2)
+    if grouped_total <= investment_total + 0.01:
+        for label, amount in sorted(holding_groups.items(), key=lambda item: item[1], reverse=True):
+            allocation.append({
+                "key": f"investment:{label.casefold()}",
+                "label": label,
+                "asset_class": "investment",
+                "amount": amount,
+                "source": "portfolio_holdings",
+            })
+        residual = round(investment_total - grouped_total, 2)
+        if residual > 0.01:
+            allocation.append({
+                "key": "investment:unassigned",
+                "label": "Weitere Investments",
+                "asset_class": "investment",
+                "amount": residual,
+                "source": "current_investments_residual",
+            })
+    elif investment_total > 0:
+        allocation.append({
+            "key": "investments",
+            "label": "Investments",
+            "asset_class": "investment",
+            "amount": investment_total,
+            "source": "current_investments",
+        })
+
+    if property_equity > 0:
+        allocation.append({
+            "key": "property",
+            "label": "Immobilien-Eigenkapital",
+            "asset_class": "property",
+            "amount": property_equity,
+            "source": "app_properties",
+        })
+
+    total = round(cash_total + investment_total + property_equity, 2)
+    for item in allocation:
+        item["share"] = round(item["amount"] / total * 100, 2) if total > 0 else 0.0
+    return {
+        "total": total,
+        "cash": cash_total,
+        "investments": investment_total,
+        "property_equity": property_equity,
+        "allocation": allocation,
+        "reconciles": abs(round(sum(item["amount"] for item in allocation), 2) - total) <= 0.01,
+        "goals_included": False,
+    }
+
+
 def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
     rows = get_report_expense_rows(user_id, report_month)
     previous_rows = get_report_expense_rows(user_id, _report_previous_month(report_month))
@@ -1506,9 +1603,11 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         grouped = {}
         for row in items:
             key = row[key_name]
-            entry = grouped.setdefault(key, {"amount": 0.0, "transaction_count": 0})
+            entry = grouped.setdefault(key, {"amount": 0.0, "transaction_count": 0, "categories": {}})
             entry["amount"] += row["amount"]
             entry["transaction_count"] += 1
+            category = str(row.get("category") or "SONSTIGES")
+            entry["categories"][category] = entry["categories"].get(category, 0.0) + row["amount"]
         return grouped
 
     categories = aggregate(eligible, "category")
@@ -1527,6 +1626,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "share": round(amount / sum(row["amount"] for row in eligible) * 100, 2) if eligible else 0.0,
             "previous_amount": previous,
             "delta": round(amount - previous, 2),
+            "previous_transaction_count": previous_categories.get(category, {}).get("transaction_count", 0),
+            "transaction_count_delta": item["transaction_count"] - previous_categories.get(category, {}).get("transaction_count", 0),
         })
 
     merchants = aggregate(eligible, "merchant_key")
@@ -1540,11 +1641,14 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         previous = round(previous_merchants.get(merchant_key, {}).get("amount", 0.0), 2)
         merchant_aggregate.append({
             "merchant": merchant_labels.get(merchant_key, merchant_key),
+            "category": max(item["categories"], key=item["categories"].get) if item["categories"] else "SONSTIGES",
             "amount": amount,
             "transaction_count": item["transaction_count"],
             "avg_transaction": round(amount / item["transaction_count"], 2),
             "previous_amount": previous,
             "delta": round(amount - previous, 2),
+            "previous_transaction_count": previous_merchants.get(merchant_key, {}).get("transaction_count", 0),
+            "transaction_count_delta": item["transaction_count"] - previous_merchants.get(merchant_key, {}).get("transaction_count", 0),
         })
 
     class_totals = {}
@@ -1558,6 +1662,10 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
     goal = data.get("pages", {}).get("goal", {})
     budget = data.get("pages", {}).get("budget", {})
     cash = _report_cash_truth(user_id)
+    investments = _report_investment_truth(user_id, report_month)
+    previous_month = _report_previous_month(report_month)
+    previous_eligible = [row for row in previous_rows if row["classification"] == "consumption"]
+    previous_investments = get_investment_summary(user_id, previous_month)
     return {
         "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
         "period": data.get("meta", {}),
@@ -1572,6 +1680,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "total_consumption": round(sum(row["amount"] for row in eligible), 2),
             "transaction_count": len(eligible),
             "tracked_days": data.get("meta", {}).get("tracked_days", 0),
+            "previous_total_consumption": round(sum(row["amount"] for row in previous_eligible), 2),
+            "previous_transaction_count": len(previous_eligible),
             "categories": category_aggregate,
             "merchants": merchant_aggregate,
         },
@@ -1582,7 +1692,7 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         },
         "budget": budget,
         "cash": cash,
-        "investments": _report_investment_truth(user_id, report_month),
+        "investments": investments,
         "property": {
             "equity": profile.get("property_equity", 0),
             "source": "app_properties",
@@ -1591,9 +1701,11 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             user_id, goal.get("description", ""), goal.get("target_amount", 0), goal.get("current_amount", 0)
         ),
         "score": data.get("pages", {}).get("score", {}),
+        "wealth": _report_wealth_truth(profile, cash, investments),
         "previous_month": {
-            "report_month": _report_previous_month(report_month),
+            "report_month": previous_month,
             "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
+            "investment_contributions": previous_investments,
         },
     }
 
@@ -1602,11 +1714,21 @@ def validate_report_snapshot(data: dict) -> dict:
     payload = _report_json_safe(data)
     truth = payload.get("report_truth", {})
     cash = truth.get("cash", {})
+    story = payload.get("report_story_v2")
     checks = {
         "cash_invariant": bool(cash.get("invariant_ok")),
         "no_non_finite_numbers": True,
         "goal_not_added_to_net_worth": True,
         "investment_market_movement_not_invented": not truth.get("investments", {}).get("market_movement", {}).get("available", False),
+        "story_v2_valid": (
+            story is None
+            or (
+                story.get("story_version") == 2
+                and story.get("page_count") == 10
+                and len(story.get("pages") or {}) == 10
+                and (story.get("quality") or {}).get("unique_primary_metrics") is True
+            )
+        ),
     }
     if not all(checks.values()):
         raise ValueError("report_snapshot_validation_failed:" + ",".join(key for key, value in checks.items() if not value))
@@ -1638,6 +1760,8 @@ def get_or_create_report_snapshot(user_id: int, report_month: str) -> dict:
             f"Zu wenig Tracking-Tage: {data.get('meta', {}).get('tracked_days', 0)}/{MIN_TRACKING_DAYS}"
         )
     data["report_truth"] = _build_report_truth_layer(user_id, report_month, data)
+    from report_story_v2 import build_report_story_v2
+    data["report_story_v2"] = build_report_story_v2(data)
     validation = validate_report_snapshot(data)
     data["meta"]["snapshot_schema_version"] = REPORT_SNAPSHOT_SCHEMA_VERSION
     serialized = json.dumps(_report_json_safe(data), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
