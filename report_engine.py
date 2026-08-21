@@ -4,6 +4,9 @@ import calendar
 import json
 import gzip
 import shutil
+import hashlib
+import math
+import re
 import logging
 import urllib.error
 import urllib.request
@@ -378,6 +381,42 @@ def ensure_net_worth_column():
             conn.commit()
 
 
+REPORT_SNAPSHOT_SCHEMA_VERSION = 2
+
+
+def ensure_report_snapshots_v2_table(conn: sqlite3.Connection | None = None) -> None:
+    """Create the additive, immutable report truth table when needed."""
+    owns_connection = conn is None
+    if owns_connection:
+        conn = sqlite3.connect(DB_NAME, timeout=30)
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS report_snapshots_v2 (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL,
+                report_month    TEXT NOT NULL,
+                schema_version  INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'finalized',
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finalized_at    TEXT,
+                report_data_json TEXT NOT NULL,
+                ai_text_json    TEXT NOT NULL DEFAULT '{}',
+                validation_json TEXT NOT NULL DEFAULT '{}',
+                data_hash       TEXT NOT NULL,
+                UNIQUE(user_id, report_month, schema_version)
+            )"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_report_snapshots_v2_user_month
+               ON report_snapshots_v2(user_id, report_month, schema_version)"""
+        )
+        if owns_connection:
+            conn.commit()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
 def month_bounds(report_month: str):
     year, month = map(int, report_month.split("-"))
     last_day = calendar.monthrange(year, month)[1]
@@ -594,40 +633,79 @@ def format_month_duration(months) -> str:
     return f"{year_text} und {month_text}"
 
 
-def get_expense_stats(user_id: int, report_month: str):
+NON_CONSUMPTION_MOVEMENTS = {
+    "transfer", "withdrawal", "income", "fixed", "investment", "savings", "contribution"
+}
+
+
+def normalize_report_merchant(value: object) -> str:
+    """Conservative report grouping: normalize whitespace/case, never invent aliases."""
+    text = re.sub(r"\s+", " ", str(value or "Unbekannt").strip())
+    return text or "Unbekannt"
+
+
+def get_report_expense_rows(user_id: int, report_month: str) -> list[dict]:
+    """Return expense rows with one central report classification.
+
+    The app movement reference is the reliable discriminator for internal money
+    movements. Rows without such a reference remain normal consumption rows,
+    preserving legacy users and historical imports.
+    """
     start, end, _ = month_bounds(report_month)
     with get_db() as conn:
-        total = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount), 0) AS total
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            """,
-            (user_id, start, end),
-        ).fetchone()["total"]
-
-        tracked_days = conn.execute(
-            """
-            SELECT COUNT(DISTINCT DATE(created_at)) AS days
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            """,
-            (user_id, start, end),
-        ).fetchone()["days"]
-
-        cats = conn.execute(
-            """
-            SELECT category, COALESCE(SUM(amount), 0) AS total
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY category
-            ORDER BY total DESC
-            LIMIT 6
-            """,
+        has_movements = table_exists(conn, "app_cash_movements")
+        movement_join = (
+            "LEFT JOIN app_cash_movements cm "
+            "ON cm.expense_id = e.id AND cm.user_id = e.user_id"
+            if has_movements else ""
+        )
+        movement_select = "cm.kind AS movement_kind" if has_movements else "'' AS movement_kind"
+        rows = conn.execute(
+            f"""SELECT e.id, e.amount, e.category, e.merchant, e.description,
+                       e.created_at, {movement_select}
+                  FROM expenses e
+                  {movement_join}
+                 WHERE e.user_id = ?
+                   AND DATE(e.created_at) BETWEEN DATE(?) AND DATE(?)
+                 ORDER BY DATE(e.created_at), e.id""",
             (user_id, start, end),
         ).fetchall()
 
-    return float(total or 0), int(tracked_days or 0), cats
+    result = []
+    for row in rows:
+        movement_kind = str(row["movement_kind"] or "").strip().lower()
+        if movement_kind in NON_CONSUMPTION_MOVEMENTS:
+            classification = "fixed_cost" if movement_kind == "fixed" else movement_kind
+        else:
+            classification = "consumption"
+        merchant = normalize_report_merchant(row["merchant"] or row["description"])
+        result.append({
+            "id": int(row["id"]),
+            "amount": round(float(row["amount"] or 0), 2),
+            "category": str(row["category"] or "SONSTIGES"),
+            "merchant": merchant,
+            "merchant_key": merchant.casefold(),
+            "description": str(row["description"] or ""),
+            "created_at": row["created_at"],
+            "movement_kind": movement_kind,
+            "classification": classification,
+        })
+    return result
+
+
+def get_expense_stats(user_id: int, report_month: str):
+    rows = get_report_expense_rows(user_id, report_month)
+    consumption = [row for row in rows if row["classification"] == "consumption"]
+    total = sum(row["amount"] for row in consumption)
+    tracked_days = len({str(row["created_at"]).split(" ", 1)[0] for row in rows})
+    category_totals: dict[str, float] = {}
+    for row in consumption:
+        category_totals[row["category"]] = category_totals.get(row["category"], 0.0) + row["amount"]
+    cats = [
+        {"category": category, "total": round(amount, 2)}
+        for category, amount in sorted(category_totals.items(), key=lambda item: item[1], reverse=True)[:6]
+    ]
+    return round(total, 2), tracked_days, cats
 
 
 def get_app_property_equity(user_id: int) -> float:
@@ -687,22 +765,13 @@ def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
 
 
 def get_biggest_expense(user_id: int, report_month: str):
-    start, end, _ = month_bounds(report_month)
-    with get_db() as conn:
-        row = conn.execute(
-            """
-            SELECT amount, category, merchant, created_at
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            ORDER BY amount DESC, created_at DESC
-            LIMIT 1
-            """,
-            (user_id, start, end),
-        ).fetchone()
-    if not row:
+    rows = [row for row in get_report_expense_rows(user_id, report_month)
+            if row["classification"] == "consumption"]
+    if not rows:
         return None
+    row = max(rows, key=lambda item: (item["amount"], str(item["created_at"])))
     return {
-        "amount": float(row["amount"] or 0),
+        "amount": row["amount"],
         "category": row["category"] or "SONSTIGES",
         "merchant": row["merchant"] or "Unbekannt",
         "created_at": row["created_at"],
@@ -974,7 +1043,6 @@ def get_budget_frame(user_id: int, report_month: str) -> dict:
     """
     empty = {"has_budgets": False, "items": [], "total_limit": 0.0,
              "total_used": 0.0, "adherence_pct": None, "on_track": None}
-    start, end, _ = month_bounds(report_month)
     try:
         with get_db() as conn:
             budgets = conn.execute(
@@ -984,19 +1052,21 @@ def get_budget_frame(user_id: int, report_month: str) -> dict:
             ).fetchall()
             if not budgets:
                 return empty
+            eligible_rows = [
+                row for row in get_report_expense_rows(user_id, report_month)
+                if row["classification"] == "consumption"
+            ]
             items = []
             total_limit = 0.0
             total_used = 0.0
             for b in budgets:
                 category = b["category"]
                 limit = float(b["monthly_limit"] or 0)
-                used = conn.execute(
-                    "SELECT COALESCE(SUM(amount), 0) AS s FROM expenses "
-                    "WHERE user_id = ? AND category = ? "
-                    "AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)",
-                    (user_id, category, start, end),
-                ).fetchone()["s"]
-                used = float(used or 0)
+                used = sum(
+                    row["amount"] for row in eligible_rows
+                    if str(row["category"]).casefold() == str(category).casefold()
+                )
+                used = round(float(used), 2)
                 total_limit += limit
                 total_used += used
                 items.append({
@@ -1295,6 +1365,330 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         p["recap"]["next_lever"] = ai["recap_lever"]
 
     return data
+
+
+def _report_json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _report_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_report_json_safe(item) for item in value]
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        raise ValueError("report_snapshot_non_finite_number")
+    return value
+
+
+def _report_previous_month(report_month: str) -> str:
+    year, month = map(int, report_month.split("-"))
+    return f"{year - 1:04d}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"
+
+
+def _report_cash_truth(user_id: int) -> dict:
+    with get_db() as conn:
+        current = conn.execute(
+            "SELECT current_cash FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        current_cash = round(float(current["current_cash"] or 0), 2) if current else 0.0
+        feature_enabled = bool(conn.execute(
+            """SELECT 1 FROM app_user_features
+                WHERE user_id = ? AND feature_key = 'multi_cash_accounts_v1' AND enabled = 1
+                LIMIT 1""", (user_id,)
+        ).fetchone()) if table_exists(conn, "app_user_features") else False
+        accounts = []
+        account_total = None
+        if feature_enabled and table_exists(conn, "app_financial_accounts"):
+            rows = conn.execute(
+                """SELECT id, name, account_type, balance, currency
+                     FROM app_financial_accounts
+                    WHERE user_id = ? AND status = 'active'
+                    ORDER BY id""",
+                (user_id,),
+            ).fetchall()
+            accounts = [
+                {
+                    "id": int(row["id"]),
+                    "name": str(row["name"] or ""),
+                    "account_type": str(row["account_type"] or ""),
+                    "balance": round(float(row["balance"] or 0), 2),
+                    "currency": str(row["currency"] or "EUR"),
+                }
+                for row in rows
+            ]
+            account_total = round(sum(row["balance"] for row in accounts), 2)
+
+    if feature_enabled and account_total is not None and abs(account_total - current_cash) > 0.01:
+        raise ValueError(
+            f"report_cash_invariant_failed:user={user_id}:accounts={account_total}:current_cash={current_cash}"
+        )
+    return {
+        "source": "financial_accounts" if feature_enabled else "legacy_current_cash",
+        "current_cash": current_cash,
+        "account_total": account_total,
+        "accounts": accounts,
+        "invariant_ok": account_total is None or abs(account_total - current_cash) <= 0.01,
+    }
+
+
+def _report_goal_truth(user_id: int, primary_description: str, primary_target: float,
+                       primary_current: float) -> dict:
+    goals = []
+    with get_db() as conn:
+        if table_exists(conn, "app_goals"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)").fetchall()}
+            rows = conn.execute("SELECT * FROM app_goals WHERE user_id = ?", (user_id,)).fetchall()
+            for row in rows:
+                goals.append({
+                    "id": int(row["goal_id"] if "goal_id" in columns else row["id"]),
+                    "name": str(row["name"] or ""),
+                    "target_amount": round(float(row["target_amount"] or 0), 2),
+                    "current_amount": round(float(row["current_amount"] or 0), 2),
+                    "is_primary": bool(row["is_primary"]) if "is_primary" in columns else False,
+                })
+    if not goals and primary_target > 0:
+        goals.append({
+            "id": None,
+            "name": primary_description,
+            "target_amount": round(primary_target, 2),
+            "current_amount": round(primary_current, 2),
+            "is_primary": True,
+        })
+    return {"primary": goals[0] if goals else None, "goals": goals}
+
+
+def _report_investment_truth(user_id: int, report_month: str) -> dict:
+    summary = get_investment_summary(user_id, report_month)
+    holdings = []
+    with get_db() as conn:
+        if table_exists(conn, "portfolio_holdings"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_holdings)").fetchall()}
+            selected = [name for name in (
+                "id", "instrument_label", "instrument_type", "isin", "price_symbol",
+                "monthly_contribution", "total_invested", "last_price", "last_checked_at"
+            ) if name in columns]
+            if selected:
+                rows = conn.execute(
+                    f"SELECT {', '.join(selected)} FROM portfolio_holdings WHERE user_id = ? ORDER BY id",
+                    (user_id,),
+                ).fetchall()
+                holding_ids = {int(row["id"]) for row in rows}
+                contribution_rows = {}
+                if "holding_id" in {item[1] for item in conn.execute("PRAGMA table_info(investment_events)").fetchall()}:
+                    events = conn.execute(
+                        """SELECT holding_id, COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS amount
+                             FROM investment_events
+                            WHERE user_id = ? AND strftime('%Y-%m', created_at) = ? AND holding_id IS NOT NULL
+                            GROUP BY holding_id""", (user_id, report_month)
+                    ).fetchall()
+                    contribution_rows = {int(row["holding_id"]): round(float(row["amount"] or 0), 2) for row in events}
+                for row in rows:
+                    item = {key: row[key] for key in selected}
+                    item["id"] = int(item["id"])
+                    item["contribution"] = contribution_rows.get(item["id"], 0.0)
+                    item["contribution_data_available"] = item["id"] in contribution_rows
+                    holdings.append(_report_json_safe(item))
+    return {
+        "contributions": summary,
+        "market_value": {
+            "amount": round(float(summary.get("market_value") or 0), 2) if summary.get("market_value") is not None else None,
+            "available": False,
+        },
+        "market_movement": {"amount": None, "available": False},
+        "holdings": holdings,
+    }
+
+
+def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
+    rows = get_report_expense_rows(user_id, report_month)
+    previous_rows = get_report_expense_rows(user_id, _report_previous_month(report_month))
+    eligible = [row for row in rows if row["classification"] == "consumption"]
+
+    def aggregate(items, key_name):
+        grouped = {}
+        for row in items:
+            key = row[key_name]
+            entry = grouped.setdefault(key, {"amount": 0.0, "transaction_count": 0})
+            entry["amount"] += row["amount"]
+            entry["transaction_count"] += 1
+        return grouped
+
+    categories = aggregate(eligible, "category")
+    previous_categories = aggregate(
+        [row for row in previous_rows if row["classification"] == "consumption"], "category"
+    )
+    category_aggregate = []
+    for category, item in sorted(categories.items(), key=lambda pair: pair[1]["amount"], reverse=True):
+        amount = round(item["amount"], 2)
+        previous = round(previous_categories.get(category, {}).get("amount", 0.0), 2)
+        category_aggregate.append({
+            "category": category,
+            "amount": amount,
+            "transaction_count": item["transaction_count"],
+            "avg_transaction": round(amount / item["transaction_count"], 2),
+            "share": round(amount / sum(row["amount"] for row in eligible) * 100, 2) if eligible else 0.0,
+            "previous_amount": previous,
+            "delta": round(amount - previous, 2),
+        })
+
+    merchants = aggregate(eligible, "merchant_key")
+    previous_merchants = aggregate(
+        [row for row in previous_rows if row["classification"] == "consumption"], "merchant_key"
+    )
+    merchant_labels = {row["merchant_key"]: row["merchant"] for row in eligible}
+    merchant_aggregate = []
+    for merchant_key, item in sorted(merchants.items(), key=lambda pair: pair[1]["amount"], reverse=True):
+        amount = round(item["amount"], 2)
+        previous = round(previous_merchants.get(merchant_key, {}).get("amount", 0.0), 2)
+        merchant_aggregate.append({
+            "merchant": merchant_labels.get(merchant_key, merchant_key),
+            "amount": amount,
+            "transaction_count": item["transaction_count"],
+            "avg_transaction": round(amount / item["transaction_count"], 2),
+            "previous_amount": previous,
+            "delta": round(amount - previous, 2),
+        })
+
+    class_totals = {}
+    for row in rows:
+        class_totals[row["classification"]] = round(
+            class_totals.get(row["classification"], 0.0) + row["amount"], 2
+        )
+
+    profile = data.get("profile", {})
+    execution = data.get("pages", {}).get("wealth_journey", {}).get("monthly_execution", {})
+    goal = data.get("pages", {}).get("goal", {})
+    budget = data.get("pages", {}).get("budget", {})
+    cash = _report_cash_truth(user_id)
+    return {
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "period": data.get("meta", {}),
+        "income": {
+            "amount": profile.get("income_total", 0),
+            "other_income": profile.get("other_income", 0),
+            "confirmed": bool(execution.get("income_confirmed")),
+            "source": "confirmed_month" if execution.get("income_confirmed") else "profile_fallback",
+        },
+        "expenses": {
+            "classification_totals": class_totals,
+            "total_consumption": round(sum(row["amount"] for row in eligible), 2),
+            "transaction_count": len(eligible),
+            "tracked_days": data.get("meta", {}).get("tracked_days", 0),
+            "categories": category_aggregate,
+            "merchants": merchant_aggregate,
+        },
+        "fixed_costs": {
+            "amount": profile.get("fixed_costs", 0),
+            "confirmed": bool(execution.get("fixed_costs_confirmed")),
+            "source": "confirmed_month" if execution.get("fixed_costs_confirmed") else "profile_fallback",
+        },
+        "budget": budget,
+        "cash": cash,
+        "investments": _report_investment_truth(user_id, report_month),
+        "property": {
+            "equity": profile.get("property_equity", 0),
+            "source": "app_properties",
+        },
+        "goals": _report_goal_truth(
+            user_id, goal.get("description", ""), goal.get("target_amount", 0), goal.get("current_amount", 0)
+        ),
+        "score": data.get("pages", {}).get("score", {}),
+        "previous_month": {
+            "report_month": _report_previous_month(report_month),
+            "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
+        },
+    }
+
+
+def validate_report_snapshot(data: dict) -> dict:
+    payload = _report_json_safe(data)
+    truth = payload.get("report_truth", {})
+    cash = truth.get("cash", {})
+    checks = {
+        "cash_invariant": bool(cash.get("invariant_ok")),
+        "no_non_finite_numbers": True,
+        "goal_not_added_to_net_worth": True,
+        "investment_market_movement_not_invented": not truth.get("investments", {}).get("market_movement", {}).get("available", False),
+    }
+    if not all(checks.values()):
+        raise ValueError("report_snapshot_validation_failed:" + ",".join(key for key, value in checks.items() if not value))
+    return checks
+
+
+def get_or_create_report_snapshot(user_id: int, report_month: str) -> dict:
+    """Return one immutable V2 snapshot and never rebuild a finalized report."""
+    ensure_report_snapshots_v2_table()
+    with get_db() as conn:
+        existing = conn.execute(
+            """SELECT id, status, report_data_json, data_hash, schema_version
+                 FROM report_snapshots_v2
+                WHERE user_id = ? AND report_month = ? AND schema_version = ?""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()
+    if existing and existing["status"] == "finalized":
+        return {
+            "id": int(existing["id"]),
+            "status": existing["status"],
+            "schema_version": int(existing["schema_version"]),
+            "data_hash": existing["data_hash"],
+            "data": json.loads(existing["report_data_json"]),
+        }
+
+    data = build_report_data(user_id, report_month)
+    if MIN_TRACKING_DAYS > 0 and int(data.get("meta", {}).get("tracked_days", 0)) < MIN_TRACKING_DAYS:
+        raise ReportSkipped(
+            f"Zu wenig Tracking-Tage: {data.get('meta', {}).get('tracked_days', 0)}/{MIN_TRACKING_DAYS}"
+        )
+    data["report_truth"] = _build_report_truth_layer(user_id, report_month, data)
+    validation = validate_report_snapshot(data)
+    data["meta"]["snapshot_schema_version"] = REPORT_SNAPSHOT_SCHEMA_VERSION
+    serialized = json.dumps(_report_json_safe(data), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    data_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    data["meta"]["snapshot_ref"] = {
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "data_hash": data_hash,
+    }
+    serialized = json.dumps(_report_json_safe(data), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    ai_json = json.dumps(data.get("ai_narratives") or {}, ensure_ascii=False, sort_keys=True)
+
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """SELECT id, status, report_data_json, data_hash, schema_version
+                 FROM report_snapshots_v2
+                WHERE user_id = ? AND report_month = ? AND schema_version = ?""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()
+        if existing and existing["status"] == "finalized":
+            conn.commit()
+            return {
+                "id": int(existing["id"]), "status": existing["status"],
+                "schema_version": int(existing["schema_version"]), "data_hash": existing["data_hash"],
+                "data": json.loads(existing["report_data_json"]),
+            }
+        cursor = conn.execute(
+            """INSERT INTO report_snapshots_v2
+                (user_id, report_month, schema_version, status, finalized_at,
+                 report_data_json, ai_text_json, validation_json, data_hash)
+               VALUES (?, ?, ?, 'finalized', CURRENT_TIMESTAMP, ?, ?, ?, ?)
+               ON CONFLICT(user_id, report_month, schema_version) DO UPDATE SET
+                 status = 'finalized', finalized_at = CURRENT_TIMESTAMP,
+                 report_data_json = excluded.report_data_json,
+                 ai_text_json = excluded.ai_text_json,
+                 validation_json = excluded.validation_json,
+                 data_hash = excluded.data_hash""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION, serialized, ai_json,
+             json.dumps(validation, sort_keys=True), data_hash),
+        )
+        conn.commit()
+        snapshot_id = int(cursor.lastrowid or conn.execute(
+            "SELECT id FROM report_snapshots_v2 WHERE user_id = ? AND report_month = ? AND schema_version = ?",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()[0])
+    return {
+        "id": snapshot_id,
+        "status": "finalized",
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "data_hash": data_hash,
+        "data": json.loads(serialized),
+    }
 
 
 def draw_cover_page(c, data):
@@ -1606,11 +2000,9 @@ def has_verified_app_account(user_id: int) -> bool:
 
 
 def send_report_to_user(user_id: int, report_month: str, bot=None):
-    report_data = build_report_data(user_id, report_month)
+    snapshot = get_or_create_report_snapshot(user_id, report_month)
+    report_data = snapshot["data"]
     tracked_days = report_data["meta"]["tracked_days"]
-
-    if MIN_TRACKING_DAYS > 0 and tracked_days < MIN_TRACKING_DAYS:
-        raise ReportSkipped(f"Zu wenig Tracking-Tage: {tracked_days}/{MIN_TRACKING_DAYS}")
 
     web_report = None
     try:
