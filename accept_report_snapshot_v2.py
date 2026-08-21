@@ -162,7 +162,7 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
         "consumption": data.get("report_truth", {}).get("expenses", {}).get("total_consumption"),
         "investment_contributions": data.get("report_truth", {}).get("investments", {}).get("contributions"),
         "goals": data.get("report_truth", {}).get("goals", {}).get("goals", []),
-        "insight": story.get("selected_insight"),
+        "insight": (story.get("insight_engine") or {}).get("selected"),
         "story_pages": story.get("page_count"),
     }
     if any(value is None for value in central_facts.values()):
