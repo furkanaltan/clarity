@@ -31,6 +31,10 @@ class ReportSnapshotV2Tests(unittest.TestCase):
                     id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT,
                     account_type TEXT, balance REAL, currency TEXT, status TEXT
                 );
+                CREATE TABLE app_goals (
+                    user_id INTEGER, goal_id TEXT, name TEXT,
+                    target_amount REAL, current_amount REAL, is_primary INTEGER
+                );
                 """
             )
             conn.execute("INSERT INTO users VALUES (1, 1000.0)")
@@ -59,6 +63,17 @@ class ReportSnapshotV2Tests(unittest.TestCase):
             conn.execute("UPDATE app_financial_accounts SET balance = 999.0")
         with self.assertRaisesRegex(ValueError, "report_cash_invariant_failed"):
             report_engine._report_cash_truth(1)
+
+    def test_goal_truth_preserves_text_goal_id(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "INSERT INTO app_goals VALUES (1, 'g_UullDEEJIr', 'Dubai', 5000.0, 900.0, 1)"
+            )
+
+        truth = report_engine._report_goal_truth(1, "", 0.0, 0.0)
+
+        self.assertEqual(truth["primary"]["id"], "g_UullDEEJIr")
+        self.assertEqual(truth["goals"][0]["current_amount"], 900.0)
 
     def test_final_snapshot_is_reused(self):
         fake_data = {

@@ -1436,8 +1436,9 @@ def _report_goal_truth(user_id: int, primary_description: str, primary_target: f
             columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)").fetchall()}
             rows = conn.execute("SELECT * FROM app_goals WHERE user_id = ?", (user_id,)).fetchall()
             for row in rows:
+                goal_id = row["goal_id"] if "goal_id" in columns else row["id"]
                 goals.append({
-                    "id": int(row["goal_id"] if "goal_id" in columns else row["id"]),
+                    "id": str(goal_id),
                     "name": str(row["name"] or ""),
                     "target_amount": round(float(row["target_amount"] or 0), 2),
                     "current_amount": round(float(row["current_amount"] or 0), 2),
