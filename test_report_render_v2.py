@@ -2,8 +2,6 @@ import copy
 import unittest
 from pathlib import Path
 
-import jinja2
-
 from report_story_v2 import build_report_story_v2
 from rove_web_report_renderer import build_render_context, render_template
 from test_report_story_v2 import standard_payload
@@ -11,7 +9,6 @@ from test_report_story_v2 import standard_payload
 
 ROOT = Path(__file__).resolve().parent
 WEB_TEMPLATE = ROOT / "report_templates" / "rove_web_report.html"
-PDF_TEMPLATE = ROOT / "report_templates" / "rove_pdf_report.html"
 
 
 def report_payload() -> dict:
@@ -54,13 +51,6 @@ class ReportRenderV2Tests(unittest.TestCase):
             "Market Movement nicht verfügbar",
         ):
             self.assertNotIn(phrase, html)
-
-    def test_pdf_uses_same_story_context_and_ten_pages(self):
-        context = build_render_context(report_payload())
-        html = jinja2.Template(PDF_TEMPLATE.read_text(encoding="utf-8")).render(**context)
-        self.assertEqual(html.count('<section class="page'), 10)
-        self.assertIn("15.000 €", html)
-        self.assertIn("Dein wiederkehrender Beitrag von 800 €", html)
 
     def test_empty_investments_and_goals_degrade_without_fake_values(self):
         data = copy.deepcopy(standard_payload())

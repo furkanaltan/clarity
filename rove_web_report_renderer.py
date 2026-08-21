@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
+from report_story_v2 import story_from_snapshot_data
 
 
 load_dotenv()
@@ -224,30 +225,9 @@ def strip_dc_runtime(template: str) -> str:
 def inject_report_css(template: str) -> str:
     css = """
     <style>
-      [data-screen-label="06 Rov.E Score"] * { box-sizing: border-box; }
-      [data-screen-label="06 Rov.E Score"] div,
-      [data-screen-label="07 Dein Ziel"] div { overflow-wrap: anywhere; }
-      @media (max-width: 760px) {
-        [data-screen-label="06 Rov.E Score"] {
-          padding-left: 20px !important;
-          padding-right: 20px !important;
-        }
-        [data-screen-label="06 Rov.E Score"] [style*="minmax(320px"] {
-          grid-template-columns: minmax(0, 1fr) !important;
-        }
-        [data-screen-label="06 Rov.E Score"] [style*="padding: 38px 42px"] {
-          padding: 28px 24px !important;
-        }
-        [data-screen-label="07 Dein Ziel"] [style*="padding: 52px 54px"] {
-          padding: 36px 28px !important;
-        }
-        [data-screen-label="07 Dein Ziel"] [style*="font-size: 24px"] {
-          font-size: 21px !important;
-          line-height: 1.45 !important;
-        }
-      }
+      [data-screen-label] { overflow-wrap: anywhere; }
       @media print {
-        body { background: #08090B !important; }
+        body { background: #07111a !important; }
         section {
           min-height: 100vh !important;
           break-after: page;
@@ -443,12 +423,6 @@ def standalone_script() -> str:
     return r"""
 <script>
 (function () {
-  const ease = 'cubic-bezier(0.2, 0.7, 0.2, 1)';
-  const fmt = (v, d) => new Intl.NumberFormat('de-DE', {
-    minimumFractionDigits: d,
-    maximumFractionDigits: d
-  }).format(v);
-
   function showExpiredState() {
     const expiry = document.body.getAttribute('data-report-expires-at');
     if (!expiry || Date.now() <= new Date(expiry).getTime()) return false;
@@ -470,46 +444,23 @@ def standalone_script() -> str:
       onScroll();
     }
 
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const ease = 'cubic-bezier(0.23, 1, 0.32, 1)';
     const reveals = Array.from(document.querySelectorAll('[data-reveal]'));
     reveals.forEach(el => {
       el.style.opacity = '0';
-      el.style.transform = 'translateY(28px)';
-      el.style.transition = 'opacity 0.9s ' + ease + ', transform 0.9s ' + ease;
+      el.style.transform = 'translateY(12px)';
+      el.style.transition = 'opacity 480ms ' + ease + ', transform 480ms ' + ease;
       el.style.transitionDelay = (parseInt(el.getAttribute('data-delay') || '0', 10)) + 'ms';
     });
 
     const bars = Array.from(document.querySelectorAll('[data-grow]'));
     bars.forEach(el => {
-      el._target = el.getAttribute('data-grow');
-      el.style.transition = 'width 1.3s ' + ease;
-      el.style.width = '0%';
+      el.style.transformOrigin = 'left center';
+      el.style.transform = 'scaleX(0)';
+      el.style.transition = 'transform 640ms ' + ease;
     });
-
-    const rings = Array.from(document.querySelectorAll('[data-ring]'));
-    rings.forEach(el => {
-      el._target = el.getAttribute('data-ring');
-      el.style.transition = 'stroke-dashoffset 1.6s ' + ease;
-      el.style.strokeDasharray = '540.4';
-      el.style.strokeDashoffset = '540.4';
-      el.setAttribute('stroke-dashoffset', '540.4');
-    });
-
-    const counts = Array.from(document.querySelectorAll('[data-count]'));
-    counts.forEach(el => {
-      el._targetVal = parseFloat(el.getAttribute('data-count'));
-      el._decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
-    });
-
-    const runCount = (el) => {
-      const dur = 1500, start = performance.now();
-      const tick = (now) => {
-        const t = Math.min(1, (now - start) / dur);
-        const e = 1 - Math.pow(1 - t, 3);
-        el.textContent = fmt(el._targetVal * e, el._decimals);
-        if (t < 1) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    };
 
     const io = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
@@ -519,37 +470,12 @@ def standalone_script() -> str:
           el.style.opacity = '1';
           el.style.transform = 'translateY(0)';
         }
-        if (el.hasAttribute('data-grow')) el.style.width = el._target;
-        if (el.hasAttribute('data-ring')) {
-          el.style.strokeDashoffset = el._target;
-          el.setAttribute('stroke-dashoffset', el._target);
-        }
-        if (el.hasAttribute('data-count') && !el._done) {
-          el._done = true;
-          runCount(el);
-        }
+        if (el.hasAttribute('data-grow')) el.style.transform = 'scaleX(1)';
         io.unobserve(el);
       });
-    }, { threshold: 0.2 });
+    }, { threshold: 0.14 });
 
-    reveals.concat(bars, rings, counts).forEach(el => io.observe(el));
-    window.setTimeout(() => {
-      rings.forEach(el => {
-        if (el._target) {
-          el.style.strokeDashoffset = el._target;
-          el.setAttribute('stroke-dashoffset', el._target);
-        }
-      });
-    }, 1200);
-
-    const assistant = document.querySelector('[data-rove-assistant]');
-    const planSection = document.querySelector('[data-screen-label="10 Plan für Juli"]');
-    if (assistant && planSection) {
-      const assistantIo = new IntersectionObserver((entries) => {
-        entries.forEach(entry => assistant.classList.toggle('is-visible', entry.isIntersecting));
-      }, { threshold: 0.36 });
-      assistantIo.observe(planSection);
-    }
+    reveals.concat(bars).forEach(el => io.observe(el));
   });
 })();
 </script>
@@ -571,7 +497,223 @@ def month_names(report_month: str) -> tuple[str, str]:
     return month_label_with_offset(report_month), month_label_with_offset(report_month, 1)
 
 
+def _story_money(value) -> str:
+    return money_text(float(value or 0), 2).replace(",00", "")
+
+
+def _story_metric_value(metric: dict) -> str:
+    value = metric.get("value")
+    key = str(metric.get("semantic_key") or "")
+    if value is None:
+        return "Noch offen"
+    if key in {"month_summary", "next_month_priorities", "rove_score"}:
+        return de_number(value)
+    return _story_money(value)
+
+
+def _localize_story_text(value) -> str:
+    text = str(value or "")
+
+    def replace_amount(match: re.Match) -> str:
+        amount = float(match.group(1))
+        return _story_money(amount)
+
+    return re.sub(r"(?<![\d.,])(\d+(?:\.\d{2}))\s+EUR\b", replace_amount, text)
+
+
+def build_story_render_context(data: dict) -> dict:
+    """Build presentation-only fields from the immutable Story V2 payload."""
+    story = story_from_snapshot_data(data)
+    pages = story["pages"]
+    report_month = str((data.get("meta") or {}).get("report_month") or story.get("report_month") or "")
+    month_label, next_label = month_names(report_month)
+
+    def metric(page_key: str) -> dict:
+        raw = dict(pages[page_key].get("primary_metric") or {})
+        raw["display_value"] = _story_metric_value(raw)
+        return raw
+
+    facts = []
+    for item in pages["page_1"].get("supporting_metrics") or []:
+        key = str(item.get("key") or "")
+        value = item.get("value")
+        if isinstance(value, (int, float)):
+            value = fmt_percent(value, 1) if key == "goal_progress" else _story_money(value)
+        facts.append({"label": str(item.get("label") or "Fakt"), "value": _localize_story_text(value or "-")})
+
+    flow = []
+    for item in pages["page_2"].get("supporting_metrics") or []:
+        flow.append({
+            "key": str(item.get("key") or ""),
+            "label": str(item.get("label") or ""),
+            "value": _story_money(item.get("value")),
+            "confirmed": bool(item.get("confirmed")),
+        })
+
+    categories_raw = pages["page_3"].get("supporting_metrics") or []
+    categories = []
+    max_category = max((float(item.get("amount") or 0) for item in categories_raw), default=1.0) or 1.0
+    for index, item in enumerate(categories_raw[:5]):
+        amount = float(item.get("amount") or 0)
+        categories.append({
+            "rank": index + 1,
+            "name": str(item.get("category") or "Sonstiges"),
+            "amount": _story_money(amount),
+            "share": fmt_percent(item.get("share") or 0, 1),
+            "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
+            "bar": max(4.0, min(100.0, amount / max_category * 100)),
+            "count": int(item.get("transaction_count") or 0),
+            "average": _story_money(item.get("avg_transaction")),
+            "delta": float(item.get("delta") or 0),
+            "class": str(item.get("class") or "unclear"),
+        })
+
+    merchants = []
+    for index, item in enumerate((pages["page_4"].get("supporting_metrics") or [])[:3]):
+        merchants.append({
+            "rank": index + 1,
+            "name": str(item.get("merchant") or "Unbekannt"),
+            "category": str(item.get("category") or "Sonstiges"),
+            "amount": _story_money(item.get("amount")),
+            "count": int(item.get("transaction_count") or 0),
+            "average": _story_money(item.get("avg_transaction")),
+            "share": fmt_percent(item.get("share") or 0, 1),
+            "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
+        })
+
+    changes = []
+    for item in (pages["page_5"].get("supporting_metrics") or [])[:3]:
+        delta = float(item.get("delta") or 0)
+        changes.append({
+            "label": str(item.get("label") or "Veränderung"),
+            "context": _localize_story_text(item.get("context")),
+            "delta": _story_money(abs(delta)),
+            "direction": "up" if delta > 0 else "down" if delta < 0 else "flat",
+        })
+
+    allocation = []
+    allocation_palette = ["blue", "cyan", "sand", "mint", "slate"]
+    for index, item in enumerate(pages["page_6"].get("supporting_metrics") or []):
+        amount = float(item.get("amount") or 0)
+        if amount <= 0:
+            continue
+        allocation.append({
+            "label": str(item.get("label") or "Vermögen"),
+            "amount": _story_money(amount),
+            "share": fmt_percent(item.get("share") or 0, 1),
+            "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
+            "tone": allocation_palette[index % len(allocation_palette)],
+        })
+
+    contribution_items = [
+        item
+        for item in (pages["page_7"].get("supporting_metrics") or [])
+        if float(item.get("amount", item.get("total", 0)) or 0) != 0
+    ]
+    contributions = []
+    for item in contribution_items[:4]:
+        amount = item.get("amount", item.get("total", 0))
+        name = item.get("name") or item.get("asset_type") or "Investment"
+        contributions.append({
+            "name": str(name),
+            "asset_type": str(item.get("asset_type") or "investment").upper(),
+            "amount": _story_money(amount),
+        })
+
+    goal_visual = (pages["page_8"].get("visual") or {}).get("data") or {}
+    primary_goal = goal_visual.get("primary_goal") or {}
+    target = float(primary_goal.get("target_amount") or 0)
+    current = float(primary_goal.get("current_amount") or 0)
+    goal_progress = min(100.0, current / target * 100) if target > 0 else 0.0
+    goal = {
+        "available": bool(primary_goal and target > 0),
+        "name": str(primary_goal.get("name") or "Dein Ziel"),
+        "current": _story_money(current),
+        "target": _story_money(target),
+        "remaining": _story_money(max(0.0, target - current)),
+        "progress": fmt_percent(goal_progress, 1),
+        "progress_raw": goal_progress,
+    }
+    score = goal_visual.get("score") or {}
+    score_value = int(score.get("clarity_score") or (score.get("parts") or {}).get("total") or 0)
+
+    insight = (story.get("insight_engine") or {}).get("selected") or {}
+    next_steps = [
+        {
+            "number": index + 1,
+            "title": str(item.get("title") or "Nächster Schritt"),
+            "text": _localize_story_text(item.get("text")),
+        }
+        for index, item in enumerate((story.get("next_month_engine") or {}).get("steps") or [])
+    ]
+
+    truth = data.get("report_truth") or {}
+    budget = truth.get("budget") or {}
+    contribution_total = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
+    if budget.get("has_budgets") and budget.get("on_track"):
+        recap_good = "Deine gesetzten Budgets lagen im Rahmen."
+    elif contribution_total > 0:
+        recap_good = f"Du hast {_story_money(contribution_total)} als Beitrag dokumentiert."
+    else:
+        recap_good = "Dein Monat ist vollständig sichtbar und damit vergleichbar."
+    if insight.get("suggested_tone") == "positive":
+        recap_good = _localize_story_text(insight.get("fallback_text") or recap_good)
+        recap_attention = changes[0]["context"] if changes else "Die Entwicklung bleibt im nächsten Monat vergleichbar."
+    else:
+        recap_attention = _localize_story_text(
+            insight.get("fallback_text")
+            or (changes[0]["context"] if changes else "Behalte die Entwicklung im Blick.")
+        )
+
+    page_copy = {
+        key: {
+            **page,
+            "text": _localize_story_text(page.get("text")),
+            "empty_state": _localize_story_text(page.get("empty_state")),
+        }
+        for key, page in pages.items()
+    }
+
+    return {
+        "story_version": story.get("story_version"),
+        "page_count": story.get("page_count"),
+        "month_label": month_label,
+        "next_month_label": next_label,
+        "tracked_days": int((data.get("meta") or {}).get("tracked_days") or 0),
+        "facts": facts[:4],
+        "flow": flow,
+        "categories": categories,
+        "merchants": merchants,
+        "changes": changes,
+        "allocation": allocation,
+        "contributions": contributions,
+        "contribution_more_count": max(0, len(contribution_items) - len(contributions)),
+        "goal": goal,
+        "score": score_value,
+        "insight": {
+            "type": str(insight.get("type") or "stable_month"),
+            "text": _localize_story_text(insight.get("fallback_text") or pages["page_9"].get("text")),
+            "tone": str(insight.get("suggested_tone") or "neutral"),
+            "safe_to_coach": bool(insight.get("safe_to_coach")),
+        },
+        "next_steps": next_steps,
+        "recap_good": recap_good,
+        "recap_attention": recap_attention,
+        "metrics": {key: metric(key) for key in pages},
+        "pages": page_copy,
+        "wealth_total": metric("page_6")["display_value"],
+        "consumption_total": _story_money((truth.get("expenses") or {}).get("total_consumption")),
+        "contribution_total": _story_money(contribution_total),
+        "cash_total": _story_money((truth.get("cash") or {}).get("current_cash")),
+        "income_total": _story_money((truth.get("income") or {}).get("amount")),
+        "fixed_costs_total": _story_money((truth.get("fixed_costs") or {}).get("amount")),
+    }
+
+
 def build_render_context(data: dict) -> dict:
+    if data.get("report_truth"):
+        return {"report": build_story_render_context(data)}
+
     meta = data["meta"]
     profile = data["profile"]
     pages = data["pages"]
@@ -825,6 +967,7 @@ def build_render_context(data: dict) -> dict:
     plan_step3_target_amount = max(50, savings_plan or 50)
 
     context = {
+        "report": build_story_render_context(data),
         "month_label": h(month_label),
         "next_label": h(next_label),
         "next_month_name": h(next_month_name),
