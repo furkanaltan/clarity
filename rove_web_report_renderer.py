@@ -324,7 +324,7 @@ def pdf_css() -> str:
       [data-screen-label="07 Dein Ziel"] > div,
       [data-screen-label="08 Meilensteine"] > div,
       [data-screen-label="09 Recap"] > div,
-      [data-screen-label="10 Plan für Juli"] > div {
+      [data-screen-label="10 Nächster Monat"] > div {
         max-width: 1040px !important;
       }
       [data-screen-label="06 Rov.E Score"] [style*="grid-template-columns: repeat(auto-fit"] {
@@ -363,7 +363,7 @@ def pdf_css() -> str:
         font-size: 21px !important;
         line-height: 1.32 !important;
       }
-      [data-screen-label="10 Plan für Juli"] {
+      [data-screen-label="10 Nächster Monat"] {
         padding-bottom: 70px !important;
       }
     </style>
@@ -446,21 +446,47 @@ def standalone_script() -> str:
 
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-    const ease = 'cubic-bezier(0.23, 1, 0.32, 1)';
+    const ease = 'cubic-bezier(0.2, 0.7, 0.2, 1)';
+    const fmt = (v, d) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
+
     const reveals = Array.from(document.querySelectorAll('[data-reveal]'));
     reveals.forEach(el => {
       el.style.opacity = '0';
-      el.style.transform = 'translateY(12px)';
-      el.style.transition = 'opacity 480ms ' + ease + ', transform 480ms ' + ease;
+      el.style.transform = 'translateY(28px)';
+      el.style.transition = 'opacity 0.9s ' + ease + ', transform 0.9s ' + ease;
       el.style.transitionDelay = (parseInt(el.getAttribute('data-delay') || '0', 10)) + 'ms';
     });
 
     const bars = Array.from(document.querySelectorAll('[data-grow]'));
     bars.forEach(el => {
-      el.style.transformOrigin = 'left center';
-      el.style.transform = 'scaleX(0)';
-      el.style.transition = 'transform 640ms ' + ease;
+      el._target = el.getAttribute('data-grow');
+      el.style.transition = 'width 1.3s ' + ease;
+      el.style.width = '0%';
     });
+
+    const rings = Array.from(document.querySelectorAll('[data-ring]'));
+    rings.forEach(el => {
+      el._target = el.getAttribute('data-ring');
+      el.style.transition = 'stroke-dashoffset 1.6s ' + ease;
+      el.setAttribute('stroke-dashoffset', '540.4');
+    });
+
+    const counts = Array.from(document.querySelectorAll('[data-count]'));
+    counts.forEach(el => {
+      el._targetVal = parseFloat(el.getAttribute('data-count'));
+      el._decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
+    });
+
+    const runCount = (el) => {
+      const dur = 1500, start = performance.now();
+      const tick = (now) => {
+        const t = Math.min(1, (now - start) / dur);
+        const e = 1 - Math.pow(1 - t, 3);
+        el.textContent = fmt(el._targetVal * e, el._decimals);
+        if (t < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
 
     const io = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
@@ -470,12 +496,37 @@ def standalone_script() -> str:
           el.style.opacity = '1';
           el.style.transform = 'translateY(0)';
         }
-        if (el.hasAttribute('data-grow')) el.style.transform = 'scaleX(1)';
+        if (el.hasAttribute('data-grow')) el.style.width = el._target;
+        if (el.hasAttribute('data-ring')) el.style.strokeDashoffset = el._target;
+        if (el.hasAttribute('data-count') && !el._done) { el._done = true; runCount(el); }
         io.unobserve(el);
       });
-    }, { threshold: 0.14 });
+    }, { threshold: 0.2 });
 
-    reveals.concat(bars).forEach(el => io.observe(el));
+    reveals.concat(bars, rings, counts).forEach(el => io.observe(el));
+
+    const assistant = document.querySelector('[data-rove-assistant]');
+    const planSection = document.querySelector('[data-screen-label="10 Nächster Monat"]');
+    if (assistant && planSection) {
+      const assistantIo = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          assistant.classList.toggle('is-visible', entry.isIntersecting);
+        });
+      }, { threshold: 0.36 });
+      assistantIo.observe(planSection);
+    }
+
+    const wealthEl = document.querySelector('.wealth-pulse');
+    if (wealthEl) {
+      const wealthIo = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          setTimeout(() => wealthEl.classList.add('is-pulsing'), 1500);
+          wealthIo.disconnect();
+        });
+      }, { threshold: 0.6 });
+      wealthIo.observe(wealthEl);
+    }
   });
 })();
 </script>
@@ -710,9 +761,186 @@ def build_story_render_context(data: dict) -> dict:
     }
 
 
+def _v2_legacy_visual_context(data: dict) -> dict:
+    """Map immutable Story V2 data onto the original web report visual language."""
+    report = build_story_render_context(data)
+    truth = data.get("report_truth") or {}
+    wealth = truth.get("wealth") or {}
+    expenses = truth.get("expenses") or {}
+    score_truth = truth.get("score") or {}
+    score_parts_raw = (score_truth.get("parts") or {}).get("factors") or []
+    score_value = int(report["score"] or 0)
+    score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1)
+    band = rank_band(score_value)
+    band_span = max(1, band["high"] - band["low"])
+    rank_name = next(
+        (name for low, high, name, _icon in SCORE_RANKS if low <= score_value <= high),
+        "Rookie",
+    )
+
+    categories = report["categories"]
+    strongest = categories[0] if categories else {
+        "name": "Noch offen", "amount": "0 €", "bar": 0, "share_raw": 0, "share": "0,0 %"
+    }
+    merchants = report["merchants"]
+    biggest = merchants[0] if merchants else {
+        "name": "Noch offen", "amount": "0 €", "share_raw": 0, "share": "0,0 %"
+    }
+    month_short = report["month_label"].split(" ", 1)[0]
+    next_month_name = report["next_month_label"].split(" ", 1)[0]
+    contribution_total_raw = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
+    net_worth_raw = float(wealth.get("total") or 0)
+    cash_raw = float(wealth.get("cash") or (truth.get("cash") or {}).get("current_cash") or 0)
+    investments_raw = float(wealth.get("investments") or (data.get("profile") or {}).get("current_investments") or 0)
+    property_raw = float(wealth.get("property_equity") or 0)
+    wealth_total = max(0.0, net_worth_raw)
+
+    allocation_total = sum(float(item.get("share_raw") or 0) for item in report["allocation"]) or 100.0
+    investment_share = (investments_raw / wealth_total * 100) if wealth_total > 0 else 0.0
+    cash_share = (cash_raw / wealth_total * 100) if wealth_total > 0 else 0.0
+    property_share = (property_raw / wealth_total * 100) if wealth_total > 0 else 0.0
+
+    money_map_categories = []
+    palette = [
+        {"bar_color": "linear-gradient(90deg, #2D7FCC 0%, #3BA7FF 100%)", "text_color": "#111318"},
+        {"bar_color": "rgba(42,171,238,0.4)", "text_color": "#F4F1EA"},
+        {"bar_color": "rgba(255,255,255,0.18)", "text_color": "#F4F1EA"},
+    ]
+    for index, item in enumerate(categories):
+        colors = palette[min(index, len(palette) - 1)]
+        money_map_categories.append({
+            "name": h(item["name"]),
+            "bar_pct": item["bar"],
+            "pct_text": int(round(float(item.get("share_raw") or 0))),
+            "amount_text": item["amount"],
+            "bar_color": colors["bar_color"],
+            "text_color": colors["text_color"],
+        })
+
+    score_parts = []
+    for item in score_parts_raw:
+        score_parts.append({
+            "label": str(item.get("n") or item.get("label") or item.get("key") or "Faktor"),
+            "value": int(item.get("points") or 0),
+            "max": int(item.get("max") or 25),
+            "warn": False,
+        })
+    if score_parts:
+        weakest = min(range(len(score_parts)), key=lambda idx: score_parts[idx]["value"])
+        score_parts[weakest]["warn"] = True
+
+    next_steps = report["next_steps"] or [
+        {"title": "Tracke weiter sauber.", "text": "So bleibt dein naechster Monat vergleichbar."},
+        {"title": "Pruefe deine groesste Kategorie.", "text": "Ein kleiner Rahmen reicht fuer den Anfang."},
+        {"title": "Halte deine Sparrate klar.", "text": "Der Beitrag zaehlt mehr als perfekte Planung."},
+    ]
+    while len(next_steps) < 3:
+        next_steps.append(next_steps[-1])
+
+    strongest_amount_raw = float((expenses.get("categories") or [{}])[0].get("amount") or 0)
+    ratio_to_savings = strongest_amount_raw / contribution_total_raw if contribution_total_raw > 0 else 0.0
+    freed_up_monthly = max(0.0, strongest_amount_raw / 2)
+    goal = report["goal"]
+    goal_name = goal["name"] if goal["available"] else "Dein Ziel"
+
+    return {
+        "report": report,
+        "month_label": h(report["month_label"]),
+        "next_label": h(report["next_month_label"]),
+        "next_month_name": h(next_month_name),
+        "next_report_delivery_month_name": h(month_label_with_offset((data.get("meta") or {}).get("report_month", ""), 2).split(" ", 1)[0]),
+        "month_short": h(month_short),
+        "freedom_step_label": "Diesen Monat aufgebaut",
+        "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "offen",
+        "freedom_step_subline": "investiert oder zurueckgelegt",
+        "development_percent_text": report["metrics"]["page_5"]["display_value"],
+        "net_worth_span": data_count_span(net_worth_raw),
+        "investments_span": data_count_span(investments_raw),
+        "cash_span": data_count_span(cash_raw),
+        "biggest_amount_span": data_count_span((expenses.get("merchants") or [{}])[0].get("amount") or 0),
+        "biggest_name": h(biggest["name"]),
+        "strongest_amount_span": data_count_span(strongest_amount_raw),
+        "strongest_name": h(strongest["name"]),
+        "tracked_days": report["tracked_days"],
+        "invested_amount": report["contribution_total"],
+        "month_savings_sentence": h(report["pages"]["page_7"].get("text") or "Dein Aufbau ist sichtbar."),
+        "wealth_headline": h(report["pages"]["page_6"].get("text") or "So ist dein Vermoegen verteilt."),
+        "wealth_sentence": h("Nur vorhandene Vermoegensklassen werden gezeigt."),
+        "strongest_amount": strongest["amount"],
+        "ratio_sentence": h(report["pages"]["page_9"].get("text") or report["insight"]["text"]),
+        "invested_span": data_count_span(contribution_total_raw),
+        "ratio_span": data_count_span(ratio_to_savings, 2),
+        "halve_sentence": h(report["insight"]["text"]),
+        "yearly_span": data_count_span(freed_up_monthly * 12),
+        "goal_desc": h(goal_name),
+        "goal_headline": h("Dein Ziel"),
+        "goal_context_text": h(goal_name),
+        "investments_pct_raw": round(investment_share, 1),
+        "investments_pct_text": fmt_percent(investment_share, 1),
+        "cash_pct_text": fmt_percent(cash_share, 1),
+        "cash_pct_raw": round(cash_share, 1),
+        "property_pct_raw": round(property_share, 1),
+        "property_pct_text": fmt_percent(property_share, 1),
+        "has_property_equity": property_raw > 0,
+        "investments_amount": _story_money(investments_raw),
+        "cash_amount": _story_money(cash_raw),
+        "property_equity_amount": _story_money(property_raw),
+        "invest_story_headline": h(report["pages"]["page_6"].get("question") or "Wo steckt dein Vermoegen heute?"),
+        "invest_story_sub": h(report["pages"]["page_6"].get("text") or ""),
+        "money_map_categories": money_map_categories,
+        "has_budget_status": bool((truth.get("budget") or {}).get("has_budgets")),
+        "budget_status_title": "Budgetrahmen",
+        "budget_status_text": h(report["recap_good"]),
+        "budget_status_subtext": h(report["recap_attention"]),
+        "biggest_amount": biggest["amount"],
+        "biggest_share_pct": int(round(float(biggest.get("share_raw") or 0))),
+        "invest_vs_strongest_text": h("Diesen Monat investiert, getrennt vom Konsum."),
+        "score_value": score_value,
+        "score_span": data_count_span(score_value),
+        "score_headline_suffix": "Rov.E hat den Monat eingeordnet.",
+        "score_dash": score_dash,
+        "rank_name": h(rank_name),
+        "prev_rank_name": h(band["prev_name"]) if band["prev_name"] else "",
+        "next_rank_name": h(band["next_name"]) if band["next_name"] else "",
+        "rank_band_low": round(band["low"] / 100 * 100, 1),
+        "rank_band_high": round((band["high"] + 1) / 100 * 100, 1),
+        "rank_band_text": f"{band['low']}-{band['high']}",
+        "score_parts": score_parts,
+        "rank_blurb": h(RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"])),
+        "next_step_headline": h(next_steps[0]["title"]),
+        "next_step_sub": h(next_steps[0]["text"]),
+        "goal_pct_span": data_count_span(goal["progress_raw"], 1),
+        "goal_pct_raw": goal["progress_raw"],
+        "goal_target_amount": goal["target"],
+        "goal_current_amount": goal["current"],
+        "net_worth_amount": goal["current"],
+        "goal_remaining_amount": goal["remaining"],
+        "goal_honest_text": h(report["pages"]["page_8"].get("text") or "Dein Ziel ist klar sichtbar."),
+        "goal_lever_text": h(report["insight"]["text"]),
+        "goal_lever_subtext": h("Rov.E zeigt dir den naechsten sinnvollen Schritt."),
+        "milestone_headline": h(report["pages"]["page_5"].get("title") or "Was hat sich veraendert?"),
+        "milestone_from": _story_money(max(0.0, wealth_total - 5000)),
+        "milestone_to": _story_money(wealth_total + 5000),
+        "milestone_pct_text": 50,
+        "milestone_pct_raw": 50,
+        "milestone_eta_text": h((report["changes"][0]["context"] if report["changes"] else "Noch kein vollstaendiger Vormonat zum Vergleichen.")),
+        "badges": [],
+        "recap_good_text": h(report["recap_good"]),
+        "recap_attention_text": h(report["recap_attention"]),
+        "recap_lever_text": h(report["insight"]["text"]),
+        "plan_step1_sub": h(next_steps[0]["text"]),
+        "plan_step1_impact": "Klarheit",
+        "plan_step2_target": strongest["amount"],
+        "plan_step2_sub": h(next_steps[1]["text"]),
+        "plan_step2_impact": "Fokus",
+        "plan_step3_target": report["contribution_total"],
+        "plan_step3_impact": "Aufbau",
+    }
+
+
 def build_render_context(data: dict) -> dict:
     if data.get("report_truth"):
-        return {"report": build_story_render_context(data)}
+        return _v2_legacy_visual_context(data)
 
     meta = data["meta"]
     profile = data["profile"]

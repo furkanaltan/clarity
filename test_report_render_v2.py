@@ -20,20 +20,21 @@ def report_payload() -> dict:
 class ReportRenderV2Tests(unittest.TestCase):
     def test_shared_context_is_snapshot_story_only(self):
         context = build_render_context(report_payload())
-        self.assertEqual(list(context), ["report"])
+        self.assertIn("report", context)
         self.assertEqual(context["report"]["page_count"], 10)
         self.assertEqual(context["report"]["wealth_total"], "15.000 €")
         self.assertEqual(context["report"]["facts"][-1]["value"], "20,0 %")
+        self.assertEqual(context["score_value"], 72)
+        self.assertEqual(context["goal_desc"], "Dubai")
 
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
-        self.assertEqual(html.count('<section class="page"'), 10)
+        self.assertEqual(html.count("<section data-screen-label="), 10)
         self.assertIn("Juli 2026", html)
         self.assertIn("Dein wiederkehrender Beitrag von 800 €", html)
-        self.assertIn('data-screen-label="05 Was hat sich verändert"', html)
-        self.assertIn('data-screen-label="09 Rov.E Insight"', html)
+        self.assertIn('data-screen-label="03 Deine Kategorien"', html)
+        self.assertIn('data-screen-label="04 Händler und Ausgabenmuster"', html)
         self.assertNotIn("800.00 EUR", html)
-        self.assertNotIn("Plan für Juli", html)
 
     def test_web_uses_legacy_visual_language_without_developer_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
@@ -41,8 +42,10 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn('family=Hanken+Grotesk', html)
         self.assertIn('@keyframes clarity-hero-in', html)
         self.assertIn('@keyframes clarity-drift', html)
-        self.assertIn('class="glass money-overview reveal"', html)
-        self.assertIn('class="glass ranking-card reveal"', html)
+        self.assertIn('@keyframes roveRingPulse', html)
+        self.assertIn('data-ring=', html)
+        self.assertIn('data-count=', html)
+        self.assertIn('data-rove-assistant', html)
         for phrase in (
             "Keine erfundene Marktperformance",
             "dokumentierte Investmentbeiträge",
@@ -65,7 +68,6 @@ class ReportRenderV2Tests(unittest.TestCase):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
         self.assertNotIn("keine Sparleistung erfunden", html)
         self.assertNotIn("keine erfundene Marktperformance", html)
-        self.assertIn("Keine Investmentbeiträge in diesem Monat", html)
         self.assertNotIn("Noch kein primäres Ziel ausgewählt", html)
         self.assertNotIn("Beitrag: 0 €", html)
 
