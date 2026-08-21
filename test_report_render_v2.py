@@ -42,6 +42,7 @@ class ReportRenderV2Tests(unittest.TestCase):
 
         self.assertEqual(context["month_label"], "Juli 2026")
         self.assertEqual(context["wealth_total"], "—")
+        self.assertIn("ursprünglichen Fassung", context["pages"]["page_3"]["text"])
 
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())

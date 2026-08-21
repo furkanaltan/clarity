@@ -598,7 +598,11 @@ def _pre_truth_story_render_context(data: dict) -> dict:
         "recap_good": str(recap.get("what_went_well") or ""),
         "recap_attention": str(recap.get("needs_attention") or ""),
         "metrics": {},
-        "pages": {},
+        "pages": {
+            "page_3": {
+                "text": "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten.",
+            },
+        },
         "wealth_total": "—",
         "consumption_total": "—",
         "contribution_total": "—",
