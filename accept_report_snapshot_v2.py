@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import report_engine
+import report_story_v2
 import rove_pdf_light_renderer
 import rove_web_report_renderer
 
@@ -60,13 +61,31 @@ def sqlite_checks(db_path: Path) -> dict:
 def service_checks() -> dict:
     api = run(["systemctl", "is-active", "rove-app-api"])
     timer = run(["systemctl", "is-active", "rove-report-worker.timer"])
+    worker_result = run(["systemctl", "show", "rove-report-worker.service", "-p", "ExecMainStatus", "-p", "Result"])
+    worker_logs = run([
+        "journalctl", "-u", "rove-report-worker.service", "--since", "24 hours ago", "--no-pager", "-o", "cat",
+    ])
     health = run(["curl", "-fsS", "https://getrove.de/app-api/health"])
     if api != "active" or timer != "active":
         fail(f"service_not_active:api={api}:worker_timer={timer}")
+    if "Result=success" not in worker_result and "ExecMainStatus=0" not in worker_result:
+        fail(f"worker_last_run_not_healthy:{worker_result}")
+    error_lines = [
+        line for line in worker_logs.splitlines()
+        if any(token in line.lower() for token in ("traceback", "unhandled", "snapshot_error", "renderer_error", "cross-user"))
+    ]
+    if error_lines:
+        fail("worker_report_errors_detected")
     payload = json.loads(health)
     if payload.get("ok") is not True:
         fail("app_health_not_ok")
-    return {"api": api, "worker_timer": timer, "health": payload}
+    return {
+        "api": api,
+        "worker_timer": timer,
+        "worker_last_run": worker_result,
+        "worker_log_errors": 0,
+        "health": payload,
+    }
 
 
 def snapshot_checks(snapshot: dict, user_id: int, report_month: str) -> dict:
@@ -130,6 +149,21 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
     ref = data["meta"].get("snapshot_ref")
     if not ref or ref.get("schema_version") != snapshot["schema_version"]:
         fail("snapshot_ref_missing_or_inconsistent")
+    # Sprint-2 snapshots remain immutable and may not contain the later story
+    # object. In that case derive the story from the same frozen payload only.
+    story = data.get("report_story_v2") or report_story_v2.story_from_snapshot_data(data)
+    if story.get("story_version") != 2 or story.get("page_count") != 10:
+        fail("story_v2_identity_missing_or_inconsistent")
+    central_facts = {
+        "net_worth": data.get("report_truth", {}).get("wealth", {}).get("net_worth"),
+        "consumption": data.get("report_truth", {}).get("expenses", {}).get("total_consumption"),
+        "investment_contributions": data.get("report_truth", {}).get("investments", {}).get("contributions"),
+        "goals": data.get("report_truth", {}).get("goals", {}).get("goals", []),
+        "insight": story.get("selected_insight"),
+        "story_pages": story.get("page_count"),
+    }
+    if any(value is None for value in central_facts.values()):
+        fail("central_report_fact_missing")
     # Both renderers received the same in-memory immutable payload. The HTML/PDF
     # files are only artifacts; no renderer is allowed to query the DB here.
     return {
@@ -139,6 +173,9 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
         "schema_version": snapshot["schema_version"],
         "report_month": data["meta"]["report_month"],
         "report_data_hash": snapshot["data_hash"],
+        "story_version": story["story_version"],
+        "story_pages": story["page_count"],
+        "central_facts_same_input": True,
         "same_input": True,
     }
 
@@ -173,6 +210,9 @@ def main() -> int:
         fail("snapshot_retry_changed_final_snapshot")
     if json.dumps(retry["data"], sort_keys=True) != json.dumps(snapshot["data"], sort_keys=True):
         fail("snapshot_retry_changed_report_data")
+    if json.dumps(retry.get("ai_text"), sort_keys=True) != json.dumps(snapshot.get("ai_text"), sort_keys=True):
+        fail("snapshot_retry_changed_ai_text")
+    final_sqlite = sqlite_checks(db_path)
 
     print(json.dumps({
         "status": "GO",
@@ -182,6 +222,10 @@ def main() -> int:
         "snapshot": snapshot_result,
         "web_pdf_identity": render_result,
         "retry_immutability": "ok",
+        "retry_snapshot_id": retry["id"],
+        "retry_data_hash": retry["data_hash"],
+        "sqlite_after_retry": final_sqlite,
+        "ai_persistence": "not_generated" if not snapshot.get("ai_text") else "unchanged",
         "old_reports_migrated": False,
         "design_changed": False,
     }, ensure_ascii=False, indent=2))
