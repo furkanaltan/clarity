@@ -1,743 +1,188 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="de">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="../support.js"></script>
-<template id="__bundler_thumbnail" data-bg-color="#08090B">
-  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
-    <rect width="1200" height="800" fill="#08090B"></rect>
-    <text x="600" y="380" text-anchor="middle" font-family="Georgia, serif" font-size="150" fill="#F4F1EA">Rov.E</text>
-    <text x="600" y="500" text-anchor="middle" font-family="Georgia, serif" font-size="96" font-style="italic" fill="#3BA7FF">Report</text>
-  </svg>
-</template>
-</head>
-<body>
-<x-dc>
-<helmet>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rov.E Monatsreport · {{ report.month_label }}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
-  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&amp;display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&amp;display=swap" rel="stylesheet">
+  <script>document.documentElement.classList.add('js');</script>
   <style>
-    html, body { margin: 0; padding: 0; background: #08090B; }
-    body { -webkit-font-smoothing: antialiased; }
-    ::selection { background: rgba(42,171,238,0.25); }
-    @keyframes clarity-hero-in { from { opacity: 0; transform: translateY(34px); } to { opacity: 1; transform: translateY(0); } }
-    @keyframes clarity-drift { 0% { transform: translate(0,0) scale(1); } 50% { transform: translate(60px,-40px) scale(1.15); } 100% { transform: translate(0,0) scale(1); } }
-    @keyframes clarity-drift-b { 0% { transform: translate(0,0) scale(1); } 50% { transform: translate(-70px,50px) scale(1.1); } 100% { transform: translate(0,0) scale(1); } }
-    @keyframes clarity-scrollhint { 0% { transform: translateY(-100%); } 60% { transform: translateY(100%); } 100% { transform: translateY(100%); } }
-    @keyframes roveValuePulse { 0%, 100% { text-shadow: 0 0 0 rgba(59,167,255,0); filter: none; transform: scale(1); } 38% { text-shadow: 0 0 18px rgba(244,241,234,0.38), 0 0 44px rgba(59,167,255,0.62), 0 0 90px rgba(59,167,255,0.24); filter: drop-shadow(0 0 16px rgba(59,167,255,0.32)); transform: scale(1.026); } }
-    @keyframes roveRingPulse { 0%, 100% { stroke-width: 12; filter: drop-shadow(0 0 8px rgba(42,171,238,0.55)); } 50% { stroke-width: 14; filter: drop-shadow(0 0 18px rgba(59,167,255,0.9)) drop-shadow(0 0 42px rgba(59,167,255,0.34)); } }
-    @keyframes roveHaloBreath { 0%, 100% { opacity: 0.42; transform: scale(1); } 50% { opacity: 0.86; transform: scale(1.08); } }
-    @keyframes roveHover { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-    @keyframes roveGlowPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.85; } }
-    @keyframes roveFinL { 0%, 100% { transform: rotate(0deg) translateY(0); } 50% { transform: rotate(-7deg) translateY(-3px); } }
-    @keyframes roveFinR { 0%, 100% { transform: rotate(0deg) translateY(0); } 50% { transform: rotate(7deg) translateY(-3px); } }
-    @keyframes roveFinalPoint { 0% { transform: rotate(18deg) translate(2px, 6px); } 100% { transform: rotate(-42deg) translate(-6px, -12px); } }
-    @keyframes roveBlink { 0%, 93%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.12); } }
-    .rove-report-assistant {
-      position: absolute;
-      top: 76px;
-      right: 252px;
-      z-index: 8;
-      width: 112px;
-      height: 112px;
-      pointer-events: none;
-      opacity: 0;
-      transform: translate(380px, 150px) rotate(22deg) scale(0.66);
-      transition: opacity 2.05s cubic-bezier(0.16,0.85,0.24,1), transform 3.75s cubic-bezier(0.16,0.85,0.24,1.02);
+    :root {
+      color-scheme: dark;
+      --page: #0b1017;
+      --page-alt: #0d141d;
+      --ink: #f5f3ed;
+      --muted: #a6aeaf;
+      --quiet: #727e84;
+      --blue: #3ba7ff;
+      --cyan: #70d5ee;
+      --mint: #68d8b2;
+      --sand: #d8b66a;
+      --slate: #71869b;
+      --line: rgba(220, 236, 246, .11);
+      --glass: rgba(255, 255, 255, .045);
+      --shadow: 0 28px 80px rgba(0, 0, 0, .22);
+      --ease: cubic-bezier(.2, .7, .2, 1);
     }
-    .rove-report-assistant.is-visible {
-      opacity: 1;
-      transform: translate(0, 0) rotate(-2deg) scale(1);
+    * { box-sizing: border-box; }
+    html { background: var(--page); scroll-behavior: smooth; }
+    body { margin: 0; overflow-x: hidden; color: var(--ink); background: var(--page); font-family: "Hanken Grotesk", sans-serif; -webkit-font-smoothing: antialiased; }
+    ::selection { background: rgba(59, 167, 255, .28); }
+    @keyframes clarity-hero-in { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes clarity-drift { 0%, 100% { transform: translate3d(0, 0, 0) scale(1); } 50% { transform: translate3d(55px, -35px, 0) scale(1.08); } }
+    @keyframes clarity-drift-b { 0%, 100% { transform: translate3d(0, 0, 0) scale(1); } 50% { transform: translate3d(-48px, 38px, 0) scale(1.06); } }
+    @keyframes clarity-scrollhint { 0% { transform: translateY(-110%); } 62%, 100% { transform: translateY(110%); } }
+    .progress { position: fixed; z-index: 40; inset: 0 0 auto; height: 2px; background: var(--blue); box-shadow: 0 0 14px rgba(59, 167, 255, .45); transform: scaleX(0); transform-origin: left; }
+    .preview-badge { position: fixed; z-index: 50; right: 16px; bottom: 16px; padding: 9px 13px; border: 1px solid rgba(216, 182, 106, .34); border-radius: 999px; background: rgba(16, 20, 26, .82); color: #ead49e; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; backdrop-filter: blur(18px); }
+    .page { position: relative; min-height: 100svh; display: flex; align-items: center; padding: clamp(84px, 10vw, 132px) 32px; overflow: hidden; border-top: 1px solid rgba(255, 255, 255, .055); background: linear-gradient(145deg, rgba(255, 255, 255, .012), transparent 46%), var(--page); }
+    .page:nth-of-type(even) { background-color: var(--page-alt); }
+    .page::before, .page::after { content: ""; position: absolute; width: min(64vw, 760px); aspect-ratio: 1; border-radius: 50%; pointer-events: none; filter: blur(18px); opacity: .58; }
+    .page::before { top: -46%; right: -30%; background: radial-gradient(circle, rgba(59, 167, 255, .105), rgba(59, 167, 255, 0) 68%); animation: clarity-drift 18s ease-in-out infinite; }
+    .page::after { bottom: -56%; left: -34%; background: radial-gradient(circle, rgba(85, 171, 218, .055), rgba(85, 171, 218, 0) 70%); animation: clarity-drift-b 22s ease-in-out infinite; }
+    .wrap { position: relative; z-index: 2; width: min(1040px, 100%); margin: 0 auto; }
+    .section-number { position: absolute; z-index: -1; top: -70px; right: 0; color: rgba(255, 255, 255, .035); font-family: "Newsreader", serif; font-size: clamp(112px, 16vw, 176px); line-height: 1; user-select: none; pointer-events: none; }
+    .eyebrow { margin-bottom: 20px; color: var(--blue); font-size: 11px; font-weight: 700; letter-spacing: .22em; text-transform: uppercase; }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2 { font-family: "Newsreader", serif; font-weight: 420; letter-spacing: -.025em; }
+    h1 { max-width: 760px; font-size: clamp(54px, 8vw, 88px); line-height: .98; }
+    h2 { max-width: 780px; font-size: clamp(42px, 5.8vw, 64px); line-height: 1.06; }
+    h3 { font-size: 20px; line-height: 1.25; font-weight: 600; letter-spacing: -.015em; }
+    .lead { max-width: 670px; margin-top: 22px; color: var(--muted); font-size: 18px; line-height: 1.62; }
+    .hero-copy { animation: clarity-hero-in 1s var(--ease) both; }
+    .hero-title { animation: clarity-hero-in 1s .1s var(--ease) both; }
+    .hero-lead { animation: clarity-hero-in 1s .2s var(--ease) both; }
+    .hero-facts { animation: clarity-hero-in 1s .3s var(--ease) both; }
+    .scroll-cue { width: 1px; height: 42px; margin: 54px auto 0; overflow: hidden; background: rgba(255, 255, 255, .1); }
+    .scroll-cue i { display: block; width: 100%; height: 100%; background: var(--blue); animation: clarity-scrollhint 2.2s ease-in-out infinite; }
+    .glass { border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(145deg, rgba(255, 255, 255, .06), rgba(255, 255, 255, .018) 42%), var(--glass); box-shadow: var(--shadow), inset 0 1px rgba(255, 255, 255, .035); backdrop-filter: blur(18px) saturate(118%); -webkit-backdrop-filter: blur(18px) saturate(118%); }
+    .label { color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    .value { font-family: "Newsreader", serif; font-variant-numeric: tabular-nums; font-weight: 420; letter-spacing: -.025em; }
+    .note { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 48px; }
+    .fact { min-height: 152px; padding: 28px; display: flex; flex-direction: column; justify-content: space-between; }
+    .fact:first-child { border-color: rgba(59, 167, 255, .25); background-color: rgba(59, 167, 255, .025); }
+    .fact .value { margin-top: 22px; font-size: clamp(26px, 3vw, 34px); }
+    .hero-meta { margin-top: 22px; display: flex; justify-content: space-between; color: var(--quiet); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+    .money-overview { display: grid; grid-template-columns: 1.45fr repeat(3, 1fr); gap: 1px; margin-top: 50px; overflow: hidden; }
+    .money-overview > div { min-height: 132px; padding: 26px; background: rgba(7, 13, 20, .28); }
+    .money-overview .primary { background: rgba(59, 167, 255, .055); }
+    .money-overview .value { margin-top: 18px; font-size: clamp(27px, 3vw, 38px); }
+    .flow-card { margin-top: 16px; padding: 12px 38px 28px; }
+    .flow-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: center; min-height: 68px; border-bottom: 1px solid var(--line); }
+    .flow-row .name { font-size: 15px; }
+    .flow-row .amount { font-family: "Newsreader", serif; font-size: 23px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .flow-row .amount.out::before { content: "− "; color: var(--quiet); }
+    .flow-total { margin-top: 20px; padding-top: 3px; display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
+    .flow-total .amount { color: var(--blue); font-family: "Newsreader", serif; font-size: 32px; white-space: nowrap; }
+    .ranking-card { margin-top: 50px; padding: 18px 42px; }
+    .ranking-row { display: grid; grid-template-columns: 42px minmax(170px, 1.15fr) minmax(180px, 1.8fr) auto; gap: 20px; align-items: center; padding: 25px 0; border-bottom: 1px solid var(--line); }
+    .ranking-row:last-child { border-bottom: 0; }
+    .rank { color: rgba(255, 255, 255, .22); font-family: "Newsreader", serif; font-size: 27px; }
+    .name { min-width: 0; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+    .sub { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .amount { text-align: right; font-family: "Newsreader", serif; font-size: 24px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .bar { height: 9px; overflow: hidden; border-radius: 99px; background: rgba(255, 255, 255, .065); }
+    .bar-fill { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2d7fcc, var(--blue)); box-shadow: 0 0 16px rgba(59, 167, 255, .28); transition: width 1.25s var(--ease); }
+    .is-visible .bar-fill, .bar-fill.is-visible { width: var(--w); }
+    .change-card { margin-top: 50px; padding: 12px 42px; }
+    .change-row { display: grid; grid-template-columns: minmax(150px, .8fr) 1.7fr; gap: 34px; padding: 26px 0; border-bottom: 1px solid var(--line); }
+    .change-row:last-child { border-bottom: 0; }
+    .change-row b { font-family: "Newsreader", serif; font-size: 24px; font-weight: 420; line-height: 1.35; }
+    .wealth-card { margin-top: 48px; padding: clamp(30px, 5vw, 50px); }
+    .wealth-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; }
+    .wealth-total { margin-top: 12px; font-size: clamp(48px, 7vw, 78px); }
+    .allocation { display: flex; height: 16px; margin-top: 38px; overflow: hidden; border-radius: 99px; background: rgba(255, 255, 255, .06); }
+    .allocation i { min-width: 3px; width: var(--w); }
+    .tone-blue { background: var(--blue); } .tone-cyan { background: var(--cyan); } .tone-sand { background: var(--sand); } .tone-mint { background: var(--mint); } .tone-slate { background: var(--slate); }
+    .allocation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 30px; border-top: 1px solid var(--line); }
+    .allocation-item { display: grid; grid-template-columns: 10px 1fr; gap: 12px; padding: 22px 18px 6px 0; }
+    .dot { width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; }
+    .allocation-item b { display: block; font-family: "Newsreader", serif; font-size: 22px; font-weight: 420; }
+    .allocation-item small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .build-card { margin-top: 48px; padding: clamp(30px, 5vw, 50px); }
+    .build-total { font-size: clamp(54px, 8vw, 88px); }
+    .build-list { margin-top: 34px; border-top: 1px solid var(--line); }
+    .build-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; padding: 22px 0; border-bottom: 1px solid var(--line); }
+    .build-row .amount { color: var(--blue); }
+    .goal-grid { display: grid; grid-template-columns: 1.5fr .75fr; gap: 16px; margin-top: 48px; }
+    .goal-card { padding: clamp(28px, 4vw, 44px); }
+    .goal-name { margin-top: 16px; font-family: "Newsreader", serif; font-size: clamp(34px, 5vw, 56px); line-height: 1; overflow-wrap: anywhere; }
+    .goal-progress { margin-top: 34px; display: flex; justify-content: space-between; gap: 22px; align-items: baseline; }
+    .goal-progress .value { font-size: 32px; }
+    .goal-meta { margin-top: 15px; display: flex; justify-content: space-between; gap: 18px; color: var(--muted); font-size: 13px; }
+    .score-card { min-height: 320px; display: grid; place-items: center; padding: 32px; text-align: center; }
+    .score-ring { --score-angle: calc(var(--score) * 3.6deg); position: relative; width: 184px; aspect-ratio: 1; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--blue) var(--score-angle), rgba(255, 255, 255, .07) 0); box-shadow: 0 0 35px rgba(59, 167, 255, .12); }
+    .score-ring::before { content: ""; position: absolute; width: 152px; aspect-ratio: 1; border-radius: 50%; background: #101923; border: 1px solid var(--line); }
+    .score-value { position: relative; z-index: 1; font-size: 64px; }
+    .insight-card { margin-top: 52px; max-width: 920px; padding: clamp(34px, 5vw, 54px); border-color: rgba(59, 167, 255, .26); background: linear-gradient(145deg, rgba(59, 167, 255, .095), rgba(255, 255, 255, .026) 55%); }
+    .insight-mark { width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid rgba(59, 167, 255, .38); border-radius: 50%; color: var(--blue); font-family: "Newsreader", serif; font-size: 20px; }
+    .insight-card p { max-width: 810px; margin-top: 28px; font-family: "Newsreader", serif; font-size: clamp(27px, 3.5vw, 40px); line-height: 1.33; letter-spacing: -.018em; }
+    .steps { display: grid; gap: 14px; margin-top: 48px; }
+    .step { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 26px; align-items: center; padding: 30px 34px; }
+    .step-no { color: rgba(255, 255, 255, .17); font-family: "Newsreader", serif; font-size: 42px; }
+    .step p { margin-top: 7px; color: var(--muted); line-height: 1.55; }
+    .empty { margin-top: 42px; padding: 32px; color: var(--muted); line-height: 1.6; }
+    .report-footer { margin-top: 54px; padding-top: 24px; display: flex; justify-content: space-between; gap: 20px; border-top: 1px solid var(--line); color: var(--quiet); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; }
+    .js .reveal { opacity: 0; transform: translateY(28px); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--delay, 0ms); }
+    .js .reveal.is-visible { opacity: 1; transform: translateY(0); }
+    @media (max-width: 820px) {
+      .page { min-height: auto; padding: 94px 22px; } .page:first-of-type { min-height: 100svh; }
+      .section-number { top: -50px; font-size: 112px; }
+      .facts { grid-template-columns: 1fr 1fr; }
+      .money-overview { grid-template-columns: 1fr 1fr; }
+      .ranking-card { padding: 12px 24px; }
+      .ranking-row { grid-template-columns: 34px minmax(0, 1fr); gap: 10px 14px; padding: 24px 0; }
+      .ranking-row .bar { grid-column: 2; grid-row: 2; } .ranking-row .amount { grid-column: 2; grid-row: 3; text-align: left; }
+      .change-row { grid-template-columns: 1fr; gap: 10px; }
+      .allocation-grid { grid-template-columns: 1fr 1fr; }
+      .goal-grid { grid-template-columns: 1fr; } .score-card { min-height: 270px; }
+      .wealth-head { align-items: flex-start; flex-direction: column; }
     }
-    .rove-report-assistant svg {
-      width: 100%;
-      height: 100%;
-      filter: drop-shadow(0 22px 34px rgba(0,0,0,0.35)) drop-shadow(0 0 22px rgba(59,167,255,0.28));
-      overflow: visible;
+    @media (max-width: 520px) {
+      .page { padding: 82px 18px; } h1 { font-size: clamp(48px, 15vw, 66px); } h2 { font-size: clamp(38px, 12vw, 50px); } .lead { font-size: 16px; }
+      .facts, .money-overview, .allocation-grid { grid-template-columns: 1fr; }
+      .fact { min-height: 126px; } .money-overview > div { min-height: 108px; }
+      .flow-card { padding: 8px 22px 24px; } .flow-row { min-height: 62px; } .flow-row .amount { font-size: 20px; }
+      .flow-total { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .ranking-card { padding: 8px 20px; } .rank { font-size: 23px; } .name { font-size: 16px; } .amount { font-size: 21px; }
+      .change-card { padding: 8px 24px; } .change-row b { font-size: 21px; }
+      .wealth-card, .build-card, .goal-card, .insight-card { border-radius: 20px; }
+      .goal-progress, .goal-meta { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .step { grid-template-columns: 44px minmax(0, 1fr); gap: 16px; padding: 24px 22px; } .step-no { font-size: 34px; }
+      .hero-meta, .report-footer { align-items: flex-start; flex-direction: column; }
+      .preview-badge { right: 10px; bottom: 10px; max-width: calc(100vw - 20px); }
     }
-    .rove-report-assistant.is-visible .rove-inner { animation: roveHover 3.4s ease-in-out infinite; }
-    .rove-report-assistant.is-visible .rove-glow { animation: roveGlowPulse 2.6s ease-in-out infinite; }
-    .rove-report-assistant.is-visible .rove-fin-l { transform-origin: 19px 74px; animation: roveFinalPoint 1.25s cubic-bezier(0.2,0.75,0.25,1) 3.45s forwards; }
-    .rove-report-assistant.is-visible .rove-fin-r { transform-origin: 101px 62px; animation: roveFinR 3.4s ease-in-out infinite; }
-    .rove-report-assistant.is-visible .rove-eye { transform-origin: center; transform-box: fill-box; animation: roveBlink 5s ease-in-out infinite; }
-    .rove-fin-l { transform-origin: 19px 62px; }
-    .rove-fin-r { transform-origin: 101px 62px; }
-    .rove-eye { transform-origin: center; transform-box: fill-box; }
-    .wealth-pulse { display: inline-block; transform-origin: center; }
-    .wealth-pulse.is-pulsing { animation: roveValuePulse 1.8s cubic-bezier(0.18,0.8,0.22,1) 0.2s both; }
-    .score-ring-pulse { animation: roveRingPulse 2.6s ease-in-out infinite; transform-origin: center; }
-    .score-halo-pulse { animation: roveHaloBreath 2.6s ease-in-out infinite; transform-origin: center; }
-    @media (max-width: 760px) {
-      .rove-report-assistant {
-        top: 94px;
-        right: 118px;
-        width: 72px;
-        height: 72px;
-        opacity: 0;
-        transform: translate(230px, 108px) rotate(22deg) scale(0.66);
-      }
-    }
-    /* Cover-Cameo: Rove fliegt einmal kurz durchs Bild — neugierig machen, wieder weg */
-    .rove-cover-cameo {
-      position: absolute;
-      top: 18%;
-      right: 7%;
-      width: 86px;
-      height: 86px;
-      z-index: 5;
-      pointer-events: none;
-      opacity: 0;
-      animation: roveCameo 5.4s cubic-bezier(0.3, 0.7, 0.3, 1) 1.6s forwards;
-    }
-    .rove-cover-cameo svg {
-      width: 100%;
-      height: 100%;
-      filter: drop-shadow(0 0 18px rgba(59,167,255,0.25));
-      overflow: visible;
-    }
-    .rove-cover-cameo .rove-inner { animation: roveHover 3.4s ease-in-out infinite; }
-    .rove-cover-cameo .rove-fin-l { transform-origin: 19px 62px; animation: roveFinL 3.4s ease-in-out infinite; }
-    .rove-cover-cameo .rove-fin-r { transform-origin: 101px 62px; animation: roveFinR 3.4s ease-in-out infinite; }
-    .rove-cover-cameo .rove-eye { transform-origin: center; transform-box: fill-box; animation: roveBlink 5s ease-in-out infinite; }
-    @keyframes roveCameo {
-      0% { opacity: 0; transform: translate(150px, 100px) rotate(20deg) scale(0.6); }
-      16% { opacity: 1; transform: translate(0, 0) rotate(-4deg) scale(1); }
-      52% { opacity: 1; transform: translate(-16px, -6px) rotate(3deg) scale(1); }
-      72% { opacity: 1; transform: translate(-8px, -2px) rotate(-2deg) scale(1); }
-      100% { opacity: 0; transform: translate(-130px, -150px) rotate(-16deg) scale(0.5); }
-    }
-    @media (max-width: 760px) {
-      .rove-cover-cameo { width: 62px; height: 62px; top: 13%; right: 5%; }
-    }
-
     @media (prefers-reduced-motion: reduce) {
-      .rove-report-assistant,
-      .rove-report-assistant .rove-inner,
-      .rove-report-assistant .rove-glow,
-      .rove-report-assistant .rove-fin-l,
-      .rove-report-assistant .rove-fin-r,
-      .rove-report-assistant .rove-eye {
-        animation: none !important;
-        transition: none !important;
-      }
-      .rove-cover-cameo { animation: none !important; opacity: 0 !important; }
-      .wealth-pulse,
-      .score-ring-pulse,
-      .score-halo-pulse { animation: none !important; }
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      .js .reveal { opacity: 1; transform: none; } .bar-fill { width: var(--w); }
     }
   </style>
-</helmet>
-
-<div style="background: #08090B; color: #F4F1EA; font-family: 'Hanken Grotesk', sans-serif; min-height: 100vh; overflow-x: hidden;">
-
-  <div data-progressbar="1" style="position: fixed; top: 0; left: 0; right: 0; height: 2px; transform: scaleX(0); transform-origin: left center; z-index: 100; box-shadow: 0px 0px 12px 0px #3BA7FFC0; background-color: #3BA7FF; text-shadow: 0px 4px 12px rgba(0, 0, 0, 0.15)"></div>
-
-  <!-- ============ 01 COVER ============ -->
-  <section data-screen-label="01 Cover" style="position: relative; min-height: 100vh; display: flex; flex-direction: column; padding: 44px 32px 40px; overflow: hidden;">
-    <div data-glow="1" style="position: absolute; top: -220px; right: -160px; width: 640px; height: 640px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.13) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift 14s ease-in-out infinite; pointer-events: none;"></div>
-    <div data-glow="1" style="position: absolute; bottom: -260px; left: -200px; width: 720px; height: 720px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.08) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift-b 18s ease-in-out infinite; pointer-events: none; text-shadow: 0px 4px 12px rgba(0, 0, 0, 0.15); box-shadow: 0px 4px 12px 0px rgba(0, 0, 0, 0.15)"></div>
-
-    <div class="rove-cover-cameo" aria-hidden="true">
-      <svg viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <radialGradient id="roveCoverBody" cx="38%" cy="25%" r="85%">
-            <stop offset="0%" stop-color="#ffffff"/>
-            <stop offset="65%" stop-color="#f3f5f8"/>
-            <stop offset="100%" stop-color="#d9dfe7"/>
-          </radialGradient>
-          <linearGradient id="roveCoverVisor" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#12161c"/>
-            <stop offset="100%" stop-color="#05070a"/>
-          </linearGradient>
-          <filter id="roveCoverBlur" x="-80%" y="-80%" width="260%" height="260%">
-            <feGaussianBlur stdDeviation="4.5"/>
-          </filter>
-        </defs>
-        <g class="rove-inner">
-          <ellipse class="rove-glow" cx="60" cy="122" rx="26" ry="6" fill="#2AABEE" filter="url(#roveCoverBlur)"/>
-          <g class="rove-fin-l">
-            <path d="M19 45 C 25 53 25 72 19 80 C 13 72 13 53 19 45 Z" fill="url(#roveCoverBody)" transform="rotate(16 19 62)"/>
-          </g>
-          <g class="rove-fin-r">
-            <path d="M101 45 C 107 53 107 72 101 80 C 95 72 95 53 101 45 Z" fill="url(#roveCoverBody)" transform="rotate(-16 101 62)"/>
-          </g>
-          <path d="M60 6 C 84 6 95 30 93 60 C 91 90 77 114 60 114 C 43 114 29 90 27 60 C 25 30 36 6 60 6 Z" fill="url(#roveCoverBody)"/>
-          <path d="M60 16 C 80 16 89 27 89 40 C 89 53 78 61 60 61 C 42 61 31 53 31 40 C 31 27 40 16 60 16 Z" fill="url(#roveCoverVisor)"/>
-          <path d="M44 23 Q 60 18 76 23" stroke="#ffffff" stroke-width="2" fill="none" opacity="0.13" stroke-linecap="round"/>
-          <ellipse cx="49" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity="0.4" filter="url(#roveCoverBlur)"/>
-          <ellipse cx="71" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity="0.4" filter="url(#roveCoverBlur)"/>
-          <ellipse class="rove-eye" cx="49" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
-          <ellipse class="rove-eye" cx="71" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
-          <text x="60" y="84" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-size="10.4" font-weight="500" font-style="italic" letter-spacing="0.15" fill="#3BA7FF">Rov.E</text>
-          <path d="M46 100 Q 60 110 74 100" stroke="#2AABEE" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
-        </g>
-      </svg>
-    </div>
-
-    <div style="position: relative; max-width: 1120px; width: 100%; margin: 0 auto; display: flex; align-items: center; justify-content: flex-end;">
-      <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: #9EA4A0;">Ausgabe 01 · Persönlich &amp; vertraulich</div>
-    </div>
-
-    <div style="position: relative; max-width: 1120px; width: 100%; margin: 6vh auto auto; padding: 42px 0 52px;">
-      <div style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF; animation: clarity-hero-in 1s cubic-bezier(0.2,0.7,0.2,1) both;">Dein Monatsabschluss</div>
-      <div style="margin-top: 28px; animation: clarity-hero-in 1s 0.12s cubic-bezier(0.2,0.7,0.2,1) both;">
-        <div style="font-family: 'Newsreader', serif; font-size: clamp(76px, 12vw, 148px); line-height: 0.9; font-weight: 420; letter-spacing: -0.03em;">Rov.<span style="font-family: 'Hanken Grotesk', sans-serif; font-size: 0.88em; font-weight: 600; letter-spacing: -0.06em; vertical-align: 0.015em;">E</span></div>
-        <div style="font-family: 'Newsreader', serif; font-size: clamp(76px, 12vw, 148px); line-height: 0.92; font-weight: 420; letter-spacing: -0.03em; font-style: italic; color: #3BA7FF;">Report</div>
-      </div>
-      <div style="margin-top: 34px; font-size: 19px; line-height: 1.65; color: #9EA4A0; max-width: 520px; animation: clarity-hero-in 1s 0.24s cubic-bezier(0.2,0.7,0.2,1) both;">Vermögen, Verhalten und der nächste Schritt zu deinem Ziel — ehrlich ausgewertet, auf den Punkt gebracht.</div>
-
-      <div style="display: flex; flex-wrap: wrap; gap: 16px; margin-top: 54px; animation: clarity-hero-in 1s 0.36s cubic-bezier(0.2,0.7,0.2,1) both;">
-        <div style="flex: 1 1 260px; min-height: 148px; box-sizing: border-box; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 34px 32px; backdrop-filter: blur(6px);">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Zeitraum</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 42px; line-height: 1.1; margin-top: 12px; letter-spacing: -0.01em;">{{ month_label }}</div>
-        </div>
-        <div style="flex: 1 1 260px; min-height: 148px; box-sizing: border-box; background: rgba(42,171,238,0.06); border: 1px solid rgba(42,171,238,0.22); border-radius: 20px; padding: 34px 32px; backdrop-filter: blur(6px);">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;">{{ freedom_step_label }}</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 42px; line-height: 1.1; margin-top: 12px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: #3BA7FF;">{{ freedom_step_text }}</div>
-          <div style="font-size: 13px; color: #9EA4A0; margin-top: 6px;">{{ freedom_step_subline }}</div>
-        </div>
-        <div style="flex: 1 1 260px; min-height: 148px; box-sizing: border-box; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 34px 32px; backdrop-filter: blur(6px);">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Entwicklung</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 42px; line-height: 1.1; margin-top: 12px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums;">{{ development_percent_text }}</div>
-          <div style="font-size: 13px; color: #9EA4A0; margin-top: 6px;">zum Vormonat</div>
-        </div>
-      </div>
-    </div>
-
-    <div style="position: relative; max-width: 1120px; width: 100%; margin: 0 auto; display: flex; align-items: center; justify-content: center;">
-      <div style="width: 1px; height: 44px; background: rgba(255,255,255,0.1); overflow: hidden; position: relative;"><div style="position: absolute; inset: 0; background: #3BA7FF; animation: clarity-scrollhint 2.2s ease-in-out infinite;"></div></div>
-    </div>
-  </section>
-
-  <!-- ============ 02 ÜBERBLICK ============ -->
-  <section data-screen-label="02 Überblick" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">02</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Überblick</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.05; margin-top: 22px; max-width: 700px;">Dein Monat auf einen Blick.</div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; margin-top: 56px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Nettovermögen</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ net_worth_span }} €</div>
-        </div>
-        <div data-reveal="1" data-delay="80" style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;">Investments</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums; color: #3BA7FF;">{{ investments_span }} €</div>
-        </div>
-        <div data-reveal="1" data-delay="160" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Cash</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ cash_span }} €</div>
-        </div>
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Größte Ausgabe</div>
-          <div>
-            <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ biggest_amount_span }} €</div>
-            <div style="font-size: 14px; color: #9EA4A0; margin-top: 4px;">{{ biggest_name }}</div>
-          </div>
-        </div>
-        <div data-reveal="1" data-delay="80" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Stärkste Kategorie</div>
-          <div>
-            <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ strongest_amount_span }} €</div>
-            <div style="font-size: 14px; color: #9EA4A0; margin-top: 4px;">{{ strongest_name }}</div>
-          </div>
-        </div>
-        <div data-reveal="1" data-delay="160" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Tracking-Tage</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 52px; letter-spacing: -0.015em; font-variant-numeric: tabular-nums;">{{ tracked_days }}</div>
-        </div>
-      </div>
-
-      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px;">
-        <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Monatsfazit</div>
-        <div style="font-family: 'Newsreader', serif; font-size: 26px; line-height: 1.55; margin-top: 14px; color: #F4F1EA;">Du hast an <span style="color: #3BA7FF;">{{ tracked_days }} Tagen</span> aktiv getrackt. {{ month_savings_sentence }} {{ wealth_sentence }} Die stärkste Kategorie war <span style="color: #F4F1EA; font-weight: 500;">{{ strongest_name }}</span> mit {{ strongest_amount }}.</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 03 INSIGHT ============ -->
-  <section data-screen-label="03 Insight" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px; overflow: hidden;">
-    <div data-glow="1" style="position: absolute; top: 10%; left: -240px; width: 620px; height: 620px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.09) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift 16s ease-in-out infinite; pointer-events: none;"></div>
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">03</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Erkenntnis des Monats</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 68px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 26px; max-width: 820px;">Dein größter Hebel liegt diesen Monat bei <span style="font-style: italic; color: #3BA7FF;">{{ strongest_name }}</span>.</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.45; margin-top: 24px; color: #9EA4A0; max-width: 640px;">{{ ratio_sentence }}</div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 54px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Gespart im {{ month_short }}</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 50px; margin-top: 14px; font-variant-numeric: tabular-nums;">{{ invested_span }} €</div>
-        </div>
-        <div data-reveal="1" data-delay="80" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">{{ strongest_name }} im {{ month_short }}</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 50px; margin-top: 14px; font-variant-numeric: tabular-nums;">{{ strongest_amount_span }} €</div>
-        </div>
-        <div data-reveal="1" data-delay="160" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px 32px;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Auf jeden gesparten €</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 50px; margin-top: 14px; font-variant-numeric: tabular-nums;">{{ ratio_span }} €</div>
-        </div>
-      </div>
-
-      <div data-reveal="1" style="margin-top: 42px; font-size: 18px; line-height: 1.75; color: #9EA4A0; max-width: 620px;">{{ halve_sentence }}</div>
-
-      <div data-reveal="1" style="margin-top: 42px; background: linear-gradient(135deg, rgba(42,171,238,0.1) 0%, rgba(42,171,238,0.04) 100%); border: 1px solid rgba(42,171,238,0.25); border-radius: 22px; padding: 40px 44px; display: flex; align-items: center; gap: 30px; flex-wrap: wrap;">
-        <div style="width: 52px; height: 52px; flex-shrink: 0; border-radius: 50%; background: rgba(42,171,238,0.15); display: flex; align-items: center; justify-content: center;"><svg width="22" height="22" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg></div>
-        <div style="flex: 1 1 320px;">
-          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #3BA7FF;">Was das pro Jahr bedeutet</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 44px; margin-top: 10px; font-variant-numeric: tabular-nums;">+{{ yearly_span }} € fürs {{ goal_desc }}</div>
-          <div style="font-size: 14px; color: #9EA4A0; margin-top: 8px; line-height: 1.6;">Ganz ohne mehr zu verdienen — nur durch eine bewusstere Gewohnheit.</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 04 FINANCIAL STORY ============ -->
-  <section data-screen-label="04 Financial Story" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">04</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Financial Story · Wo du stehst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">{{ wealth_headline }}</div>
-
-      <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 52px 54px;">
-        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #9EA4A0;">Nettovermögen · {{ month_label }}</div>
-        <div class="wealth-pulse" style="font-family: 'Newsreader', serif; font-size: clamp(64px, 9vw, 104px); line-height: 1; margin-top: 18px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;">{{ net_worth_span }} €</div>
-
-        <div style="margin-top: 48px; display: flex; height: 52px; border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.05);">
-          <div data-grow="{{ investments_pct_raw }}%" style="width: {{ investments_pct_raw }}%; background: linear-gradient(90deg, #2D7FCC 0%, #3BA7FF 100%); display: flex; align-items: center; padding: 0 20px; color: #111318; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: 0 0 24px rgba(42,171,238,0.35);">Investments · {{ investments_pct_text }}</div>
-          <div style="width: {{ cash_pct_raw }}%; display: flex; align-items: center; padding: 0 20px; color: #9EA4A0; font-size: 13px; font-weight: 600; white-space: nowrap;">Cash · {{ cash_pct_text }}</div>
-          {% if has_property_equity %}<div style="width: {{ property_pct_raw }}%; display: flex; align-items: center; padding: 0 20px; color: #D8B66A; font-size: 13px; font-weight: 700; white-space: nowrap; background: rgba(216,182,106,0.14);">Immobilie · {{ property_pct_text }}</div>{% endif %}
-        </div>
-        <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 16px; font-size: 14px; color: #9EA4A0;">
-          <div><span style="color: #3BA7FF; font-weight: 600; font-variant-numeric: tabular-nums;">{{ investments_amount }}</span> investiert</div>
-          <div><span style="color: #F4F1EA; font-weight: 600; font-variant-numeric: tabular-nums;">{{ cash_amount }}</span> liquide</div>
-          {% if has_property_equity %}<div><span style="color: #D8B66A; font-weight: 600; font-variant-numeric: tabular-nums;">{{ property_equity_amount }}</span> Immobilien-Eigenkapital</div>{% endif %}
-        </div>
-      </div>
-
-      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: flex; gap: 26px; align-items: flex-start; flex-wrap: wrap;">
-        <div style="width: 48px; height: 48px; flex-shrink: 0; border-radius: 50%; background: rgba(42,171,238,0.12); display: flex; align-items: center; justify-content: center;"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg></div>
-        <div style="flex: 1 1 360px;">
-          <div style="font-family: 'Newsreader', serif; font-size: 25px; line-height: 1.45; color: #F4F1EA;">{{ invest_story_headline }}</div>
-          <div style="font-size: 15px; color: #9EA4A0; line-height: 1.65; margin-top: 12px;">{{ invest_story_sub }}</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 05 MONEY MAP ============ -->
-  <section data-screen-label="05 Money Map" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">05</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Money Map · Dein Verhalten</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 700px;">{{ strongest_name }} ist dein größter Hebel.</div>
-
-      <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 44px 48px; display: flex; flex-direction: column; gap: 32px;">
-        {% for cat in money_map_categories %}
-        <div style="display: flex; align-items: center; gap: 22px;">
-          <div style="width: 130px; flex-shrink: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;{% if not loop.first %} color: #9EA4A0;{% endif %}">{{ cat.name }}</div>
-          <div style="flex: 1; height: 38px; border-radius: 10px; background: rgba(255,255,255,0.05); overflow: hidden;"><div data-grow="{{ cat.bar_pct }}%" style="width: {{ cat.bar_pct }}%; height: 100%; border-radius: 10px; background: {{ cat.bar_color }}; display: flex; align-items: center; justify-content: flex-end; padding-right: 12px; color: {{ cat.text_color }}; font-size: {% if loop.first %}13px; font-weight: 700{% else %}12px; font-weight: 600{% endif %}; {% if loop.first %}box-shadow: 0 0 20px rgba(42,171,238,0.3);{% endif %}">{{ cat.pct_text }} %</div></div>
-          <div style="width: 70px; flex-shrink: 0; text-align: right; font-family: 'Newsreader', serif; font-size: 24px; font-variant-numeric: tabular-nums;{% if not loop.first %} color: #9EA4A0;{% endif %}">{{ cat.amount_text }}</div>
-        </div>
-        {% endfor %}
-      </div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 16px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 40px;">
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Die eine Zahl, die zählt</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.4; margin-top: 16px;">Eine einzige Buchung — <span style="color: #3BA7FF;">{{ biggest_name }}, {{ biggest_amount }}</span> — macht {{ biggest_share_pct }} % deiner getrackten Ausgaben aus.</div>
-          <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 14px;">Hier verändert ein kleiner Vorsatz am meisten. Nicht streichen — bewusst entscheiden.</div>
-        </div>
-        <div data-reveal="1" data-delay="100" style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 20px; padding: 36px 40px; display: flex; flex-direction: column; justify-content: center;">
-          {% if has_budget_status %}
-          <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l3.2 3.2L13 4.5"></path></svg>{{ budget_status_title }}</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.35; margin-top: 16px;">{{ budget_status_text }}</div>
-          <div style="font-size: 14px; color: #9EA4A0; line-height: 1.6; margin-top: 12px;">{{ budget_status_subtext }}</div>
-          {% else %}
-          <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="8,1.5 10,6 15,6 11,9 12.5,14 8,11 3.5,14 5,9 1,6 6,6"></polygon></svg>Beste Entscheidung</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.35; margin-top: 16px;">{{ invested_amount }} bewusst zur Seite gelegt.</div>
-          <div style="font-size: 14px; color: #9EA4A0; line-height: 1.6; margin-top: 12px;">{{ invest_vs_strongest_text }}</div>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 06 ROV.E SCORE ============ -->
-  <section data-screen-label="06 Rov.E Score" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px; overflow: hidden;">
-    <div data-glow="1" style="position: absolute; top: 15%; right: -260px; width: 640px; height: 640px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.09) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift-b 15s ease-in-out infinite; pointer-events: none;"></div>
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">06</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Rov.E Score · Wie bewusst du steuerst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">{{ score_value }} von 100 — {{ score_headline_suffix }}</div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 56px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 44px 36px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-          <div style="position: relative; width: 210px; height: 210px;">
-            <div data-reveal="1" data-delay="1500" style="position: absolute; inset: -34px; border-radius: 50%; background: radial-gradient(circle, rgba(59,167,255,0.22) 0%, rgba(59,167,255,0) 62%); pointer-events: none;"></div>
-            <svg width="210" height="210" viewBox="0 0 200 200" style="position: relative;">
-              <circle cx="100" cy="100" r="86" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="12"></circle>
-              <circle data-ring="{{ score_dash }}" cx="100" cy="100" r="86" fill="none" stroke="#3BA7FF" stroke-width="12" stroke-linecap="round" stroke-dasharray="540.4" stroke-dashoffset="{{ score_dash }}" transform="rotate(-90 100 100)" style="filter: drop-shadow(0 0 8px rgba(42,171,238,0.55));"></circle>
-            </svg>
-            <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;">
-              <div class="score-breath" style="font-family: 'Newsreader', serif; font-size: 68px; line-height: 1; font-variant-numeric: tabular-nums;">{{ score_span }}</div>
-              <div data-reveal="1" data-delay="1750" style="font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF; margin-top: 6px;">{{ rank_name }}</div>
-            </div>
-          </div>
-          <div style="margin-top: 30px; width: 100%; max-width: 300px; display: flex; flex-direction: column; gap: 8px;">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9EA4A0;">
-              <span{% if prev_rank_name %} style="color: #6b7178;"{% endif %}>{{ prev_rank_name or "—" }}</span>
-              <span style="color: #3BA7FF; font-weight: 700;">{{ rank_name }}</span>
-              <span>{{ next_rank_name or "Höchster Rang" }}</span>
-            </div>
-            <div style="height: 6px; border-radius: 4px; background: linear-gradient(90deg, rgba(255,255,255,0.08) 0, rgba(255,255,255,0.08) {{ rank_band_low }}%, #3BA7FF {{ rank_band_low }}%, #3BA7FF {{ rank_band_high }}%, rgba(255,255,255,0.08) {{ rank_band_high }}%, rgba(255,255,255,0.08) 100%);"></div>
-            <div style="font-size: 11px; color: #9EA4A0; text-align: center; margin-top: 2px;">{{ rank_band_text }} Punkte</div>
-            <div style="align-self: center; margin-top: 16px; border: 1px solid rgba(59,167,255,0.35); background: rgba(59,167,255,0.10); color: #F4F1EA; border-radius: 999px; padding: 10px 18px; font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; box-shadow: 0 0 24px rgba(59,167,255,0.10);">Score teilen</div>
-          </div>
-        </div>
-
-        <div data-reveal="1" data-delay="100" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 14px 36px;">
-          {% for part in score_parts %}
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: 22px 0;{% if not loop.last %} border-bottom: 1px solid rgba(255,255,255,0.07);{% endif %}">
-            <div style="font-size: 15px; font-weight: 500;{% if part.warn %} color: #D8B66A;{% endif %}">{{ part.label }}</div>
-            <div style="font-family: 'Newsreader', serif; font-size: 25px; color: {% if part.warn %}#D8B66A{% else %}#3BA7FF{% endif %}; font-variant-numeric: tabular-nums;">{{ part.value }}<span style="color: #9EA4A0; font-size: 16px;">/{{ part.max }}</span></div>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-
-      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 36px;">
-        <div>
-          <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Was „{{ rank_name }}“ bedeutet</div>
-          <div style="font-size: 16px; color: #9EA4A0; line-height: 1.65; margin-top: 14px;">{{ rank_blurb }}</div>
-        </div>
-        <div>
-          <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l3.5 3.5L13 4"></path></svg>Dein nächster Schritt</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 26px; line-height: 1.3; margin-top: 12px;">{{ next_step_headline }}</div>
-          <div style="font-size: 15px; color: #9EA4A0; line-height: 1.6; margin-top: 8px;">{{ next_step_sub }}</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 07 YOUR GOAL ============ -->
-  <section data-screen-label="07 Dein Ziel" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">07</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Dein Ziel · Wohin du willst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 720px;">{{ goal_headline }}</div>
-
-      <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 52px 54px;">
-        <div style="display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
-          <div style="min-width: 0; flex: 1 1 260px;">
-            <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #9EA4A0;">Ziel</div>
-            <div style="font-family: 'Newsreader', serif; font-size: clamp(34px, 6vw, 80px); line-height: 1.05; margin-top: 12px; letter-spacing: -0.025em; overflow-wrap: break-word; word-break: break-word;">{{ goal_desc }}</div>
-          </div>
-          <div style="text-align: right; flex-shrink: 0;">
-            <div style="font-family: 'Newsreader', serif; font-size: 46px; color: #3BA7FF; font-variant-numeric: tabular-nums;">{{ goal_pct_span }} %</div>
-            <div style="font-size: 13px; color: #9EA4A0;">erreicht</div>
-          </div>
-        </div>
-        <div style="margin-top: 32px; height: 14px; border-radius: 8px; background: rgba(255,255,255,0.06); overflow: hidden;"><div data-grow="{{ goal_pct_raw }}%" style="width: {{ goal_pct_raw }}%; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #2D7FCC, #3BA7FF); box-shadow: 0 0 16px rgba(42,171,238,0.6);"></div></div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 16px; margin-top: 36px;">
-          <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #9EA4A0;">Zielbetrag</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; font-variant-numeric: tabular-nums;">{{ goal_target_amount }}</div></div>
-          <div style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #3BA7FF;">Im Zieltopf</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; color: #3BA7FF; font-variant-numeric: tabular-nums;">{{ goal_current_amount }}</div></div>
-          <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 26px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: #9EA4A0;">Noch</div><div style="font-family: 'Newsreader', serif; font-size: 30px; margin-top: 12px; font-variant-numeric: tabular-nums;">{{ goal_remaining_amount }}</div></div>
-        </div>
-
-        <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 36px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 36px;">
-          <div>
-            <div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Ehrlich gesagt</div>
-            <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_honest_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_context_text }}</div>
-          </div>
-          <div>
-            <div style="display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg>Dein Hebel</div>
-            <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_lever_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_lever_subtext }}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 08 MEILENSTEINE ============ -->
-  <section data-screen-label="08 Meilensteine" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">08</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #D8B66A;">Meilensteine · Deine Etappen</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 720px;">{{ milestone_headline }}</div>
-
-      <div data-reveal="1" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 44px 48px;">
-        <div style="display: flex; align-items: baseline; justify-content: space-between;">
-          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Von {{ milestone_from }} zu {{ milestone_to }}</div>
-          <div style="font-family: 'Newsreader', serif; font-size: 20px; color: #D8B66A; font-variant-numeric: tabular-nums;">{{ milestone_pct_text }} %</div>
-        </div>
-        <div style="margin-top: 18px; height: 14px; border-radius: 8px; background: rgba(255,255,255,0.06); overflow: hidden;"><div data-grow="{{ milestone_pct_raw }}%" style="width: {{ milestone_pct_raw }}%; height: 100%; border-radius: 8px; background: linear-gradient(90deg, #B9944D, #D8B66A); box-shadow: 0 0 16px rgba(216,182,106,0.45);"></div></div>
-        <div style="display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: #9EA4A0; font-variant-numeric: tabular-nums;"><span>{{ milestone_from }}</span><span style="color: #D8B66A; font-weight: 600;">{{ net_worth_amount }} · du bist hier</span><span>{{ milestone_to }}</span></div>
-        <div style="margin-top: 30px; display: flex; align-items: center; gap: 14px; background: rgba(216,182,106,0.08); border: 1px solid rgba(216,182,106,0.22); border-radius: 14px; padding: 20px 24px; font-size: 15px; color: #F4F1EA; line-height: 1.55;"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#D8B66A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;"><path d="M3 13L13 3M7 3h6v6"></path></svg><span>{{ milestone_eta_text }}</span></div>
-      </div>
-
-      <div data-reveal="1" style="margin-top: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 40px 46px;">
-        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #9EA4A0;">Bereits freigeschaltet</div>
-        {% if badges %}
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 24px;">
-          {% for badge in badges %}
-          <div style="background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.13); border-radius: 16px; padding: 26px;">
-            <div style="width: 40px; height: 40px; border-radius: 50%; background: rgba(216,182,106,0.14); display: flex; align-items: center; justify-content: center;"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="#D8B66A" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5l1.8 4.2 4.5.4-3.4 3 1 4.4L8 11.2 4.1 13.5l1-4.4-3.4-3 4.5-.4z"></path></svg></div>
-            <div style="font-size: 15px; font-weight: 700; margin-top: 18px; color: #F4F1EA;">{{ badge.label }}</div>
-            <div style="font-size: 12px; color: #9EA4A0; margin-top: 4px; font-variant-numeric: tabular-nums;">{{ badge.date }}</div>
-          </div>
-          {% endfor %}
-        </div>
-        {% else %}
-        <div style="margin-top: 20px; font-size: 15px; color: #9EA4A0; line-height: 1.6;">Noch keine Etappe freigeschaltet — die erste kommt mit deinem nächsten Fortschritt.</div>
-        {% endif %}
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 09 RECAP ============ -->
-  <section data-screen-label="09 Recap" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">09</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Recap · Ehrlich zusammengefasst</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(44px, 6vw, 64px); font-weight: 420; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; max-width: 780px;">Ein starker Start mit einem klaren nächsten Schritt.</div>
-
-      <div style="display: flex; flex-direction: column; gap: 16px; margin-top: 56px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 42px; display: flex; gap: 26px; align-items: flex-start;">
-          <div style="width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; background: #3BA7FF; color: #111318; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 700;">✓</div>
-          <div>
-            <div style="font-family: 'Newsreader', serif; font-size: 25px;">Was gut lief</div>
-            <div style="font-size: 16px; color: #9EA4A0; line-height: 1.7; margin-top: 10px;">{{ recap_good_text }}</div>
-          </div>
-        </div>
-        <div data-reveal="1" data-delay="80" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 42px; display: flex; gap: 26px; align-items: flex-start;">
-          <div style="width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; background: rgba(217,168,92,0.15); color: #D8B66A; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700;">!</div>
-          <div>
-            <div style="font-family: 'Newsreader', serif; font-size: 25px;">Was Aufmerksamkeit braucht</div>
-            <div style="font-size: 16px; color: #9EA4A0; line-height: 1.7; margin-top: 10px;">{{ recap_attention_text }}</div>
-          </div>
-        </div>
-        <div data-reveal="1" data-delay="160" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 42px; display: flex; gap: 26px; align-items: flex-start;">
-          <div style="width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%; background: rgba(42,171,238,0.12); display: flex; align-items: center; justify-content: center;"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg></div>
-          <div>
-            <div style="font-family: 'Newsreader', serif; font-size: 25px;">Dein größter Hebel</div>
-            <div style="font-size: 16px; color: #9EA4A0; line-height: 1.7; margin-top: 10px;">{{ recap_lever_text }}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ 10 PLAN FÜR JULI ============ -->
-  <section data-screen-label="10 Plan für Juli" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px 90px; overflow: hidden;">
-    <div data-glow="1" style="position: absolute; bottom: -280px; right: -200px; width: 700px; height: 700px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.1) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift 17s ease-in-out infinite; pointer-events: none;"></div>
-    <div style="max-width: 1040px; margin: 0 auto; position: relative;">
-      <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">10</div>
-      <div data-reveal="1" style="display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; text-transform: uppercase; color: #3BA7FF;">Plan für den nächsten Monat · {{ next_label }}</div>
-      <div data-reveal="1" style="font-family: 'Newsreader', serif; font-size: clamp(48px, 7vw, 76px); font-weight: 420; letter-spacing: -0.025em; line-height: 1.02; margin-top: 24px;">Dein Plan für {{ next_month_name }}.</div>
-      <div class="rove-report-assistant" data-rove-assistant role="img" aria-label="Rov.E zeigt auf deinen Plan">
-        <svg viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="roveReportBody" cx="38%" cy="25%" r="85%">
-              <stop offset="0%" stop-color="#ffffff"/>
-              <stop offset="65%" stop-color="#f3f5f8"/>
-              <stop offset="100%" stop-color="#d9dfe7"/>
-            </radialGradient>
-            <linearGradient id="roveReportVisor" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#12161c"/>
-              <stop offset="100%" stop-color="#05070a"/>
-            </linearGradient>
-            <filter id="roveReportBlur" x="-80%" y="-80%" width="260%" height="260%">
-              <feGaussianBlur stdDeviation="4.5"/>
-            </filter>
-          </defs>
-          <g class="rove-inner">
-            <ellipse class="rove-glow" cx="60" cy="122" rx="26" ry="6" fill="#2AABEE" filter="url(#roveReportBlur)"/>
-            <g class="rove-fin-l">
-              <path d="M19 45 C 25 53 25 72 19 80 C 13 72 13 53 19 45 Z" fill="url(#roveReportBody)" transform="rotate(16 19 62)"/>
-            </g>
-            <g class="rove-fin-r">
-              <path d="M101 45 C 107 53 107 72 101 80 C 95 72 95 53 101 45 Z" fill="url(#roveReportBody)" transform="rotate(-16 101 62)"/>
-            </g>
-            <path d="M60 6 C 84 6 95 30 93 60 C 91 90 77 114 60 114 C 43 114 29 90 27 60 C 25 30 36 6 60 6 Z" fill="url(#roveReportBody)"/>
-            <path d="M60 16 C 80 16 89 27 89 40 C 89 53 78 61 60 61 C 42 61 31 53 31 40 C 31 27 40 16 60 16 Z" fill="url(#roveReportVisor)"/>
-            <path d="M44 23 Q 60 18 76 23" stroke="#ffffff" stroke-width="2" fill="none" opacity="0.13" stroke-linecap="round"/>
-            <ellipse cx="49" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity="0.4" filter="url(#roveReportBlur)"/>
-            <ellipse cx="71" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity="0.4" filter="url(#roveReportBlur)"/>
-            <ellipse class="rove-eye rove-eye-l" cx="49" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
-            <ellipse class="rove-eye rove-eye-r" cx="71" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
-            <text x="60" y="84" text-anchor="middle" font-family="'Newsreader', Georgia, serif" font-size="10.4" font-weight="500" font-style="italic" letter-spacing="0.15" fill="#3BA7FF">Rov.E</text>
-            <path d="M46 100 Q 60 110 74 100" stroke="#2AABEE" stroke-width="2" fill="none" opacity="0.35" stroke-linecap="round"/>
-          </g>
-        </svg>
-      </div>
-      <div data-reveal="1" style="font-size: 18px; color: #9EA4A0; line-height: 1.65; margin-top: 18px; max-width: 560px;">Drei klare Schritte. Mehr brauchst du nicht, um den nächsten Monat bewusster zu gestalten.</div>
-
-      <div style="display: flex; flex-direction: column; gap: 16px; margin-top: 56px;">
-        <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: flex; gap: 30px; align-items: center; flex-wrap: wrap;">
-          <div style="font-family: 'Newsreader', serif; font-size: 58px; line-height: 1; color: rgba(255,255,255,0.12); font-variant-numeric: tabular-nums; width: 66px; flex-shrink: 0;">01</div>
-          <div style="flex: 1 1 300px;">
-            <div style="font-family: 'Newsreader', serif; font-size: 28px; line-height: 1.25;">Tracke an mindestens 10 Tagen.</div>
-            <div style="font-size: 15px; color: #9EA4A0; line-height: 1.65; margin-top: 8px;">{{ plan_step1_sub }}</div>
-          </div>
-          <div style="text-align: left; flex-shrink: 0; width: 140px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #9EA4A0;">Wirkung</div><div style="font-family: 'Newsreader', serif; font-size: 24px; color: #3BA7FF; margin-top: 6px;">{{ plan_step1_impact }}</div></div>
-        </div>
-        <div data-reveal="1" data-delay="80" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: flex; gap: 30px; align-items: center; flex-wrap: wrap;">
-          <div style="font-family: 'Newsreader', serif; font-size: 58px; line-height: 1; color: rgba(255,255,255,0.12); font-variant-numeric: tabular-nums; width: 66px; flex-shrink: 0;">02</div>
-          <div style="flex: 1 1 300px;">
-            <div style="font-family: 'Newsreader', serif; font-size: 28px; line-height: 1.25;">Halte {{ strongest_name }} unter {{ plan_step2_target }}.</div>
-            <div style="font-size: 15px; color: #9EA4A0; line-height: 1.65; margin-top: 8px;">{{ plan_step2_sub }}</div>
-          </div>
-          <div style="text-align: left; flex-shrink: 0; width: 140px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #9EA4A0;">Wirkung</div><div style="font-family: 'Newsreader', serif; font-size: 24px; color: #3BA7FF; margin-top: 6px;">{{ plan_step2_impact }}</div></div>
-        </div>
-        <div data-reveal="1" data-delay="160" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: flex; gap: 30px; align-items: center; flex-wrap: wrap;">
-          <div style="font-family: 'Newsreader', serif; font-size: 58px; line-height: 1; color: rgba(255,255,255,0.12); font-variant-numeric: tabular-nums; width: 66px; flex-shrink: 0;">03</div>
-          <div style="flex: 1 1 300px;">
-            <div style="font-family: 'Newsreader', serif; font-size: 28px; line-height: 1.25;">Spare oder investiere mindestens {{ plan_step3_target }}.</div>
-            <div style="font-size: 15px; color: #9EA4A0; line-height: 1.65; margin-top: 8px;">Ein Dauerauftrag macht aus einem guten Monat eine Gewohnheit.</div>
-          </div>
-          <div style="text-align: left; flex-shrink: 0; width: 140px;"><div style="font-size: 10.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #9EA4A0;">Wirkung</div><div style="font-family: 'Newsreader', serif; font-size: 24px; color: #3BA7FF; margin-top: 6px;">{{ plan_step3_impact }}</div></div>
-        </div>
-      </div>
-
-      <div style="margin-top: 90px; padding-top: 32px; border-top: 1px solid rgba(255,255,255,0.07); display: flex; align-items: center; justify-content: center;">
-        <div style="font-size: 11px; letter-spacing: 0.14em; color: #9EA4A0;">Erstellt mit Rov.E · Persönlich &amp; vertraulich</div>
-      </div>
-    </div>
-  </section>
-
-</div>
-</x-dc>
-<script type="text/x-dc" data-dc-script data-props="{
-  &quot;animationen&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;label&quot;: &quot;Scroll-Animationen &amp; Count-ups&quot;, &quot;section&quot;: &quot;Effekte&quot;},
-  &quot;glowEffekte&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;label&quot;: &quot;Ambient-Glow im Hintergrund&quot;, &quot;section&quot;: &quot;Effekte&quot;}
-}">
-class Component extends DCLogic {
-  componentDidMount() {
-    this._cleanup = [];
-    this.applyGlow();
-    const animate = this.props.animationen ?? true;
-
-    // Scroll progress bar
-    const bar = document.querySelector('[data-progressbar]');
-    if (bar) {
-      const onScroll = () => {
-        const h = document.documentElement;
-        const max = h.scrollHeight - h.clientHeight;
-        bar.style.transform = 'scaleX(' + (max > 0 ? h.scrollTop / max : 0) + ')';
-      };
-      window.addEventListener('scroll', onScroll, { passive: true });
-      onScroll();
-      this._cleanup.push(() => window.removeEventListener('scroll', onScroll));
-    }
-
-    if (!animate) return;
-
-    const ease = 'cubic-bezier(0.2, 0.7, 0.2, 1)';
-    const fmt = (v, d) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
-
-    // Prepare reveals
-    const reveals = Array.from(document.querySelectorAll('[data-reveal]'));
-    reveals.forEach(el => {
-      el.style.opacity = '0';
-      el.style.transform = 'translateY(28px)';
-      el.style.transition = 'opacity 0.9s ' + ease + ', transform 0.9s ' + ease;
-      el.style.transitionDelay = (parseInt(el.getAttribute('data-delay') || '0', 10)) + 'ms';
-    });
-
-    // Prepare bars
-    const bars = Array.from(document.querySelectorAll('[data-grow]'));
-    bars.forEach(el => {
-      el._target = el.getAttribute('data-grow');
-      el.style.transition = 'width 1.3s ' + ease;
-      el.style.width = '0%';
-    });
-
-    // Prepare ring
-    const rings = Array.from(document.querySelectorAll('[data-ring]'));
-    rings.forEach(el => {
-      el._target = el.getAttribute('data-ring');
-      el.style.transition = 'stroke-dashoffset 1.6s ' + ease;
-      el.setAttribute('stroke-dashoffset', '540.4');
-    });
-
-    // Count-ups
-    const counts = Array.from(document.querySelectorAll('[data-count]'));
-    counts.forEach(el => {
-      el._targetVal = parseFloat(el.getAttribute('data-count'));
-      el._decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
-    });
-
-    const runCount = (el) => {
-      const dur = 1500, start = performance.now();
-      const tick = (now) => {
-        const t = Math.min(1, (now - start) / dur);
-        const e = 1 - Math.pow(1 - t, 3);
-        el.textContent = fmt(el._targetVal * e, el._decimals);
-        if (t < 1) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    };
-
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (!entry.isIntersecting) return;
-        const el = entry.target;
-        if (el.hasAttribute('data-reveal')) { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; }
-        if (el.hasAttribute('data-grow')) { el.style.width = el._target; }
-        if (el.hasAttribute('data-ring')) { el.style.strokeDashoffset = el._target; }
-        if (el.hasAttribute('data-count') && !el._done) { el._done = true; runCount(el); }
-        io.unobserve(el);
-      });
-    }, { threshold: 0.2 });
-
-    reveals.concat(bars, rings, counts).forEach(el => io.observe(el));
-    this._cleanup.push(() => io.disconnect());
-
-    const assistant = document.querySelector('[data-rove-assistant]');
-    const planSection = document.querySelector('[data-screen-label="10 Plan für Juli"]');
-    if (assistant && planSection) {
-      const assistantIo = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-          assistant.classList.toggle('is-visible', entry.isIntersecting);
-        });
-      }, { threshold: 0.36 });
-      assistantIo.observe(planSection);
-      this._cleanup.push(() => assistantIo.disconnect());
-    }
-
-    // Nettovermögen: einmaliger Puls, nachdem der Count-up (~1,5s) durch ist
-    const wealthEl = document.querySelector('.wealth-pulse');
-    if (wealthEl) {
-      const wealthIo = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-          if (!entry.isIntersecting) return;
-          setTimeout(() => wealthEl.classList.add('is-pulsing'), 1500);
-          wealthIo.disconnect();
-        });
-      }, { threshold: 0.6 });
-      wealthIo.observe(wealthEl);
-      this._cleanup.push(() => wealthIo.disconnect());
-    }
-
-  }
-
-  componentDidUpdate() { this.applyGlow(); }
-
-  applyGlow() {
-    const glow = this.props.glowEffekte ?? true;
-    document.querySelectorAll('[data-glow]').forEach(el => { el.style.display = glow ? '' : 'none'; });
-  }
-
-  componentWillUnmount() { (this._cleanup || []).forEach(fn => fn()); }
-
-  renderVals() { return {}; }
-}
+</head>
+<body>
+{% macro de_text(value) -%}{{ value | replace('.0 %', ',0 %') | replace('.1 %', ',1 %') | replace('.2 %', ',2 %') | replace('.3 %', ',3 %') | replace('.4 %', ',4 %') | replace('.5 %', ',5 %') | replace('.6 %', ',6 %') | replace('.7 %', ',7 %') | replace('.8 %', ',8 %') | replace('.9 %', ',9 %') }}{%- endmacro %}
+<div class="progress" data-progressbar></div>
+{% if report.preview %}<div class="preview-badge">{{ report.preview.user_type }} · {{ report.preview.snapshot }} · {{ report.preview.story }}</div>{% endif %}
+<section class="page" data-screen-label="01 Dein Monat"><div class="wrap"><div class="section-number">01</div><div class="eyebrow hero-copy">Rov.E Monatsreport</div><h1 class="hero-title">{{ report.month_label }}</h1><p class="lead hero-lead">Dein Monat in Zahlen und Entscheidungen.</p><div class="facts hero-facts">{% for fact in report.facts %}<article class="glass fact"><div class="label">{{ fact.label }}</div><div class="value">{{ fact.value }}</div></article>{% endfor %}</div><div class="hero-meta"><span>Dein Geld. Klar eingeordnet.</span><span>{{ report.tracked_days }} Trackingtage</span></div><div class="scroll-cue" aria-hidden="true"><i></i></div></div></section>
+<section class="page" data-screen-label="02 Dein Geldfluss"><div class="wrap"><div class="section-number">02</div><div class="eyebrow reveal">Dein Geldfluss</div><h2 class="reveal">Was diesen Monat finanziell passiert ist.</h2><div class="glass money-overview reveal"><div class="primary"><div class="label">Gesamtvermögen</div><div class="value">{{ report.wealth_total }}</div></div><div><div class="label">Konsum</div><div class="value">{{ report.consumption_total }}</div></div><div><div class="label">Investiert</div><div class="value">{{ report.contribution_total }}</div></div><div><div class="label">Cash</div><div class="value">{{ report.cash_total }}</div></div></div>{% if report.flow %}<div class="glass flow-card reveal">{% for item in report.flow %}<div class="flow-row"><div><div class="name">{{ item.label }}</div>{% if item.confirmed %}<div class="note">Bestätigt</div>{% endif %}</div><div class="amount{% if item.key != 'income' %} out{% endif %}">{{ item.value }}</div></div>{% endfor %}<div class="flow-total"><div><div class="label">Differenz</div><div class="note">Was nach den gezeigten Positionen bleibt</div></div><div class="amount">{{ report.metrics.page_2.display_value }}</div></div></div>{% endif %}</div></section>
+<section class="page" data-screen-label="03 Deine Kategorien"><div class="wrap"><div class="section-number">03</div><div class="eyebrow reveal">Deine Kategorien</div><h2 class="reveal">Wohin dein Geld geflossen ist.</h2><p class="lead reveal">Deine wichtigsten Kategorien nach Betrag, Anteil und Buchungen.</p>{% if report.categories %}<div class="glass ranking-card reveal">{% for item in report.categories %}<div class="ranking-row"><div class="rank">0{{ item.rank }}</div><div><div class="name">{{ item.name }}</div><div class="sub">{{ item.count }} Buchungen · Ø {{ item.average }}</div></div><div class="bar"><i class="bar-fill" style="--w:{{ item.bar }}%"></i></div><div class="amount">{{ item.amount }}<div class="sub">{{ item.share }}</div></div></div>{% endfor %}</div>{% else %}<div class="glass empty reveal">Noch keine Kategorien für diesen Monat.</div>{% endif %}</div></section>
+<section class="page" data-screen-label="04 Händler und Ausgabenmuster"><div class="wrap"><div class="section-number">04</div><div class="eyebrow reveal">Händler &amp; Ausgabenmuster</div><h2 class="reveal">Deine Top-Händler.</h2><p class="lead reveal">Hier konzentrierten sich deine Ausgaben.</p>{% if report.merchants %}<div class="glass ranking-card reveal">{% for item in report.merchants %}<div class="ranking-row"><div class="rank">0{{ item.rank }}</div><div><div class="name">{{ item.name }}</div><div class="sub">{{ item.category }} · {{ item.count }} Ausgaben · Ø {{ item.average }}</div></div><div class="bar"><i class="bar-fill" style="--w:{{ item.share_raw }}%"></i></div><div class="amount">{{ item.amount }}<div class="sub">{{ item.share }} vom Konsum</div></div></div>{% endfor %}</div>{% else %}<div class="glass empty reveal">Noch keine Händlerdaten für diesen Monat.</div>{% endif %}</div></section>
+<section class="page" data-screen-label="05 Was hat sich verändert"><div class="wrap"><div class="section-number">05</div><div class="eyebrow reveal">Vormonatsvergleich</div><h2 class="reveal">Was hat sich verändert?</h2><p class="lead reveal">Nur die Unterschiede, die für deinen Monat relevant sind.</p>{% if report.changes %}<div class="glass change-card reveal">{% for item in report.changes %}<div class="change-row"><div class="label">{{ item.label }}</div><b>{{ item.context }}</b></div>{% endfor %}</div>{% else %}<div class="glass empty reveal">Für diesen Monat gibt es noch keinen belastbaren Vergleich.</div>{% endif %}</div></section>
+<section class="page" data-screen-label="06 Dein Vermögen"><div class="wrap"><div class="section-number">06</div><div class="eyebrow reveal">Dein Vermögen</div><h2 class="reveal">So ist dein Vermögen verteilt.</h2><div class="glass wealth-card reveal"><div class="wealth-head"><div><div class="label">Gesamtvermögen</div><div class="value wealth-total">{{ report.wealth_total }}</div></div><div class="note">Nur vorhandene Vermögensklassen</div></div>{% if report.allocation %}<div class="allocation">{% for item in report.allocation %}<i class="tone-{{ item.tone }}" style="--w:{{ item.share_raw }}%;width:{{ item.share_raw }}%"></i>{% endfor %}</div><div class="allocation-grid">{% for item in report.allocation %}<div class="allocation-item"><i class="dot tone-{{ item.tone }}"></i><div><b>{{ item.amount }}</b><small>{{ item.label }} · {{ item.share }}</small></div></div>{% endfor %}</div>{% endif %}</div></div></section>
+<section class="page" data-screen-label="07 Was hast du aufgebaut"><div class="wrap"><div class="section-number">07</div><div class="eyebrow reveal">Dein Aufbau</div><h2 class="reveal">Was du aufgebaut hast.</h2>{% if report.contributions %}<div class="glass build-card reveal"><div class="label">Diesen Monat investiert</div><div class="value build-total">{{ report.contribution_total }}</div><div class="build-list">{% for item in report.contributions %}<div class="build-row"><div><div class="name">{{ item.name }}</div><div class="sub">{{ item.asset_type }}</div></div><div class="amount">{{ item.amount }}</div></div>{% endfor %}</div>{% if report.contribution_more_count %}<div class="note" style="margin-top:20px">+ {{ report.contribution_more_count }} weitere Positionen</div>{% endif %}</div>{% else %}<div class="glass empty reveal">Keine Investmentbeiträge in diesem Monat.</div>{% endif %}</div></section>
+<section class="page" data-screen-label="08 Score und Ziele"><div class="wrap"><div class="section-number">08</div><div class="eyebrow reveal">Score &amp; Ziele</div><h2 class="reveal">Dein Fortschritt.</h2><div class="goal-grid">{% if report.goal.available %}<article class="glass goal-card reveal"><div class="label">Dein Ziel</div><div class="goal-name">{{ report.goal.name }}</div><div class="goal-progress"><div><div class="value">{{ report.goal.current }}</div><div class="note">von {{ report.goal.target }}</div></div><div class="value">{{ report.goal.progress }}</div></div><div class="bar" style="margin-top:24px"><i class="bar-fill" style="--w:{{ report.goal.progress_raw }}%"></i></div><div class="goal-meta"><span>Noch {{ report.goal.remaining }}</span><span>{{ report.goal.progress }}</span></div></article>{% endif %}<article class="glass score-card reveal"><div><div class="score-ring" style="--score:{{ report.score }}"><div class="value score-value">{{ report.score }}</div></div><div class="label" style="margin-top:20px">Rov.E Score</div><div class="note">von 100 Punkten</div></div></article></div></div></section>
+<section class="page" data-screen-label="09 Rov.E Insight"><div class="wrap"><div class="section-number">09</div><div class="eyebrow reveal">Rov.E Insight</div><h2 class="reveal">Was in deinem Monat wirklich zählt.</h2><article class="glass insight-card reveal"><div class="insight-mark">R</div><p>{{ de_text(report.insight.text) }}</p></article></div></section>
+<section class="page" data-screen-label="10 Nächster Monat"><div class="wrap"><div class="section-number">10</div><div class="eyebrow reveal">{{ report.next_month_label }}</div><h2 class="reveal">Deine nächsten Schritte.</h2><p class="lead reveal">Drei konkrete Punkte für den neuen Monat.</p><div class="steps">{% for item in report.next_steps %}<article class="glass step reveal" style="--delay:{{ loop.index0 * 70 }}ms"><div class="step-no">0{{ item.number }}</div><div><h3>{{ item.title }}</h3><p>{{ item.text | replace(' ist dokumentiert.', '.') }}</p></div></article>{% endfor %}</div><div class="report-footer"><span>Rov.E behält den Überblick.</span><span>{{ report.month_label }}</span></div></div></section>
+<script>
+(() => {
+  const progress = document.querySelector('[data-progressbar]');
+  const updateProgress = () => { const root = document.documentElement; const max = root.scrollHeight - root.clientHeight; if (progress) progress.style.transform = `scaleX(${max > 0 ? root.scrollTop / max : 0})`; };
+  window.addEventListener('scroll', updateProgress, { passive: true }); updateProgress();
+  const reveal = new IntersectionObserver(entries => { entries.forEach(entry => { if (!entry.isIntersecting) return; entry.target.classList.add('is-visible'); entry.target.querySelectorAll('.bar-fill').forEach(bar => bar.classList.add('is-visible')); reveal.unobserve(entry.target); }); }, { threshold: .16, rootMargin: '0px 0px -6% 0px' });
+  document.querySelectorAll('.reveal').forEach(element => reveal.observe(element));
+})();
 </script>
 </body>
 </html>
