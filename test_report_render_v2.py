@@ -27,13 +27,25 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["score_value"], 72)
         self.assertEqual(context["goal_desc"], "Dubai")
 
+    def test_legacy_snapshot_uses_snapshot_only_wealth_fallback(self):
+        data = standard_payload()
+        data["report_truth"].pop("wealth")
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+
+        self.assertIn('data-count="15000"', context["net_worth_span"])
+        self.assertEqual(context["report"]["wealth_total"], "15.000 €")
+
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
         self.assertEqual(html.count("<section data-screen-label="), 10)
         self.assertIn("Juli 2026", html)
         self.assertIn("Dein wiederkehrender Beitrag von 800 €", html)
+        self.assertRegex(html, r'data-screen-label="02 (Überblick|Dein Geldfluss)"')
         self.assertIn('data-screen-label="03 Deine Kategorien"', html)
         self.assertIn('data-screen-label="04 Händler und Ausgabenmuster"', html)
+        self.assertIn("Rov.E", html)
         self.assertNotIn("800.00 EUR", html)
 
     def test_web_uses_legacy_visual_language_without_developer_copy(self):

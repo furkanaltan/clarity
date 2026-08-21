@@ -5,6 +5,7 @@ from report_story_v2 import (
     CANDIDATE_TYPES,
     REPORT_STORY_VERSION,
     build_report_story_v2,
+    get_report_wealth,
 )
 
 
@@ -103,6 +104,37 @@ def standard_payload() -> dict:
 
 
 class ReportStoryV2Tests(unittest.TestCase):
+    def test_legacy_snapshot_wealth_is_derived_without_mutating_payload(self):
+        data = standard_payload()
+        data["report_truth"].pop("wealth")
+        before = copy.deepcopy(data)
+
+        wealth = get_report_wealth(data)
+
+        self.assertTrue(wealth["available"])
+        self.assertEqual(wealth["total"], 15000.0)
+        self.assertEqual(data, before)
+
+    def test_incomplete_legacy_snapshot_never_uses_live_data(self):
+        data = standard_payload()
+        data["report_truth"].pop("wealth")
+        data["profile"].pop("current_investments")
+
+        wealth = get_report_wealth(data)
+
+        self.assertFalse(wealth["available"])
+        self.assertIsNone(wealth["total"])
+
+    def test_partial_comparison_does_not_compare_full_month_score(self):
+        data = standard_payload()
+        data["report_truth"]["previous_month"]["comparison_mode"] = "partial"
+
+        story = build_report_story_v2(data)
+
+        self.assertTrue(story["quality"]["previous_month_available"])
+        changes = story["pages"]["page_5"]["supporting_metrics"]
+        self.assertNotIn("score", {change["type"] for change in changes})
+
     def test_standard_story_has_exactly_ten_distinct_pages(self):
         story = build_report_story_v2(standard_payload())
         self.assertEqual(story["story_version"], REPORT_STORY_VERSION)

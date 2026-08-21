@@ -119,6 +119,11 @@ def _defensive_delta_pct(current: float, previous: float) -> float | None:
 def _previous_available(truth: dict) -> bool:
     expenses = truth.get("expenses") or {}
     previous = truth.get("previous_month") or {}
+    if previous.get("comparison_mode") == "partial":
+        return bool(
+            _money(expenses.get("previous_total_consumption")) > 0
+            or _integer(expenses.get("previous_transaction_count")) > 0
+        )
     if "previous_total_consumption" in expenses:
         return bool(
             _money(expenses.get("previous_total_consumption")) > 0
@@ -206,15 +211,33 @@ def _annotate_budget(categories: list[dict], truth: dict) -> None:
         item["budget_over"] = bool(budget and budget.get("over"))
 
 
-def _wealth(truth: dict, data: dict) -> dict:
+def get_report_wealth(data: dict) -> dict:
+    """Read wealth only from the immutable snapshot, including legacy V2 payloads."""
+    truth = data.get("report_truth") or {}
     frozen = deepcopy(truth.get("wealth") or {})
-    if frozen.get("allocation") is not None:
+    if frozen.get("total") is not None:
+        frozen.setdefault("available", True)
         return frozen
     profile = data.get("profile") or {}
     cash = truth.get("cash") or {}
-    cash_amount = _money(cash.get("current_cash", profile.get("cash_reserve")))
-    investments = _money(profile.get("current_investments"))
-    property_equity = _money((truth.get("property") or {}).get("equity", profile.get("property_equity")))
+    property_truth = truth.get("property") or {}
+    cash_value = cash.get("current_cash", profile.get("cash_reserve"))
+    investments_value = profile.get("current_investments")
+    property_value = property_truth.get("equity", profile.get("property_equity"))
+    if cash_value is None or investments_value is None or property_value is None:
+        return {
+            "total": None,
+            "cash": cash_value,
+            "investments": investments_value,
+            "property_equity": property_value,
+            "allocation": [],
+            "reconciles": False,
+            "goals_included": False,
+            "available": False,
+        }
+    cash_amount = _money(cash_value)
+    investments = _money(investments_value)
+    property_equity = _money(property_value)
     total = round(cash_amount + investments + property_equity, 2)
     allocation = []
     for key, label, amount in (
@@ -239,7 +262,12 @@ def _wealth(truth: dict, data: dict) -> dict:
         "allocation": allocation,
         "reconciles": abs(sum(item["amount"] for item in allocation) - total) <= 0.01,
         "goals_included": False,
+        "available": True,
     }
+
+
+def _wealth(truth: dict, data: dict) -> dict:
+    return get_report_wealth(data)
 
 
 def _monthly_plan(data: dict) -> dict:
@@ -402,7 +430,7 @@ def _select_month_facts(data: dict, truth: dict, categories: list[dict], changes
     if categories:
         facts.append({"key": "top_category", "label": str(categories[0]["category"]), "value": categories[0]["amount"], "priority": 6})
     facts.append({"key": "total_consumption", "label": "Konsumausgaben", "value": _money(expenses.get("total_consumption")), "priority": 5})
-    if wealth.get("total", 0) > 0:
+    if _money(wealth.get("total")) > 0:
         facts.append({"key": "wealth_status", "label": "Gesamtvermögen", "value": wealth["total"], "priority": 4})
     return sorted(facts, key=lambda item: item["priority"], reverse=True)[:4]
 
@@ -445,10 +473,11 @@ def _comparison_changes(truth: dict, categories: list[dict], merchants: list[dic
                 "context": _change_label(current_contributions, previous_contributions),
             })
     score = truth.get("score") or {}
-    previous_snapshot = (truth.get("previous_month") or {}).get("snapshot") or {}
+    previous_month = truth.get("previous_month") or {}
+    previous_snapshot = previous_month.get("snapshot") or {}
     current_score = _integer(score.get("clarity_score", (score.get("parts") or {}).get("total")))
     previous_score = _integer(previous_snapshot.get("clarity_score"))
-    if previous_score and abs(current_score - previous_score) >= 3:
+    if previous_month.get("comparison_mode") != "partial" and previous_score and abs(current_score - previous_score) >= 3:
         score_delta = current_score - previous_score
         changes.append({
             "type": "score",
@@ -636,10 +665,10 @@ def build_report_story_v2(report_data: dict) -> dict:
             text="Nur relevante absolute oder häufigkeitsbezogene Veränderungen werden gezeigt.",
             empty_state="Noch kein vollständiger Vormonat zum Vergleichen.", available=comparison_available),
         "page_6": _page(6, "Dein Vermögen", "Wo steckt dein Vermögen heute?",
-            {"semantic_key": "net_worth", "label": "Gesamtvermögen", "value": wealth.get("total", 0)},
+            {"semantic_key": "net_worth", "label": "Gesamtvermögen", "value": wealth.get("total")},
             supporting_metrics=wealth.get("allocation") or [], visual={"type": "wealth_allocation", "data": wealth.get("allocation") or []},
             text="Zieltöpfe sind Zweckbindungen und werden nicht als zusätzliches Vermögen gezählt.",
-            empty_state="Noch keine Vermögenswerte erfasst.", available=wealth.get("total", 0) > 0),
+            empty_state="Noch keine Vermögenswerte erfasst.", available=_money(wealth.get("total")) > 0),
         "page_7": _page(7, "Was hast du aufgebaut?", "Was hast du wirklich gespart oder investiert?",
             {"semantic_key": "investment_contributions", "label": "Dokumentierte Beiträge", "value": invested},
             supporting_metrics=contribution_breakdown,
@@ -701,6 +730,7 @@ def build_report_story_v2(report_data: dict) -> dict:
 def story_from_snapshot_data(report_data: dict) -> dict:
     """Reuse an embedded story or derive it from the same immutable payload."""
     embedded = report_data.get("report_story_v2")
-    if embedded and embedded.get("story_version") == REPORT_STORY_VERSION:
+    has_current_wealth_shape = (report_data.get("report_truth") or {}).get("wealth", {}).get("total") is not None
+    if embedded and embedded.get("story_version") == REPORT_STORY_VERSION and has_current_wealth_shape:
         return deepcopy(embedded)
     return build_report_story_v2(report_data)

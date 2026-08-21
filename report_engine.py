@@ -426,6 +426,33 @@ def month_bounds(report_month: str):
     return start, end, label
 
 
+def report_period_window(report_month: str, as_of: date | None = None) -> dict:
+    """Return the frozen reporting window for a closed or still-open month."""
+    start, month_end, label = month_bounds(report_month)
+    start_date = date.fromisoformat(start)
+    month_end_date = date.fromisoformat(month_end)
+    today = as_of or date.today()
+    is_partial = start_date <= today <= month_end_date
+    period_end = today if is_partial else month_end_date
+    return {
+        "start": start,
+        "end": period_end.isoformat(),
+        "month_end": month_end,
+        "month_label": label,
+        "comparison_mode": "partial" if is_partial else "full",
+        "cutoff_day": period_end.day,
+    }
+
+
+def previous_period_end(report_month: str, cutoff_day: int | None = None) -> str:
+    """Use the same calendar day in the prior month, without crossing its end."""
+    previous = _report_previous_month(report_month)
+    _start, previous_end, _label = month_bounds(previous)
+    if cutoff_day is None:
+        return previous_end
+    return previous_end[:-2] + f"{min(max(1, cutoff_day), int(previous_end[-2:])):02d}"
+
+
 def get_user(user_id: int):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -644,7 +671,7 @@ def normalize_report_merchant(value: object) -> str:
     return text or "Unbekannt"
 
 
-def get_report_expense_rows(user_id: int, report_month: str) -> list[dict]:
+def get_report_expense_rows(user_id: int, report_month: str, cutoff_date: str | None = None) -> list[dict]:
     """Return expense rows with one central report classification.
 
     The app movement reference is the reliable discriminator for internal money
@@ -652,6 +679,8 @@ def get_report_expense_rows(user_id: int, report_month: str) -> list[dict]:
     preserving legacy users and historical imports.
     """
     start, end, _ = month_bounds(report_month)
+    if cutoff_date:
+        end = min(end, cutoff_date)
     with get_db() as conn:
         has_movements = table_exists(conn, "app_cash_movements")
         movement_join = (
@@ -693,8 +722,8 @@ def get_report_expense_rows(user_id: int, report_month: str) -> list[dict]:
     return result
 
 
-def get_expense_stats(user_id: int, report_month: str):
-    rows = get_report_expense_rows(user_id, report_month)
+def get_expense_stats(user_id: int, report_month: str, cutoff_date: str | None = None):
+    rows = get_report_expense_rows(user_id, report_month, cutoff_date)
     consumption = [row for row in rows if row["classification"] == "consumption"]
     total = sum(row["amount"] for row in consumption)
     tracked_days = len({str(row["created_at"]).split(" ", 1)[0] for row in rows})
@@ -764,8 +793,8 @@ def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
     return str(row["name"] or "").strip(), target_amount, min(max(0.0, progress), target_amount)
 
 
-def get_biggest_expense(user_id: int, report_month: str):
-    rows = [row for row in get_report_expense_rows(user_id, report_month)
+def get_biggest_expense(user_id: int, report_month: str, cutoff_date: str | None = None):
+    rows = [row for row in get_report_expense_rows(user_id, report_month, cutoff_date)
             if row["classification"] == "consumption"]
     if not rows:
         return None
@@ -778,8 +807,10 @@ def get_biggest_expense(user_id: int, report_month: str):
     }
 
 
-def get_investment_summary(user_id: int, report_month: str) -> dict:
+def get_investment_summary(user_id: int, report_month: str, cutoff_date: str | None = None) -> dict:
     start, end, _ = month_bounds(report_month)
+    if cutoff_date:
+        end = min(end, cutoff_date)
     empty = {
         "one_time_in": 0.0,
         "recurring_in": 0.0,
@@ -1098,9 +1129,10 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     if not user:
         raise ValueError("User nicht gefunden")
 
-    start, end, month_label = month_bounds(report_month)
-    total_expenses, tracked_days, category_rows = get_expense_stats(user_id, report_month)
-    biggest_expense = get_biggest_expense(user_id, report_month)
+    period = report_period_window(report_month)
+    start, end, month_label = period["start"], period["end"], period["month_label"]
+    total_expenses, tracked_days, category_rows = get_expense_stats(user_id, report_month, end)
+    biggest_expense = get_biggest_expense(user_id, report_month, end)
     snapshot = get_snapshot(user_id, report_month)
     prev_snapshot = get_prev_snapshot(user_id, report_month)
 
@@ -1156,7 +1188,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     strongest_category = top_categories[0] if top_categories else None
     goal_progress = (goal_current_amount / target_amount * 100.0) if target_amount > 0 else 0.0
     months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, savings_plan)
-    investment_summary = get_investment_summary(user_id, report_month)
+    investment_summary = get_investment_summary(user_id, report_month, end)
     monthly_execution = get_monthly_execution(user_id, report_month)
     savings_progress = get_report_savings_progress(user_id, report_month, monthly_execution)
     wealth_history = get_wealth_history(user_id, report_month)
@@ -1241,6 +1273,9 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "report_month": report_month,
             "period_start": start,
             "period_end": end,
+            "month_end": period["month_end"],
+            "comparison_mode": period["comparison_mode"],
+            "comparison_cutoff_day": period["cutoff_day"],
             "month_label": month_label,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "tracked_days": tracked_days,
@@ -1460,8 +1495,8 @@ def _report_goal_truth(user_id: int, primary_description: str, primary_target: f
     return {"primary": primary, "goals": goals}
 
 
-def _report_investment_truth(user_id: int, report_month: str) -> dict:
-    summary = get_investment_summary(user_id, report_month)
+def _report_investment_truth(user_id: int, report_month: str, cutoff_date: str | None = None) -> dict:
+    summary = get_investment_summary(user_id, report_month, cutoff_date)
     holdings = []
     with get_db() as conn:
         if table_exists(conn, "portfolio_holdings"):
@@ -1483,7 +1518,8 @@ def _report_investment_truth(user_id: int, report_month: str) -> dict:
                         """SELECT holding_id, COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS amount
                              FROM investment_events
                             WHERE user_id = ? AND strftime('%Y-%m', created_at) = ? AND holding_id IS NOT NULL
-                            GROUP BY holding_id""", (user_id, report_month)
+                              AND DATE(created_at) <= DATE(?)
+                            GROUP BY holding_id""", (user_id, report_month, cutoff_date or month_bounds(report_month)[1])
                     ).fetchall()
                     contribution_rows = {int(row["holding_id"]): round(float(row["amount"] or 0), 2) for row in events}
                 for row in rows:
@@ -1595,8 +1631,14 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
 
 
 def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
-    rows = get_report_expense_rows(user_id, report_month)
-    previous_rows = get_report_expense_rows(user_id, _report_previous_month(report_month))
+    meta = data.get("meta", {})
+    current_end = str(meta.get("period_end") or month_bounds(report_month)[1])
+    comparison_mode = str(meta.get("comparison_mode") or "full")
+    cutoff_day = int(meta.get("comparison_cutoff_day") or int(current_end[-2:]))
+    previous_month = _report_previous_month(report_month)
+    previous_end = previous_period_end(report_month, cutoff_day) if comparison_mode == "partial" else month_bounds(previous_month)[1]
+    rows = get_report_expense_rows(user_id, report_month, current_end)
+    previous_rows = get_report_expense_rows(user_id, previous_month, previous_end)
     eligible = [row for row in rows if row["classification"] == "consumption"]
 
     def aggregate(items, key_name):
@@ -1662,10 +1704,9 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
     goal = data.get("pages", {}).get("goal", {})
     budget = data.get("pages", {}).get("budget", {})
     cash = _report_cash_truth(user_id)
-    investments = _report_investment_truth(user_id, report_month)
-    previous_month = _report_previous_month(report_month)
+    investments = _report_investment_truth(user_id, report_month, current_end)
     previous_eligible = [row for row in previous_rows if row["classification"] == "consumption"]
-    previous_investments = get_investment_summary(user_id, previous_month)
+    previous_investments = get_investment_summary(user_id, previous_month, previous_end)
     return {
         "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
         "period": data.get("meta", {}),
@@ -1704,6 +1745,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         "wealth": _report_wealth_truth(profile, cash, investments),
         "previous_month": {
             "report_month": previous_month,
+            "comparison_mode": comparison_mode,
+            "period_end": previous_end,
             "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
             "investment_contributions": previous_investments,
         },

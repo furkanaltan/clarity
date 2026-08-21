@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
-from report_story_v2 import story_from_snapshot_data
+from report_story_v2 import get_report_wealth, story_from_snapshot_data
 
 
 load_dotenv()
@@ -765,7 +765,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     """Map immutable Story V2 data onto the original web report visual language."""
     report = build_story_render_context(data)
     truth = data.get("report_truth") or {}
-    wealth = truth.get("wealth") or {}
+    wealth = get_report_wealth(data)
     expenses = truth.get("expenses") or {}
     score_truth = truth.get("score") or {}
     score_parts_raw = (score_truth.get("parts") or {}).get("factors") or []
@@ -789,9 +789,10 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     month_short = report["month_label"].split(" ", 1)[0]
     next_month_name = report["next_month_label"].split(" ", 1)[0]
     contribution_total_raw = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
+    wealth_available = bool(wealth.get("available"))
     net_worth_raw = float(wealth.get("total") or 0)
-    cash_raw = float(wealth.get("cash") or (truth.get("cash") or {}).get("current_cash") or 0)
-    investments_raw = float(wealth.get("investments") or (data.get("profile") or {}).get("current_investments") or 0)
+    cash_raw = float(wealth.get("cash") or 0)
+    investments_raw = float(wealth.get("investments") or 0)
     property_raw = float(wealth.get("property_equity") or 0)
     wealth_total = max(0.0, net_worth_raw)
 
@@ -854,9 +855,9 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "offen",
         "freedom_step_subline": "investiert oder zurueckgelegt",
         "development_percent_text": report["metrics"]["page_5"]["display_value"],
-        "net_worth_span": data_count_span(net_worth_raw),
-        "investments_span": data_count_span(investments_raw),
-        "cash_span": data_count_span(cash_raw),
+        "net_worth_span": data_count_span(net_worth_raw) if wealth_available else "—",
+        "investments_span": data_count_span(investments_raw) if wealth_available else "—",
+        "cash_span": data_count_span(cash_raw) if wealth_available else "—",
         "biggest_amount_span": data_count_span((expenses.get("merchants") or [{}])[0].get("amount") or 0),
         "biggest_name": h(biggest["name"]),
         "strongest_amount_span": data_count_span(strongest_amount_raw),

@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,6 +43,9 @@ class ReportSnapshotV2Tests(unittest.TestCase):
                 "INSERT INTO expenses VALUES (?, 1, ?, ?, ?, '', '2026-08-10 12:00:00')",
                 [(1, 20.0, "Restaurant", "Lidl"), (2, 300.0, "Transfer", "Umbuchung")],
             )
+            conn.execute(
+                "INSERT INTO expenses VALUES (3, 1, 55.0, 'Restaurant', 'Spaet', '', '2026-08-25 12:00:00')"
+            )
             conn.execute("INSERT INTO app_cash_movements VALUES (1, 1, 'transfer', 300.0, 2)")
             conn.execute("INSERT INTO app_user_features VALUES (1, 'multi_cash_accounts_v1', 1)")
             conn.execute("INSERT INTO app_financial_accounts VALUES (1, 1, 'Giro', 'checking', 1000.0, 'EUR', 'active')")
@@ -52,11 +56,21 @@ class ReportSnapshotV2Tests(unittest.TestCase):
 
     def test_transfers_are_not_consumption(self):
         rows = report_engine.get_report_expense_rows(1, "2026-08")
-        self.assertEqual([row["classification"] for row in rows], ["consumption", "transfer"])
+        self.assertEqual([row["classification"] for row in rows], ["consumption", "transfer", "consumption"])
         total, tracked_days, categories = report_engine.get_expense_stats(1, "2026-08")
-        self.assertEqual(total, 20.0)
-        self.assertEqual(tracked_days, 1)
+        self.assertEqual(total, 75.0)
+        self.assertEqual(tracked_days, 2)
         self.assertEqual(categories[0]["category"], "Restaurant")
+
+    def test_open_month_window_uses_same_day_in_previous_month(self):
+        window = report_engine.report_period_window("2026-08", date(2026, 8, 21))
+        self.assertEqual(window["end"], "2026-08-21")
+        self.assertEqual(window["comparison_mode"], "partial")
+        self.assertEqual(report_engine.previous_period_end("2026-08", window["cutoff_day"]), "2026-07-21")
+
+    def test_expenses_after_open_month_cutoff_are_excluded(self):
+        rows = report_engine.get_report_expense_rows(1, "2026-08", "2026-08-21")
+        self.assertEqual([row["id"] for row in rows], [1, 2])
 
     def test_multi_account_cash_drift_blocks_truth(self):
         with sqlite3.connect(self.db) as conn:
