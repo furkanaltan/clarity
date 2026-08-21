@@ -44,6 +44,60 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["wealth_total"], "—")
         self.assertIn("ursprünglichen Fassung", context["pages"]["page_3"]["text"])
 
+    def test_pre_truth_snapshot_maps_only_frozen_legacy_values(self):
+        data = {
+            "meta": {"report_month": "2026-07", "tracked_days": 24},
+            "profile": {
+                "income_total": 3500.0,
+                "fixed_costs": 1200.0,
+                "cash_reserve": 9167.0,
+                "current_investments": 22299.0,
+                "property_equity": 9000.0,
+                "net_worth": 40466.0,
+            },
+            "pages": {
+                "cover": {"freedom_step": 750.0},
+                "financial_story": {
+                    "cash": 9167.0,
+                    "investments": 22299.0,
+                    "net_worth": 40466.0,
+                },
+                "month": {"total_expenses": 2610.0},
+                "wealth_journey": {"investment_summary": {"net_contributions": 750.0}},
+                "goal": {
+                    "description": "Dubai",
+                    "target_amount": 4000.0,
+                    "current_amount": 51.0,
+                    "progress_percent": 1.275,
+                },
+                "score": {"clarity_score": 64},
+                "money_map": {
+                    "categories": [{"category": "restaurant", "total": 210.0}],
+                    "insights": ["Restaurant war deine größte flexible Kategorie."],
+                },
+                "recap": {},
+            },
+        }
+
+        context = build_story_render_context(data)
+
+        self.assertEqual(context["wealth_total"], "40.466 €")
+        self.assertEqual(context["consumption_total"], "2.610 €")
+        self.assertEqual(context["contribution_total"], "750 €")
+        self.assertEqual(context["income_total"], "3.500 €")
+        self.assertEqual(context["fixed_costs_total"], "1.200 €")
+        self.assertEqual(context["goal"]["current"], "51 €")
+        self.assertEqual(context["categories"][0]["name"], "Restaurant")
+
+    def test_goal_current_and_net_worth_are_distinct(self):
+        context = build_render_context(report_payload())
+        html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
+
+        self.assertEqual(context["goal_current_amount"], "1.000 €")
+        self.assertEqual(context["net_worth_amount"], "15.000 €")
+        self.assertIn("Aktueller Stand</div><div", html)
+        self.assertIn(">1.000 €</div>", html)
+
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
         html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
         self.assertEqual(html.count("<section data-screen-label="), 10)

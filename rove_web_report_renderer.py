@@ -573,26 +573,100 @@ def _localize_story_text(value) -> str:
 
 
 def _pre_truth_story_render_context(data: dict) -> dict:
-    """Keep pre-V2 report snapshots renderable without inventing a new story."""
+    """Map frozen pre-V2 facts without consulting current application state."""
     meta = data.get("meta") or {}
+    profile = data.get("profile") or {}
     pages = data.get("pages") or {}
     report_month = str(meta.get("report_month") or "")
     month_label, next_month_label = month_names(report_month)
+    financial_story = pages.get("financial_story") or {}
+    month = pages.get("month") or {}
+    journey = pages.get("wealth_journey") or {}
+    investment_summary = journey.get("investment_summary") or {}
+    goal_page = pages.get("goal") or {}
+    score_page = pages.get("score") or {}
+    money_map = pages.get("money_map") or {}
     recap = pages.get("recap") or {}
+
+    def frozen_value(*values):
+        return next((value for value in values if value is not None), None)
+
+    cash = frozen_value(financial_story.get("cash"), profile.get("cash_reserve"))
+    investments = frozen_value(
+        financial_story.get("investments"), profile.get("current_investments")
+    )
+    property_equity = profile.get("property_equity")
+    wealth_total = frozen_value(financial_story.get("net_worth"), profile.get("net_worth"))
+    if wealth_total is None and all(value is not None for value in (cash, investments, property_equity)):
+        wealth_total = float(cash) + float(investments) + float(property_equity)
+
+    consumption = month.get("total_expenses")
+    contribution = frozen_value(
+        investment_summary.get("net_contributions"),
+        (pages.get("cover") or {}).get("freedom_step"),
+    )
+    categories = money_map.get("categories") or []
+    category_text = next(
+        (str(value).strip() for value in money_map.get("insights") or [] if str(value).strip()),
+        (
+            "Deine Kategorien basieren auf dem eingefrorenen Monatsabschluss."
+            if categories
+            else "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten."
+        ),
+    )
+
+    goal_target = float(goal_page.get("target_amount") or 0)
+    goal_current = float(goal_page.get("current_amount") or 0)
+    goal_progress = (
+        float(goal_page.get("progress_percent"))
+        if goal_page.get("progress_percent") is not None
+        else min(100.0, goal_current / goal_target * 100) if goal_target > 0 else 0.0
+    )
+    goal_available = goal_target > 0
+
+    category_context = []
+    total_consumption = float(consumption or 0)
+    max_category = max((float(item.get("total") or 0) for item in categories), default=1.0) or 1.0
+    for index, item in enumerate(categories[:5]):
+        amount = float(item.get("total") or 0)
+        category_context.append({
+            "rank": index + 1,
+            "name": category_label(item.get("category")).title(),
+            "amount": _story_money(amount),
+            "share": fmt_percent(amount / total_consumption * 100 if total_consumption else 0, 1),
+            "share_raw": amount / total_consumption * 100 if total_consumption else 0,
+            "bar": max(4.0, min(100.0, amount / max_category * 100)),
+            "count": int(item.get("transaction_count") or 0),
+            "average": _story_money(item.get("avg_transaction")),
+            "delta": 0.0,
+            "class": "unclear",
+        })
+
+    def display_money(value) -> str:
+        return _story_money(value) if value is not None else "—"
+
     return {
         "page_count": 0,
         "month_label": month_label,
         "next_month_label": next_month_label,
         "facts": [],
         "flow": [],
-        "categories": [],
+        "categories": category_context,
         "merchants": [],
         "changes": [],
         "allocation": [],
         "contributions": [],
         "contribution_more_count": 0,
-        "goal": {"available": False, "name": "Dein Ziel", "current": "—", "target": "—", "remaining": "—", "progress_raw": 0},
-        "score": 0,
+        "goal": {
+            "available": goal_available,
+            "name": str(goal_page.get("description") or "Dein Ziel"),
+            "current": display_money(goal_current) if goal_available else "—",
+            "target": display_money(goal_target) if goal_available else "—",
+            "remaining": display_money(max(0.0, goal_target - goal_current)) if goal_available else "—",
+            "progress": fmt_percent(goal_progress, 1),
+            "progress_raw": goal_progress,
+        },
+        "score": int(score_page.get("clarity_score") or 0),
         "insight": {"type": "legacy_snapshot", "text": "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten.", "tone": "neutral", "safe_to_coach": False},
         "next_steps": [],
         "recap_good": str(recap.get("what_went_well") or ""),
@@ -600,15 +674,15 @@ def _pre_truth_story_render_context(data: dict) -> dict:
         "metrics": {},
         "pages": {
             "page_3": {
-                "text": "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten.",
+                "text": category_text,
             },
         },
-        "wealth_total": "—",
-        "consumption_total": "—",
-        "contribution_total": "—",
-        "cash_total": "—",
-        "income_total": "—",
-        "fixed_costs_total": "—",
+        "wealth_total": display_money(wealth_total),
+        "consumption_total": display_money(consumption),
+        "contribution_total": display_money(contribution),
+        "cash_total": display_money(cash),
+        "income_total": display_money(profile.get("income_total")),
+        "fixed_costs_total": display_money(profile.get("fixed_costs")),
     }
 
 
@@ -956,7 +1030,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "goal_pct_raw": goal["progress_raw"],
         "goal_target_amount": goal["target"],
         "goal_current_amount": goal["current"],
-        "net_worth_amount": goal["current"],
+        "net_worth_amount": _story_money(wealth_total) if wealth_available else "—",
         "goal_remaining_amount": goal["remaining"],
         "goal_honest_text": h(report["pages"]["page_8"].get("text") or "Dein Ziel ist klar sichtbar."),
         "goal_lever_text": h(report["insight"]["text"]),
