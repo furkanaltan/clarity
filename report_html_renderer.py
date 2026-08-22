@@ -13,6 +13,8 @@ from report_engine import GERMAN_MONTHS, build_report_data
 REPORT_BUNDLE_DIR = Path(__file__).resolve().parent / "report_html" / "report-main"
 PAGE_DIR = REPORT_BUNDLE_DIR / "pages"
 GENERATED_DIR = REPORT_BUNDLE_DIR / "generated"
+HELL_REFERENCE_TEMPLATE = Path(__file__).resolve().parent / "report_templates" / "rove_pdf_hell_original.html"
+HELL_PAGES_TEMPLATE = Path(__file__).resolve().parent / "report_templates" / "rove_pdf_hell_pages.html"
 
 PAGE_FILES = [
     ("01-cover.html", "Rov.E Report"),
@@ -1270,14 +1272,55 @@ NEW_PAGE_RENDERERS = {
 }
 
 
+def _extract_labeled_pages(source: str) -> list[str]:
+    pages: list[str] = []
+    cursor = 0
+    marker = '<div data-screen-label="'
+    tag_pattern = re.compile(r"</?div\b[^>]*>", re.IGNORECASE)
+    while True:
+        start = source.find(marker, cursor)
+        if start < 0:
+            break
+        depth = 0
+        end = None
+        for match in tag_pattern.finditer(source, start):
+            if match.group(0).lower().startswith("</div"):
+                depth -= 1
+                if depth == 0:
+                    end = match.end()
+                    break
+            else:
+                depth += 1
+        if end is None:
+            raise ValueError("Unvollstaendige PDF-Seite in der hellen Referenzvorlage.")
+        pages.append(source[start:end])
+        cursor = end
+    return pages
+
+
+def _render_hell_pages(data: dict) -> list[str]:
+    import jinja2
+    # Local import avoids a module cycle: the web renderer reuses the formatting
+    # helpers from this module, while both renderers share the immutable V2 facts.
+    from rove_web_report_renderer import build_render_context
+
+    template = HELL_PAGES_TEMPLATE.read_text(encoding="utf-8")
+    rendered = jinja2.Template(template).render(**build_render_context(data))
+    pages = _extract_labeled_pages(rendered)
+    if len(pages) != 10:
+        raise ValueError(f"Die helle PDF-Vorlage muss exakt 10 Seiten liefern, erhalten: {len(pages)}")
+    return pages
+
+
 def render_page(page_filename: str, data: dict) -> str:
-    return NEW_PAGE_RENDERERS[page_filename]("", data)
+    filenames = [filename for filename, _title in PAGE_FILES]
+    return _render_hell_pages(data)[filenames.index(page_filename)]
 
 
 def build_html_report(user_id: int, report_month: str, report_data: dict | None = None) -> Path:
     report_data = report_data or build_report_data(user_id, report_month)
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    rendered_pages = [render_page(filename, report_data) for filename, _title in PAGE_FILES]
+    rendered_pages = _render_hell_pages(report_data)
     doc = build_html_document(rendered_pages)
     output_path = GENERATED_DIR / f"clarity_report_{user_id}_{report_month}.html"
     output_path.write_text(doc, encoding="utf-8")
@@ -1287,21 +1330,28 @@ def build_html_report(user_id: int, report_month: str, report_data: dict | None 
 
 
 def build_html_document(pages: list[str]) -> str:
-    return """<!doctype html>
+    source = HELL_REFERENCE_TEMPLATE.read_text(encoding="utf-8")
+    reference_pages = _extract_labeled_pages(source)
+    if len(reference_pages) != 10:
+        raise ValueError("Die originale helle PDF-Referenz enthaelt nicht exakt 10 Seiten.")
+    reference_styles = "\n".join(
+        re.findall(r"<style\b[^>]*>[\s\S]*?</style>", source, flags=re.IGNORECASE)
+    )
+    print_css = """
+<style>
+  @page { size: 820px 1080px; margin: 0; }
+  html, body { margin: 0 !important; padding: 0 !important; }
+  body { background: #E3E1DC; }
+  body > div { min-height: 0 !important; padding: 0 !important; gap: 0 !important; display: block !important; }
+  [data-screen-label] { border-radius: 0 !important; box-shadow: none !important; break-after: page; }
+  [data-screen-label]:last-child { break-after: auto; }
+</style>
+"""
+    return f"""<!doctype html>
 <html lang="de">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rov.E Report</title>
-    <link rel="stylesheet" href="../style.css" />
-  </head>
-  <body>
-    <main class="report" aria-label="Rov.E Monatsreport">
-{pages}
-    </main>
-  </body>
-</html>
-""".format(pages="\n\n".join(pages))
+<head><meta charset="utf-8">{reference_styles}{print_css}</head>
+<body><div>{' '.join(pages)}</div></body>
+</html>"""
 
 
 def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_data: dict | None = None) -> Path:
@@ -1329,11 +1379,12 @@ def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_
     with TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         writer = PdfWriter()
-        for idx, (filename, _title) in enumerate(PAGE_FILES, start=1):
+        rendered_pages = _render_hell_pages(report_data)
+        for idx, page_html in enumerate(rendered_pages, start=1):
             single_html_path = tmp_path / f"page_{idx:02d}.html"
             single_pdf_path = tmp_path / f"page_{idx:02d}.pdf"
             single_html_path.write_text(
-                build_html_document([render_page(filename, report_data)]),
+                build_html_document([page_html]),
                 encoding="utf-8",
             )
             HTML(filename=str(single_html_path), base_url=str(html_path.parent)).write_pdf(str(single_pdf_path))
