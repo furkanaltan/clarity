@@ -20,7 +20,7 @@ from pathlib import Path
 
 import report_engine
 import report_story_v2
-import rove_pdf_light_renderer
+import report_html_renderer
 import rove_web_report_renderer
 
 
@@ -145,7 +145,7 @@ def render_identity(snapshot: dict, output_dir: Path) -> dict:
     web_path = output_dir / "report.html"
     web_path.write_text(web_html, encoding="utf-8")
     pdf_path = output_dir / "report.pdf"
-    rove_pdf_light_renderer.build_pdf_report(0, data["meta"]["report_month"], pdf_path, report_data=data)
+    report_html_renderer.build_pdf_report(0, data["meta"]["report_month"], pdf_path, report_data=data)
     ref = data["meta"].get("snapshot_ref")
     if not ref or ref.get("schema_version") != snapshot["schema_version"]:
         fail("snapshot_ref_missing_or_inconsistent")

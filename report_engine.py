@@ -1640,6 +1640,15 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
     rows = get_report_expense_rows(user_id, report_month, current_end)
     previous_rows = get_report_expense_rows(user_id, previous_month, previous_end)
     eligible = [row for row in rows if row["classification"] == "consumption"]
+    largest_expense = None
+    if eligible:
+        largest = max(eligible, key=lambda row: row["amount"])
+        largest_expense = {
+            "merchant": largest["merchant"],
+            "category": largest["category"],
+            "amount": round(float(largest["amount"]), 2),
+            "transaction_id": largest["id"],
+        }
 
     def aggregate(items, key_name):
         grouped = {}
@@ -1725,6 +1734,7 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "previous_transaction_count": len(previous_eligible),
             "categories": category_aggregate,
             "merchants": merchant_aggregate,
+            "largest_expense": largest_expense,
         },
         "fixed_costs": {
             "amount": profile.get("fixed_costs", 0),
@@ -2064,11 +2074,12 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
-    # Neues helles PDF (WeasyPrint, gleiche Datenquelle wie der Weblink).
-    # Faellt bei jedem Fehler (z.B. WeasyPrint fehlt) automatisch auf den
-    # alten, stabilen ReportLab-Renderer zurueck -> Bot bleibt funktionsfaehig.
+    # Bestehendes helles PDF-Design aus report_html/report-main verwenden.
+    # Der PDF-Sprint darf den etablierten Rov.E-Report nicht durch eine neue
+    # Designsprache ersetzen. Bei einem Renderer-Fehler bleibt der alte
+    # ReportLab-Fallback fuer die Service-Stabilitaet erhalten.
     try:
-        from rove_pdf_light_renderer import build_pdf_report
+        from report_html_renderer import build_pdf_report
         build_pdf_report(user_id, report_month, file_path, report_data=report_data)
     except Exception:
         logger.exception("Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer")
