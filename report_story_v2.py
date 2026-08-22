@@ -102,6 +102,21 @@ def category_label(value: Any) -> str:
     return CATEGORY_LABELS.get(_category_key(raw), raw.title())
 
 
+def valid_report_merchant(merchant: Any, category: Any = None) -> bool:
+    """Reject category fallbacks while preserving real user-entered counterparties."""
+    merchant_text = str(merchant or "").strip()
+    merchant_key = _category_key(merchant_text)
+    compact_key = "".join(character for character in merchant_key if character.isalnum())
+    category_keys = {_category_key(key) for key in CATEGORY_LABELS}
+    category_keys.update(_category_key(label) for label in CATEGORY_LABELS.values())
+    return bool(
+        merchant_text
+        and merchant_key not in category_keys
+        and merchant_key != _category_key(category)
+        and compact_key not in {"UNBEKANNT", "KEINEHAENDLERDATEN", "KEINEHANDLERDATEN"}
+    )
+
+
 def _change_label(current: float, previous: float) -> str:
     delta = round(current - previous, 2)
     if previous <= 0 and current > 0:
@@ -174,7 +189,12 @@ def _merchant_rows(truth: dict) -> list[dict]:
     rows = []
     for raw in (truth.get("expenses") or {}).get("merchants") or []:
         item = deepcopy(raw)
-        item["category_key"] = str(item.get("category") or "SONSTIGES")
+        merchant = str(item.get("merchant") or "").strip()
+        category_key = str(item.get("category") or "SONSTIGES")
+        if not valid_report_merchant(merchant, category_key):
+            continue
+        item["merchant"] = merchant
+        item["category_key"] = category_key
         item["category"] = category_label(item["category_key"])
         amount = _money(item.get("amount"))
         previous = _money(item.get("previous_amount"))
@@ -519,13 +539,38 @@ def _next_steps(data: dict, truth: dict, categories: list[dict], insight: dict) 
     savings = _savings_context(data, truth)
     budget = truth.get("budget") or {}
     steps = []
+    over_budget = [
+        item for item in categories
+        if item.get("budget_over") and _money((item.get("budget") or {}).get("limit")) > 0
+    ]
+    if over_budget:
+        item = max(
+            over_budget,
+            key=lambda row: _money((row.get("budget") or {}).get("used"))
+            - _money((row.get("budget") or {}).get("limit")),
+        )
+        limit = _money(item["budget"].get("limit"))
+        used = _money(item["budget"].get("used"))
+        over = round(max(0.0, used - limit), 2)
+        steps.append({
+            "type": "observe",
+            "title": f"{item['category']}-Budget im Blick behalten",
+            "text": (
+                f"Dein gesetztes Budget beträgt {limit:.2f} EUR; "
+                f"im Berichtsmonat lag die Kategorie {over:.2f} EUR darüber."
+            ),
+            "category": item["category"],
+            "budget_limit": limit,
+            "actual": used,
+            "over_amount": over,
+        })
     if savings["gap"] > 0:
         steps.append({
             "type": "close_goal_gap",
             "title": "Sparraten-Lücke im Blick behalten",
             "text": f"Zu deiner geplanten Sparrate fehlten {savings['gap']:.2f} EUR.",
         })
-    if insight["type"] in {"savings_goal_gap_vs_discretionary_delta", "budget_overrun_vs_flexible_category"}:
+    if not over_budget and insight["type"] in {"savings_goal_gap_vs_discretionary_delta", "budget_overrun_vs_flexible_category"}:
         category = insight["supporting_metrics"].get("category")
         steps.append({
             "type": "observe",
@@ -590,6 +635,7 @@ def build_report_story_v2(report_data: dict) -> dict:
     categories = _category_rows(truth)
     _annotate_budget(categories, truth)
     categories.sort(key=lambda item: (item["relevance_score"] + (10 if item.get("budget_over") else 0), item["amount"]), reverse=True)
+    category_ranking = sorted(categories, key=lambda item: item["amount"], reverse=True)[:6]
     merchants = _merchant_rows(truth)
     candidates = build_insight_candidates(report_data, truth, categories, merchants)
     insight = candidates[0]
@@ -650,8 +696,8 @@ def build_report_story_v2(report_data: dict) -> dict:
             text="Die Differenz ist ein Geldfluss-Ergebnis, keine automatisch bestätigte Sparleistung.",
             empty_state="Für einen vollständigen Geldfluss fehlt ein verwendbarer Einkommenswert.", available=income > 0),
         "page_3": _page(3, "Deine Kategorien", "Wofür hast du dein Geld ausgegeben?",
-            {"semantic_key": "top_category", "label": categories[0]["category"] if categories else "Keine Kategorie", "value": categories[0]["amount"] if categories else 0},
-            supporting_metrics=categories[:5], visual={"type": "category_ranking", "data": categories[:5]},
+            {"semantic_key": "top_category", "label": category_ranking[0]["category"] if category_ranking else "Keine Kategorie", "value": category_ranking[0]["amount"] if category_ranking else 0},
+            supporting_metrics=category_ranking, visual={"type": "category_ranking", "data": category_ranking},
             text="Betrag, Anteil, Buchungen und Durchschnitt basieren auf Konsumausgaben.",
             empty_state="Für diesen Monat liegen keine Konsumausgaben nach Kategorien vor.", available=bool(categories)),
         "page_4": _page(4, "Händler & Ausgabenmuster", "Wo konkret ist dein Geld gelandet und wie oft?",
@@ -667,7 +713,7 @@ def build_report_story_v2(report_data: dict) -> dict:
         "page_6": _page(6, "Dein Vermögen", "Wo steckt dein Vermögen heute?",
             {"semantic_key": "net_worth", "label": "Gesamtvermögen", "value": wealth.get("total")},
             supporting_metrics=wealth.get("allocation") or [], visual={"type": "wealth_allocation", "data": wealth.get("allocation") or []},
-            text="Zieltöpfe sind Zweckbindungen und werden nicht als zusätzliches Vermögen gezählt.",
+            text="Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
             empty_state="Noch keine Vermögenswerte erfasst.", available=_money(wealth.get("total")) > 0),
         "page_7": _page(7, "Was hast du aufgebaut?", "Was hast du wirklich gespart oder investiert?",
             {"semantic_key": "investment_contributions", "label": "Dokumentierte Beiträge", "value": invested},
