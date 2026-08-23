@@ -19,6 +19,8 @@ import telebot
 import openai
 from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
+from rove_expense_domain import begin_expense_write, create_expense_for_user
+from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, is_feature_enabled
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -480,6 +482,13 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+def telegram_expense_request_id(message, item_index: int = 0) -> str:
+    """Stable, user-bound idempotency key for one Telegram message item."""
+    chat_id = int(getattr(getattr(message, "chat", None), "id", 0) or 0)
+    message_id = int(getattr(message, "message_id", 0) or 0)
+    return f"telegram:{chat_id}:{message_id}:expense:{int(item_index)}"
 
 def init_db():
     with get_db() as conn:
@@ -3240,6 +3249,86 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
     savings_total = etf_savings + cash_savings
     savings_rate = (savings_total / income * 100.0) if income > 0 else 0.0
     remaining, total_expenses, _, _ = calculate_remaining_budget(u, user_id)
+    truth_facts = {
+        "cash_source": "legacy",
+        "budgets": [],
+        "actuals": {},
+        "goals": [],
+        "score": {},
+        "contributions": 0.0,
+    }
+
+    with get_db() as conn:
+        if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+            try:
+                row = conn.execute(
+                    """SELECT COALESCE(SUM(balance), 0) AS total
+                       FROM app_financial_accounts
+                       WHERE user_id = ? AND status = 'active'""",
+                    (user_id,),
+                ).fetchone()
+                cash = float(row["total"] or 0) if row else 0.0
+                truth_facts["cash_source"] = "active_financial_accounts"
+            except sqlite3.OperationalError:
+                pass
+        try:
+            rows = conn.execute(
+                """SELECT category, monthly_limit, source FROM category_budgets
+                   WHERE user_id = ? AND active_month = ?""",
+                (user_id, current_budget_month()),
+            ).fetchall()
+            truth_facts["budgets"] = [
+                {
+                    "category": str(row["category"] or ""),
+                    "limit": float(row["monthly_limit"] or 0),
+                    "status": "USER_SET_BUDGET" if str(row["source"] or "manual") == "manual" else "SUGGESTION",
+                }
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        rows = conn.execute(
+            """SELECT category, COALESCE(SUM(amount), 0) AS total FROM expenses
+               WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+               GROUP BY category""",
+            (user_id,),
+        ).fetchall()
+        truth_facts["actuals"] = {
+            str(row["category"] or "SONSTIGES"): round(float(row["total"] or 0), 2)
+            for row in rows
+        }
+        try:
+            rows = conn.execute(
+                """SELECT goal_id, name, target_amount, current_amount, goal_monthly_rate
+                   FROM app_goals WHERE user_id = ?""",
+                (user_id,),
+            ).fetchall()
+            truth_facts["goals"] = [
+                {
+                    "id": str(row["goal_id"]),
+                    "name": str(row["name"] or ""),
+                    "target": float(row["target_amount"] or 0),
+                    "current": float(row["current_amount"] or 0),
+                    "goal_monthly_rate": float(row["goal_monthly_rate"])
+                    if row["goal_monthly_rate"] is not None else None,
+                }
+                for row in rows
+            ]
+        except sqlite3.OperationalError:
+            pass
+        score_row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if score_row:
+            truth_facts["score"] = calculate_live_score(
+                conn, user_id, score_row, total_expenses=total_expenses
+            )
+        row = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS total
+               FROM investment_events
+               WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
+                 AND event_type IN ('contribution', 'investment_contribution', 'manual_adjustment')""",
+            (user_id,),
+        ).fetchone()
+        truth_facts["contributions"] = round(float(row["total"] or 0), 2)
 
     lines = [
         "Nutzerprofil aus der Rov.E-Datenbank:",
@@ -3256,6 +3345,14 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
         f"- Sparquote: {savings_rate:.1f}%",
         f"- Ausgaben diesen Monat: {eur(total_expenses)}",
         f"- Freies Restbudget diesen Monat: {eur(remaining)}",
+        "- Strukturierte freigegebene Fakten:",
+        f"  - Cash-Quelle: {truth_facts['cash_source']}",
+        f"  - Aktuelle Cash-Wahrheit: {eur(cash)}",
+        f"  - Budgets (USER_SET_BUDGET oder SUGGESTION): {json.dumps(truth_facts['budgets'], ensure_ascii=False)}",
+        f"  - Beobachtete Ausgaben je Kategorie: {json.dumps(truth_facts['actuals'], ensure_ascii=False)}",
+        f"  - Ziele inklusive goal_monthly_rate: {json.dumps(truth_facts['goals'], ensure_ascii=False)}",
+        f"  - Score und Teilwerte: {json.dumps(truth_facts['score'], ensure_ascii=False, default=str)}",
+        f"  - Investment-Beiträge im aktuellen Monat: {eur(truth_facts['contributions'])}",
     ]
 
     details = u.get("details", {})
@@ -3334,6 +3431,22 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
             lines.append(f"  - {row['scope']}: {eur(row['amount'])} ({row['source']})")
 
     return "\n".join(lines)
+
+
+def ai_reply_has_only_known_numbers(reply_text: str, known_text: str) -> bool:
+    """Reject free AI text that introduces a numeric fact absent from supplied facts."""
+    def numbers(text: str) -> set[float]:
+        values = set()
+        for raw in re.findall(r"(?<![A-Za-z])(\d{1,3}(?:[.,]\d{1,2})?)(?![A-Za-z])", text or ""):
+            try:
+                normalized = raw.replace(".", "").replace(",", ".") if "," in raw else raw
+                values.add(round(float(normalized), 2))
+            except ValueError:
+                continue
+        return values
+
+    allowed = numbers(known_text)
+    return all(value in allowed for value in numbers(reply_text))
 
 
 def is_hard_off_topic_request(text_lower: str) -> bool:
@@ -6063,13 +6176,28 @@ def handle_msg(message):
         parsed_items = parse_hybrid_expense_items(text_input, expense_amounts, user_id=uid)
         if parsed_items:
             with get_db() as conn:
-                for item in parsed_items:
-                    conn.execute(
-                        "INSERT INTO expenses (user_id, amount, category, merchant, description) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (uid, item["amount"], item["category"], item["merchant"], "Via Hybrid Multi")
-                    )
+                begin_expense_write(conn)
+                results = []
+                for index, item in enumerate(parsed_items):
+                    results.append(create_expense_for_user(
+                        conn,
+                        uid,
+                        amount=item["amount"],
+                        category=item["category"],
+                        merchant=item["merchant"],
+                        description="Via Hybrid Multi",
+                        request_id=telegram_expense_request_id(message, index),
+                    ))
                 conn.commit()
+            parsed_items = [
+                {
+                    **item,
+                    "amount": result["amount"],
+                    "category": result["category"],
+                    "merchant": result["merchant"],
+                }
+                for item, result in zip(parsed_items, results)
+            ]
 
             cp_earned = handle_daily_activity(uid, bot)
             cp_str = build_tracking_note(cp_earned)
@@ -6135,10 +6263,15 @@ def handle_msg(message):
 
         if merchant_found and category_found:
             with get_db() as conn:
-                conn.execute(
-                    "INSERT INTO expenses (user_id, amount, category, merchant, description) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (uid, amount_val, category_found, merchant_found, "Via Hybrid")
+                begin_expense_write(conn)
+                create_expense_for_user(
+                    conn,
+                    uid,
+                    amount=amount_val,
+                    category=category_found,
+                    merchant=merchant_found,
+                    description="Via Hybrid",
+                    request_id=telegram_expense_request_id(message),
                 )
                 conn.commit()
 
@@ -6174,20 +6307,25 @@ def handle_msg(message):
 
     # ─── PROGNOSE (Ohne KI) ──────────────────────────────────────────────
     if any(w in text_lower for w in ["wie lange", "wann erreiche", "dauer", "prognose"]):
-        sparrate = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
-        if sparrate <= 0:
-            bot.send_message(uid, "Sparrate ist 0€. Bitte unter /settings einrichten.")
+        goal_rate = get_goal_monthly_rate(uid)
+        erg = calculate_time_to_goal(
+            u.get("goal_amount") or 0, get_goal_current_amount(uid), goal_rate
+        )
+        goal_current = get_goal_current_amount(uid)
+        goal_target = float(u.get("goal_amount") or 0)
+        remaining = max(goal_target - goal_current, 0.0)
+        lines = [
+            f"🎯 *{u.get('goal_description', 'Dein Ziel')}*",
+            "",
+            f"Zielbetrag: {goal_target:.2f}€",
+            f"Aktueller Stand: {goal_current:.2f}€",
+            f"Noch offen: {remaining:.2f}€",
+        ]
+        if goal_rate and goal_rate > 0:
+            lines.extend([f"Für dieses Ziel geplant: {goal_rate:.2f}€/Monat", f"Hinweis: *{erg}*"])
         else:
-            erg = calculate_time_to_goal(
-                u.get("goal_amount") or 0, get_goal_current_amount(uid),
-                get_goal_monthly_rate(uid)
-            )
-            bot.send_message(uid,
-                f"🎯 *{u.get('goal_description', 'Dein Ziel')}*\n\n"
-                f"Sparrate: {sparrate:.2f}€/Monat\n"
-                f"Hinweis: *{erg}*",
-                parse_mode="Markdown"
-            )
+            lines.append("Keine Zeitprognose: Für dieses Ziel ist keine eigene Monatsrate hinterlegt.")
+        bot.send_message(uid, "\n".join(lines), parse_mode="Markdown")
         return
 
     # ─── BUDGET-CHECK (Ohne KI) ──────────────────────────────────────────
@@ -6241,6 +6379,9 @@ Du beantwortest Fragen zu persönlichen Finanzen, Ausgaben, Budget, Sparzielen, 
 Nutze das Nutzerprofil unten aktiv, wenn es für die Frage relevant ist.
 Wenn eine Information im Profil steht, behandle sie als bekannt und frage nicht erneut danach.
 Erfinde keine Zahlen. Wenn eine Zahl nicht im Profil oder in den Ausgaben steht, sage kurz, dass sie noch nicht hinterlegt ist.
+Verwende ausschliesslich Zahlen aus den strukturierten freigegebenen Fakten oder der Nutzereingabe.
+Behandle SUGGESTION niemals als USER_SET_BUDGET. Rechne keine neuen Finanzwerte selbst aus.
+Wenn eine Zahl nicht sicher vorhanden ist, formuliere ohne Zahl.
 
 ETF- und Finanzbildungsfragen sind erlaubt. Erklaere ruhig, klar und hilfreich.
 Keine Panik-Disclaimer. Keine konkreten Kauf-/Verkaufsempfehlungen für einzelne Produkte.
@@ -6303,14 +6444,23 @@ Nutzereingabe: {text_input}"""
                     if str(merchant).strip().lower() == "unbekannt":
                         merchant = extract_merchant_name(text_input)
                     with get_db() as conn:
-                        conn.execute(
-                            "INSERT INTO expenses (user_id, amount, category, merchant, description) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (uid, amt, category, merchant, "Via KI")
+                        begin_expense_write(conn)
+                        result = create_expense_for_user(
+                            conn,
+                            uid,
+                            amount=amt,
+                            category=category,
+                            merchant=merchant,
+                            description="Via KI",
+                            request_id=telegram_expense_request_id(message, len(booked_items)),
                         )
                         conn.commit()
                     booked += 1
-                    booked_items.append({"amount": amt, "category": category, "merchant": merchant})
+                    booked_items.append({
+                        "amount": result["amount"],
+                        "category": result["category"],
+                        "merchant": result["merchant"],
+                    })
             except (ValueError, TypeError) as e:
                 logger.warning(f"KI-Ausgabe konnte nicht verbucht werden: {e}")
 
@@ -6320,8 +6470,12 @@ Nutzereingabe: {text_input}"""
             cp_str = build_tracking_note(cp_earned)
             reply += format_expense_confirmation(booked_items, cp_str, user_id=uid) + "\n"
 
-        if data.get("reply_text") and booked == 0:
-            reply += data["reply_text"]
+        raw_reply = str(data.get("reply_text") or "").strip()
+        if raw_reply and booked == 0:
+            if ai_reply_has_only_known_numbers(raw_reply, user_context + "\n" + text_input):
+                reply += raw_reply
+            else:
+                logger.warning("KI-Antwort mit nicht freigegebener Zahl verworfen (User %s)", uid)
 
         if not reply.strip():
             reply = build_not_understood_answer()

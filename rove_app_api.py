@@ -64,6 +64,10 @@ from rove_investment_contributions import (
     ensure_investment_contribution_schema,
     record_holding_contribution,
 )
+from rove_expense_domain import (
+    begin_expense_write,
+    create_expense_for_user,
+)
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
     archive_financial_account,
@@ -5015,116 +5019,41 @@ def create_expense():
 
     token = token_from_request()
     with db() as conn:
-        begin_write(conn)   # siehe begin_write(): sonst verlieren parallele Buchungen den Abzug
+        begin_expense_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-
         ensure_expense_request_id_schema(conn)
-        if request_id:
-            existing = conn.execute(
-                "SELECT id, amount, category, merchant FROM expenses "
-                "WHERE user_id = ? AND request_id = ? LIMIT 1",
-                (user_id, request_id),
-            ).fetchone()
-            if existing:
-                balances = app_cash_accounts(conn, user_id)
-                live_data = build_live_app_data(conn, user_id)
-                return jsonify({
-                    "ok": True,
-                    "id": int(existing["id"]),
-                    "user_id": user_id,
-                    "amount": round(float(existing["amount"] or 0), 2),
-                    "category": str(existing["category"] or ""),
-                    "merchant": str(existing["merchant"] or ""),
-                    "paid_cash": False,
-                    "cash_applied": 0.0,
-                    "giro_applied": 0.0,
-                    "idempotent_replay": True,
-                    "accounts": balances,
-                    "available": live_data["sts"]["available"],
-                })
-
-        # Eine einmal korrigierte Händler-Kategorie gewinnt zentral gegen die lokale
-        # Heuristik. Das gilt beim nächsten App-Eintrag ebenso wie beim Telegram-Bot.
         bot_category = category_rule_for_merchant(conn, user_id, merchant) or bot_category
-
-        # Vor dem INSERT pruefen: Ein return innerhalb des DB-Kontexts wuerde einen bereits
-        # eingefuegten Datensatz sonst normal committen, obwohl die Zahlung abgelehnt wurde.
-        ensure_app_cash_movements_table(conn)
-        pilot = multi_cash_accounts_enabled(conn, user_id)
-        if pilot:
-            prepare_multi_cash_write(conn)
-        account_key = "bargeld" if paid_cash else "giro"
-        movement_kind = "payment" if paid_cash else "card"
+        try:
+            result = create_expense_for_user(
+                conn,
+                user_id,
+                amount=amount,
+                category=bot_category,
+                merchant=merchant,
+                description=description,
+                request_id=request_id,
+                paid_cash=paid_cash,
+            )
+        except (LookupError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         balances = app_cash_accounts(conn, user_id)
-        if paid_cash and amount > balances[account_key]:
-            return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
-
-        account_id = None
-        if pilot:
-            account_id = (
-                legacy_financial_account_id(conn, user_id, "bargeld")
-                if paid_cash else role_financial_account_id(conn, user_id, "expense")
-            )
-            account = require_financial_account(conn, user_id, account_id)
-            if paid_cash and amount > float(account["balance"] or 0.0) + 0.009:
-                return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
-            cur = conn.execute(
-                """INSERT INTO expenses
-                       (user_id, amount, category, merchant, description, account_id, request_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, amount, bot_category, merchant, description, account_id, request_id),
-            )
-        else:
-            cur = conn.execute(
-                """INSERT INTO expenses
-                       (user_id, amount, category, merchant, description, request_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, amount, bot_category, merchant, description, request_id),
-            )
-        expense_id = cur.lastrowid
-        # Jede App-Ausgabe senkt dauerhaft das Konto, aus dem sie bezahlt wurde. Ohne diese
-        # Kontowirkung sprang der Girostand nach dem naechsten App-Refresh auf den alten Wert
-        # zurueck, obwohl Ausgabe, Budget und Report die Buchung bereits kannten.
-        # Giro darf ins Minus gehen (z. B. 100 EUR Kontostand minus 600 EUR Ausgabe =
-        # -500 EUR). Beim Loeschen wird exakt derselbe Betrag wieder gutgeschrieben.
-        account_applied = round(amount, 2)
-        if pilot:
-            balances = adjust_financial_account_balance(
-                conn, user_id, account_id, -account_applied, require_funds=paid_cash
-            )
-            conn.execute(
-                """INSERT INTO app_cash_movements
-                       (user_id, kind, amount, expense_id, source_account_id)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (user_id, movement_kind, account_applied, expense_id, account_id),
-            )
-        else:
-            balances[account_key] = round(balances[account_key] - account_applied, 2)
-            save_app_cash_accounts(conn, user_id, balances)
-            conn.execute(
-                """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-                   VALUES (?, ?, ?, ?)""",
-                (user_id, movement_kind, account_applied, expense_id),
-            )
-        cash_applied = account_applied if paid_cash else 0.0
-        giro_applied = 0.0 if paid_cash else account_applied
-        reward = award_tracking_points(conn, user_id, expense_id=expense_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
     return jsonify({
         "ok": True,
-        "id": expense_id,
+        "id": result["id"],
         "user_id": user_id,
-        "amount": round(amount, 2),
-        "category": bot_category,
-        "merchant": merchant,
-        "paid_cash": paid_cash,
-        "cash_applied": cash_applied,
-        "giro_applied": giro_applied,
-        "reward": reward,
+        "amount": result["amount"],
+        "category": result["category"],
+        "merchant": result["merchant"],
+        "paid_cash": result["paid_cash"],
+        "cash_applied": result["cash_applied"],
+        "giro_applied": result["giro_applied"],
+        "reward": result["reward"],
+        "idempotent_replay": result["idempotent_replay"],
         "accounts": balances,
         "available": live_data["sts"]["available"],
     })
