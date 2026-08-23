@@ -33,6 +33,7 @@ def create_db(path: Path) -> None:
                 income REAL DEFAULT 0,
                 other_income REAL DEFAULT 0,
                 fixed_costs REAL DEFAULT 0,
+                fixed_costs_details TEXT DEFAULT '{}',
                 etf_savings REAL DEFAULT 0,
                 cash_savings REAL DEFAULT 0
             );
@@ -135,7 +136,7 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
         create_db(self.db_path)
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
-            patch.object(api, "build_live_app_data", lambda _conn, _uid: {"sts": {"available": 0}}),
+            patch.object(api, "build_live_app_data", lambda _conn, _uid: {"sts": {"available": 0}, "budgets": []}),
             patch.object(api, "award_tracking_points", lambda *_a, **_k: {"awarded": 0}),
             patch.object(api, "reverse_tracking_points_for_deleted_expense", lambda *_a, **_k: False),
             patch.object(api, "category_rule_for_merchant", lambda *_a, **_k: None),
@@ -440,6 +441,102 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
         self.assertEqual(sorted(inserted_counts), [0, 1])
         self.assertEqual(self.account("giro")["balance"], 987.5)
         self.assertEqual(self.legacy("giro"), 987.5)
+
+    def test_manual_expense_request_id_is_user_bound_and_idempotent(self) -> None:
+        payload = {
+            "amount": 30,
+            "merchant": "Lidl",
+            "category": "Lebensmittel",
+            "request_id": "manual-request-1",
+        }
+        first = self.request("POST", "/v1/expenses", json=payload)
+        replay = self.request("POST", "/v1/expenses", json={**payload, "amount": 999})
+        second = self.request("POST", "/v1/expenses", json={**payload, "request_id": "manual-request-2"})
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["idempotent_replay"])
+        self.assertEqual(replay.get_json()["id"], first.get_json()["id"])
+        self.assertEqual(second.status_code, 200, second.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM expenses WHERE user_id=1").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_cash_movements WHERE user_id=1 AND kind='card'").fetchone()[0], 2)
+        self.assertEqual(self.account("giro")["balance"], 940)
+
+    def test_transaction_state_exposes_real_merchant_not_category_fallback(self) -> None:
+        from rove_app_state import _build_tx
+
+        with closing(self.connect()) as conn:
+            conn.execute(
+                "INSERT INTO expenses (user_id, amount, category, merchant, description) VALUES (1, 5, 'LEBENSMITTEL', NULL, NULL)"
+            )
+            conn.execute(
+                "INSERT INTO expenses (user_id, amount, category, merchant, description) VALUES (1, 7, 'LEBENSMITTEL', 'Hochzeit', NULL)"
+            )
+            conn.commit()
+            items = [item for group in _build_tx(conn, 1) for item in group["items"]]
+
+        merchants = {item["merchant"] for item in items}
+        self.assertIn("", merchants)
+        self.assertIn("Hochzeit", merchants)
+        self.assertNotIn("Lebensmittel", merchants)
+
+    def test_category_write_is_atomic_and_user_bound(self) -> None:
+        created = self.request("POST", "/v1/expenses", json={
+            "amount": 12, "merchant": "Hochzeit", "category": "Sonstiges",
+        })
+        expense_id = created.get_json()["id"]
+        changed = self.request("POST", f"/v1/expenses/{expense_id}/category", json={
+            "category": "Shopping",
+        })
+        self.assertEqual(changed.status_code, 200, changed.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(
+                conn.execute("SELECT category FROM expenses WHERE id=?", (expense_id,)).fetchone()[0],
+                "SHOPPING",
+            )
+
+    def test_budget_and_contract_writes_remain_consistent_under_parallel_updates(self) -> None:
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """CREATE TABLE category_budgets (
+                   user_id INTEGER, category TEXT, monthly_limit REAL,
+                   source TEXT, active_month TEXT,
+                   UNIQUE(user_id, category, active_month)
+                )"""
+            )
+            conn.commit()
+
+        budget_statuses: list[int] = []
+
+        def update_budget(limit: int) -> None:
+            budget_statuses.append(self.request("POST", "/v1/budgets", json={
+                "budgets": [{"category": "Shopping", "limit": limit}],
+            }).status_code)
+
+        threads = [threading.Thread(target=update_budget, args=(limit,)) for limit in (200, 250)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(budget_statuses), [200, 200])
+
+        contract_statuses: list[int] = []
+
+        def create_contract(name: str) -> None:
+            contract_statuses.append(self.request("POST", "/v1/contracts", json={
+                "action": "create", "name": name, "category": "Abos", "amount": 10,
+            }).status_code)
+
+        threads = [threading.Thread(target=create_contract, args=(name,)) for name in ("Abo A", "Abo B")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(contract_statuses), [200, 200])
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM category_budgets").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id=1").fetchone()[0], 2)
 
     def test_reference_migration_and_pilot_control_are_safe_and_reversible(self) -> None:
         first = migrate_references(self.db_path, apply=True)

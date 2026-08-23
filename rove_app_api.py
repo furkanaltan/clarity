@@ -481,6 +481,18 @@ def clean_text(value: object, fallback: str = "") -> str:
     return text[:80] if text else fallback
 
 
+def ensure_expense_request_id_schema(conn: sqlite3.Connection) -> None:
+    """Adds an optional user-scoped idempotency key to existing expense rows."""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(expenses)")}
+    if "request_id" not in columns:
+        conn.execute("ALTER TABLE expenses ADD COLUMN request_id TEXT")
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_user_request_id
+           ON expenses(user_id, request_id)
+           WHERE request_id IS NOT NULL AND TRIM(request_id) <> ''"""
+    )
+
+
 def screenshot_mime_type(payload: bytes) -> str | None:
     """Vertraut nicht dem Dateinamen oder dem vom Browser gelieferten MIME-Typ."""
     if payload.startswith(b"\xff\xd8\xff"):
@@ -3268,6 +3280,7 @@ def update_contracts():
         return jsonify({"ok": False, "error": "valid_contract_action_required"}), 400
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
@@ -3334,6 +3347,7 @@ def update_budgets():
     token = token_from_request()
     active_month = datetime.now().strftime("%Y-%m")
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
@@ -4954,6 +4968,7 @@ def create_expense():
     bot_category = APP_TO_BOT_CATEGORY.get(app_category, "SONSTIGES")
     merchant = clean_text(payload.get("merchant") or payload.get("name"), "App-Buchung")
     description = clean_text(payload.get("description"), "Via Rov.E App")
+    request_id = clean_text(payload.get("request_id") or payload.get("idempotency_key"))[:128] or None
     # Bar bezahlt ("30 Euro Doener mit Bargeld bezahlt", Furkan 25.07.): eine ganz normale
     # Ausgabe fuer Budget/Bot/Report — das Geld kommt aber aus dem Portemonnaie, nicht vom
     # Girokonto. Beides in EINEM Aufruf, damit Buchung und Bargeldstand nie halb gespeichert
@@ -4966,6 +4981,31 @@ def create_expense():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+
+        ensure_expense_request_id_schema(conn)
+        if request_id:
+            existing = conn.execute(
+                "SELECT id, amount, category, merchant FROM expenses "
+                "WHERE user_id = ? AND request_id = ? LIMIT 1",
+                (user_id, request_id),
+            ).fetchone()
+            if existing:
+                balances = app_cash_accounts(conn, user_id)
+                live_data = build_live_app_data(conn, user_id)
+                return jsonify({
+                    "ok": True,
+                    "id": int(existing["id"]),
+                    "user_id": user_id,
+                    "amount": round(float(existing["amount"] or 0), 2),
+                    "category": str(existing["category"] or ""),
+                    "merchant": str(existing["merchant"] or ""),
+                    "paid_cash": False,
+                    "cash_applied": 0.0,
+                    "giro_applied": 0.0,
+                    "idempotent_replay": True,
+                    "accounts": balances,
+                    "available": live_data["sts"]["available"],
+                })
 
         # Eine einmal korrigierte Händler-Kategorie gewinnt zentral gegen die lokale
         # Heuristik. Das gilt beim nächsten App-Eintrag ebenso wie beim Telegram-Bot.
@@ -4994,15 +5034,16 @@ def create_expense():
                 return jsonify({"ok": False, "error": "cash_balance_insufficient"}), 400
             cur = conn.execute(
                 """INSERT INTO expenses
-                       (user_id, amount, category, merchant, description, account_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, amount, bot_category, merchant, description, account_id),
+                       (user_id, amount, category, merchant, description, account_id, request_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, amount, bot_category, merchant, description, account_id, request_id),
             )
         else:
             cur = conn.execute(
-                """INSERT INTO expenses (user_id, amount, category, merchant, description)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (user_id, amount, bot_category, merchant, description),
+                """INSERT INTO expenses
+                       (user_id, amount, category, merchant, description, request_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, amount, bot_category, merchant, description, request_id),
             )
         expense_id = cur.lastrowid
         # Jede App-Ausgabe senkt dauerhaft das Konto, aus dem sie bezahlt wurde. Ohne diese
@@ -5129,6 +5170,7 @@ def update_expense_category(expense_id: int):
 
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
