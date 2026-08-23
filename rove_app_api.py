@@ -3764,6 +3764,7 @@ def configure_portfolio_tracking():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        begin_write(conn)
         holding = conn.execute(
             """SELECT id, instrument_key, quantity, valuation_enabled,
                       COALESCE(market_value, total_invested, 0) AS value
@@ -3828,6 +3829,7 @@ def configure_portfolio_tracking():
             quote,
             expected_symbol=symbol,
             reconcile_pending=quantity_increased,
+            manage_transaction=False,
         )
         live_data = build_live_app_data(conn, user_id)
 

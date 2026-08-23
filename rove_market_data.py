@@ -245,83 +245,91 @@ def apply_market_quote(
     *,
     expected_symbol: str | None = None,
     reconcile_pending: bool = False,
+    manage_transaction: bool = True,
 ) -> dict:
-    """Apply one quote atomically and adjust the user's aggregate by the delta only."""
+    """Apply one quote and adjust the user's aggregate by the delta only.
+
+    Existing callers keep the helper-owned transaction. API callers that already
+    hold a write transaction can opt out so metadata and valuation commit together.
+    """
     ensure_market_tracking_schema(conn)
     ensure_investment_contribution_schema(conn)
-    conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute(
-        """SELECT id, user_id, instrument_label, price_symbol, quantity,
-                  total_invested, market_value, valuation_enabled
-             FROM portfolio_holdings WHERE id = ?""",
-        (holding_id,),
-    ).fetchone()
-    if not row:
-        conn.rollback()
-        raise ValueError("market_position_not_found")
-    if expected_symbol and str(row["price_symbol"] or "").upper() != expected_symbol.upper():
-        conn.rollback()
-        raise ValueError("market_position_changed")
-    quantity = float(row["quantity"] or 0)
-    if not row["valuation_enabled"] or quantity <= 0:
-        conn.rollback()
-        raise ValueError("market_position_not_configured")
+    if manage_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            """SELECT id, user_id, instrument_label, price_symbol, quantity,
+                      total_invested, market_value, valuation_enabled
+                 FROM portfolio_holdings WHERE id = ?""",
+            (holding_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("market_position_not_found")
+        if expected_symbol and str(row["price_symbol"] or "").upper() != expected_symbol.upper():
+            raise ValueError("market_position_changed")
+        quantity = float(row["quantity"] or 0)
+        if not row["valuation_enabled"] or quantity <= 0:
+            raise ValueError("market_position_not_configured")
 
-    market_value = round(quantity * float(quote["eur_price"]), 2)
-    previous_value = row["market_value"]
-    if previous_value is None:
-        previous_value = row["total_invested"] or 0
-    delta = round(market_value - float(previous_value), 2)
-    total_row = conn.execute(
-        "SELECT current_investments FROM users WHERE user_id = ?", (row["user_id"],)
-    ).fetchone()
-    if not total_row:
-        conn.rollback()
-        raise ValueError("market_user_not_found")
-    absorbed = 0.0
-    if reconcile_pending and delta > 0:
-        absorbed = reconcile_pending_contribution(
-            conn, int(row["user_id"]), int(holding_id), delta
-        )
+        market_value = round(quantity * float(quote["eur_price"]), 2)
+        previous_value = row["market_value"]
+        if previous_value is None:
+            previous_value = row["total_invested"] or 0
+        delta = round(market_value - float(previous_value), 2)
         total_row = conn.execute(
             "SELECT current_investments FROM users WHERE user_id = ?", (row["user_id"],)
         ).fetchone()
-    new_total = round(max(0.0, float(total_row["current_investments"] or 0) + delta), 2)
-    valuation_delta = round(delta - absorbed, 2) if delta > 0 else delta
+        if not total_row:
+            raise ValueError("market_user_not_found")
+        absorbed = 0.0
+        if reconcile_pending and delta > 0:
+            absorbed = reconcile_pending_contribution(
+                conn, int(row["user_id"]), int(holding_id), delta
+            )
+            total_row = conn.execute(
+                "SELECT current_investments FROM users WHERE user_id = ?", (row["user_id"],)
+            ).fetchone()
+        new_total = round(max(0.0, float(total_row["current_investments"] or 0) + delta), 2)
+        valuation_delta = round(delta - absorbed, 2) if delta > 0 else delta
 
-    conn.execute(
-        """UPDATE portfolio_holdings
-              SET last_price = ?, market_value = ?, market_data_provider = ?,
-                  last_checked_at = CURRENT_TIMESTAMP,
-                  market_value_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?""",
-        (quote["native_price"], market_value, quote.get("provider", "twelve_data"), holding_id),
-    )
-    conn.execute(
-        "UPDATE users SET current_investments = ? WHERE user_id = ?",
-        (new_total, row["user_id"]),
-    )
-    if abs(valuation_delta) >= 0.01:
         conn.execute(
-            """INSERT INTO investment_events
-               (user_id, amount, direction, asset_type, asset_name, event_type,
-                source, note, holding_id)
-               VALUES (?, ?, ?, ?, ?, 'market_valuation', ?, ?, ?)""",
-            (
-                row["user_id"], abs(valuation_delta),
-                "in" if valuation_delta > 0 else "out", "market",
-                row["instrument_label"], quote.get("provider", "twelve_data"),
-                f"Taegliche Kursbewertung {quote.get('resolved_symbol', quote['symbol'])} in EUR",
-                int(holding_id),
-            ),
+            """UPDATE portfolio_holdings
+                  SET last_price = ?, market_value = ?, market_data_provider = ?,
+                      last_checked_at = CURRENT_TIMESTAMP,
+                      market_value_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?""",
+            (quote["native_price"], market_value, quote.get("provider", "twelve_data"), holding_id),
         )
-    conn.commit()
-    return {
-        "market_value": market_value,
-        "delta": valuation_delta,
-        "pending_absorbed": absorbed,
-        "investment_total": new_total,
-    }
+        conn.execute(
+            "UPDATE users SET current_investments = ? WHERE user_id = ?",
+            (new_total, row["user_id"]),
+        )
+        if abs(valuation_delta) >= 0.01:
+            conn.execute(
+                """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name, event_type,
+                    source, note, holding_id)
+                   VALUES (?, ?, ?, ?, ?, 'market_valuation', ?, ?, ?)""",
+                (
+                    row["user_id"], abs(valuation_delta),
+                    "in" if valuation_delta > 0 else "out", "market",
+                    row["instrument_label"], quote.get("provider", "twelve_data"),
+                    f"Taegliche Kursbewertung {quote.get('resolved_symbol', quote['symbol'])} in EUR",
+                    int(holding_id),
+                ),
+            )
+        if manage_transaction:
+            conn.commit()
+        return {
+            "market_value": market_value,
+            "delta": valuation_delta,
+            "pending_absorbed": absorbed,
+            "investment_total": new_total,
+        }
+    except Exception:
+        if manage_transaction:
+            conn.rollback()
+        raise
 
 
 def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None) -> dict:
