@@ -3149,7 +3149,7 @@ def update_goals():
     """Verwaltet App-Ziele zentral, damit sie App-Neustarts und Geraetewechsel ueberleben."""
     payload = request.get_json(silent=True) or {}
     action = clean_text(payload.get("action")).lower()
-    if action not in {"create", "assign", "set_target", "delete"}:
+    if action not in {"create", "assign", "set_target", "set_rate", "delete"}:
         return jsonify({"ok": False, "error": "valid_goal_action_required"}), 400
 
     token = token_from_request()
@@ -3157,6 +3157,7 @@ def update_goals():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        begin_write(conn)
         ensure_app_goals_table(conn)
 
         if action == "create":
@@ -3166,6 +3167,11 @@ def update_goals():
             tint = clean_text(payload.get("tint"), "#2AABEE")
             if not name or target is None or target <= 0:
                 return jsonify({"ok": False, "error": "valid_goal_name_and_target_required"}), 400
+            rate = None
+            if "goal_monthly_rate" in payload and payload.get("goal_monthly_rate") not in (None, ""):
+                rate = goal_amount(payload.get("goal_monthly_rate"))
+                if rate is None or rate <= 0:
+                    return jsonify({"ok": False, "error": "valid_goal_monthly_rate_required"}), 400
             duplicate = conn.execute(
                 """SELECT 1 FROM app_goals
                      WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
@@ -3176,9 +3182,9 @@ def update_goals():
             goal_id = secrets.token_urlsafe(9)
             conn.execute(
                 """INSERT INTO app_goals
-                   (user_id, goal_id, name, target_amount, icon, tint)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, goal_id, name, target, icon, tint),
+                   (user_id, goal_id, name, target_amount, goal_monthly_rate, icon, tint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, goal_id, name, target, rate, icon, tint),
             )
         else:
             goal_id = clean_text(payload.get("goal_id"))
@@ -3202,6 +3208,22 @@ def update_goals():
                         "UPDATE users SET goal_description = '', goal_amount = 0 WHERE user_id = ?", (user_id,)
                     )
                     conn.execute("DELETE FROM app_primary_goal_progress WHERE user_id = ?", (user_id,))
+                elif action == "set_rate":
+                    raw_rate = payload.get("goal_monthly_rate")
+                    if raw_rate in (None, ""):
+                        next_rate = None
+                    else:
+                        next_rate = goal_amount(raw_rate)
+                        if next_rate is None or next_rate <= 0:
+                            return jsonify({"ok": False, "error": "valid_goal_monthly_rate_required"}), 400
+                    conn.execute(
+                        """INSERT INTO app_primary_goal_progress (user_id, goal_monthly_rate)
+                           VALUES (?, ?)
+                           ON CONFLICT(user_id) DO UPDATE SET
+                             goal_monthly_rate = excluded.goal_monthly_rate,
+                             updated_at = CURRENT_TIMESTAMP""",
+                        (user_id, next_rate),
+                    )
                 elif action == "assign":
                     amount = goal_amount(payload.get("amount"))
                     if amount is None or amount <= 0:
@@ -3241,6 +3263,20 @@ def update_goals():
 
             if action == "delete":
                 conn.execute("DELETE FROM app_goals WHERE user_id = ? AND goal_id = ?", (user_id, goal_id))
+            elif action == "set_rate":
+                raw_rate = payload.get("goal_monthly_rate")
+                if raw_rate in (None, ""):
+                    next_rate = None
+                else:
+                    next_rate = goal_amount(raw_rate)
+                    if next_rate is None or next_rate <= 0:
+                        return jsonify({"ok": False, "error": "valid_goal_monthly_rate_required"}), 400
+                conn.execute(
+                    """UPDATE app_goals
+                          SET goal_monthly_rate = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND goal_id = ?""",
+                    (next_rate, user_id, goal_id),
+                )
             elif action == "assign":
                 amount = goal_amount(payload.get("amount"))
                 if amount is None or amount <= 0:

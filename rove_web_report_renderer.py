@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 import secrets
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 
 from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
-from report_story_v2 import get_report_wealth, story_from_snapshot_data
+from report_story_v2 import get_report_wealth, story_from_snapshot_data, valid_report_merchant
 
 
 load_dotenv()
@@ -692,6 +693,7 @@ def build_story_render_context(data: dict) -> dict:
         return _pre_truth_story_render_context(data)
     story = story_from_snapshot_data(data)
     pages = story["pages"]
+    truth = data.get("report_truth") or {}
     report_month = str((data.get("meta") or {}).get("report_month") or story.get("report_month") or "")
     month_label, next_label = month_names(report_month)
 
@@ -720,12 +722,24 @@ def build_story_render_context(data: dict) -> dict:
     categories_raw = pages["page_3"].get("supporting_metrics") or []
     categories = []
     max_category = max((float(item.get("amount") or 0) for item in categories_raw), default=1.0) or 1.0
-    for index, item in enumerate(categories_raw[:5]):
+    for index, item in enumerate(categories_raw[:6]):
         amount = float(item.get("amount") or 0)
+        budget = dict(item.get("budget") or {})
+        budget_limit = float(budget.get("limit") or 0)
+        budget_used = float(budget.get("used") or amount or 0)
+        budget_line = ""
+        if budget_limit > 0:
+            diff = budget_used - budget_limit
+            budget_line = (
+                f"Budget {_story_money(budget_limit)} · {_story_money(diff)} über Budget"
+                if diff > 0
+                else f"Budget {_story_money(budget_limit)} · {_story_money(abs(diff))} frei"
+            )
         categories.append({
             "rank": index + 1,
             "name": str(item.get("category") or "Sonstiges"),
             "amount": _story_money(amount),
+            "amount_raw": amount,
             "share": fmt_percent(item.get("share") or 0, 1),
             "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
             "bar": max(4.0, min(100.0, amount / max_category * 100)),
@@ -733,28 +747,52 @@ def build_story_render_context(data: dict) -> dict:
             "average": _story_money(item.get("avg_transaction")),
             "delta": float(item.get("delta") or 0),
             "class": str(item.get("class") or "unclear"),
+            "budget": budget,
+            "budget_line": budget_line,
+            "budget_over": bool(item.get("budget_over")),
         })
 
     merchants = []
-    for index, item in enumerate((pages["page_4"].get("supporting_metrics") or [])[:3]):
+    for item in pages["page_4"].get("supporting_metrics") or []:
+        if not valid_report_merchant(item.get("merchant"), item.get("category")):
+            continue
         merchants.append({
-            "rank": index + 1,
+            "rank": len(merchants) + 1,
             "name": str(item.get("merchant") or "Unbekannt"),
-            "category": str(item.get("category") or "Sonstiges"),
+            "category": category_label(item.get("category") or "Sonstiges"),
             "amount": _story_money(item.get("amount")),
+            "amount_raw": float(item.get("amount") or 0),
             "count": int(item.get("transaction_count") or 0),
             "average": _story_money(item.get("avg_transaction")),
             "share": fmt_percent(item.get("share") or 0, 1),
             "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
         })
+        if len(merchants) == 3:
+            break
 
     changes = []
     for item in (pages["page_5"].get("supporting_metrics") or [])[:3]:
         delta = float(item.get("delta") or 0)
+        current = item.get("current")
+        previous = item.get("previous")
+        delta_percent = item.get("delta_percent")
+        if delta_percent is None and previous is not None and abs(float(previous)) > 0.0049:
+            delta_percent = round(delta / abs(float(previous)) * 100, 2)
+        amount_text = f"{'+' if delta > 0 else '-'}{_story_money(abs(delta))}" if delta else "0 €"
+        pct_label = (
+            f"{'+' if float(delta_percent) > 0 else ''}{de_number(delta_percent, 1)} %"
+            if delta_percent is not None else "Vergleich"
+        )
         changes.append({
             "label": str(item.get("label") or "Veränderung"),
             "context": _localize_story_text(item.get("context")),
+            "amount_text": amount_text,
+            "pct_label": pct_label,
             "delta": _story_money(abs(delta)),
+            "delta_raw": delta,
+            "delta_percent": delta_percent,
+            "current_raw": float(current) if current is not None else None,
+            "previous_raw": float(previous) if previous is not None else None,
             "direction": "up" if delta > 0 else "down" if delta < 0 else "flat",
         })
 
@@ -771,6 +809,26 @@ def build_story_render_context(data: dict) -> dict:
             "share_raw": max(0.0, min(100.0, float(item.get("share") or 0))),
             "tone": allocation_palette[index % len(allocation_palette)],
         })
+    if not allocation:
+        wealth_truth = truth.get("wealth") or {}
+        wealth_total = float(wealth_truth.get("total") or 0)
+        fallback_items = (
+            ("Cash", wealth_truth.get("cash")),
+            ("Investments", wealth_truth.get("investments")),
+            ("Immobilie", wealth_truth.get("property_equity")),
+        )
+        for label, raw_amount in fallback_items:
+            amount = float(raw_amount or 0)
+            if amount <= 0:
+                continue
+            share = amount / wealth_total * 100 if wealth_total > 0 else 0
+            allocation.append({
+                "label": label,
+                "amount": _story_money(amount),
+                "share": fmt_percent(share, 1),
+                "share_raw": max(0.0, min(100.0, share)),
+                "tone": allocation_palette[len(allocation) % len(allocation_palette)],
+            })
 
     contribution_items = [
         item
@@ -814,13 +872,12 @@ def build_story_render_context(data: dict) -> dict:
         for index, item in enumerate((story.get("next_month_engine") or {}).get("steps") or [])
     ]
 
-    truth = data.get("report_truth") or {}
     budget = truth.get("budget") or {}
     contribution_total = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
     if budget.get("has_budgets") and budget.get("on_track"):
         recap_good = "Deine gesetzten Budgets lagen im Rahmen."
     elif contribution_total > 0:
-        recap_good = f"Du hast {_story_money(contribution_total)} als Beitrag dokumentiert."
+        recap_good = f"Du hast {_story_money(contribution_total)} investiert."
     else:
         recap_good = "Dein Monat ist vollständig sichtbar und damit vergleichbar."
     if insight.get("suggested_tone") == "positive":
@@ -854,6 +911,11 @@ def build_story_render_context(data: dict) -> dict:
         "changes": changes,
         "allocation": allocation,
         "contributions": contributions,
+        "contribution_label": (
+            "Diesen Monat investiert oder zurückgelegt"
+            if contribution_total > 0 else "Kein neuer Beitrag in diesem Monat"
+        ),
+        "contribution_empty_text": "Keine Position mit neuem Beitrag in diesem Monat.",
         "contribution_more_count": max(0, len(contribution_items) - len(contributions)),
         "goal": goal,
         "score": score_value,
@@ -898,10 +960,24 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     strongest = categories[0] if categories else {
         "name": "Noch offen", "amount": "0 €", "bar": 0, "share_raw": 0, "share": "0,0 %"
     }
+    category_count = len(categories)
+    transaction_count = int(expenses.get("transaction_count") or sum(item.get("count", 0) for item in categories))
     merchants = report["merchants"]
     biggest = merchants[0] if merchants else {
-        "name": "Noch offen", "amount": "0 €", "share_raw": 0, "share": "0,0 %"
+        "name": "Kein Händler erkannt", "amount": "0 €", "amount_raw": 0,
+        "share_raw": 0, "share": "0,0 %"
     }
+    merchant_rows = [
+        {
+            "rank": str(index),
+            "name": h(item["name"]),
+            "amount": item["amount"],
+            "count_text": f"{item['count']} {'Ausgabe' if item['count'] == 1 else 'Ausgaben'}",
+            "average": item["average"],
+            "category": h(item["category"]),
+        }
+        for index, item in enumerate(merchants[:3], start=1)
+    ]
     month_short = report["month_label"].split(" ", 1)[0]
     next_month_name = report["next_month_label"].split(" ", 1)[0]
     contribution_total_raw = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
@@ -930,6 +1006,35 @@ def _v2_legacy_visual_context(data: dict) -> dict:
             "bar_pct": item["bar"],
             "pct_text": int(round(float(item.get("share_raw") or 0))),
             "amount_text": item["amount"],
+            "count": item.get("count", 0),
+            "average": item.get("average", "0 €"),
+            "budget": dict(item.get("budget") or {}),
+            "budget_over": bool(item.get("budget_over")),
+            "bar_color": colors["bar_color"],
+            "text_color": colors["text_color"],
+        })
+
+    comparison_rows = []
+    max_change = max((abs(float(item.get("delta_raw") or 0)) for item in report["changes"]), default=1.0) or 1.0
+    for index, item in enumerate(report["changes"][:5]):
+        colors = palette[min(index, len(palette) - 1)]
+        delta = float(item.get("delta_raw") or 0)
+        delta_percent = item.get("delta_percent")
+        if delta_percent is None:
+            previous = item.get("previous_raw")
+            current = item.get("current_raw")
+            if previous is None and current is not None:
+                previous = float(current) - delta
+            if previous is not None and abs(float(previous)) > 0.0049:
+                delta_percent = round(delta / abs(float(previous)) * 100, 2)
+        comparison_rows.append({
+            "name": h(item["label"]),
+            "bar_pct": max(4.0, min(100.0, abs(delta) / max_change * 100)),
+            "pct_label": (
+                f"{'+' if float(delta_percent) > 0 else ''}{de_number(delta_percent, 1)} %"
+                if delta_percent is not None else "Vergleich"
+            ),
+            "amount_text": f"{'+' if delta > 0 else '-'}{_story_money(abs(delta))}" if delta else "0 €",
             "bar_color": colors["bar_color"],
             "text_color": colors["text_color"],
         })
@@ -937,6 +1042,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     score_parts = []
     for item in score_parts_raw:
         score_parts.append({
+            "key": str(item.get("key") or ""),
             "label": str(item.get("n") or item.get("label") or item.get("key") or "Faktor"),
             "value": int(item.get("points") or 0),
             "max": int(item.get("max") or 25),
@@ -946,19 +1052,157 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         weakest = min(range(len(score_parts)), key=lambda idx: score_parts[idx]["value"])
         score_parts[weakest]["warn"] = True
 
-    next_steps = report["next_steps"] or [
-        {"title": "Tracke weiter sauber.", "text": "So bleibt dein naechster Monat vergleichbar."},
-        {"title": "Pruefe deine groesste Kategorie.", "text": "Ein kleiner Rahmen reicht fuer den Anfang."},
-        {"title": "Halte deine Sparrate klar.", "text": "Der Beitrag zaehlt mehr als perfekte Planung."},
+    score_names = {
+        "budget": "Budget",
+        "savings": "Sparausführung",
+        "consistency": "Tracking",
+        "structure": "Struktur",
+    }
+    weakest_part = min(
+        score_parts,
+        key=lambda item: item["value"] / max(1, item["max"]),
+        default=None,
+    )
+    strong_parts = [
+        score_names.get(item["key"], item["label"])
+        for item in score_parts
+        if item["value"] / max(1, item["max"]) >= 0.8
     ]
-    while len(next_steps) < 3:
-        next_steps.append(next_steps[-1])
+    weakest_name = score_names.get((weakest_part or {}).get("key"), (weakest_part or {}).get("label", "deinem nächsten Teilbereich"))
+    if contribution_total_raw <= 0 and any(item.get("key") == "savings" and item["value"] >= item["max"] for item in score_parts):
+        rank_blurb = (
+            "Der Spar-Teilscore liegt bei 25/25; im Juli ist jedoch kein neuer "
+            f"Investment- oder Sparbeitrag hinzugekommen. Bei {weakest_name} liegt dein nächster Prüfpunkt."
+        )
+    elif strong_parts:
+        strong_text = " und ".join(strong_parts[:2])
+        rank_blurb = f"{strong_text} {'sind' if len(strong_parts) > 1 else 'ist'} stark. Bei {weakest_name} liegt dein nächster Prüfpunkt."
+    else:
+        rank_blurb = f"Dein niedrigster Teilscore liegt bei {weakest_name}. Dort ist der nächste sachliche Prüfpunkt."
 
     strongest_amount_raw = float((expenses.get("categories") or [{}])[0].get("amount") or 0)
-    ratio_to_savings = strongest_amount_raw / contribution_total_raw if contribution_total_raw > 0 else 0.0
-    freed_up_monthly = max(0.0, strongest_amount_raw / 2)
     goal = report["goal"]
     goal_name = goal["name"] if goal["available"] else "Dein Ziel"
+    savings_plan = float((data.get("profile") or {}).get("savings_plan") or 0)
+    tracked_days = int(report["tracked_days"] or 0)
+
+    over_budget = [
+        item for item in report["categories"]
+        if item.get("budget_over") and float((item.get("budget") or {}).get("limit") or 0) > 0
+    ]
+    budget_issue = max(
+        over_budget,
+        key=lambda item: float((item.get("budget") or {}).get("used") or item.get("amount_raw") or 0)
+        - float((item.get("budget") or {}).get("limit") or 0),
+        default=None,
+    )
+    budget_limit = float((budget_issue or {}).get("budget", {}).get("limit") or 0)
+    budget_used = float((budget_issue or {}).get("budget", {}).get("used") or (budget_issue or {}).get("amount_raw") or 0)
+    budget_over = max(0.0, budget_used - budget_limit)
+    budget_fact = (
+        f"{budget_issue['name']} lag {_story_money(budget_over)} über deinem gesetzten Budget von {_story_money(budget_limit)}."
+        if budget_issue else ""
+    )
+
+    contribution_text = (
+        f"{_story_money(contribution_total_raw)} investiert oder zurückgelegt."
+        if contribution_total_raw > 0
+        else "In diesem Monat ist kein neuer Investment- oder Sparbeitrag hinzugekommen."
+    )
+    tracking_summary = (
+        f"{tracked_days} Tage getrackt" if tracked_days > 0 else "dein Monatsbild vollständig erfasst"
+    )
+    month_summary_text = (
+        f"{month_short}: {tracking_summary}. {contribution_text} "
+        f"Deine stärkste Kategorie war {strongest['name']} mit {strongest['amount']}."
+    )
+    comparison_text = (
+        f"{report['changes'][0]['label']}: {report['changes'][0]['context']}"
+        if report["changes"] else "Noch kein belastbarer Vormonatsvergleich verfügbar."
+    )
+    development_text = (
+        f"{'+' if float(report['changes'][0].get('delta_raw') or 0) > 0 else '-'}{_story_money(abs(float(report['changes'][0].get('delta_raw') or 0)))}"
+        if report["changes"] else "Kein Vergleich"
+    )
+
+    if budget_issue:
+        recap_good = "Du hast im Juli aktiv Vermögen aufgebaut." if contribution_total_raw > 0 else "Deine Ausgaben sind klar nach Kategorien aufgeschlüsselt."
+        recap_attention = budget_fact
+        recap_lever = "Prüfe im nächsten Monat, ob diese Abweichung einmalig war oder erneut auftritt."
+    elif (truth.get("budget") or {}).get("has_budgets") and (truth.get("budget") or {}).get("on_track"):
+        recap_good = "Deine gesetzten Kategorie-Budgets lagen im vorgesehenen Rahmen."
+        recap_attention = "In diesem Monat ist keine Budgetüberschreitung hervorgehoben."
+        recap_lever = "Behalte die bestehenden Budgets als Vergleichsrahmen für den nächsten Monat bei."
+    else:
+        recap_good = f"Du hast an {tracked_days} Tagen getrackt und damit eine belastbare Monatsbasis geschaffen."
+        recap_attention = report["insight"]["text"]
+        recap_lever = "Beobachte im nächsten Monat, ob sich derselbe Zusammenhang wiederholt."
+
+    score_next_title = (
+        f"{weakest_name} im nächsten Monat gezielt beobachten."
+        if weakest_part else "Halte den nächsten Monat vollständig sichtbar."
+    )
+    score_next_text = (
+        f"Ein stabilerer Wert würde deinen Teilscore für {weakest_name} stärken."
+        if weakest_part else "So bleibt dein Report belastbar vergleichbar."
+    )
+
+    plan_step1_title = "Halte deine Buchungen im nächsten Monat vollständig."
+    plan_step1_sub = "So bleibt auch der nächste Monatsvergleich aussagekräftig."
+    if budget_issue:
+        plan_step2_title = f"Behalte dein {budget_issue['name']}-Budget von {_story_money(budget_limit)} im Blick."
+        plan_step2_sub = "So erkennst du früh, ob die Abweichung einmalig war."
+        plan_step2_impact = f"Budget {_story_money(budget_limit)}"
+    else:
+        plan_step2_title = f"Behalte {strongest['name']} im Blick."
+        plan_step2_sub = "Prüfe, ob die Kategorie im nächsten Monat erneut auffällt."
+        plan_step2_impact = "Beobachten"
+    if savings_plan > 0:
+        plan_step3_title = f"Halte deine geplante Sparrate von {_story_money(savings_plan)} ein."
+        plan_step3_sub = "Plane die Rate wie vorgesehen ein."
+        plan_step3_impact = f"Plan {_story_money(savings_plan)}"
+    else:
+        plan_step3_title = "Prüfe deinen Sparplan für den nächsten Monat."
+        plan_step3_sub = "Ohne hinterlegte Sparrate nennt Rov.E keinen eigenen Zielbetrag."
+        plan_step3_impact = "Plan prüfen"
+
+    primary_goal = (truth.get("goals") or {}).get("primary") or {}
+    goal_remaining = max(
+        0.0,
+        float(primary_goal.get("target_amount") or 0) - float(primary_goal.get("current_amount") or 0),
+    ) if goal["available"] else 0.0
+    if goal["available"] and savings_plan > 0 and goal_remaining > 0:
+        goal_months = max(1, math.ceil(goal_remaining / savings_plan))
+        goal_honest_text = (
+            f"Bei deiner geplanten Sparrate von {_story_money(savings_plan)} pro Monat "
+            f"entspricht der offene Betrag rechnerisch rund {goal_months} Monaten."
+        )
+        goal_honest_subtext = "Deine hinterlegte Sparrate dient dabei als Orientierung."
+        goal_lever_text = f"{_story_money(savings_plan)} pro Monat sind aktuell eingeplant."
+        goal_lever_subtext = "Änderst du die Rate, verändert sich auch der Zeitraum."
+    else:
+        goal_honest_text = "Für dein Ziel ist noch kein monatlicher Zeitraum hinterlegt."
+        goal_honest_subtext = "Sobald du eine Rate festlegst, erhältst du eine zeitliche Orientierung."
+        goal_lever_text = "Noch keine monatliche Sparrate eingeplant."
+        goal_lever_subtext = "Der Zielstand bleibt davon unverändert sichtbar."
+
+    contribution_details = report.get("contributions") or []
+    if contribution_total_raw > 0 and contribution_details:
+        build_detail_text = " · ".join(
+            f"{item['name']}: {item['amount']}" for item in contribution_details[:3]
+        )
+    elif contribution_total_raw > 0:
+        build_detail_text = "Damit bleibt sichtbar, was du in diesem Monat aktiv aufgebaut hast."
+    else:
+        build_detail_text = "In diesem Monat kam kein neuer Beitrag hinzu."
+
+    previous_month_label = month_label_with_offset((data.get("meta") or {}).get("report_month", ""), -1)
+    comparison_basis_text = f"{report['month_label']} im Vergleich zu {previous_month_label}."
+
+    mband = milestone_band(wealth_total)
+    milestone_remaining = max(0.0, mband["to_amount"] - wealth_total)
+    milestone_headline = f"Noch {_story_money(milestone_remaining)} bis zum nächsten Meilenstein."
+    milestone_fact = f"Dir fehlen noch {_story_money(milestone_remaining)} bis {_story_money(mband['to_amount'])}."
 
     return {
         "report": report,
@@ -968,27 +1212,32 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "next_report_delivery_month_name": h(month_label_with_offset((data.get("meta") or {}).get("report_month", ""), 2).split(" ", 1)[0]),
         "month_short": h(month_short),
         "freedom_step_label": "Diesen Monat aufgebaut",
-        "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "offen",
-        "freedom_step_subline": "investiert oder zurueckgelegt",
-        "development_percent_text": report["metrics"]["page_5"]["display_value"],
+        "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "Kein neuer Beitrag",
+        "freedom_step_subline": "investiert oder zurückgelegt" if contribution_total_raw > 0 else "kein neuer Beitrag",
+        "development_percent_text": development_text,
+        "development_subline": h(
+            f"{report['changes'][0]['label']} zum Vormonat"
+            if report["changes"] else "kein belastbarer Vormonat"
+        ),
         "net_worth_span": data_count_span(net_worth_raw) if wealth_available else "—",
         "investments_span": data_count_span(investments_raw) if wealth_available else "—",
         "cash_span": data_count_span(cash_raw) if wealth_available else "—",
-        "biggest_amount_span": data_count_span((expenses.get("merchants") or [{}])[0].get("amount") or 0),
+        "biggest_amount_span": data_count_span(biggest.get("amount_raw") or 0),
         "biggest_name": h(biggest["name"]),
         "strongest_amount_span": data_count_span(strongest_amount_raw),
         "strongest_name": h(strongest["name"]),
         "tracked_days": report["tracked_days"],
         "invested_amount": report["contribution_total"],
-        "month_savings_sentence": h(report["pages"]["page_7"].get("text") or "Dein Aufbau ist sichtbar."),
+        "month_summary_text": h(month_summary_text),
+        "month_savings_sentence": h(contribution_text),
         "wealth_headline": h(report["pages"]["page_6"].get("text") or "So ist dein Vermoegen verteilt."),
         "wealth_sentence": h("Nur vorhandene Vermoegensklassen werden gezeigt."),
         "strongest_amount": strongest["amount"],
         "ratio_sentence": h(report["pages"]["page_9"].get("text") or report["insight"]["text"]),
         "invested_span": data_count_span(contribution_total_raw),
-        "ratio_span": data_count_span(ratio_to_savings, 2),
+        "ratio_span": data_count_span(0, 2),
         "halve_sentence": h(report["insight"]["text"]),
-        "yearly_span": data_count_span(freed_up_monthly * 12),
+        "yearly_span": data_count_span(0),
         "goal_desc": h(goal_name),
         "goal_headline": h("Dein Ziel"),
         "goal_context_text": h(goal_name),
@@ -1005,13 +1254,19 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "invest_story_headline": h(report["pages"]["page_6"].get("question") or "Wo steckt dein Vermoegen heute?"),
         "invest_story_sub": h(report["pages"]["page_6"].get("text") or ""),
         "money_map_categories": money_map_categories,
+        "money_map_category_count": category_count,
+        "money_map_transaction_count": transaction_count,
+        "comparison_rows": comparison_rows,
+        "comparison_text": h(comparison_text),
         "has_budget_status": bool((truth.get("budget") or {}).get("has_budgets")),
         "budget_status_title": "Budgetrahmen",
         "budget_status_text": h(report["recap_good"]),
         "budget_status_subtext": h(report["recap_attention"]),
         "biggest_amount": biggest["amount"],
         "biggest_share_pct": int(round(float(biggest.get("share_raw") or 0))),
-        "invest_vs_strongest_text": h("Diesen Monat investiert, getrennt vom Konsum."),
+        "merchant_rows": merchant_rows,
+        "build_summary_text": h(contribution_text),
+        "invest_vs_strongest_text": h(build_detail_text),
         "score_value": score_value,
         "score_span": data_count_span(score_value),
         "score_headline_suffix": "Rov.E hat den Monat eingeordnet.",
@@ -1023,35 +1278,43 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "rank_band_high": round((band["high"] + 1) / 100 * 100, 1),
         "rank_band_text": f"{band['low']}-{band['high']}",
         "score_parts": score_parts,
-        "rank_blurb": h(RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"])),
-        "next_step_headline": h(next_steps[0]["title"]),
-        "next_step_sub": h(next_steps[0]["text"]),
+        "rank_blurb": h(rank_blurb),
+        "next_step_headline": h(score_next_title),
+        "next_step_sub": h(score_next_text),
         "goal_pct_span": data_count_span(goal["progress_raw"], 1),
         "goal_pct_raw": goal["progress_raw"],
         "goal_target_amount": goal["target"],
         "goal_current_amount": goal["current"],
         "net_worth_amount": _story_money(wealth_total) if wealth_available else "—",
         "goal_remaining_amount": goal["remaining"],
-        "goal_honest_text": h(report["pages"]["page_8"].get("text") or "Dein Ziel ist klar sichtbar."),
-        "goal_lever_text": h(report["insight"]["text"]),
-        "goal_lever_subtext": h("Rov.E zeigt dir den naechsten sinnvollen Schritt."),
-        "milestone_headline": h(report["pages"]["page_5"].get("title") or "Was hat sich veraendert?"),
-        "milestone_from": _story_money(max(0.0, wealth_total - 5000)),
-        "milestone_to": _story_money(wealth_total + 5000),
-        "milestone_pct_text": 50,
-        "milestone_pct_raw": 50,
-        "milestone_eta_text": h((report["changes"][0]["context"] if report["changes"] else "Noch kein vollstaendiger Vormonat zum Vergleichen.")),
+        "goal_title_text": h(f"Dein Ziel: {goal_name}."),
+        "goal_honest_text": h(goal_honest_text),
+        "goal_honest_subtext": h(goal_honest_subtext),
+        "goal_lever_label": "Dein Plan",
+        "goal_lever_text": h(goal_lever_text),
+        "goal_lever_subtext": h(goal_lever_subtext),
+        "milestone_headline": h(milestone_headline),
+        "milestone_from": _story_money(mband["from_amount"]),
+        "milestone_to": _story_money(mband["to_amount"]),
+        "milestone_pct_text": int(round(mband["pct"])),
+        "milestone_pct_raw": round(mband["pct"], 1),
+        "milestone_eta_text": h(comparison_basis_text),
+        "milestone_fact_text": h(milestone_fact),
         "badges": [],
-        "recap_good_text": h(report["recap_good"]),
-        "recap_attention_text": h(report["recap_attention"]),
-        "recap_lever_text": h(report["insight"]["text"]),
-        "plan_step1_sub": h(next_steps[0]["text"]),
-        "plan_step1_impact": "Klarheit",
-        "plan_step2_target": strongest["amount"],
-        "plan_step2_sub": h(next_steps[1]["text"]),
-        "plan_step2_impact": "Fokus",
-        "plan_step3_target": report["contribution_total"],
-        "plan_step3_impact": "Aufbau",
+        "recap_good_text": h(recap_good),
+        "recap_attention_text": h(recap_attention),
+        "recap_lever_text": h(recap_lever),
+        "plan_step1_title": h(plan_step1_title),
+        "plan_step1_sub": h(plan_step1_sub),
+        "plan_step1_impact": "Datenbasis",
+        "plan_step2_title": h(plan_step2_title),
+        "plan_step2_target": _story_money(budget_limit) if budget_issue else strongest["amount"],
+        "plan_step2_sub": h(plan_step2_sub),
+        "plan_step2_impact": h(plan_step2_impact),
+        "plan_step3_title": h(plan_step3_title),
+        "plan_step3_sub": h(plan_step3_sub),
+        "plan_step3_target": _story_money(savings_plan) if savings_plan > 0 else "—",
+        "plan_step3_impact": h(plan_step3_impact),
     }
 
 
@@ -1102,6 +1365,7 @@ def build_render_context(data: dict) -> dict:
     savings_plan = profile.get("savings_plan") or 0
     goal_target = goal.get("target_amount") or 0
     goal_current = goal.get("current_amount") or 0
+    goal_monthly_rate = goal.get("goal_monthly_rate")
     goal_pct = round(min(100.0, goal.get("progress_percent") or 0), 1)
     tracked_days = int(meta.get("tracked_days") or 0)
 
@@ -1243,8 +1507,8 @@ def build_render_context(data: dict) -> dict:
     goal_gap = max(goal_target - goal_current, 0)
     if goal_target > 0 and goal_pct >= 100:
         goal_honest_text = "Dein Zieltopf ist vollständig gefüllt."
-    elif savings_plan > 0 and months_to_goal:
-        goal_honest_text = f"Mit deiner geplanten Sparrate von {money_text(savings_plan)}/Monat erreichst du dein {h(goal_desc)} in rund {h(goal_duration)}."
+    elif goal_monthly_rate and months_to_goal:
+        goal_honest_text = f"Mit deiner geplanten Rate von {money_text(goal_monthly_rate)}/Monat erreichst du dein {h(goal_desc)} rechnerisch in rund {h(goal_duration)}."
     else:
         goal_honest_text = "Sobald deine Sparrate sauber steht, wird die Zielprognose sichtbar."
     if goal_target > 0 and goal_pct >= 100:
@@ -1253,16 +1517,9 @@ def build_render_context(data: dict) -> dict:
     elif tracked_days < 3:
         goal_lever_text = "Tracke noch ein paar Tage weiter, dann wird dein persönlicher Hebel belastbar."
         goal_lever_subtext = "Noch zu früh für eine belastbare Kategorie-Empfehlung."
-    elif freed_up_monthly > 0 and savings_plan > 0 and months_to_goal:
-        boosted_months = calculate_goal_projection(goal_target, goal_current, savings_plan + freed_up_monthly)
-        years_saved = None
-        if boosted_months is not None and months_to_goal:
-            years_saved = round(max(0, months_to_goal - boosted_months) / 12, 1)
-        if years_saved and years_saved >= 0.5:
-            goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich rund {de_number(years_saved, 1)} Jahre früher ans Ziel."
-        else:
-            goal_lever_text = f"Schon +{money_text(freed_up_monthly)}/Monat bringt dich spürbar früher ans Ziel."
-        goal_lever_subtext = f"Das entspricht etwa der Hälfte deiner Ausgaben in {h(strongest_name)}."
+    elif goal_monthly_rate and months_to_goal:
+        goal_lever_text = f"Bei gleichbleibender Rate von {money_text(goal_monthly_rate)}/Monat bleibt diese Zielrechnung nachvollziehbar."
+        goal_lever_subtext = "Die Rechnung nutzt ausschließlich deine ausdrücklich hinterlegte Zielrate."
     else:
         goal_lever_text = "Sobald deine Sparrate steht, wird dein persönlicher Hebel sichtbar."
         goal_lever_subtext = "Mit mehr Daten wird der nächste sinnvolle Schritt sichtbar."
@@ -1419,6 +1676,26 @@ def build_render_context(data: dict) -> dict:
             if milestone_months else "Meilenstein-Boost"
         ),
     }
+
+    # Pre-V2 snapshots keep their original frozen wording; these aliases only
+    # satisfy the shared template and never consult live financial state.
+    context.update({
+        "development_subline": "zum Vormonat",
+        "month_summary_text": h(
+            f"Du hast an {tracked_days} Tagen aktiv getrackt. "
+            f"{month_savings_sentence} Deine stärkste Kategorie war {strongest_name} mit {money_text(strongest_amount)}."
+        ),
+        "comparison_rows": [],
+        "comparison_text": "Für diesen Altbericht ist kein V2-Vormonatsvergleich eingefroren.",
+        "build_summary_text": h(month_savings_sentence),
+        "goal_title_text": h(goal_headline),
+        "goal_honest_subtext": "Diese Aussage stammt aus dem ursprünglichen Monatsabschluss.",
+        "milestone_fact_text": h(milestone_eta_text),
+        "plan_step1_title": h(next_step_headline),
+        "plan_step2_title": h(f"Behalte {strongest_name} im Blick."),
+        "plan_step3_title": h(f"Halte deine geplante Sparrate von {money_text(plan_step3_target_amount)} ein."),
+        "plan_step3_sub": "Dieser Betrag stammt aus dem ursprünglichen Monatsplan.",
+    })
 
     return context
 

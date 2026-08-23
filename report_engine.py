@@ -638,12 +638,11 @@ def calculate_clarity_score_v2(user_id: int, user, total_expenses: float, report
 
 
 def calculate_goal_projection(goal_amount: float, current_value: float, monthly_savings: float):
-    remaining = goal_amount - current_value
-    if goal_amount <= 0 or remaining <= 0:
-        return 0
-    if monthly_savings <= 0:
+    remaining = max(float(goal_amount or 0) - float(current_value or 0), 0.0)
+    rate = float(monthly_savings or 0)
+    if remaining <= 0 or rate <= 0:
         return None
-    return int((remaining + monthly_savings - 0.01) // monthly_savings)
+    return int(math.ceil(remaining / rate))
 
 
 def format_month_duration(months) -> str:
@@ -755,7 +754,7 @@ def get_app_property_equity(user_id: int) -> float:
     return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
 
 
-def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
+def get_report_goal(user_id: int, user) -> tuple[str, float, float, float | None]:
     """Return the report goal and its explicitly assigned goal-pot balance.
 
     Older Telegram users store their primary goal on ``users``. New App users
@@ -767,19 +766,27 @@ def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
         with get_db() as conn:
             progress = 0.0
             if table_exists(conn, "app_primary_goal_progress"):
+                progress_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(app_primary_goal_progress)")
+                }
+                rate_column = ", goal_monthly_rate" if "goal_monthly_rate" in progress_columns else ""
                 row = conn.execute(
-                    """SELECT current_amount FROM app_primary_goal_progress
-                         WHERE user_id = ?""",
+                    f"SELECT current_amount{rate_column} FROM app_primary_goal_progress WHERE user_id = ?",
                     (user_id,),
                 ).fetchone()
                 progress = float(row["current_amount"] or 0) if row else 0.0
-        return description, target_amount, min(max(0.0, progress), target_amount)
+                rate = (float(row["goal_monthly_rate"] or 0)
+                        if row and "goal_monthly_rate" in progress_columns
+                        and row["goal_monthly_rate"] else None)
+        return description, target_amount, min(max(0.0, progress), target_amount), rate if rate and rate > 0 else None
 
     with get_db() as conn:
         if not table_exists(conn, "app_goals"):
-            return "", 0.0, 0.0
+            return "", 0.0, 0.0, None
+        goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)")}
+        rate_column = ", goal_monthly_rate" if "goal_monthly_rate" in goal_columns else ""
         row = conn.execute(
-            """SELECT name, target_amount, current_amount
+            f"""SELECT name, target_amount, current_amount{rate_column}
                  FROM app_goals
                 WHERE user_id = ? AND target_amount > 0
                 ORDER BY datetime(created_at), goal_id
@@ -787,10 +794,12 @@ def get_report_goal(user_id: int, user) -> tuple[str, float, float]:
             (user_id,),
         ).fetchone()
     if not row:
-        return "", 0.0, 0.0
+        return "", 0.0, 0.0, None
     target_amount = float(row["target_amount"] or 0)
     progress = float(row["current_amount"] or 0)
-    return str(row["name"] or "").strip(), target_amount, min(max(0.0, progress), target_amount)
+    rate = (float(row["goal_monthly_rate"] or 0)
+            if "goal_monthly_rate" in goal_columns and row["goal_monthly_rate"] else None)
+    return str(row["name"] or "").strip(), target_amount, min(max(0.0, progress), target_amount), rate if rate and rate > 0 else None
 
 
 def get_biggest_expense(user_id: int, report_month: str, cutoff_date: str | None = None):
@@ -1145,7 +1154,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
     property_equity = get_app_property_equity(user_id)
-    goal_description, target_amount, goal_current_amount = get_report_goal(user_id, user)
+    goal_description, target_amount, goal_current_amount, goal_monthly_rate = get_report_goal(user_id, user)
     clarity_points = row_int(user, "clarity_points")
 
     free_budget = income_total - fixed_costs
@@ -1187,7 +1196,9 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     ]
     strongest_category = top_categories[0] if top_categories else None
     goal_progress = (goal_current_amount / target_amount * 100.0) if target_amount > 0 else 0.0
-    months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, savings_plan)
+    # General savings are not assigned to an individual earmark.
+    # A goal-specific rate does not exist yet, so no forecast is published.
+    months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, goal_monthly_rate)
     investment_summary = get_investment_summary(user_id, report_month, end)
     monthly_execution = get_monthly_execution(user_id, report_month)
     savings_progress = get_report_savings_progress(user_id, report_month, monthly_execution)
@@ -1262,10 +1273,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         needs_attention = f"Behalte {strongest_category['category']} im Blick, weil diese Kategorie den Monat dominiert."
 
     next_lever = "Diesen Monat weiter sauber tracken."
-    if months_to_goal is None:
-        next_lever = "Eine monatliche Sparrate hinterlegen, damit die Zielprognose sichtbar wird."
-    elif months_to_goal > 0:
-        next_lever = f"Bei gleicher Sparrate erreichst du dein Ziel in etwa {format_month_duration(months_to_goal)}."
+    if target_amount > 0 and goal_current_amount < target_amount:
+        next_lever = "Ordne deinem Ziel nur dann Geld zu, wenn du es bewusst dafür reservieren möchtest."
 
     data = {
         "meta": {
@@ -1346,6 +1355,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "description": goal_description or "Dein Ziel",
                 "target_amount": target_amount,
                 "current_amount": goal_current_amount,
+                "goal_monthly_rate": goal_monthly_rate,
                 "progress_percent": min(100.0, goal_progress),
                 "months_to_goal": months_to_goal,
                 "forecast_text": next_lever,
@@ -1464,7 +1474,7 @@ def _report_cash_truth(user_id: int) -> dict:
 
 
 def _report_goal_truth(user_id: int, primary_description: str, primary_target: float,
-                       primary_current: float) -> dict:
+                       primary_current: float, primary_rate: float | None = None) -> dict:
     goals = []
     primary = None
     if primary_target > 0:
@@ -1473,6 +1483,7 @@ def _report_goal_truth(user_id: int, primary_description: str, primary_target: f
             "name": primary_description or "Dein Ziel",
             "target_amount": round(primary_target, 2),
             "current_amount": round(primary_current, 2),
+            "goal_monthly_rate": primary_rate,
             "is_primary": True,
         }
         goals.append(primary)
@@ -1487,6 +1498,10 @@ def _report_goal_truth(user_id: int, primary_description: str, primary_target: f
                     "name": str(row["name"] or ""),
                     "target_amount": round(float(row["target_amount"] or 0), 2),
                     "current_amount": round(float(row["current_amount"] or 0), 2),
+                    "goal_monthly_rate": (round(float(row["goal_monthly_rate"]), 2)
+                                           if "goal_monthly_rate" in columns
+                                           and row["goal_monthly_rate"] is not None
+                                           and float(row["goal_monthly_rate"] or 0) > 0 else None),
                     "is_primary": bool(row["is_primary"]) if "is_primary" in columns else False,
                 }
                 goals.append(item)
@@ -1749,7 +1764,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "source": "app_properties",
         },
         "goals": _report_goal_truth(
-            user_id, goal.get("description", ""), goal.get("target_amount", 0), goal.get("current_amount", 0)
+            user_id, goal.get("description", ""), goal.get("target_amount", 0),
+            goal.get("current_amount", 0), goal.get("goal_monthly_rate")
         ),
         "score": data.get("pages", {}).get("score", {}),
         "wealth": _report_wealth_truth(profile, cash, investments),

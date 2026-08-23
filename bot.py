@@ -8,6 +8,7 @@ import json
 import re
 import random
 import calendar
+import math
 import fcntl
 import urllib.request
 from datetime import datetime, date, timedelta
@@ -1658,23 +1659,54 @@ def looks_like_profile_correction(text_lower: str) -> bool:
     return False
 
 
-def calculate_time_to_goal(goal_amount: float, etf_monthly: float, cash_monthly: float,
-                           current_investments: float = 0.0, current_cash: float = 0.0) -> str:
-    """Ziel-Prognose mit echten Startwerten und Zinseszins."""
-    if goal_amount <= 0:
-        return "Bitte hinterlege zuerst einen Zielbetrag."
-    if current_investments + current_cash >= goal_amount:
+def get_goal_monthly_rate(user_id: int, goal_id: str = "primary") -> float | None:
+    try:
+        with get_db() as conn:
+            if goal_id == "primary":
+                row = conn.execute(
+                    "SELECT goal_monthly_rate FROM app_primary_goal_progress WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT goal_monthly_rate FROM app_goals WHERE user_id = ? AND goal_id = ?",
+                    (user_id, goal_id),
+                ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or row["goal_monthly_rate"] is None:
+        return None
+    rate = float(row["goal_monthly_rate"] or 0)
+    return rate if rate > 0 else None
+
+
+def get_goal_current_amount(user_id: int, goal_id: str = "primary") -> float:
+    try:
+        with get_db() as conn:
+            if goal_id == "primary":
+                row = conn.execute(
+                    "SELECT current_amount FROM app_primary_goal_progress WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT current_amount FROM app_goals WHERE user_id = ? AND goal_id = ?",
+                    (user_id, goal_id),
+                ).fetchone()
+    except sqlite3.OperationalError:
+        return 0.0
+    return max(0.0, float(row["current_amount"] or 0)) if row else 0.0
+
+
+def calculate_time_to_goal(goal_amount: float, goal_current: float, goal_monthly_rate: float | None) -> str:
+    """Calculate only from the explicit rate and earmark of this goal."""
+    remaining = max(float(goal_amount or 0) - float(goal_current or 0), 0.0)
+    rate = float(goal_monthly_rate or 0)
+    if remaining <= 0:
         return "Ziel rechnerisch bereits erreicht."
-    if etf_monthly + cash_monthly <= 0:
-        return "Sparrate ist 0 – Ziel nicht erreichbar."
-    etf_bal, cash_bal, months = current_investments, current_cash, 0
-    while (etf_bal + cash_bal) < goal_amount:
-        etf_bal = (etf_bal + etf_monthly) * (1 + 0.07 / 12)
-        cash_bal = (cash_bal + cash_monthly) * (1 + 0.02 / 12)
-        months += 1
-        if months > 1200:
-            return "Über 100 Jahre – erhöhe deine Sparrate."
-    return format_month_duration(months)
+    if rate <= 0:
+        return "Keine Zeitprognose: Für dieses Ziel ist keine eigene Monatsrate hinterlegt."
+    return format_month_duration(int(math.ceil(remaining / rate)))
 
 
 def format_month_duration(months: int) -> str:
@@ -3590,27 +3622,24 @@ def calculate_clarity_score(user_id: int, u: dict, total_expenses: float, report
 def record_score_history_if_needed(user_id: int, u: dict = None) -> None:
     today = date.today().isoformat()
     month_key = date.today().strftime("%Y-%m")
+    u = u or get_or_create_user(user_id)
     with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         cursor.execute(
             "SELECT 1 FROM score_history WHERE user_id = ? AND recorded_date = ?",
             (user_id, today)
         )
         if cursor.fetchone():
+            conn.commit()
             return
-
-    u = u or get_or_create_user(user_id)
-    with get_db() as conn:
-        cursor = conn.cursor()
         cursor.execute(
             "SELECT SUM(amount) FROM expenses WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?",
             (user_id, month_key)
         )
         total_expenses = cursor.fetchone()[0] or 0.0
-
-    score_data = calculate_clarity_score(user_id, u, total_expenses, month_key)
-    cp = u.get("clarity_points") or 0
-    with get_db() as conn:
+        score_data = calculate_live_score(conn, user_id, u, total_expenses, month_key)
+        cp = u.get("clarity_points") or 0
         conn.execute(
             """INSERT INTO score_history
                (user_id, recorded_date, clarity_score, clarity_points, rank_name,
@@ -5365,16 +5394,14 @@ def handle_commands(message):
             return
         sparrate = (u.get("etf_savings") or 0) + (u.get("cash_savings") or 0)
         prognose = calculate_time_to_goal(
-            u.get("goal_amount") or 0, u.get("etf_savings") or 0,
-            u.get("cash_savings") or 0, u.get("current_investments") or 0,
-            u.get("current_cash") or 0
+            u.get("goal_amount") or 0, get_goal_current_amount(uid),
+            get_goal_monthly_rate(uid)
         )
         bot.send_message(uid,
             f"🎯 *{u['goal_description']}*\n\n"
             f"Zielbetrag: {u.get('goal_amount', 0):.2f}€\n"
             f"Sparrate: {sparrate:.2f}€/Monat\n"
-            f"Prognose: *{prognose}*\n\n"
-            f"_(7% ETF · 2% Tagesgeld)_",
+            f"Hinweis: *{prognose}*",
             parse_mode="Markdown"
         )
 
@@ -6152,14 +6179,13 @@ def handle_msg(message):
             bot.send_message(uid, "Sparrate ist 0€. Bitte unter /settings einrichten.")
         else:
             erg = calculate_time_to_goal(
-                u.get("goal_amount") or 0, u.get("etf_savings") or 0,
-                u.get("cash_savings") or 0, u.get("current_investments") or 0,
-                u.get("current_cash") or 0
+                u.get("goal_amount") or 0, get_goal_current_amount(uid),
+                get_goal_monthly_rate(uid)
             )
             bot.send_message(uid,
                 f"🎯 *{u.get('goal_description', 'Dein Ziel')}*\n\n"
                 f"Sparrate: {sparrate:.2f}€/Monat\n"
-                f"Prognose: *{erg}*",
+                f"Hinweis: *{erg}*",
                 parse_mode="Markdown"
             )
         return

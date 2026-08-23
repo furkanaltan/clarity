@@ -862,6 +862,7 @@ def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
             name          TEXT NOT NULL,
             target_amount REAL NOT NULL,
             current_amount REAL NOT NULL DEFAULT 0.0,
+            goal_monthly_rate REAL DEFAULT NULL,
             icon          TEXT NOT NULL DEFAULT 'coins',
             tint          TEXT NOT NULL DEFAULT '#2AABEE',
             created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -870,6 +871,9 @@ def ensure_app_goals_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(app_goals)")}
+    if "goal_monthly_rate" not in columns:
+        conn.execute("ALTER TABLE app_goals ADD COLUMN goal_monthly_rate REAL DEFAULT NULL")
 
 
 def ensure_app_primary_goal_progress_table(conn: sqlite3.Connection) -> None:
@@ -878,10 +882,14 @@ def ensure_app_primary_goal_progress_table(conn: sqlite3.Connection) -> None:
         """CREATE TABLE IF NOT EXISTS app_primary_goal_progress (
             user_id        INTEGER PRIMARY KEY,
             current_amount REAL NOT NULL DEFAULT 0.0,
+            goal_monthly_rate REAL DEFAULT NULL,
             updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(app_primary_goal_progress)")}
+    if "goal_monthly_rate" not in columns:
+        conn.execute("ALTER TABLE app_primary_goal_progress ADD COLUMN goal_monthly_rate REAL DEFAULT NULL")
 
 
 def get_app_primary_goal_progress(conn: sqlite3.Connection, user_id: int, target: float) -> float:
@@ -890,6 +898,18 @@ def get_app_primary_goal_progress(conn: sqlite3.Connection, user_id: int, target
         "SELECT current_amount FROM app_primary_goal_progress WHERE user_id = ?", (user_id,)
     ).fetchone()
     return round(min(max(0.0, float(row["current_amount"] or 0)), max(0.0, target)), 2) if row else 0.0
+
+
+def get_app_primary_goal_rate(conn: sqlite3.Connection, user_id: int) -> float | None:
+    ensure_app_primary_goal_progress_table(conn)
+    row = conn.execute(
+        "SELECT goal_monthly_rate FROM app_primary_goal_progress WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row or row["goal_monthly_rate"] is None:
+        return None
+    rate = float(row["goal_monthly_rate"] or 0)
+    return round(rate, 2) if rate > 0 else None
 
 
 def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
@@ -935,7 +955,7 @@ def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     """Liest nur Ziele, die in der App angelegt wurden, ohne Bot-Ziele zu duplizieren."""
     ensure_app_goals_table(conn)
     rows = conn.execute(
-        """SELECT goal_id, name, target_amount, current_amount, icon, tint
+        """SELECT goal_id, name, target_amount, current_amount, goal_monthly_rate, icon, tint
              FROM app_goals WHERE user_id = ? ORDER BY datetime(created_at), goal_id""",
         (user_id,),
     ).fetchall()
@@ -943,7 +963,10 @@ def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
         "id": str(row["goal_id"]),
         "t": str(row["name"]),
         "tar": round(max(0.0, float(row["target_amount"] or 0)), 2),
-        "cur": round(max(0.0, float(row["current_amount"] or 0)), 2),
+        "cur": round(min(max(0.0, float(row["current_amount"] or 0)), max(0.0, float(row["target_amount"] or 0))), 2),
+        "rate": (round(float(row["goal_monthly_rate"]), 2)
+                 if row["goal_monthly_rate"] is not None and float(row["goal_monthly_rate"] or 0) > 0
+                 else None),
         "icon": str(row["icon"] or "coins"),
         "tint": str(row["tint"] or "#2AABEE"),
         "source": "app",
@@ -1391,6 +1414,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "icon": "coins", "tint": "#2AABEE",
             "cur": get_app_primary_goal_progress(conn, user_id, float(u.get("goal_amount") or 0)),
             "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
+            "rate": get_app_primary_goal_rate(conn, user_id),
             # Wird weiterhin als Bot-Hauptziel markiert, damit lokale Snapshots es niemals
             # wiederbeleben. Bearbeiten und Löschen übernimmt jetzt trotzdem die App-API.
             "source": "bot",

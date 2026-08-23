@@ -53,6 +53,33 @@ def _int(row, key: str) -> int:
         return 0
 
 
+def _score_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
+    """Use active Financial Accounts as cash truth for opted-in users."""
+    enabled = conn.execute(
+        """SELECT 1 FROM app_user_features
+             WHERE user_id = ? AND feature_key = 'multi_cash_accounts_v1' AND enabled = 1
+             LIMIT 1""",
+        (user_id,),
+    ).fetchone()
+    if not enabled:
+        return _number(user, "current_cash")
+    try:
+        row = conn.execute(
+            """SELECT COALESCE(SUM(balance), 0) AS total
+                 FROM app_financial_accounts
+                WHERE user_id = ? AND status = 'active'""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return _number(user, "current_cash")
+    if not row:
+        return 0.0
+    try:
+        return float(row["total"] or 0)
+    except (TypeError, KeyError, IndexError):
+        return float(row[0] or 0)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
@@ -142,12 +169,12 @@ def score_cap(days: int) -> tuple[int, int, int]:
     return 100, 0, 100
 
 
-def start_score(user) -> int:
+def start_score(user, cash_override: float | None = None) -> int:
     income = _number(user, "income") + _number(user, "other_income")
     fixed = _number(user, "fixed_costs")
     savings = _number(user, "etf_savings") + _number(user, "cash_savings")
     investments = _number(user, "current_investments")
-    cash = _number(user, "current_cash")
+    cash = _number(user, "current_cash") if cash_override is None else float(cash_override)
     savings_ratio = savings / income if income > 0 else 0
 
     score = 30
@@ -241,7 +268,7 @@ def calculate_score(
     savings_ratio = savings_amount / income if income > 0 else 0.0
     spendable_budget = income - fixed - savings_amount
     remaining = spendable_budget - total_expenses
-    cash = _number(user, "current_cash")
+    cash = _score_cash(conn, user_id, user)
     tracked_days = tracking_days_90(conn, user_id, today)
     days = platform_days(conn, user_id, today)
 
@@ -377,7 +404,7 @@ def calculate_score(
         "savings": savings,
         "consistency": consistency,
         "structure": structure,
-        "start_score": start_score(user),
+        "start_score": start_score(user, cash_override=cash),
         "days_to_unlock": 0,
         "next_unlock_level": 0,
         "data_confidence": confidence,
