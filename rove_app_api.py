@@ -1718,6 +1718,9 @@ def current_transactions():
     """Liest die aktuellen Monatsbuchungen fuer eine bereits gekoppelte App."""
     token = token_from_request()
     with db() as conn:
+        # This endpoint also activates due scheduled savings. Serialize the
+        # read-modify-delete path so concurrent GETs cannot materialize twice.
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401

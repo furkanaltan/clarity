@@ -24,6 +24,7 @@ Migrations-Punkte"):
     Höhe des aktuellen Vermögens statt eine Kurve zu erfinden.
 """
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -42,6 +43,8 @@ from rove_financial_accounts import (
     list_financial_accounts,
     roles_summary,
 )
+
+logger = logging.getLogger(__name__)
 
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
@@ -1017,8 +1020,8 @@ def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
 
 
 def get_app_cash_accounts(
-    conn: sqlite3.Connection, user_id: int, bot_cash: float
-) -> tuple[dict[str, float], bool]:
+    conn: sqlite3.Connection, user_id: int, bot_cash: float | None
+) -> tuple[dict[str, float | None], bool]:
     """Liest die getrennten Cash-Konten oder faellt sicher auf den Bot-Startwert zurueck.
 
     Alte Telegram-Profile kennen nur `current_cash`. Bis der Nutzer die Aufteilung einmal
@@ -1034,7 +1037,11 @@ def get_app_cash_accounts(
         rows = []
 
     if not rows:
-        return {"giro": round(max(0.0, bot_cash), 2), "tagesgeld": 0.0, "bargeld": 0.0}, False
+        return {
+            "giro": round(bot_cash, 2) if bot_cash is not None else None,
+            "tagesgeld": 0.0,
+            "bargeld": 0.0,
+        }, False
 
     balances = {key: 0.0 for key in ACCOUNT_META}
     for row in rows:
@@ -1051,9 +1058,10 @@ def get_app_cash_accounts(
 
     # Der Bot kann zwischen zwei App-Aufrufen neue Cash-Sparraten bestaetigen. Dieser neue
     # Betrag gehoert zunaechst ins Girokonto, damit Gesamtvermögen und Bot niemals driften.
-    delta = round(float(bot_cash) - sum(balances.values()), 2)
-    if abs(delta) >= 0.01:
-        balances["giro"] = round(balances["giro"] + delta, 2)
+    if bot_cash is not None:
+        delta = round(float(bot_cash) - sum(balances.values()), 2)
+        if abs(delta) >= 0.01:
+            balances["giro"] = round(balances["giro"] + delta, 2)
     return balances, True
 
 
@@ -1134,7 +1142,7 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
     return deltas
 
 
-def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float):
+def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None):
     """Rekonstruiert den Vermoegensverlauf rueckwaerts aus den echten Buchungen.
 
     Bis 27.07. stand hier ein Platzhalter — derselbe Wert zweimal, fuer jeden Zeitraum. Die Kurve
@@ -1152,6 +1160,9 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float):
     gehabt. Fuer 1W und 1M ist die Kurve damit auf den Cent genau; fuer 1J zeigt sie die Spar- und
     Ausgabenbewegung, nicht die Kursentwicklung.
     """
+    if net_worth is None:
+        return {}, {}
+
     max_tage = max(spanne for spanne, _ in NET_SERIES_RANGES.values())
     deltas = _daily_net_deltas(conn, user_id, max_tage)
     heute = date.today()
@@ -1194,13 +1205,29 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     except (json.JSONDecodeError, TypeError):
         details = {}
 
-    bot_cash = float(u.get("current_cash") or 0)
-    cash_accounts, has_cash_accounts = get_app_cash_accounts(conn, user_id, bot_cash)
-    cash = round(sum(cash_accounts.values()), 2)
+    raw_bot_cash = u.get("current_cash")
+    bot_cash = None if raw_bot_cash is None else float(raw_bot_cash)
+    multi_cash = is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
+    if multi_cash:
+        # The active Financial Accounts are the visible cash truth for opted-in users.
+        # Keep the legacy aggregate untouched; it remains a compatibility value only.
+        active_accounts = list_financial_accounts(conn, user_id)
+        cash = round(sum(float(account["balance"] or 0) for account in active_accounts), 2)
+        has_cash_accounts = True
+        cash_accounts = {"giro": None, "tagesgeld": None, "bargeld": None}
+        if bot_cash is not None and abs(cash - bot_cash) >= 0.01:
+            logger.warning("multi-account cash drift detected for user_id=%s", user_id)
+    else:
+        cash_accounts, has_cash_accounts = get_app_cash_accounts(conn, user_id, bot_cash)
+        cash = (
+            round(sum(float(value) for value in cash_accounts.values()), 2)
+            if all(value is not None for value in cash_accounts.values())
+            else None
+        )
     investments = float(u.get("current_investments") or 0)
     property_data = get_app_property(conn, user_id)
     property_equity = float(property_data["equity"] if property_data else 0)
-    net_worth = cash + investments + property_equity
+    net_worth = None if cash is None else cash + investments + property_equity
     etf_savings = round(float(u.get("etf_savings") or 0), 2)
     cash_savings = round(float(u.get("cash_savings") or 0), 2)
     sparraten = etf_savings + cash_savings
@@ -1253,7 +1280,6 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         for month_key in _previous_month_keys()
         if (history := _build_budgets(conn, user_id, month_key))
     }
-    multi_cash = is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
     role_map = roles_summary(conn, user_id) if multi_cash else {}
     roles_by_account: dict[int, list[str]] = {}
     for role, account_id in role_map.items():
@@ -1308,7 +1334,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "step": onboarding_step,
             "completed": onboarding_step >= 10,
         },
-        "netWorth": round(net_worth, 2),
+        "netWorth": round(net_worth, 2) if net_worth is not None else None,
         "series": net_series,
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),
@@ -1345,7 +1371,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "scheduledSavings": scheduled_savings,
         "score": score,
         "sts": {
-            "konto": round(cash, 2),
+            "konto": round(cash, 2) if cash is not None else None,
             "fixRest": round(fixed_costs, 2),
             "sparraten": round(sparraten, 2),
             "etfSparrate": etf_savings,
