@@ -5276,40 +5276,13 @@ def handle_commands(message):
         return
 
     if cmd == '/app':
-        try:
-            # rove_app_state importiert bewusst NICHTS aus bot.py (siehe Docstring dort) —
-            # Score wird deshalb hier berechnet (Funktionen sind eh schon im Namespace) und nur
-            # als fertiger Wert übergeben.
-            from rove_app_state import build_app_state, APP_STATE_LINK_TTL_DAYS
-            total_expenses = get_month_expenses(uid)
-            score_result = calculate_clarity_score(uid, u, total_expenses)
-            result = build_app_state(uid, score_result.get("total") or 0, score_result.get("rank_name") or "—")
-        except Exception:
-            logger.exception(f"App-State-Export fehlgeschlagen für User {uid}")
-            bot.send_message(uid, "Konnte deinen App-Zugang gerade nicht vorbereiten — versuch's gleich nochmal.")
-            return
-        if result.get("url"):
-            from urllib.parse import quote
-            param = f"?state={quote(result['url'], safe='')}"
-            app_url = f"https://getrove.de/app/{param}"
-            pairing_code = result.get("pairing_code") or "—"
-            bot.send_message(
-                uid,
-                "*Dein Rov.E-App-Zugang ist bereit.*\n\n"
-                f"[App direkt öffnen]({app_url})\n\n"
-                "Für dein Homescreen-Icon:\n"
-                "Öffne Rov.E und tippe auf „Mit Telegram verbinden“.\n"
-                f"Dein App-Code: `{pairing_code}`\n\n"
-                f"Code und Link gelten {APP_STATE_LINK_TTL_DAYS} Tage. Mit /app bekommst du jederzeit einen neuen Zugang.",
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-        else:
-            bot.send_message(
-                uid,
-                "App-Zugang ist auf dem Server noch nicht fertig eingerichtet "
-                "(ROVE_APP_STATE_PUBLIC_BASE_URL fehlt)."
-            )
+        bot.send_message(
+            uid,
+            "Dein Rov.E Zugang läuft über die Web-App mit E-Mail und Passwort:\n"
+            "https://getrove.de/app/\n\n"
+            "Aus Sicherheitsgründen werden keine persönlichen Zugangslinks mehr per Telegram erzeugt.",
+            disable_web_page_preview=True,
+        )
         return
 
     if (u.get("onboarding_step") or 0) >= STEP_NORMAL:

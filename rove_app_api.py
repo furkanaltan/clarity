@@ -39,7 +39,6 @@ from rove_app_state import (
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
     _build_tx,
-    build_app_state,
     build_live_app_data,
     ensure_app_account_balances_table,
     ensure_app_asset_order_table,
@@ -427,19 +426,14 @@ def token_from_request() -> str:
 
 
 def user_from_token(conn: sqlite3.Connection, token: str) -> int | None:
-    if not token:
-        return None
-    row = conn.execute(
-        """SELECT l.user_id
-             FROM app_state_links l
-             LEFT JOIN user_access a ON a.user_id = l.user_id
-            WHERE l.token = ?
-              AND l.status = 'active'
-              AND COALESCE(a.status, 'approved') IN ('approved', 'app_only')
-              AND datetime(l.expires_at) >= datetime('now', 'localtime')""",
-        (token,),
-    ).fetchone()
-    return int(row["user_id"]) if row else None
+    """Compatibility boundary for the retired state-link bearer flow.
+
+    Legacy callers still pass a token argument, but it is deliberately ignored. Every
+    finance endpoint derives its user from the HttpOnly session cookie, leaving one
+    central authorization point for a later device-lock check.
+    """
+    session = session_user_from_cookie(conn)
+    return session[0] if session else None
 
 
 def is_admin_user(user_id: int) -> bool:
@@ -479,18 +473,16 @@ def ensure_admin_tables(conn: sqlite3.Connection) -> None:
 
 
 def authenticated_admin(conn: sqlite3.Connection):
-    """Prueft App-Token, E-Mail-Session und Adminrolle fuer jeden Admin-Endpunkt."""
+    """Prueft E-Mail-Session und Adminrolle fuer jeden Admin-Endpunkt."""
     ensure_auth_tables(conn)
-    token_user_id = user_from_token(conn, token_from_request())
     session = session_user_from_cookie(conn)
-    if not token_user_id:
-        return None, (jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401)
-    if not session or session[0] != token_user_id:
+    if not session:
         return None, (jsonify({"ok": False, "error": "reauthentication_required"}), 401)
-    if not is_admin_user(token_user_id):
+    user_id, _session_id = session
+    if not is_admin_user(user_id):
         return None, (jsonify({"ok": False, "error": "forbidden"}), 403)
     ensure_admin_tables(conn)
-    return token_user_id, None
+    return user_id, None
 
 
 def clean_text(value: object, fallback: str = "") -> str:
@@ -829,6 +821,9 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE app_state_links ADD COLUMN pairing_code TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_state_links_expiry ON app_state_links(status, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_state_links_pairing ON app_state_links(pairing_code, status)")
+    # State-link bearers are retired. Normal HttpOnly sessions live in app_sessions and
+    # remain untouched, so this cutover does not force existing web users to log in again.
+    conn.execute("UPDATE app_state_links SET status = 'revoked' WHERE status = 'active'")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS app_accounts (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -969,12 +964,9 @@ def latest_score(conn: sqlite3.Connection, user_id: int) -> tuple[int, str]:
     return (int(row["clarity_score"] or 0), "—") if row else (0, "—")
 
 
-def create_state_url_for_user(conn: sqlite3.Connection, user_id: int) -> str:
-    if not PUBLIC_APP_STATE_BASE_URL:
-        raise RuntimeError("app_state_not_configured")
-    score_total, score_label = latest_score(conn, user_id)
-    result = build_app_state(user_id, score_total, score_label)
-    return str(result.get("url") or "")
+def revoke_legacy_state_links(conn: sqlite3.Connection) -> None:
+    """Invalidates old state-link bearers without touching normal web sessions."""
+    conn.execute("UPDATE app_state_links SET status = 'revoked' WHERE status = 'active'")
 
 
 def send_login_email(email: str, code: str) -> None:
@@ -1174,17 +1166,7 @@ def request_login_code():
             invitation_id = int(invitation["id"])
             flow = APP_REGISTRATION_FLOW
         elif not account:
-            if not pairing_code:
-                return jsonify({"ok": False, "error": "pairing_code_required"}), 409
-            linked = conn.execute(
-                """SELECT 1 FROM app_state_links
-                   WHERE pairing_code = ?
-                     AND status = 'active'
-                     AND datetime(expires_at) >= datetime('now', 'localtime')""",
-                (pairing_code,),
-            ).fetchone()
-            if not linked:
-                return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
+            return jsonify({"ok": False, "error": "account_required"}), 409
         conn.execute(
             """INSERT INTO app_login_codes
                (email, code_hash, pairing_code, expires_at, flow, invitation_id)
@@ -1272,34 +1254,15 @@ def verify_login_code():
             )
             new_account = True
         else:
-            pairing_code = str(row["pairing_code"] or "")
-            linked = conn.execute(
-                """SELECT user_id FROM app_state_links
-                   WHERE pairing_code = ?
-                     AND status = 'active'
-                     AND datetime(expires_at) >= datetime('now', 'localtime')
-                   ORDER BY datetime(created_at) DESC LIMIT 1""",
-                (pairing_code,),
-            ).fetchone()
-            if not linked:
-                return jsonify({"ok": False, "error": "pairing_code_required"}), 409
-            user_id = int(linked["user_id"])
-            cur = conn.execute(
-                """INSERT INTO app_accounts (email, user_id, verified_at)
-                   VALUES (?, ?, CURRENT_TIMESTAMP)""",
-                (email, user_id),
-            )
-            account_id = int(cur.lastrowid)
+            return jsonify({"ok": False, "error": "account_required"}), 409
 
         raw_session, expires_at = issue_session(conn, account_id)
         conn.execute("UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
         conn.commit()
-        state_url = create_state_url_for_user(conn, user_id)
         credential = conn.execute("SELECT 1 FROM app_credentials WHERE account_id = ?", (account_id,)).fetchone()
 
     resp = make_response(jsonify({
         "ok": True,
-        "state_url": state_url,
         "new_account": new_account,
         "onboarding_required": new_account,
         "password_setup_required": not bool(credential),
@@ -1340,8 +1303,7 @@ def setup_password():
             (account_id, PASSWORD_HASHER.hash(password)),
         )
         conn.commit()
-        state_url = create_state_url_for_user(conn, user_id)
-    return jsonify({"ok": True, "state_url": state_url, "password_set": True})
+    return jsonify({"ok": True, "password_set": True})
 
 
 @app.route("/v1/auth/password/login", methods=["POST"])
@@ -1380,10 +1342,9 @@ def password_login():
                 )
             raw_session, expires_at = issue_session(conn, int(account["id"]))
             conn.commit()
-            state_url = create_state_url_for_user(conn, int(account["user_id"]))
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    resp = make_response(jsonify({"ok": True, "state_url": state_url, "onboarding_required": False}))
+    resp = make_response(jsonify({"ok": True, "onboarding_required": False}))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -1458,10 +1419,9 @@ def confirm_password_reset():
             conn.execute("UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL", (row["account_id"],))
             raw_session, expires_at = issue_session(conn, int(row["account_id"]))
             conn.commit()
-            state_url = create_state_url_for_user(conn, int(row["user_id"]))
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
+    resp = make_response(jsonify({"ok": True}))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -1496,8 +1456,7 @@ def change_password():
         conn.execute("UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL", (row["account_id"],))
         raw_session, expires_at = issue_session(conn, int(row["account_id"]))
         conn.commit()
-        state_url = create_state_url_for_user(conn, user_id)
-    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
+    resp = make_response(jsonify({"ok": True}))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -1509,12 +1468,11 @@ def auth_me():
             session = session_user_from_cookie(conn)
             if not session:
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
-            user_id, _session_id = session
+            _user_id, _session_id = session
             conn.commit()
-            state_url = create_state_url_for_user(conn, user_id)
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    return jsonify({"ok": True, "state_url": state_url})
+    return jsonify({"ok": True})
 
 
 @app.route("/v1/auth/logout", methods=["POST"])
@@ -1949,36 +1907,8 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
 
 @app.route("/v1/pair", methods=["POST"])
 def pair_app():
-    """Verbindet eine installierte PWA einmalig mit dem Telegram-App-Code."""
-    if not PUBLIC_APP_STATE_BASE_URL:
-        return jsonify({"ok": False, "error": "app_state_not_configured"}), 503
-
-    payload = request.get_json(silent=True) or {}
-    code = clean_pairing_code(payload.get("code"))
-    if not code:
-        return jsonify({"ok": False, "error": "invalid_code"}), 400
-    if not pairing_attempt_allowed():
-        return jsonify({"ok": False, "error": "too_many_pairing_attempts"}), 429
-
-    with db() as conn:
-        try:
-            row = conn.execute(
-                """SELECT token FROM app_state_links
-                   WHERE pairing_code = ?
-                     AND status = 'active'
-                     AND datetime(expires_at) >= datetime('now', 'localtime')""",
-                (code,),
-            ).fetchone()
-        except sqlite3.OperationalError:
-            return jsonify({"ok": False, "error": "pairing_not_ready"}), 503
-
-    if not row:
-        return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
-
-    return jsonify({
-        "ok": True,
-        "state_url": f"{PUBLIC_APP_STATE_BASE_URL}/{row['token']}.json",
-    })
+    """Retired: pairing codes previously yielded public bearer state links."""
+    return jsonify({"ok": False, "error": "pairing_retired"}), 410
 
 
 @app.route("/v1/transactions", methods=["GET"])
@@ -2007,6 +1937,9 @@ def current_app_state():
         ensure_market_tracking_schema(conn)
         conn.commit()
         begin_write(conn)
+        # Retire every legacy bearer row on first API-state access. These rows are
+        # independent from app_sessions, so existing browser sessions keep working.
+        revoke_legacy_state_links(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
@@ -2272,12 +2205,6 @@ def admin_update_access(target_user_id: int):
                        approved_by = excluded.approved_by,
                        revoked_at = ''""",
                 (target_user_id, next_status, admin_user_id),
-            )
-            conn.execute(
-                """UPDATE app_state_links SET status = 'active'
-                    WHERE user_id = ? AND status = 'revoked'
-                      AND datetime(expires_at) >= datetime('now', 'localtime')""",
-                (target_user_id,),
             )
         else:
             conn.execute(

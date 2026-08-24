@@ -1848,59 +1848,10 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
 
 
 def build_app_state(user_id: int, score_total: int = 0, score_label: str = "—") -> dict:
-    """Baut das App-State-JSON für user_id und schreibt es nach public/app-state/<token>.json.
-    score_total/score_label kommen vom Aufrufer (bot.py hat calculate_clarity_score() schon im
-    eigenen Namespace, siehe Modul-Docstring, warum das hier nicht selbst berechnet wird).
-    Gibt {token, pairing_code, path, url, expires_at} zurück."""
-    ensure_app_state_links_table()
+    """Deprecated compatibility shim for the retired public state-link flow.
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        state_data = build_live_app_data(conn, user_id)
-
-        access = conn.execute(
-            "SELECT display_name, username FROM user_access WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        display_name = ((access["display_name"] if access else "") or
-                         (access["username"] if access else "") or "")
-
-        token = secrets.token_urlsafe(24)
-        pairing_code = _new_pairing_code(conn)
-        expires_at = datetime.now() + timedelta(days=APP_STATE_LINK_TTL_DAYS)
-
-        state = {
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "user_id": user_id,
-            "display_name": display_name,
-            "api": {
-                "baseUrl": PUBLIC_APP_API_BASE_URL,
-                "token": token,
-            } if PUBLIC_APP_API_BASE_URL else None,
-            **state_data,
-        }
-        # score_total/score_label bleiben nur fuer alte Aufrufer im Funktionskopf. Der
-        # State enthaelt jetzt immer den live berechneten Score inklusive Faktoren und RP.
-    finally:
-        conn.close()
-
-    PUBLIC_APP_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = PUBLIC_APP_STATE_DIR / f"{token}.json"
-    output_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-
-    public_url = f"{PUBLIC_APP_STATE_BASE_URL}/{token}.json" if PUBLIC_APP_STATE_BASE_URL else ""
-    with sqlite3.connect(DB_PATH) as db_conn:
-        db_conn.execute(
-            """INSERT INTO app_state_links (token, user_id, expires_at, status, pairing_code)
-               VALUES (?, ?, ?, 'active', ?)""",
-            (token, user_id, expires_at.strftime("%Y-%m-%d %H:%M:%S"), pairing_code),
-        )
-        db_conn.commit()
-
-    return {
-        "token": token,
-        "pairing_code": pairing_code,
-        "path": output_path,
-        "url": public_url,
-        "expires_at": expires_at,
-    }
+    Financial app state is delivered only by the cookie-authenticated API. Keeping this
+    function side-effect free prevents legacy callers from creating public JSON files or
+    bearer credentials while they move to the normal web login.
+    """
+    return {"retired": True, "user_id": int(user_id)}
