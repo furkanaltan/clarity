@@ -26,6 +26,7 @@ REPORT_RETRY_DELAY_MINUTES = int(os.getenv("REPORT_RETRY_DELAY_MINUTES", "15"))
 REPORT_PROCESSING_TIMEOUT_MINUTES = int(os.getenv("REPORT_PROCESSING_TIMEOUT_MINUTES", "45"))
 REPORT_TIMEZONE = ZoneInfo("Europe/Berlin")
 STEP_NORMAL = 10
+ACCOUNT_DELETE_CLEANUP_BATCH_SIZE = 20
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("rove-report-worker")
@@ -216,10 +217,17 @@ def process_due_jobs() -> dict:
 
 def maintain_archives() -> dict:
     import rove_web_report_renderer
+    from rove_app_api import retry_account_delete_file_cleanup
 
+    # Run the bounded recovery first so report archive errors cannot defer it.
+    cleanup_completed = retry_account_delete_file_cleanup(ACCOUNT_DELETE_CLEANUP_BATCH_SIZE)
     removed = rove_web_report_renderer.cleanup_expired_reports()
     archived = report_engine.archive_old_reports()
-    result = {"web_reports_removed": int(removed or 0), "pdf_reports_archived": int(archived or 0)}
+    result = {
+        "web_reports_removed": int(removed or 0),
+        "pdf_reports_archived": int(archived or 0),
+        "account_delete_cleanup_completed": int(cleanup_completed or 0),
+    }
     logger.info("Report-Pflege: %s", result)
     return result
 

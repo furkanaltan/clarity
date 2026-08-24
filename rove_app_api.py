@@ -2777,16 +2777,33 @@ def complete_app_onboarding():
         if user and int(user["onboarding_step"] or 0) >= 10:
             return jsonify({"ok": False, "error": "onboarding_already_completed"}), 409
 
+        # A resumed onboarding initializes missing data; it must never reset values that
+        # were already recorded through a canonical App path.
+        has_cash_accounts = bool(conn.execute(
+            "SELECT 1 FROM app_account_balances WHERE user_id = ? LIMIT 1", (user_id,)
+        ).fetchone()) if table_exists(conn, "app_account_balances") else False
+        has_holdings = bool(conn.execute(
+            "SELECT 1 FROM portfolio_holdings WHERE user_id = ? LIMIT 1", (user_id,)
+        ).fetchone())
+        has_investment_events = bool(conn.execute(
+            "SELECT 1 FROM investment_events WHERE user_id = ? LIMIT 1", (user_id,)
+        ).fetchone())
+        has_contracts = bool(conn.execute(
+            "SELECT 1 FROM app_contracts WHERE user_id = ? LIMIT 1", (user_id,)
+        ).fetchone()) if table_exists(conn, "app_contracts") else False
+
         ensure_payday_column(conn)
         conn.execute(
-            """UPDATE users SET income = ?, other_income = ?, fixed_costs = 0,
-                      fixed_costs_details = '{}', etf_savings = ?, cash_savings = ?,
-                      current_investments = ?, current_cash = ?, onboarding_step = 10,
+            """UPDATE users SET income = ?, other_income = ?, etf_savings = ?, cash_savings = ?,
+                      current_investments = CASE WHEN ? THEN current_investments ELSE ? END,
+                      current_cash = CASE WHEN ? THEN current_cash ELSE ? END, onboarding_step = 10,
                       current_month = ?
                 WHERE user_id = ?""",
             (
                 income, other_income, etf_savings, cash_savings,
+                has_holdings or has_investment_events,
                 round(amounts["etf"] + amounts["krypto"], 2),
+                has_cash_accounts or multi_cash_accounts_enabled(conn, user_id),
                 round(amounts["giro"] + amounts["tagesgeld"] + amounts["bargeld"], 2),
                 datetime.now().strftime("%Y-%m"), user_id,
             ),
@@ -2803,11 +2820,12 @@ def complete_app_onboarding():
         )
 
         ensure_app_account_balances_table(conn)
-        save_app_cash_accounts(conn, user_id, {
-            "giro": amounts["giro"],
-            "tagesgeld": amounts["tagesgeld"],
-            "bargeld": amounts["bargeld"],
-        })
+        if not has_cash_accounts and not multi_cash_accounts_enabled(conn, user_id):
+            save_app_cash_accounts(conn, user_id, {
+                "giro": amounts["giro"],
+                "tagesgeld": amounts["tagesgeld"],
+                "bargeld": amounts["bargeld"],
+            })
 
         ensure_app_contracts_table(conn)
         for contract in cleaned_contracts:
@@ -2828,7 +2846,8 @@ def complete_app_onboarding():
                     contract["tint"], contract["cancelable"],
                 ),
             )
-        sync_app_contract_details(conn, user_id)
+        if cleaned_contracts or has_contracts:
+            sync_app_contract_details(conn, user_id)
 
         ensure_app_goals_table(conn)
         for goal in cleaned_goals:
@@ -4831,16 +4850,83 @@ def request_account_delete_code():
     return jsonify({"ok": True, "sent": True})
 
 
-def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[str]:
+def ensure_account_delete_cleanup_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS account_delete_file_cleanup (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, opaque_cleanup_id TEXT NOT NULL UNIQUE,
+        internal_path TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, completed_at TEXT
+    )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_account_delete_cleanup_path ON account_delete_file_cleanup(internal_path)")
+
+
+def _cleanup_path_allowed(path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+        return any(resolved.is_relative_to(root.resolve()) for root in (
+            PUBLIC_APP_STATE_DIR, PUBLIC_REPORT_DIR, REPORTS_DIR, REPORTS_ARCHIVE_DIR
+        ))
+    except OSError:
+        return False
+
+
+def _remove_cleanup_path(path: Path) -> str | None:
+    if not _cleanup_path_allowed(path):
+        return "path_not_allowed"
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+    except OSError as exc:
+        return type(exc).__name__
+    return None
+
+
+def queue_account_cleanup_failures(paths: list[Path]) -> None:
+    if not paths:
+        return
+    with db() as conn:
+        begin_write(conn)
+        ensure_account_delete_cleanup_table(conn)
+        for path in paths:
+            if _cleanup_path_allowed(path):
+                conn.execute("""INSERT OR IGNORE INTO account_delete_file_cleanup
+                    (opaque_cleanup_id, internal_path) VALUES (?, ?)""",
+                    (secrets.token_urlsafe(18), str(path)))
+        conn.commit()
+
+
+def retry_account_delete_file_cleanup(limit: int = 20) -> int:
+    """Retries only persisted, allowlisted leftovers; safe to call from maintenance."""
+    completed = 0
+    batch_limit = max(1, min(int(limit), 20))
+    with db() as conn:
+        begin_write(conn)
+        ensure_account_delete_cleanup_table(conn)
+        rows = conn.execute(
+            """SELECT id, internal_path FROM account_delete_file_cleanup
+                 WHERE completed_at IS NULL
+                 ORDER BY id
+                 LIMIT ?""",
+            (batch_limit,),
+        ).fetchall()
+        for row in rows:
+            error = _remove_cleanup_path(Path(str(row["internal_path"])))
+            if error is None:
+                conn.execute("UPDATE account_delete_file_cleanup SET completed_at=CURRENT_TIMESTAMP, attempts=attempts+1, last_error=NULL WHERE id=?", (row["id"],))
+                completed += 1
+            else:
+                conn.execute("UPDATE account_delete_file_cleanup SET attempts=attempts+1, last_error=? WHERE id=?", (error, row["id"]))
+        conn.commit()
+    return completed
+
+
+def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[Path]:
     """Entfernt nutzerbezogene Dateien nur aus den bekannten Rov.E-Verzeichnissen."""
-    errors: list[str] = []
+    errors: list[Path] = []
     for token in state_tokens:
         state_path = PUBLIC_APP_STATE_DIR / f"{token}.json"
-        try:
-            if state_path.is_file():
-                state_path.unlink()
-        except OSError as exc:
-            errors.append(f"state:{type(exc).__name__}")
+        if _remove_cleanup_path(state_path): errors.append(state_path)
 
     try:
         public_report_root = PUBLIC_REPORT_DIR.resolve()
@@ -4849,23 +4935,14 @@ def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_pat
     for html_path in html_paths:
         try:
             report_dir = Path(html_path).resolve().parent
-            if report_dir.parent == public_report_root and report_dir.is_dir():
-                shutil.rmtree(report_dir)
-        except OSError as exc:
-            errors.append(f"web_report:{type(exc).__name__}")
+            if report_dir.parent == public_report_root and _remove_cleanup_path(report_dir): errors.append(report_dir)
+        except OSError:
+            errors.append(Path(html_path))
 
     for pdf_path in REPORTS_DIR.glob(f"rove_report_{user_id}_*.pdf"):
-        try:
-            if pdf_path.is_file():
-                pdf_path.unlink()
-        except OSError as exc:
-            errors.append(f"pdf:{type(exc).__name__}")
+        if _remove_cleanup_path(pdf_path): errors.append(pdf_path)
     for archive_path in REPORTS_ARCHIVE_DIR.glob(f"rove_report_{user_id}_*.pdf.gz"):
-        try:
-            if archive_path.is_file():
-                archive_path.unlink()
-        except OSError as exc:
-            errors.append(f"pdf_archive:{type(exc).__name__}")
+        if _remove_cleanup_path(archive_path): errors.append(archive_path)
     return errors
 
 
@@ -4974,7 +5051,8 @@ def delete_account():
 
     cleanup_errors = remove_deleted_account_files(token_user_id, state_tokens, html_paths)
     if cleanup_errors:
-        app.logger.error("Kontodaten geloescht, Dateibereinigung unvollstaendig: %s", cleanup_errors)
+        queue_account_cleanup_failures(cleanup_errors)
+        app.logger.error("Kontodaten geloescht, Dateibereinigung wartet auf Retry: %s", len(cleanup_errors))
     resp = make_response(jsonify({"ok": True, "deleted": True, "cleanupPending": bool(cleanup_errors)}))
     resp.delete_cookie(SESSION_COOKIE_NAME, path="/app-api/")
     return resp
