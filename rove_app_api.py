@@ -41,6 +41,7 @@ from rove_app_state import (
     ensure_app_asset_order_table,
     ensure_app_cash_movements_table,
     ensure_app_contracts_table,
+    sync_contract_fixed_costs,
     ensure_app_etf_position_plans_table,
     ensure_app_etf_savings_plan_table,
     ensure_app_goals_table,
@@ -1302,24 +1303,8 @@ CONTRACT_CATEGORIES = frozenset({"Abos", "Versicherungen", "Wohnen", "Kredite", 
 
 
 def sync_app_contract_details(conn: sqlite3.Connection, user_id: int) -> None:
-    """Spiegelt App-Verträge in Bot-Fixkosten und Monatsbudget."""
-    user = conn.execute("SELECT fixed_costs_details FROM users WHERE user_id = ?", (user_id,)).fetchone()
-    try:
-        details = json.loads(user["fixed_costs_details"] or "{}") if user else {}
-    except (json.JSONDecodeError, TypeError):
-        details = {}
-    rows = conn.execute(
-        "SELECT detail_key, amount FROM app_contracts WHERE user_id = ?", (user_id,)
-    ).fetchall()
-    values = {str(row["detail_key"]): round(float(row["amount"] or 0), 2) for row in rows}
-    if values:
-        details["app_vertraege"] = values
-    else:
-        details.pop("app_vertraege", None)
-    conn.execute(
-        "UPDATE users SET fixed_costs_details = ?, fixed_costs = ? WHERE user_id = ?",
-        (json.dumps(details, ensure_ascii=False), fixed_costs_total(details), user_id),
-    )
+    """Keeps the legacy aggregate in sync with the unified contract set."""
+    sync_contract_fixed_costs(conn, user_id)
 
 
 def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
@@ -3631,7 +3616,7 @@ def fixed_costs_total(details: dict) -> float:
         float(value or 0)
         for section in details.values() if isinstance(section, dict)
         for key, value in section.items()
-        if key not in {"restschuld", "gesamtbetrag", "schulden_gesamt"}
+        if key not in {"restschuld", "gesamtbetrag", "schulden_gesamt", "gesamt"}
     ), 2)
 
 

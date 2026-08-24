@@ -156,7 +156,8 @@ CANCELABLE_SECTIONS = {"abos", "versicherungen"}
 APP_CONTRACT_SECTION = "app_vertraege"
 
 # Bestandsgrößen innerhalb einer Sektion, keine monatlichen Fixkosten-Zeilen.
-DETAIL_SKIP_KEYS = {"restschuld", "gesamtbetrag", "schulden_gesamt"}
+# Aggregates and debt balances describe a section; they are never individual monthly contracts.
+DETAIL_SKIP_KEYS = {"restschuld", "gesamtbetrag", "schulden_gesamt", "gesamt"}
 
 
 def ensure_app_state_links_table() -> None:
@@ -926,6 +927,8 @@ def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
             tint        TEXT NOT NULL DEFAULT '#8FA8BC',
             debit_day   TEXT NOT NULL DEFAULT '1.',
             cancelable  INTEGER NOT NULL DEFAULT 1,
+            source      TEXT NOT NULL DEFAULT 'app',
+            legacy_ref  TEXT,
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id, contract_id),
@@ -933,12 +936,165 @@ def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(app_contracts)")}
+    if "source" not in columns:
+        conn.execute("ALTER TABLE app_contracts ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
+    if "legacy_ref" not in columns:
+        conn.execute("ALTER TABLE app_contracts ADD COLUMN legacy_ref TEXT")
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_app_contracts_legacy_ref
+             ON app_contracts(user_id, legacy_ref)
+             WHERE legacy_ref IS NOT NULL"""
+    )
+
+
+def fixed_costs_total(details: dict) -> float:
+    """Returns the active recurring-cost total without debt balances."""
+    return round(sum(
+        float(value or 0)
+        for section in details.values() if isinstance(section, dict)
+        for key, value in section.items()
+        if key not in DETAIL_SKIP_KEYS
+    ), 2)
+
+
+def _legacy_contract_candidates(details: dict) -> list[dict]:
+    """Maps known Telegram fixed-cost keys to stable, migratable contract records."""
+    candidates = []
+    for section, values in details.items():
+        if section not in DETAIL_LABELS or not isinstance(values, dict):
+            continue
+        for key, raw_amount in values.items():
+            if key in DETAIL_SKIP_KEYS:
+                continue
+            try:
+                amount = round(float(raw_amount), 2)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            name = str(DETAIL_LABELS.get(section, {}).get(key, key.replace("_", " ").title())).strip()
+            if not name:
+                continue
+            category = {
+                "wohnen": "Wohnen", "mobilitaet": "Mobilität", "abos": "Abos",
+                "versicherungen": "Versicherungen", "kredite": "Kredite",
+            }.get(section, "Sonstiges")
+            candidates.append({
+                "section": section,
+                "key": str(key),
+                "legacy_ref": f"telegram_legacy:{section}:{key}",
+                "name": name,
+                "category": category,
+                "amount": amount,
+                "icon": DETAIL_ICONS.get(key, SECTION_ICONS.get(section, "doc")),
+                "tint": DETAIL_TINTS.get(key, SECTION_TINTS.get(section, "#8FA8BC")),
+                "cancelable": 1 if section in CANCELABLE_SECTIONS else 0,
+            })
+    return candidates
+
+
+def sync_contract_fixed_costs(conn: sqlite3.Connection, user_id: int) -> None:
+    """Mirrors the one operational contract set into the legacy aggregate fields."""
+    row = conn.execute("SELECT fixed_costs_details FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    try:
+        details = json.loads(row["fixed_costs_details"] or "{}") if row else {}
+    except (json.JSONDecodeError, TypeError):
+        details = {}
+    values = {
+        str(contract["detail_key"]): round(float(contract["amount"] or 0), 2)
+        for contract in conn.execute(
+            "SELECT detail_key, amount FROM app_contracts WHERE user_id = ?", (user_id,)
+        ).fetchall()
+    }
+    if values:
+        details[APP_CONTRACT_SECTION] = values
+    else:
+        details.pop(APP_CONTRACT_SECTION, None)
+    conn.execute(
+        "UPDATE users SET fixed_costs_details = ?, fixed_costs = ? WHERE user_id = ?",
+        (json.dumps(details, ensure_ascii=False), fixed_costs_total(details), user_id),
+    )
+
+
+def normalize_legacy_contracts(conn: sqlite3.Connection, user_id: int) -> dict:
+    """Moves known Telegram contracts into app_contracts without changing their total.
+
+    Unknown, zero, and ambiguous records remain in the legacy JSON. A stable section/key
+    reference makes retries safe and lets a legacy-origin contract use the normal App API.
+    """
+    ensure_app_contracts_table(conn)
+    row = conn.execute("SELECT fixed_costs_details FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        raise LookupError("contract_user_not_found")
+    try:
+        details = json.loads(row["fixed_costs_details"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        details = {}
+    if not isinstance(details, dict):
+        details = {}
+
+    result = {"created": 0, "already_normalized": 0, "exact_duplicates": 0, "uncertain": 0, "invalid": 0}
+    for contract in _legacy_contract_candidates(details):
+        existing = conn.execute(
+            "SELECT contract_id FROM app_contracts WHERE user_id = ? AND legacy_ref = ?",
+            (user_id, contract["legacy_ref"]),
+        ).fetchone()
+        exact = None if existing else conn.execute(
+            """SELECT contract_id FROM app_contracts
+                 WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+                   AND ROUND(amount, 2) = ? AND source = 'app' LIMIT 1""",
+            (user_id, contract["name"], contract["amount"]),
+        ).fetchone()
+        same_name = None if (existing or exact) else conn.execute(
+            """SELECT 1 FROM app_contracts
+                 WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1""",
+            (user_id, contract["name"]),
+        ).fetchone()
+        if same_name:
+            result["uncertain"] += 1
+            continue
+        if existing:
+            result["already_normalized"] += 1
+        elif exact:
+            # A same-name, same-amount App row is the only automatic cross-source match.
+            conn.execute(
+                "UPDATE app_contracts SET legacy_ref = ? WHERE user_id = ? AND contract_id = ?",
+                (contract["legacy_ref"], user_id, exact["contract_id"]),
+            )
+            result["exact_duplicates"] += 1
+        else:
+            contract_id = secrets.token_urlsafe(9)
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, icon, tint,
+                    cancelable, source, legacy_ref)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'telegram_legacy', ?)""",
+                (user_id, contract_id, f"app_{contract_id}", contract["name"],
+                 contract["category"], contract["amount"], contract["icon"], contract["tint"],
+                 contract["cancelable"], contract["legacy_ref"]),
+            )
+            result["created"] += 1
+
+        section = details.get(contract["section"])
+        if isinstance(section, dict):
+            section.pop(contract["key"], None)
+            if not section:
+                details.pop(contract["section"], None)
+
+    # Keep non-contract legacy values intact, then mirror the unified contract set once.
+    conn.execute(
+        "UPDATE users SET fixed_costs_details = ? WHERE user_id = ?",
+        (json.dumps(details, ensure_ascii=False), user_id),
+    )
+    sync_contract_fixed_costs(conn, user_id)
+    return result
 
 
 def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     ensure_app_contracts_table(conn)
     rows = conn.execute(
-        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable
+        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source
              FROM app_contracts WHERE user_id = ? ORDER BY datetime(created_at), contract_id""",
         (user_id,),
     ).fetchall()
@@ -947,7 +1103,7 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
         "a": round(max(0.0, float(row["amount"] or 0)), 2),
         "icon": str(row["icon"] or "doc"), "tint": str(row["tint"] or "#8FA8BC"),
         "date": str(row["debit_day"] or "1."), "cancel": bool(row["cancelable"]),
-        "source": "app", "category": str(row["category"]),
+        "source": str(row["source"] or "app"), "category": str(row["category"]),
     } for row in rows]
 
 
