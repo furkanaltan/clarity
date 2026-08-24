@@ -28,6 +28,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, make_response, request, send_file
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
+from argon2.low_level import Type
 import rove_account_delete_cleanup as account_delete_cleanup
 from rove_app_state import (
     ACCOUNT_META,
@@ -115,7 +118,11 @@ ACCOUNT_DELETE_CODE_TTL_MINUTES = int(os.getenv("ROVE_ACCOUNT_DELETE_CODE_TTL_MI
 AUTH_SESSION_TTL_DAYS = int(os.getenv("ROVE_APP_AUTH_SESSION_TTL_DAYS", "180"))
 AUTH_ATTEMPT_WINDOW_SECONDS = 15 * 60
 AUTH_ATTEMPT_LIMIT = 5
-_auth_attempts: dict[str, list[float]] = {}
+AUTH_PASSWORD_MAX_LENGTH = 1024
+AUTH_PASSWORD_MIN_LENGTH = 10
+AUTH_RESET_TTL_MINUTES = 10
+AUTH_BUCKETS: dict[str, dict[str, list[float]]] = {}
+PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16, type=Type.ID)
 APP_REGISTRATION_FLOW = "app_registration"
 APP_USER_ID_BASE = 8_000_000_000_000_000
 SCREENSHOT_ATTEMPT_WINDOW_SECONDS = 24 * 60 * 60
@@ -289,6 +296,11 @@ def health():
 @app.route("/v1/auth/verify-code", methods=["OPTIONS"])
 @app.route("/v1/auth/me", methods=["OPTIONS"])
 @app.route("/v1/auth/logout", methods=["OPTIONS"])
+@app.route("/v1/auth/password/setup", methods=["OPTIONS"])
+@app.route("/v1/auth/password/login", methods=["OPTIONS"])
+@app.route("/v1/auth/password/change", methods=["OPTIONS"])
+@app.route("/v1/auth/password/reset/request", methods=["OPTIONS"])
+@app.route("/v1/auth/password/reset/confirm", methods=["OPTIONS"])
 @app.route("/v1/onboarding", methods=["OPTIONS"])
 @app.route("/v1/admin/overview", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations", methods=["OPTIONS"])
@@ -741,19 +753,6 @@ def pairing_attempt_allowed() -> bool:
     return True
 
 
-def auth_attempt_allowed(email: str) -> bool:
-    ip = request.headers.get("X-Real-IP", request.remote_addr or "unknown")
-    key = f"{ip}:{email.casefold()}"
-    now = time.monotonic()
-    attempts = [stamp for stamp in _auth_attempts.get(key, []) if now - stamp < AUTH_ATTEMPT_WINDOW_SECONDS]
-    if len(attempts) >= AUTH_ATTEMPT_LIMIT:
-        _auth_attempts[key] = attempts
-        return False
-    attempts.append(now)
-    _auth_attempts[key] = attempts
-    return True
-
-
 def screenshot_attempt_allowed(user_id: int) -> bool:
     """Kostenbremse pro Nutzer; ein Neustart setzt nur das In-Memory-Fenster zurueck."""
     now = time.monotonic()
@@ -775,8 +774,8 @@ def normalize_email(value: object) -> str:
 
 
 def auth_secret() -> str:
-    # Der Secret muss stabil bleiben, weil Codes und Sessions nur gehasht gespeichert werden.
-    return AUTH_SECRET or BREVO_API_KEY
+    # Codes, sessions and reset codes must never share an external provider secret.
+    return AUTH_SECRET
 
 
 def keyed_hash(value: str) -> str:
@@ -784,6 +783,34 @@ def keyed_hash(value: str) -> str:
     if not secret:
         raise RuntimeError("app_auth_not_configured")
     return hmac.new(secret.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def auth_attempt_allowed(bucket: str, email: str, limit: int = AUTH_ATTEMPT_LIMIT) -> bool:
+    ip = request.headers.get("X-Real-IP", request.remote_addr or "unknown")
+    key = f"{ip}:{email.casefold()}"
+    now = time.monotonic()
+    attempts = [stamp for stamp in AUTH_BUCKETS.get(bucket, {}).get(key, []) if now - stamp < AUTH_ATTEMPT_WINDOW_SECONDS]
+    if len(attempts) >= limit:
+        AUTH_BUCKETS.setdefault(bucket, {})[key] = attempts
+        return False
+    attempts.append(now)
+    AUTH_BUCKETS.setdefault(bucket, {})[key] = attempts
+    return True
+
+
+def validate_password(value: object) -> str | None:
+    password = value if isinstance(value, str) else ""
+    if not (AUTH_PASSWORD_MIN_LENGTH <= len(password) <= AUTH_PASSWORD_MAX_LENGTH):
+        return None
+    return password
+
+
+def issue_session(conn: sqlite3.Connection, account_id: int) -> tuple[str, datetime]:
+    raw_session = secrets.token_urlsafe(32)
+    expires_at = datetime.now() + timedelta(days=AUTH_SESSION_TTL_DAYS)
+    conn.execute("INSERT INTO app_sessions (token_hash, account_id, expires_at) VALUES (?, ?, ?)",
+                 (keyed_hash(raw_session), account_id, expires_at.strftime("%Y-%m-%d %H:%M:%S")))
+    return raw_session, expires_at
 
 
 def ensure_auth_tables(conn: sqlite3.Connection) -> None:
@@ -881,6 +908,15 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_login_codes_email ON app_login_codes(email, consumed_at, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sessions_hash ON app_sessions(token_hash, revoked_at, expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_delete_codes_user ON app_account_delete_codes(user_id, consumed_at, expires_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_credentials (
+        account_id INTEGER PRIMARY KEY, password_hash TEXT NOT NULL, password_version INTEGER NOT NULL DEFAULT 1,
+        password_set_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, password_changed_at TEXT,
+        FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_password_reset_codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, code_hash TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        consumed_at TEXT, FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_password_reset_codes_account ON app_password_reset_codes(account_id, consumed_at, expires_at)")
 
 
 def create_app_only_user(conn: sqlite3.Connection, email: str) -> tuple[int, int]:
@@ -982,6 +1018,44 @@ def send_login_email(email: str, code: str) -> None:
         raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
 
 
+def send_password_reset_email(email: str, code: str) -> None:
+    """Sends a separate, short-lived recovery code without exposing it in logs."""
+    if not BREVO_API_KEY:
+        raise RuntimeError("brevo_not_configured")
+    payload = {
+        "sender": {"name": LOGIN_FROM_NAME, "email": LOGIN_FROM_EMAIL},
+        "to": [{"email": email}],
+        "subject": "Dein Rov.E Passwort zurücksetzen",
+        "textContent": (
+            f"Dein Rov.E Code zum Zurücksetzen lautet: {code}\n\n"
+            f"Der Code ist {AUTH_RESET_TTL_MINUTES} Minuten gültig. "
+            "Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren."
+        ),
+        "htmlContent": (
+            "<html><body style=\"font-family:Arial,sans-serif;color:#111\">"
+            "<p>Dein Rov.E Code zum Zurücksetzen lautet:</p>"
+            f"<p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">{code}</p>"
+            f"<p>Der Code ist {AUTH_RESET_TTL_MINUTES} Minuten gültig.</p>"
+            "<p style=\"color:#666\">Wenn du das nicht angefordert hast, kannst du diese E-Mail ignorieren.</p>"
+            "</body></html>"
+        ),
+        "tags": ["rove-app-password-reset"],
+    }
+    req = urllib.request.Request(
+        BREVO_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status >= 300:
+                raise RuntimeError(f"brevo_status_{response.status}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+
+
 def send_account_delete_email(email: str, code: str) -> None:
     if not BREVO_API_KEY:
         raise RuntimeError("brevo_not_configured")
@@ -1072,7 +1146,7 @@ def request_login_code():
     registration = payload.get("registration") is True
     if not email:
         return jsonify({"ok": False, "error": "valid_email_required"}), 400
-    if not auth_attempt_allowed(email):
+    if not auth_attempt_allowed("verification_code_request", email):
         return jsonify({"ok": False, "error": "too_many_login_attempts"}), 429
 
     try:
@@ -1142,6 +1216,8 @@ def verify_login_code():
     code = re.sub(r"\D", "", str(payload.get("code") or ""))[:6]
     if not email or len(code) != 6:
         return jsonify({"ok": False, "error": "valid_email_and_code_required"}), 400
+    if not auth_attempt_allowed("verification_code_verify", email):
+        return jsonify({"ok": False, "error": "too_many_code_attempts"}), 429
 
     try:
         code_hash = keyed_hash(f"{email}:{code}")
@@ -1215,23 +1291,213 @@ def verify_login_code():
             )
             account_id = int(cur.lastrowid)
 
-        raw_session = secrets.token_urlsafe(32)
-        expires_at = datetime.now() + timedelta(days=AUTH_SESSION_TTL_DAYS)
-        conn.execute(
-            """INSERT INTO app_sessions (token_hash, account_id, expires_at)
-               VALUES (?, ?, ?)""",
-            (keyed_hash(raw_session), account_id, expires_at.strftime("%Y-%m-%d %H:%M:%S")),
-        )
+        raw_session, expires_at = issue_session(conn, account_id)
         conn.execute("UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
         conn.commit()
         state_url = create_state_url_for_user(conn, user_id)
+        credential = conn.execute("SELECT 1 FROM app_credentials WHERE account_id = ?", (account_id,)).fetchone()
 
     resp = make_response(jsonify({
         "ok": True,
         "state_url": state_url,
         "new_account": new_account,
         "onboarding_required": new_account,
+        "password_setup_required": not bool(credential),
     }))
+    return set_session_cookie(resp, raw_session, expires_at)
+
+
+def password_values(payload: dict) -> tuple[str | None, str | None]:
+    password = validate_password(payload.get("password"))
+    confirmation = payload.get("password_confirmation")
+    if password is None or not isinstance(confirmation, str) or not hmac.compare_digest(password, confirmation):
+        return None, None
+    return password, confirmation
+
+
+@app.route("/v1/auth/password/setup", methods=["POST"])
+def setup_password():
+    password, _confirmation = password_values(request.get_json(silent=True) or {})
+    if password is None:
+        return jsonify({"ok": False, "error": "password_policy_or_confirmation_failed"}), 400
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        user_id, session_id = session
+        account = conn.execute(
+            "SELECT account_id FROM app_sessions WHERE id = ? AND revoked_at IS NULL", (session_id,)
+        ).fetchone()
+        if not account:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        account_id = int(account["account_id"])
+        if conn.execute("SELECT 1 FROM app_credentials WHERE account_id = ?", (account_id,)).fetchone():
+            return jsonify({"ok": False, "error": "password_already_set"}), 409
+        conn.execute(
+            "INSERT INTO app_credentials (account_id, password_hash) VALUES (?, ?)",
+            (account_id, PASSWORD_HASHER.hash(password)),
+        )
+        conn.commit()
+        state_url = create_state_url_for_user(conn, user_id)
+    return jsonify({"ok": True, "state_url": state_url, "password_set": True})
+
+
+@app.route("/v1/auth/password/login", methods=["POST"])
+def password_login():
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    password = payload.get("password") if isinstance(payload.get("password"), str) else ""
+    # Keep the public error identical for unknown emails, invalid passwords and malformed input.
+    if not auth_attempt_allowed("password_login", email or "invalid"):
+        return jsonify({"ok": False, "error": "invalid_credentials"}), 401
+    try:
+        with db() as conn:
+            begin_write(conn)
+            ensure_auth_tables(conn)
+            account = conn.execute(
+                """SELECT a.id, a.user_id, c.password_hash
+                     FROM app_accounts a JOIN app_credentials c ON c.account_id = a.id
+                    WHERE a.email = ?""",
+                (email,),
+            ).fetchone()
+            verified = False
+            if account and password:
+                try:
+                    verified = PASSWORD_HASHER.verify(str(account["password_hash"]), password)
+                except (InvalidHashError, VerificationError):
+                    verified = False
+            if not account or not verified:
+                return jsonify({"ok": False, "error": "invalid_credentials"}), 401
+            access = conn.execute("SELECT status FROM user_access WHERE user_id = ?", (account["user_id"],)).fetchone()
+            if access and str(access["status"] or "") not in {"approved", "app_only"}:
+                return jsonify({"ok": False, "error": "invalid_credentials"}), 401
+            if PASSWORD_HASHER.check_needs_rehash(str(account["password_hash"])):
+                conn.execute(
+                    "UPDATE app_credentials SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+                    (PASSWORD_HASHER.hash(password), account["id"]),
+                )
+            raw_session, expires_at = issue_session(conn, int(account["id"]))
+            conn.commit()
+            state_url = create_state_url_for_user(conn, int(account["user_id"]))
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    resp = make_response(jsonify({"ok": True, "state_url": state_url, "onboarding_required": False}))
+    return set_session_cookie(resp, raw_session, expires_at)
+
+
+@app.route("/v1/auth/password/reset/request", methods=["POST"])
+def request_password_reset():
+    email = normalize_email((request.get_json(silent=True) or {}).get("email"))
+    if not auth_attempt_allowed("password_reset_request", email or "invalid"):
+        return jsonify({"ok": True, "sent": True})
+    try:
+        with db() as conn:
+            begin_write(conn)
+            ensure_auth_tables(conn)
+            account = conn.execute(
+                """SELECT a.id, a.email FROM app_accounts a
+                     JOIN app_credentials c ON c.account_id = a.id WHERE a.email = ?""", (email,)
+            ).fetchone()
+            if not account:
+                conn.commit()
+                return jsonify({"ok": True, "sent": True})
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            conn.execute(
+                "UPDATE app_password_reset_codes SET consumed_at = CURRENT_TIMESTAMP WHERE account_id = ? AND consumed_at IS NULL",
+                (account["id"],),
+            )
+            conn.execute(
+                "INSERT INTO app_password_reset_codes (account_id, code_hash, expires_at) VALUES (?, ?, ?)",
+                (account["id"], keyed_hash(f"reset:{account['id']}:{code}"),
+                 (datetime.now() + timedelta(minutes=AUTH_RESET_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            conn.commit()
+        try:
+            send_password_reset_email(str(account["email"]), code)
+        except RuntimeError:
+            app.logger.warning("Passwort-Reset-E-Mail konnte nicht gesendet werden")
+        return jsonify({"ok": True, "sent": True})
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+
+
+@app.route("/v1/auth/password/reset/confirm", methods=["POST"])
+def confirm_password_reset():
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    code = re.sub(r"\D", "", str(payload.get("code") or ""))[:6]
+    password, _confirmation = password_values(payload)
+    if not auth_attempt_allowed("password_reset_verify", email or "invalid"):
+        return jsonify({"ok": False, "error": "invalid_or_expired_reset_code"}), 401
+    if not email or len(code) != 6 or password is None:
+        return jsonify({"ok": False, "error": "invalid_or_expired_reset_code"}), 401
+    try:
+        with db() as conn:
+            begin_write(conn)
+            ensure_auth_tables(conn)
+            row = conn.execute(
+                """SELECT r.id, r.account_id, r.code_hash, r.attempts, a.user_id
+                     FROM app_password_reset_codes r JOIN app_accounts a ON a.id = r.account_id
+                    WHERE a.email = ? AND r.consumed_at IS NULL
+                      AND datetime(r.expires_at) >= datetime('now', 'localtime')
+                    ORDER BY datetime(r.created_at) DESC, r.id DESC LIMIT 1""", (email,)
+            ).fetchone()
+            expected = keyed_hash(f"reset:{row['account_id']}:{code}") if row else ""
+            if not row or int(row["attempts"] or 0) >= 5 or not hmac.compare_digest(str(row["code_hash"]), expected):
+                if row:
+                    conn.execute("UPDATE app_password_reset_codes SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
+                    conn.commit()
+                return jsonify({"ok": False, "error": "invalid_or_expired_reset_code"}), 401
+            conn.execute(
+                "UPDATE app_credentials SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+                (PASSWORD_HASHER.hash(password), row["account_id"]),
+            )
+            conn.execute("UPDATE app_password_reset_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
+            conn.execute("UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL", (row["account_id"],))
+            raw_session, expires_at = issue_session(conn, int(row["account_id"]))
+            conn.commit()
+            state_url = create_state_url_for_user(conn, int(row["user_id"]))
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
+    return set_session_cookie(resp, raw_session, expires_at)
+
+
+@app.route("/v1/auth/password/change", methods=["POST"])
+def change_password():
+    payload = request.get_json(silent=True) or {}
+    current_password = payload.get("current_password") if isinstance(payload.get("current_password"), str) else ""
+    password, _confirmation = password_values(payload)
+    if password is None:
+        return jsonify({"ok": False, "error": "password_policy_or_confirmation_failed"}), 400
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        user_id, session_id = session
+        row = conn.execute(
+            """SELECT s.account_id, c.password_hash FROM app_sessions s
+                 JOIN app_credentials c ON c.account_id = s.account_id WHERE s.id = ?""", (session_id,)
+        ).fetchone()
+        try:
+            verified = bool(row and PASSWORD_HASHER.verify(str(row["password_hash"]), current_password))
+        except (InvalidHashError, VerificationError):
+            verified = False
+        if not verified:
+            return jsonify({"ok": False, "error": "current_password_invalid"}), 401
+        conn.execute(
+            "UPDATE app_credentials SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE account_id = ?",
+            (PASSWORD_HASHER.hash(password), row["account_id"]),
+        )
+        conn.execute("UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE account_id = ? AND revoked_at IS NULL", (row["account_id"],))
+        raw_session, expires_at = issue_session(conn, int(row["account_id"]))
+        conn.commit()
+        state_url = create_state_url_for_user(conn, user_id)
+    resp = make_response(jsonify({"ok": True, "state_url": state_url}))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -4969,6 +5235,8 @@ def delete_account():
         conn.execute("PRAGMA defer_foreign_keys = ON")
         if account_ids:
             placeholders = ",".join("?" for _ in account_ids)
+            conn.execute(f"DELETE FROM app_password_reset_codes WHERE account_id IN ({placeholders})", account_ids)
+            conn.execute(f"DELETE FROM app_credentials WHERE account_id IN ({placeholders})", account_ids)
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
         for email in emails:
             conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
