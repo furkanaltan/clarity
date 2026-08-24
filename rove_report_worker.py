@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import report_engine
+import rove_account_delete_cleanup as account_delete_cleanup
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -30,6 +30,23 @@ ACCOUNT_DELETE_CLEANUP_BATCH_SIZE = 20
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("rove-report-worker")
+
+
+def report_engine_module():
+    """Defers optional report dependencies until a worker command needs them."""
+    import report_engine
+
+    return report_engine
+
+
+def report_renderer_module():
+    import rove_web_report_renderer
+
+    return rove_web_report_renderer
+
+
+def account_delete_cleanup_roots() -> tuple[Path, Path, Path, Path]:
+    return account_delete_cleanup.configured_roots(APP_DIR)
 
 
 @contextmanager
@@ -193,6 +210,7 @@ def mark_failed(job: dict, error: str) -> bool:
 
 
 def process_due_jobs() -> dict:
+    report_engine = report_engine_module()
     jobs = claim_due_jobs()
     result = {"claimed": len(jobs), "sent": 0, "skipped": 0, "retry": 0, "failed": 0}
     for job in jobs:
@@ -216,11 +234,12 @@ def process_due_jobs() -> dict:
 
 
 def maintain_archives() -> dict:
-    import rove_web_report_renderer
-    from rove_app_api import retry_account_delete_file_cleanup
-
     # Run the bounded recovery first so report archive errors cannot defer it.
-    cleanup_completed = retry_account_delete_file_cleanup(ACCOUNT_DELETE_CLEANUP_BATCH_SIZE)
+    cleanup_completed = account_delete_cleanup.retry_paths(
+        DB_PATH, account_delete_cleanup_roots(), ACCOUNT_DELETE_CLEANUP_BATCH_SIZE
+    )
+    rove_web_report_renderer = report_renderer_module()
+    report_engine = report_engine_module()
     removed = rove_web_report_renderer.cleanup_expired_reports()
     archived = report_engine.archive_old_reports()
     result = {

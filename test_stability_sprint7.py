@@ -2,9 +2,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import rove_app_api as api
+import rove_account_delete_cleanup as cleanup
 import rove_report_worker as worker
 
 
@@ -21,6 +23,9 @@ class DeleteCleanupTests(unittest.TestCase):
             patch.object(api, "DB_PATH", self.db_path), patch.object(api, "PUBLIC_APP_STATE_DIR", self.state),
             patch.object(api, "REPORTS_DIR", self.reports), patch.object(api, "REPORTS_ARCHIVE_DIR", self.archive),
             patch.object(api, "PUBLIC_REPORT_DIR", self.public),
+            patch.object(worker, "DB_PATH", self.db_path), patch.object(
+                worker, "account_delete_cleanup_roots", return_value=(self.state, self.public, self.reports, self.archive)
+            ),
         ]
         for patcher in self.patchers: patcher.start()
 
@@ -65,12 +70,12 @@ class DeleteCleanupTests(unittest.TestCase):
         failed = self.reports / "locked.pdf"; failed.write_text("a")
         successful = self.reports / "ready.pdf"; successful.write_text("b")
         api.queue_account_cleanup_failures([failed, successful])
-        remove = api._remove_cleanup_path
+        remove = cleanup.remove_path
 
-        def retry(path):
-            return "PermissionError" if path == failed else remove(path)
+        def retry(path, roots):
+            return "PermissionError" if path == failed else remove(path, roots)
 
-        with patch.object(api, "_remove_cleanup_path", side_effect=retry):
+        with patch.object(cleanup, "remove_path", side_effect=retry):
             self.assertEqual(api.retry_account_delete_file_cleanup(), 1)
         rows = self.records()
         self.assertEqual(rows[0][1:3], (1, "PermissionError"))
@@ -89,8 +94,10 @@ class DeleteCleanupTests(unittest.TestCase):
     def test_report_maintenance_processes_pending_cleanup_automatically(self):
         pending = self.reports / "restart-recovery.pdf"; pending.write_text("private")
         api.queue_account_cleanup_failures([pending])
-        with patch("rove_web_report_renderer.cleanup_expired_reports", return_value=0), patch.object(
-            worker.report_engine, "archive_old_reports", return_value=0
+        with patch.object(
+            worker, "report_renderer_module", return_value=SimpleNamespace(cleanup_expired_reports=lambda: 0)
+        ), patch.object(
+            worker, "report_engine_module", return_value=SimpleNamespace(archive_old_reports=lambda: 0)
         ):
             result = worker.maintain_archives()
         self.assertEqual(result["account_delete_cleanup_completed"], 1)

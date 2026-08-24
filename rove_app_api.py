@@ -28,6 +28,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, make_response, request, send_file
+import rove_account_delete_cleanup as account_delete_cleanup
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -4851,74 +4852,28 @@ def request_account_delete_code():
 
 
 def ensure_account_delete_cleanup_table(conn: sqlite3.Connection) -> None:
-    conn.execute("""CREATE TABLE IF NOT EXISTS account_delete_file_cleanup (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, opaque_cleanup_id TEXT NOT NULL UNIQUE,
-        internal_path TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, completed_at TEXT
-    )""")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_account_delete_cleanup_path ON account_delete_file_cleanup(internal_path)")
+    account_delete_cleanup.ensure_table(conn)
+
+
+def account_delete_cleanup_roots() -> tuple[Path, Path, Path, Path]:
+    return (PUBLIC_APP_STATE_DIR, PUBLIC_REPORT_DIR, REPORTS_DIR, REPORTS_ARCHIVE_DIR)
 
 
 def _cleanup_path_allowed(path: Path) -> bool:
-    try:
-        resolved = path.resolve(strict=False)
-        return any(resolved.is_relative_to(root.resolve()) for root in (
-            PUBLIC_APP_STATE_DIR, PUBLIC_REPORT_DIR, REPORTS_DIR, REPORTS_ARCHIVE_DIR
-        ))
-    except OSError:
-        return False
+    return account_delete_cleanup.path_allowed(path, account_delete_cleanup_roots())
 
 
 def _remove_cleanup_path(path: Path) -> str | None:
-    if not _cleanup_path_allowed(path):
-        return "path_not_allowed"
-    try:
-        if path.is_dir():
-            shutil.rmtree(path)
-        elif path.exists():
-            path.unlink()
-    except OSError as exc:
-        return type(exc).__name__
-    return None
+    return account_delete_cleanup.remove_path(path, account_delete_cleanup_roots())
 
 
 def queue_account_cleanup_failures(paths: list[Path]) -> None:
-    if not paths:
-        return
-    with db() as conn:
-        begin_write(conn)
-        ensure_account_delete_cleanup_table(conn)
-        for path in paths:
-            if _cleanup_path_allowed(path):
-                conn.execute("""INSERT OR IGNORE INTO account_delete_file_cleanup
-                    (opaque_cleanup_id, internal_path) VALUES (?, ?)""",
-                    (secrets.token_urlsafe(18), str(path)))
-        conn.commit()
+    account_delete_cleanup.queue_paths(DB_PATH, account_delete_cleanup_roots(), paths)
 
 
 def retry_account_delete_file_cleanup(limit: int = 20) -> int:
     """Retries only persisted, allowlisted leftovers; safe to call from maintenance."""
-    completed = 0
-    batch_limit = max(1, min(int(limit), 20))
-    with db() as conn:
-        begin_write(conn)
-        ensure_account_delete_cleanup_table(conn)
-        rows = conn.execute(
-            """SELECT id, internal_path FROM account_delete_file_cleanup
-                 WHERE completed_at IS NULL
-                 ORDER BY id
-                 LIMIT ?""",
-            (batch_limit,),
-        ).fetchall()
-        for row in rows:
-            error = _remove_cleanup_path(Path(str(row["internal_path"])))
-            if error is None:
-                conn.execute("UPDATE account_delete_file_cleanup SET completed_at=CURRENT_TIMESTAMP, attempts=attempts+1, last_error=NULL WHERE id=?", (row["id"],))
-                completed += 1
-            else:
-                conn.execute("UPDATE account_delete_file_cleanup SET attempts=attempts+1, last_error=? WHERE id=?", (error, row["id"]))
-        conn.commit()
-    return completed
+    return account_delete_cleanup.retry_paths(DB_PATH, account_delete_cleanup_roots(), limit)
 
 
 def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[Path]:
