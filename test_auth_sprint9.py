@@ -35,8 +35,6 @@ class PasswordAuthTests(unittest.TestCase):
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
             patch.object(api, "AUTH_SECRET", "test-auth-secret"),
-            patch.object(api, "PUBLIC_APP_STATE_BASE_URL", "https://state.example.test"),
-            patch.object(api, "create_state_url_for_user", lambda _conn, user_id: f"https://state.example.test/{user_id}.json"),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -90,7 +88,7 @@ class PasswordAuthTests(unittest.TestCase):
         self.assertEqual((bad_email.status_code, bad_email.get_json()["error"]), (401, "invalid_credentials"))
         self.assertEqual((bad_password.status_code, bad_password.get_json()["error"]), (401, "invalid_credentials"))
         self.assertEqual(success.status_code, 200, success.get_json())
-        self.assertEqual(success.get_json()["state_url"], "https://state.example.test/1.json")
+        self.assertNotIn("state_url", success.get_json())
 
     def test_reset_uses_one_time_hmac_code_and_revokes_old_sessions(self):
         self.issue_session(raw_token="old-session")

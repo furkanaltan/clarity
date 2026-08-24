@@ -37,8 +37,6 @@ class WebAuthTests(unittest.TestCase):
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
             patch.object(api, "AUTH_SECRET", "test-auth-secret"),
-            patch.object(api, "PUBLIC_APP_STATE_BASE_URL", "https://state.example.test"),
-            patch.object(api, "create_state_url_for_user", lambda _conn, user_id: f"https://state.example.test/{user_id}.json"),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -83,7 +81,7 @@ class WebAuthTests(unittest.TestCase):
         self.assertFalse(requested.get_json()["needsPairing"])
         send.assert_called_once()
         self.assertEqual(verified.status_code, 200, verified.get_json())
-        self.assertEqual(verified.get_json()["state_url"], "https://state.example.test/1.json")
+        self.assertNotIn("state_url", verified.get_json())
 
     def test_verified_email_stays_bound_to_its_own_user(self):
         with patch.object(api.secrets, "randbelow", return_value=654321), patch.object(api, "send_login_email"):
@@ -91,7 +89,7 @@ class WebAuthTests(unittest.TestCase):
                 client.post("/v1/auth/request-code", json={"email": "other@example.test"})
                 verified = client.post("/v1/auth/verify-code", json={"email": "other@example.test", "code": "654321"})
         self.assertEqual(verified.status_code, 200, verified.get_json())
-        self.assertEqual(verified.get_json()["state_url"], "https://state.example.test/2.json")
+        self.assertNotIn("state_url", verified.get_json())
 
     def test_logout_then_second_user_login_uses_only_second_user_state(self):
         raw_token = self.issue_session()
@@ -107,13 +105,13 @@ class WebAuthTests(unittest.TestCase):
                     "/v1/auth/verify-code", json={"email": "other@example.test", "code": "222222"}
                 )
         self.assertEqual(second_user.status_code, 200, second_user.get_json())
-        self.assertEqual(second_user.get_json()["state_url"], "https://state.example.test/2.json")
+        self.assertNotIn("state_url", second_user.get_json())
 
     def test_unknown_email_cannot_claim_a_legacy_user(self):
         with api.app.test_client() as client:
             response = client.post("/v1/auth/request-code", json={"email": "unknown@example.test"})
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"], "pairing_code_required")
+        self.assertEqual(response.get_json()["error"], "account_required")
 
 
 if __name__ == "__main__":
