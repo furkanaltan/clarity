@@ -121,6 +121,12 @@ AUTH_PASSWORD_MAX_LENGTH = 1024
 AUTH_PASSWORD_MIN_LENGTH = 10
 AUTH_RESET_TTL_MINUTES = 10
 AUTH_BUCKETS: dict[str, dict[str, list[float]]] = {}
+PIN_LENGTH = 4
+PIN_MAX_ATTEMPTS = 5
+PIN_INACTIVITY_SECONDS = 5 * 60
+PIN_RATE_WINDOW_SECONDS = 15 * 60
+PIN_RATE_LIMIT = 20
+PIN_ATTEMPT_BUCKETS: dict[str, list[float]] = {}
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16, type=Type.ID)
 APP_REGISTRATION_FLOW = "app_registration"
 APP_USER_ID_BASE = 8_000_000_000_000_000
@@ -300,6 +306,13 @@ def health():
 @app.route("/v1/auth/password/change", methods=["OPTIONS"])
 @app.route("/v1/auth/password/reset/request", methods=["OPTIONS"])
 @app.route("/v1/auth/password/reset/confirm", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/status", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/setup", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/unlock", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/lock", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/activity", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/change", methods=["OPTIONS"])
+@app.route("/v1/auth/pin/recover", methods=["OPTIONS"])
 @app.route("/v1/onboarding", methods=["OPTIONS"])
 @app.route("/v1/admin/overview", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations", methods=["OPTIONS"])
@@ -797,12 +810,49 @@ def validate_password(value: object) -> str | None:
     return password
 
 
+def validate_pin(value: object) -> str | None:
+    pin = value if isinstance(value, str) else ""
+    return pin if len(pin) == PIN_LENGTH and pin.isascii() and pin.isdigit() else None
+
+
+def pin_secret_value(session_id: int, pin: str) -> str:
+    return keyed_hash(f"app-pin:{session_id}:{pin}")
+
+
+def pin_rate_allowed(session_id: int) -> bool:
+    key = str(session_id)
+    now = time.monotonic()
+    attempts = [stamp for stamp in PIN_ATTEMPT_BUCKETS.get(key, []) if now - stamp < PIN_RATE_WINDOW_SECONDS]
+    if len(attempts) >= PIN_RATE_LIMIT:
+        PIN_ATTEMPT_BUCKETS[key] = attempts
+        return False
+    attempts.append(now)
+    PIN_ATTEMPT_BUCKETS[key] = attempts
+    return True
+
+
 def issue_session(conn: sqlite3.Connection, account_id: int) -> tuple[str, datetime]:
     raw_session = secrets.token_urlsafe(32)
     expires_at = datetime.now() + timedelta(days=AUTH_SESSION_TTL_DAYS)
     conn.execute("INSERT INTO app_sessions (token_hash, account_id, expires_at) VALUES (?, ?, ?)",
                  (keyed_hash(raw_session), account_id, expires_at.strftime("%Y-%m-%d %H:%M:%S")))
     return raw_session, expires_at
+
+
+def ensure_session_pin_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_session_pins (
+            session_id       INTEGER PRIMARY KEY,
+            pin_verifier     TEXT NOT NULL,
+            failed_attempts  INTEGER NOT NULL DEFAULT 0,
+            locked_out_at    TEXT,
+            unlocked_at      TEXT,
+            last_activity_at TEXT,
+            created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(session_id) REFERENCES app_sessions(id) ON DELETE CASCADE
+        )"""
+    )
 
 
 def ensure_auth_tables(conn: sqlite3.Connection) -> None:
@@ -912,6 +962,7 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
         created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
         consumed_at TEXT, FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE)""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_password_reset_codes_account ON app_password_reset_codes(account_id, consumed_at, expires_at)")
+    ensure_session_pin_table(conn)
 
 
 def create_app_only_user(conn: sqlite3.Connection, email: str) -> tuple[int, int]:
@@ -1114,6 +1165,97 @@ def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None
         return None
     conn.execute("UPDATE app_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", (row["session_id"],))
     return int(row["user_id"]), int(row["session_id"])
+
+
+def pin_row(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """SELECT pin_verifier, failed_attempts, locked_out_at, unlocked_at,
+                  last_activity_at,
+                  CAST(strftime('%s','now') - strftime('%s',last_activity_at) AS INTEGER) AS idle_seconds
+             FROM app_session_pins WHERE session_id = ?""",
+        (session_id,),
+    ).fetchone()
+
+
+def pin_state(conn: sqlite3.Connection, session_id: int, *, touch: bool = False) -> str:
+    row = pin_row(conn, session_id)
+    if not row:
+        return "setup_required"
+    if row["locked_out_at"] or int(row["failed_attempts"] or 0) >= PIN_MAX_ATTEMPTS:
+        return "reauth_required"
+    if not row["unlocked_at"] or not row["last_activity_at"]:
+        return "locked"
+    idle_seconds = int(row["idle_seconds"] or 0)
+    if idle_seconds >= PIN_INACTIVITY_SECONDS:
+        conn.execute(
+            """UPDATE app_session_pins
+                  SET unlocked_at = NULL, last_activity_at = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?""",
+            (session_id,),
+        )
+        return "locked"
+    if touch and idle_seconds >= 30:
+        conn.execute(
+            """UPDATE app_session_pins
+                  SET last_activity_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?""",
+            (session_id,),
+        )
+    return "unlocked"
+
+
+def pin_locked_response(status: str):
+    return jsonify({
+        "ok": False,
+        "error": "pin_locked",
+        "pin_status": status,
+        "reauth_required": status == "reauth_required",
+    }), 423
+
+
+PIN_GATE_OPEN_PATHS = frozenset({
+    "/v1/pair",
+    "/v1/auth/request-code",
+    "/v1/auth/verify-code",
+    "/v1/auth/me",
+    "/v1/auth/logout",
+    "/v1/auth/password/setup",
+    "/v1/auth/password/login",
+    "/v1/auth/password/reset/request",
+    "/v1/auth/password/reset/confirm",
+    "/v1/auth/pin/status",
+    "/v1/auth/pin/setup",
+    "/v1/auth/pin/unlock",
+    "/v1/auth/pin/lock",
+    "/v1/auth/pin/activity",
+    "/v1/auth/pin/change",
+    "/v1/auth/pin/recover",
+    "/v1/internal/push",
+})
+
+
+@app.before_request
+def enforce_session_pin():
+    if request.method == "OPTIONS" or not request.path.startswith("/v1/"):
+        return None
+    if request.path in PIN_GATE_OPEN_PATHS:
+        return None
+    with db() as conn:
+        ensure_session_pin_table(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return None
+        user_id, session_id = session
+        if request.path == "/v1/onboarding":
+            user = conn.execute(
+                "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if user and int(user["onboarding_step"] or 0) < 10 and not pin_row(conn, session_id):
+                return None
+        status = pin_state(conn, session_id, touch=True)
+        if status != "unlocked":
+            return pin_locked_response(status)
+    return None
 
 
 def set_session_cookie(resp, raw_token: str, expires_at: datetime):
@@ -1319,8 +1461,9 @@ def password_login():
             begin_write(conn)
             ensure_auth_tables(conn)
             account = conn.execute(
-                """SELECT a.id, a.user_id, c.password_hash
+                """SELECT a.id, a.user_id, c.password_hash, u.onboarding_step
                      FROM app_accounts a JOIN app_credentials c ON c.account_id = a.id
+                     JOIN users u ON u.user_id = a.user_id
                     WHERE a.email = ?""",
                 (email,),
             ).fetchone()
@@ -1344,7 +1487,10 @@ def password_login():
             conn.commit()
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    resp = make_response(jsonify({"ok": True, "onboarding_required": False}))
+    resp = make_response(jsonify({
+        "ok": True,
+        "onboarding_required": int(account["onboarding_step"] or 0) < 10,
+    }))
     return set_session_cookie(resp, raw_session, expires_at)
 
 
@@ -1468,11 +1614,258 @@ def auth_me():
             session = session_user_from_cookie(conn)
             if not session:
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
-            _user_id, _session_id = session
+            user_id, session_id = session
+            status = pin_state(conn, session_id)
+            user = conn.execute(
+                "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
             conn.commit()
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True,
+        "pin_status": status,
+        "onboarding_required": bool(user and int(user["onboarding_step"] or 0) < 10),
+    })
+
+
+def pin_values(payload: dict, key: str = "pin", confirmation_key: str = "pin_confirmation") -> str | None:
+    pin = validate_pin(payload.get(key))
+    confirmation = payload.get(confirmation_key)
+    if pin is None or not isinstance(confirmation, str) or not hmac.compare_digest(pin, confirmation):
+        return None
+    return pin
+
+
+def verify_session_pin(conn: sqlite3.Connection, session_id: int, pin: str) -> tuple[bool, str, int]:
+    row = pin_row(conn, session_id)
+    if not row:
+        return False, "setup_required", PIN_MAX_ATTEMPTS
+    attempts = int(row["failed_attempts"] or 0)
+    if row["locked_out_at"] or attempts >= PIN_MAX_ATTEMPTS:
+        return False, "reauth_required", 0
+    try:
+        verified = PASSWORD_HASHER.verify(str(row["pin_verifier"]), pin_secret_value(session_id, pin))
+    except (InvalidHashError, VerificationError):
+        verified = False
+    if verified:
+        conn.execute(
+            """UPDATE app_session_pins
+                  SET failed_attempts = 0, locked_out_at = NULL,
+                      unlocked_at = CURRENT_TIMESTAMP, last_activity_at = CURRENT_TIMESTAMP,
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?""",
+            (session_id,),
+        )
+        return True, "unlocked", PIN_MAX_ATTEMPTS
+    attempts += 1
+    locked_out = attempts >= PIN_MAX_ATTEMPTS
+    conn.execute(
+        """UPDATE app_session_pins
+              SET failed_attempts = ?,
+                  locked_out_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE locked_out_at END,
+                  unlocked_at = CASE WHEN ? THEN NULL ELSE unlocked_at END,
+                  last_activity_at = CASE WHEN ? THEN NULL ELSE last_activity_at END,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = ?""",
+        (attempts, locked_out, locked_out, locked_out, session_id),
+    )
+    return False, "reauth_required" if locked_out else "locked", max(0, PIN_MAX_ATTEMPTS - attempts)
+
+
+@app.route("/v1/auth/pin/status", methods=["GET"])
+def app_pin_status():
+    with db() as conn:
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        user_id, session_id = session
+        status = pin_state(conn, session_id)
+        user = conn.execute(
+            "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        conn.commit()
+    return jsonify({
+        "ok": True,
+        "pin_status": status,
+        "pin_required": True,
+        "onboarding_required": bool(user and int(user["onboarding_step"] or 0) < 10),
+    })
+
+
+@app.route("/v1/auth/pin/setup", methods=["POST"])
+def setup_app_pin():
+    pin = pin_values(request.get_json(silent=True) or {})
+    if pin is None:
+        return jsonify({"ok": False, "error": "pin_format_or_confirmation_failed"}), 400
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        user_id, session_id = session
+        user = conn.execute(
+            "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if not user or int(user["onboarding_step"] or 0) < 10:
+            return jsonify({"ok": False, "error": "onboarding_required"}), 409
+        if pin_row(conn, session_id):
+            return jsonify({"ok": False, "error": "pin_already_set"}), 409
+        conn.execute(
+            """INSERT INTO app_session_pins
+               (session_id, pin_verifier, unlocked_at, last_activity_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+            (session_id, PASSWORD_HASHER.hash(pin_secret_value(session_id, pin))),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "pin_status": "unlocked"})
+
+
+@app.route("/v1/auth/pin/unlock", methods=["POST"])
+def unlock_app_pin():
+    pin = validate_pin((request.get_json(silent=True) or {}).get("pin"))
+    if pin is None:
+        return jsonify({"ok": False, "error": "invalid_pin", "attempts_remaining": PIN_MAX_ATTEMPTS}), 400
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        _user_id, session_id = session
+        if not pin_rate_allowed(session_id):
+            return jsonify({"ok": False, "error": "pin_rate_limited"}), 429
+        verified, status, remaining = verify_session_pin(conn, session_id, pin)
+        conn.commit()
+    if status == "setup_required":
+        return jsonify({"ok": False, "error": "pin_setup_required"}), 409
+    if not verified and status == "reauth_required":
+        return pin_locked_response(status)
+    if not verified:
+        return jsonify({"ok": False, "error": "invalid_pin", "attempts_remaining": remaining}), 400
+    return jsonify({"ok": True, "pin_status": "unlocked"})
+
+
+@app.route("/v1/auth/pin/lock", methods=["POST"])
+def lock_app_pin():
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        _user_id, session_id = session
+        conn.execute(
+            """UPDATE app_session_pins
+                  SET unlocked_at = NULL, last_activity_at = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?""",
+            (session_id,),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "pin_status": "locked"})
+
+
+@app.route("/v1/auth/pin/activity", methods=["POST"])
+def touch_app_pin_activity():
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        _user_id, session_id = session
+        status = pin_state(conn, session_id, touch=True)
+        conn.commit()
+    if status != "unlocked":
+        return pin_locked_response(status)
+    return jsonify({"ok": True, "pin_status": "unlocked"})
+
+
+@app.route("/v1/auth/pin/change", methods=["POST"])
+def change_app_pin():
+    payload = request.get_json(silent=True) or {}
+    current_pin = validate_pin(payload.get("current_pin"))
+    new_pin = pin_values(payload, "new_pin", "new_pin_confirmation")
+    if current_pin is None or new_pin is None:
+        return jsonify({"ok": False, "error": "pin_format_or_confirmation_failed"}), 400
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        _user_id, session_id = session
+        if not pin_rate_allowed(session_id):
+            return jsonify({"ok": False, "error": "pin_rate_limited"}), 429
+        if pin_state(conn, session_id) != "unlocked":
+            return pin_locked_response(pin_state(conn, session_id))
+        verified, status, remaining = verify_session_pin(conn, session_id, current_pin)
+        if not verified:
+            conn.commit()
+            if status == "reauth_required":
+                return pin_locked_response(status)
+            return jsonify({"ok": False, "error": "invalid_pin", "attempts_remaining": remaining}), 400
+        conn.execute(
+            """UPDATE app_session_pins
+                  SET pin_verifier = ?, failed_attempts = 0, locked_out_at = NULL,
+                      unlocked_at = CURRENT_TIMESTAMP, last_activity_at = CURRENT_TIMESTAMP,
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?""",
+            (PASSWORD_HASHER.hash(pin_secret_value(session_id, new_pin)), session_id),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "pin_status": "unlocked"})
+
+
+@app.route("/v1/auth/pin/recover", methods=["POST"])
+def recover_app_pin():
+    payload = request.get_json(silent=True) or {}
+    email = normalize_email(payload.get("email"))
+    password = payload.get("password") if isinstance(payload.get("password"), str) else ""
+    pin = pin_values(payload)
+    if not email or not password or pin is None:
+        return jsonify({"ok": False, "error": "invalid_credentials"}), 401
+    with db() as conn:
+        begin_write(conn)
+        ensure_auth_tables(conn)
+        session = session_user_from_cookie(conn)
+        if not session:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        _user_id, session_id = session
+        if not pin_rate_allowed(session_id):
+            return jsonify({"ok": False, "error": "pin_rate_limited"}), 429
+        account = conn.execute(
+            """SELECT a.email, c.password_hash
+                 FROM app_sessions s JOIN app_accounts a ON a.id = s.account_id
+                 JOIN app_credentials c ON c.account_id = a.id
+                WHERE s.id = ?""",
+            (session_id,),
+        ).fetchone()
+        verified = False
+        if account and hmac.compare_digest(str(account["email"]).casefold(), email):
+            try:
+                verified = PASSWORD_HASHER.verify(str(account["password_hash"]), password)
+            except (InvalidHashError, VerificationError):
+                verified = False
+        if not verified:
+            return jsonify({"ok": False, "error": "invalid_credentials"}), 401
+        conn.execute(
+            """INSERT INTO app_session_pins
+               (session_id, pin_verifier, failed_attempts, locked_out_at, unlocked_at, last_activity_at, updated_at)
+               VALUES (?, ?, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(session_id) DO UPDATE SET
+                 pin_verifier = excluded.pin_verifier,
+                 failed_attempts = 0,
+                 locked_out_at = NULL,
+                 unlocked_at = CURRENT_TIMESTAMP,
+                 last_activity_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (session_id, PASSWORD_HASHER.hash(pin_secret_value(session_id, pin))),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "pin_status": "unlocked"})
 
 
 @app.route("/v1/auth/logout", methods=["POST"])
@@ -3129,10 +3522,15 @@ def complete_app_onboarding():
                 (user_id, execution_day, source_account, source_account_id, mode, start_month),
             )
 
-        live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
-    return jsonify({"ok": True, "onboardingRequired": False, **live_data})
+    # Financial state stays behind the mandatory PIN boundary. The client proceeds
+    # directly to PIN setup and loads /v1/state only after that session is unlocked.
+    return jsonify({
+        "ok": True,
+        "onboardingRequired": False,
+        "pinSetupRequired": True,
+    })
 
 
 @app.route("/v1/profile", methods=["OPTIONS"])
@@ -5164,6 +5562,13 @@ def delete_account():
             placeholders = ",".join("?" for _ in account_ids)
             conn.execute(f"DELETE FROM app_password_reset_codes WHERE account_id IN ({placeholders})", account_ids)
             conn.execute(f"DELETE FROM app_credentials WHERE account_id IN ({placeholders})", account_ids)
+            conn.execute(
+                f"""DELETE FROM app_session_pins
+                      WHERE session_id IN (
+                        SELECT id FROM app_sessions WHERE account_id IN ({placeholders})
+                      )""",
+                account_ids,
+            )
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
         for email in emails:
             conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
