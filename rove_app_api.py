@@ -66,6 +66,7 @@ from rove_market_data import (
 )
 from rove_investment_contributions import (
     ensure_investment_contribution_schema,
+    holding_contribution_summary,
     record_holding_contribution,
 )
 from rove_expense_domain import (
@@ -4572,6 +4573,47 @@ def update_etf_position_plan():
     })
 
 
+def _assigned_non_crypto_investment_value(conn: sqlite3.Connection, user_id: int) -> float:
+    """Return the value already represented by visible ETF/stock positions."""
+    holdings = conn.execute(
+        """SELECT id, LOWER(COALESCE(instrument_type, 'etf')) AS instrument_type,
+                  COALESCE(valuation_enabled, 0) AS valuation_enabled,
+                  quantity, price_symbol,
+                  CASE
+                      WHEN valuation_enabled = 1 AND market_value IS NOT NULL THEN market_value
+                      ELSE COALESCE(total_invested, 0)
+                  END AS visible_value
+             FROM portfolio_holdings
+            WHERE user_id = ?""",
+        (user_id,),
+    ).fetchall()
+    total = sum(max(0.0, float(row["visible_value"] or 0)) for row in holdings)
+    for row in holdings:
+        if (
+            row["instrument_type"] == "etf"
+            and row["valuation_enabled"]
+            and row["quantity"]
+            and row["price_symbol"]
+        ):
+            total += holding_contribution_summary(
+                conn, user_id, int(row["id"])
+            )["pending"]
+
+    manual_stocks = conn.execute(
+        """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+             FROM investment_events e
+            WHERE e.user_id = ? AND e.asset_type = 'stock'
+              AND NOT EXISTS (
+                  SELECT 1 FROM portfolio_holdings ph
+                   WHERE ph.user_id = e.user_id
+                     AND LOWER(TRIM(ph.instrument_label)) = LOWER(TRIM(e.asset_name))
+              )""",
+        (user_id,),
+    ).fetchone()
+    total += max(0.0, float(manual_stocks["net"] or 0))
+    return round(total, 2)
+
+
 @app.route("/v1/investments", methods=["POST"])
 def update_investment_position():
     """Setzt manuelle Krypto-, Aktien- oder bestehende ETF-Werte ohne Doppelzaehlung."""
@@ -4644,21 +4686,9 @@ def update_investment_position():
                          FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
                     (user_id,),
                 ).fetchone()
-                stocks_row = conn.execute(
-                    """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
-                         FROM investment_events WHERE user_id = ? AND asset_type = 'stock'""",
-                    (user_id,),
-                ).fetchone()
-                etf_row = conn.execute(
-                    """SELECT COALESCE(SUM(total_invested), 0) AS total
-                         FROM portfolio_holdings
-                        WHERE user_id = ? AND LOWER(COALESCE(instrument_type, 'etf')) = 'etf'""",
-                    (user_id,),
-                ).fetchone()
                 crypto_total = max(0.0, float(crypto_row["net"] or 0))
-                stocks_total = max(0.0, float(stocks_row["net"] or 0))
-                etf_total = max(0.0, float(etf_row["total"] or 0))
-                unassigned = max(0.0, current_total - crypto_total - stocks_total - etf_total)
+                assigned_total = _assigned_non_crypto_investment_value(conn, user_id)
+                unassigned = max(0.0, current_total - crypto_total - assigned_total)
                 total_delta = round(max(0.0, target_value - unassigned), 2)
                 key_hash = hashlib.sha256(
                     f"{user_id}:{asset_name.lower()}".encode("utf-8")
@@ -4743,25 +4773,10 @@ def update_investment_position():
                      FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
                 (user_id,),
             ).fetchone()
-            stocks_row = conn.execute(
-                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
-                     FROM investment_events WHERE user_id = ? AND asset_type = 'stock'""",
-                (user_id,),
-            ).fetchone()
-            try:
-                etf_row = conn.execute(
-                    """SELECT COALESCE(SUM(total_invested), 0) AS total
-                         FROM portfolio_holdings
-                        WHERE user_id = ? AND LOWER(COALESCE(instrument_type, 'etf')) = 'etf'""",
-                    (user_id,),
-                ).fetchone()
-                etf_total = max(0.0, float(etf_row["total"] or 0))
-            except sqlite3.OperationalError:
-                etf_total = 0.0
             crypto_total = max(0.0, float(crypto_row["net"] or 0))
-            stocks_total = max(0.0, float(stocks_row["net"] or 0))
             non_crypto_total = max(0.0, current_total - crypto_total)
-            unassigned = max(0.0, non_crypto_total - etf_total - stocks_total)
+            assigned_total = _assigned_non_crypto_investment_value(conn, user_id)
+            unassigned = max(0.0, non_crypto_total - assigned_total)
             # Ein bereits im Gesamtwert enthaltener Rest wird nur benannt. Erst ein Betrag
             # oberhalb dieses Restes erhoeht das Vermoegen wirklich.
             total_delta = round(max(0.0, target_value - unassigned), 2)
