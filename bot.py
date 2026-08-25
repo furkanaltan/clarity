@@ -5361,7 +5361,7 @@ def handle_commands(message):
             uid,
             f"📊 *Rov.E Score: {score_data['total']}/100*\n"
             f"{score_data['rank_emoji']} *{score_data['rank_name']}*\n"
-            f"Status: {score_data['phase']} · Proof: {score_data['proof_days']}/90 Tage"
+            f"Status: {score_data['phase']} · {score_data['tracking_label']}"
             f"{unlock_line}\n\n"
             f"*Breakdown*\n"
             f"├ Budget Control:       {score_data['budget']}/25\n"

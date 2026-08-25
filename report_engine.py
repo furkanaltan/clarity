@@ -1338,6 +1338,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "rank_icon": score_parts["rank_icon"],
                 "phase": score_parts["phase"],
                 "proof_days": score_parts["proof_days"],
+                "tracking_label": score_parts["tracking_label"],
                 "days_to_unlock": score_parts["days_to_unlock"],
                 "next_unlock_level": score_parts["next_unlock_level"],
                 "share_cta": "Share Score",
@@ -1964,7 +1965,8 @@ def draw_score_page(c, data):
     c.drawCentredString(PAGE_W / 2, PAGE_H - 320, score["rank_name"])
     c.setFont("Helvetica", 11)
     c.setFillColor(MUTED)
-    proof_line = f"{score['phase']} · {score['proof_days']}d verified"
+    tracking_line = score.get("tracking_label") or f"{score['proof_days']}d verified"
+    proof_line = f"{score['phase']} · {tracking_line}"
     c.drawCentredString(PAGE_W / 2, PAGE_H - 342, proof_line)
     if score["days_to_unlock"] > 0:
         unlock = f"Noch {score['days_to_unlock']} Tage bis {score['next_unlock_level']}+ freigeschaltet wird."

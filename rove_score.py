@@ -169,6 +169,19 @@ def score_cap(days: int) -> tuple[int, int, int]:
     return 100, 0, 100
 
 
+def apply_score_cap(raw_score: int, platform_days: int) -> tuple[int, int, int, int]:
+    """Return final score, cap, days until unlock, and next unlock level."""
+    cap, days_to_unlock, next_unlock_level = score_cap(max(0, int(platform_days)))
+    return min(max(0, int(raw_score)), cap), cap, days_to_unlock, next_unlock_level
+
+
+def tracking_label(platform_days: int, tracking_days: int) -> str:
+    """Use a bounded window before the rolling 90-day window is available."""
+    if platform_days < 90:
+        return f"{tracking_days} von {max(0, platform_days)} möglichen Tracking-Tagen"
+    return f"{tracking_days} Tracking-Tage in den letzten 90 Tagen"
+
+
 def start_score(user, cash_override: float | None = None) -> int:
     income = _number(user, "income") + _number(user, "other_income")
     fixed = _number(user, "fixed_costs")
@@ -317,14 +330,14 @@ def calculate_score(
     if spendable_budget > 0:
         structure += 5
 
-    raw_total = budget + savings + consistency + structure
-    total = min(100, max(0, raw_total))
+    raw_total = min(100, max(0, budget + savings + consistency + structure))
     # A critical monthly shortfall must stay visible in the overall result. Strong
     # structure or tracking cannot turn an overspent month into a Manager score.
     if spendable_budget <= 0:
-        total = min(total, 54)
+        raw_total = min(raw_total, 54)
     elif remaining < 0:
-        total = min(total, 64)
+        raw_total = min(raw_total, 64)
+    total, cap, days_to_unlock, next_unlock_level = apply_score_cap(raw_total, days)
     rank_name, rank_icon = score_rank(total)
 
     if tracked_days == 0:
@@ -353,16 +366,17 @@ def calculate_score(
         if confirmed else
         "Bestätige deine Sparrate im Monatsplan, sobald sie wirklich ausgeführt wurde."
     )
+    tracking_text = tracking_label(days, tracked_days)
     if days < 90:
         consistency_why = (
-            f"Du hast an {tracked_days} Tagen getrackt. Nach {days} Tagen kann Rov.E "
+            f"Du hast {tracking_text}. Nach {days} Tagen kann Rov.E "
             f"deine Konstanz aktuell bis {consistency_age_cap}/25 bewerten."
         )
         consistency_lever = (
             f"Volle 25 Punkte gibt es ab 90 Tagen und {consistency_target} aktiven Tracking-Tagen."
         )
     else:
-        consistency_why = f"Du hast an {tracked_days} der letzten 90 Tage mindestens eine Ausgabe dokumentiert."
+        consistency_why = f"Du hast {tracking_text}."
         consistency_lever = (
             f"Für volle 25 Punkte zählen {consistency_target} echte Tracking-Tage innerhalb von 90 Tagen."
         )
@@ -383,18 +397,19 @@ def calculate_score(
     weakest = min(factors, key=lambda factor: factor["points"])
     confidence, confidence_note = data_confidence(days, tracked_days)
     phase = confidence
-    description = f"Datengrundlage: {days} Tage, davon {tracked_days} aktive Tracking-Tage. {confidence_note}"
+    description = f"Datengrundlage: {days} Tage, davon {tracking_text}. {confidence_note}"
 
     return {
         "value": total,
         "total": total,
         "raw_total": raw_total,
+        "raw_score": raw_total,
         "label": rank_name,
         "rank_name": rank_name,
         "rank_icon": rank_icon,
         "rank_emoji": rank_icon,
         "phase": phase,
-        "cap": 100,
+        "cap": cap,
         "platform_days": days,
         "proof_days": days,
         "tracking_days_90": tracked_days,
@@ -405,8 +420,9 @@ def calculate_score(
         "consistency": consistency,
         "structure": structure,
         "start_score": start_score(user, cash_override=cash),
-        "days_to_unlock": 0,
-        "next_unlock_level": 0,
+        "days_to_unlock": days_to_unlock,
+        "next_unlock_level": next_unlock_level,
+        "tracking_label": tracking_text,
         "data_confidence": confidence,
         "consistency_target": consistency_target,
         "consistency_age_cap": consistency_age_cap,
