@@ -143,7 +143,9 @@ def search_crypto_assets(
     if not found:
         try:
             payload = _cmc_request_json(
-                "/v1/cryptocurrency/map", {"listing_status": "active"}, api_key
+                "/v1/cryptocurrency/map",
+                {"listing_status": "active", "start": 1, "limit": 5000},
+                api_key,
             )
         except ValueError as exc:
             last_error = exc

@@ -156,6 +156,43 @@ class CryptoV1Tests(unittest.TestCase):
         self.assertEqual(removed.status_code, 200, removed.get_json())
         self.assertEqual(self.values(), (5000, 0))
 
+    def test_one_of_five_legacy_crypto_rows_can_be_removed_without_touching_the_others(self):
+        legacy_rows = (
+            ("Krypto", 1000),
+            ("Sonic", 200),
+            ("Alchemy Pay", 300),
+            ("Kaspa", 400),
+            ("Chainlink", 500),
+        )
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("DELETE FROM investment_events WHERE user_id=1")
+            conn.executemany(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type, source)
+                   VALUES (1, ?, 'in', 'crypto', ?, 'initial_balance', 'app_onboarding')""",
+                [(amount, name) for name, amount in legacy_rows],
+            )
+            conn.execute(
+                "UPDATE users SET current_investments=? WHERE user_id=1",
+                (sum(amount for _name, amount in legacy_rows),),
+            )
+            conn.commit()
+
+        before_cash = self.values()[0]
+        removed = self.request("DELETE", "/v1/investments", json={
+            "asset_type": "crypto", "asset_name": "Sonic",
+        })
+        self.assertEqual(removed.status_code, 200, removed.get_json())
+        self.assertEqual(self.values(), (before_cash, 2200))
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            positions = _crypto_positions(conn, 1)
+        self.assertEqual(
+            {position["legacyLabel"] for position in positions if position.get("legacy")},
+            {"Krypto", "Alchemy Pay", "Kaspa", "Chainlink"},
+        )
+
     def test_legacy_and_tracked_crypto_are_separate_without_etf_double_counting(self):
         self.request("POST", "/v1/crypto/positions", json=self.payload())
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -233,8 +270,9 @@ class CryptoProviderTests(unittest.TestCase):
             {"id": 32684, "name": "Sonic", "symbol": "S", "slug": "sonic"},
             {"id": 6958, "name": "Alchemy Pay", "symbol": "ACH", "slug": "alchemy-pay"},
         ]}
-        with patch.object(market, "_cmc_request_json", side_effect=[empty, empty, active_map]):
+        with patch.object(market, "_cmc_request_json", side_effect=[empty, empty, active_map]) as provider:
             sonic = market.search_crypto_assets("S")
+        self.assertEqual(provider.call_args_list[-1].args[1]["limit"], 5000)
         with patch.object(market, "_cmc_request_json", side_effect=[empty, empty, active_map]):
             alchemy = market.search_crypto_assets("ACH")
         self.assertEqual(sonic[0]["symbol"], "S")
