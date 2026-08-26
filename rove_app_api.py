@@ -5263,6 +5263,9 @@ def remove_legacy_crypto_position(legacy_ref: int):
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        # Cookie auth updates last_seen_at and therefore opens SQLite's implicit transaction.
+        # Finish that session touch before reserving the deletion transaction.
+        conn.commit()
         begin_write(conn)
         legacy = conn.execute(
             """SELECT COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name

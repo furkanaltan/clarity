@@ -221,6 +221,19 @@ class CryptoV1Tests(unittest.TestCase):
         self.assertEqual(removed.status_code, 200, removed.get_json())
         self.assertEqual(self.values(), (5000, 0))
 
+    def test_legacy_delete_commits_cookie_session_touch_before_write_lock(self):
+        def cookie_authenticated_user(conn, _token):
+            # Mirrors the production session's last_seen_at update, which opens a
+            # deferred SQLite transaction before the finance mutation starts.
+            conn.execute("UPDATE users SET current_cash=current_cash WHERE user_id=1")
+            return 1
+
+        with patch.object(api, "user_from_token", cookie_authenticated_user):
+            removed = self.request("DELETE", "/v1/crypto/legacy/1")
+
+        self.assertEqual(removed.status_code, 200, removed.get_json())
+        self.assertEqual(self.values(), (5000, 0))
+
     def test_legacy_and_tracked_crypto_are_separate_without_etf_double_counting(self):
         self.request("POST", "/v1/crypto/positions", json=self.payload())
         with closing(sqlite3.connect(self.db_path)) as conn:
