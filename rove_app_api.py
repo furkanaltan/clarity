@@ -5278,8 +5278,11 @@ def remove_legacy_crypto_position(legacy_ref: int):
             """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
                  FROM investment_events
                 WHERE user_id = ? AND asset_type = 'crypto'
-                  AND LOWER(TRIM(asset_name)) = LOWER(?)""",
-            (user_id, asset_name),
+                  AND (
+                       LOWER(TRIM(COALESCE(asset_name, ''))) = LOWER(?)
+                    OR (? = 'Krypto' AND TRIM(COALESCE(asset_name, '')) = '')
+                  )""",
+            (user_id, asset_name, asset_name),
         ).fetchone()
         net = round(max(0.0, float(row["net"] or 0)), 2)
         if net < 0.01:

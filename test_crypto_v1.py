@@ -202,6 +202,25 @@ class CryptoV1Tests(unittest.TestCase):
             {"Krypto", "Alchemy Pay", "Kaspa", "Chainlink"},
         )
 
+    def test_legacy_crypto_with_blank_name_can_be_removed(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("DELETE FROM investment_events WHERE user_id=1")
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type, source)
+                   VALUES (1, 125, 'in', 'crypto', '', 'initial_balance', 'telegram_legacy')"""
+            )
+            conn.execute("UPDATE users SET current_investments=125 WHERE user_id=1")
+            conn.commit()
+
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            position = next(p for p in _crypto_positions(conn, 1) if p.get("legacy"))
+
+        removed = self.request("DELETE", f"/v1/crypto/legacy/{position['legacyRef']}")
+        self.assertEqual(removed.status_code, 200, removed.get_json())
+        self.assertEqual(self.values(), (5000, 0))
+
     def test_legacy_and_tracked_crypto_are_separate_without_etf_double_counting(self):
         self.request("POST", "/v1/crypto/positions", json=self.payload())
         with closing(sqlite3.connect(self.db_path)) as conn:
