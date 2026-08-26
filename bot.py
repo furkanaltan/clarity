@@ -711,9 +711,28 @@ def init_db():
             ("last_price", "ALTER TABLE portfolio_holdings ADD COLUMN last_price REAL"),
             ("last_checked_at", "ALTER TABLE portfolio_holdings ADD COLUMN last_checked_at DATETIME"),
             ("total_invested", "ALTER TABLE portfolio_holdings ADD COLUMN total_invested REAL"),
+            ("instrument_type", "ALTER TABLE portfolio_holdings ADD COLUMN instrument_type TEXT NOT NULL DEFAULT 'etf'"),
+            ("quantity", "ALTER TABLE portfolio_holdings ADD COLUMN quantity REAL"),
+            ("quote_currency", "ALTER TABLE portfolio_holdings ADD COLUMN quote_currency TEXT"),
+            ("market_value", "ALTER TABLE portfolio_holdings ADD COLUMN market_value REAL"),
+            ("market_value_updated_at", "ALTER TABLE portfolio_holdings ADD COLUMN market_value_updated_at DATETIME"),
+            ("market_data_provider", "ALTER TABLE portfolio_holdings ADD COLUMN market_data_provider TEXT"),
+            ("valuation_enabled", "ALTER TABLE portfolio_holdings ADD COLUMN valuation_enabled INTEGER NOT NULL DEFAULT 0"),
+            ("provider_asset_id", "ALTER TABLE portfolio_holdings ADD COLUMN provider_asset_id TEXT"),
+            ("position_source", "ALTER TABLE portfolio_holdings ADD COLUMN position_source TEXT"),
+            ("import_key", "ALTER TABLE portfolio_holdings ADD COLUMN import_key TEXT"),
         ]:
             if col not in existing_cols:
                 conn.execute(ddl)
+        conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_holding_provider_asset
+            ON portfolio_holdings(user_id, market_data_provider, provider_asset_id)
+            WHERE LOWER(COALESCE(instrument_type, '')) = 'crypto'
+              AND provider_asset_id IS NOT NULL AND TRIM(provider_asset_id) <> ''
+        ''')
+        conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_holding_import_key
+            ON portfolio_holdings(user_id, import_key)
+            WHERE import_key IS NOT NULL AND TRIM(import_key) <> ''
+        ''')
 
         conn.execute('''INSERT OR IGNORE INTO user_access (user_id, status, approved_at, note)
             SELECT user_id, 'approved', CURRENT_TIMESTAMP, 'Bestehender Nutzer vor Freigabesystem'

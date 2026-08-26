@@ -64,8 +64,10 @@ from rove_market_data import (
     apply_market_quote,
     ensure_market_tracking_schema,
     fetch_eur_quote,
+    fetch_crypto_eur_quotes,
     normalize_currency,
     normalize_symbol,
+    search_crypto_assets,
 )
 from rove_investment_contributions import (
     ensure_investment_contribution_schema,
@@ -399,6 +401,12 @@ def property_options():
 
 
 @app.route("/v1/investments", methods=["OPTIONS"])
+@app.route("/v1/crypto/search", methods=["OPTIONS"])
+@app.route("/v1/crypto/preview", methods=["OPTIONS"])
+@app.route("/v1/crypto/positions", methods=["OPTIONS"])
+@app.route("/v1/crypto/positions/<int:holding_id>", methods=["OPTIONS"])
+@app.route("/v1/crypto/import/screenshot", methods=["OPTIONS"])
+@app.route("/v1/crypto/import/screenshot/commit", methods=["OPTIONS"])
 def investments_options():
     return ("", 204)
 
@@ -657,6 +665,82 @@ def normalize_screenshot_rows(raw: object) -> list[dict]:
             "direction": direction,
             "category": category,
             "confidence": round(confidence, 2),
+        })
+    return normalized
+
+
+def request_crypto_screenshot_analysis(image_bytes: bytes, mime_type: str) -> dict:
+    """Extract crypto inventory only; the image and result are never persisted here."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("screenshot_import_not_configured")
+    prompt = """Du liest einen Portfolio-Screenshot fuer eine deutsche Finanz-App.
+Extrahiere nur sichtbare Kryptowaehrungs-Positionen. Erfinde keine Menge, keinen Coin und
+keinen Einstandswert. current_value und cost_basis sind EUR-Werte; quantity ist die sichtbare
+Coin-Menge. Wenn Symbol oder Menge fehlen, verwende null. Antworte als reines JSON:
+{"positions":[{"name":"Bitcoin","symbol":"BTC oder null","quantity":0.1 oder null,
+"current_value":5000.0 oder null,"cost_basis":4000.0 oder null,"confidence":0.0}]}
+Maximal 20 Positionen. Keine Summenzeilen und keine Fiat-Konten."""
+    body = {
+        "model": SCREENSHOT_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {
+                "url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+                "detail": "high",
+            }},
+        ]}],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 1800,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=40) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+        return json.loads(response_data["choices"][0]["message"]["content"])
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise RuntimeError("screenshot_rate_limited") from exc
+        if exc.code in {401, 403}:
+            raise RuntimeError("screenshot_provider_auth_failed") from exc
+        raise RuntimeError("screenshot_provider_unavailable") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("screenshot_provider_unavailable") from exc
+
+
+def normalize_crypto_screenshot_rows(raw: object, user_id: int, image_digest: str) -> list[dict]:
+    rows = raw if isinstance(raw, list) else []
+    normalized: list[dict] = []
+    for index, row in enumerate(rows[:20]):
+        if not isinstance(row, dict):
+            continue
+        name = clean_text(row.get("name"))
+        symbol = normalize_symbol(row.get("symbol"))
+        try:
+            quantity = None if row.get("quantity") in {None, ""} else round(float(row["quantity"]), 12)
+            current_value = None if row.get("current_value") in {None, ""} else round(float(row["current_value"]), 2)
+            cost_basis = None if row.get("cost_basis") in {None, ""} else round(float(row["cost_basis"]), 2)
+            confidence = min(1.0, max(0.0, float(row.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            continue
+        if not name and not symbol:
+            continue
+        material = f"{user_id}|{image_digest}|{index}|{name}|{symbol}|{quantity}"
+        normalized.append({
+            "name": name,
+            "symbol": symbol,
+            "quantity": quantity if quantity and quantity > 0 else None,
+            "currentValue": current_value if current_value is not None and current_value >= 0 else None,
+            "costBasis": cost_basis if cost_basis is not None and cost_basis >= 0 else None,
+            "confidence": round(confidence, 2),
+            "importKey": hashlib.sha256(material.encode("utf-8")).hexdigest()[:32],
+            "selected": bool(quantity and quantity > 0 and symbol and confidence >= 0.6),
+            "missingQuantity": not quantity or quantity <= 0,
         })
     return normalized
 
@@ -4902,7 +4986,8 @@ def _assigned_non_crypto_investment_value(conn: sqlite3.Connection, user_id: int
                       ELSE COALESCE(total_invested, 0)
                   END AS visible_value
              FROM portfolio_holdings
-            WHERE user_id = ?""",
+            WHERE user_id = ?
+              AND LOWER(COALESCE(instrument_type, 'etf')) <> 'crypto'""",
         (user_id,),
     ).fetchall()
     total = sum(max(0.0, float(row["visible_value"] or 0)) for row in holdings)
@@ -4930,6 +5015,244 @@ def _assigned_non_crypto_investment_value(conn: sqlite3.Connection, user_id: int
     ).fetchone()
     total += max(0.0, float(manual_stocks["net"] or 0))
     return round(total, 2)
+
+
+def _optional_non_negative_money(value: object) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        amount = round(float(value), 2)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("valid_crypto_cost_basis_required") from exc
+    if amount < 0 or amount > 100_000_000:
+        raise ValueError("valid_crypto_cost_basis_required")
+    return amount
+
+
+def _clean_crypto_position_payload(payload: dict) -> dict:
+    provider_asset_id = str(payload.get("provider_asset_id") or payload.get("providerAssetId") or "").strip()
+    name = clean_text(payload.get("name") or payload.get("asset_name"))
+    symbol = normalize_symbol(payload.get("symbol"))
+    try:
+        quantity = round(float(payload.get("quantity") or 0), 12)
+    except (TypeError, ValueError):
+        quantity = 0.0
+    if not provider_asset_id.isdigit() or int(provider_asset_id) <= 0 or not name or not symbol:
+        raise ValueError("valid_crypto_asset_required")
+    if quantity <= 0 or quantity > 1_000_000_000:
+        raise ValueError("valid_crypto_quantity_required")
+    source = str(payload.get("source") or "manual").strip().lower()
+    if source not in {"manual", "screenshot"}:
+        source = "manual"
+    import_key = str(payload.get("import_key") or payload.get("importKey") or "").strip().lower()
+    if import_key and not re.fullmatch(r"[a-f0-9]{32}", import_key):
+        raise ValueError("valid_crypto_import_key_required")
+    return {
+        "provider_asset_id": provider_asset_id,
+        "name": name,
+        "symbol": symbol,
+        "quantity": quantity,
+        "cost_basis": _optional_non_negative_money(payload.get("cost_basis", payload.get("costBasis"))),
+        "source": source,
+        "import_key": import_key or None,
+    }
+
+
+def _insert_crypto_holding(
+    conn: sqlite3.Connection, user_id: int, position: dict, quote: dict
+) -> int:
+    existing = conn.execute(
+        """SELECT id FROM portfolio_holdings
+            WHERE user_id = ? AND LOWER(COALESCE(instrument_type, '')) = 'crypto'
+              AND market_data_provider = 'coinmarketcap' AND provider_asset_id = ?""",
+        (user_id, position["provider_asset_id"]),
+    ).fetchone()
+    if existing:
+        raise ValueError("crypto_position_already_exists")
+    market_value = round(position["quantity"] * float(quote["eur_price"]), 2)
+    total = conn.execute(
+        "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not total:
+        raise ValueError("market_user_not_found")
+    instrument_key = f"crypto_cmc_{position['provider_asset_id']}"
+    canonical_name = clean_text(quote.get("name"), position["name"])
+    canonical_symbol = normalize_symbol(quote.get("symbol")) or position["symbol"]
+    cursor = conn.execute(
+        """INSERT INTO portfolio_holdings
+               (user_id, instrument_key, instrument_label, isin, price_symbol,
+                monthly_contribution, total_invested, last_price, last_checked_at,
+                instrument_type, quantity, quote_currency, market_value,
+                market_value_updated_at, market_data_provider, valuation_enabled,
+                provider_asset_id, position_source, import_key, updated_at)
+           VALUES (?, ?, ?, '', ?, 0, ?, ?, CURRENT_TIMESTAMP, 'crypto', ?, 'EUR', ?,
+                   CURRENT_TIMESTAMP, 'coinmarketcap', 1, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        (
+            user_id, instrument_key, canonical_name, canonical_symbol,
+            position["cost_basis"], quote["eur_price"], position["quantity"], market_value,
+            position["provider_asset_id"], position["source"], position["import_key"],
+        ),
+    )
+    conn.execute(
+        "UPDATE users SET current_investments = ? WHERE user_id = ?",
+        (round(float(total["current_investments"] or 0) + market_value, 2), user_id),
+    )
+    return int(cursor.lastrowid)
+
+
+@app.route("/v1/crypto/search", methods=["GET"])
+def search_crypto_positions():
+    query = clean_text(request.args.get("q"))
+    token = token_from_request()
+    with db() as conn:
+        if not user_from_token(conn, token):
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+    if len(query) < 2:
+        return jsonify({"ok": False, "error": "crypto_search_query_required"}), 400
+    try:
+        assets = search_crypto_assets(query)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    return jsonify({"ok": True, "assets": assets})
+
+
+@app.route("/v1/crypto/preview", methods=["POST"])
+def preview_crypto_position():
+    try:
+        position = _clean_crypto_position_payload(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    token = token_from_request()
+    with db() as conn:
+        if not user_from_token(conn, token):
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+    try:
+        quote = fetch_crypto_eur_quotes([position["provider_asset_id"]]).get(position["provider_asset_id"])
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    if not quote:
+        return jsonify({"ok": False, "error": "crypto_asset_not_found"}), 404
+    market_value = round(position["quantity"] * float(quote["eur_price"]), 2)
+    profit = None if position["cost_basis"] is None else round(market_value - position["cost_basis"], 2)
+    return jsonify({
+        "ok": True, "name": clean_text(quote.get("name"), position["name"]),
+        "symbol": normalize_symbol(quote.get("symbol")) or position["symbol"],
+        "price": quote["eur_price"], "marketValue": market_value,
+        "costBasis": position["cost_basis"], "profitLoss": profit, "currency": "EUR",
+    })
+
+
+@app.route("/v1/crypto/positions", methods=["POST"])
+def create_crypto_position():
+    try:
+        position = _clean_crypto_position_payload(request.get_json(silent=True) or {})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        try:
+            quote = fetch_crypto_eur_quotes([position["provider_asset_id"]]).get(position["provider_asset_id"])
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        if not quote:
+            return jsonify({"ok": False, "error": "crypto_asset_not_found"}), 404
+        begin_write(conn)
+        try:
+            holding_id = _insert_crypto_holding(conn, user_id, position, quote)
+        except ValueError as exc:
+            conn.rollback()
+            status = 409 if str(exc) == "crypto_position_already_exists" else 400
+            return jsonify({"ok": False, "error": str(exc)}), status
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, "holdingId": holding_id, **live_data})
+
+
+@app.route("/v1/crypto/positions/<int:holding_id>", methods=["PATCH"])
+def edit_crypto_position(holding_id: int):
+    payload = request.get_json(silent=True) or {}
+    try:
+        quantity = round(float(payload.get("quantity") or 0), 12)
+        cost_basis = _optional_non_negative_money(payload.get("cost_basis", payload.get("costBasis")))
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc) or "valid_crypto_position_required"}), 400
+    if quantity <= 0 or quantity > 1_000_000_000:
+        return jsonify({"ok": False, "error": "valid_crypto_quantity_required"}), 400
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        holding = conn.execute(
+            """SELECT id, provider_asset_id, market_value FROM portfolio_holdings
+                WHERE id = ? AND user_id = ?
+                  AND LOWER(COALESCE(instrument_type, '')) = 'crypto'""",
+            (holding_id, user_id),
+        ).fetchone()
+        if not holding:
+            return jsonify({"ok": False, "error": "crypto_position_not_found"}), 404
+        try:
+            quote = fetch_crypto_eur_quotes([holding["provider_asset_id"]]).get(str(holding["provider_asset_id"]))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        if not quote:
+            return jsonify({"ok": False, "error": "crypto_asset_not_found"}), 404
+        new_value = round(quantity * float(quote["eur_price"]), 2)
+        begin_write(conn)
+        total = conn.execute("SELECT current_investments FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        delta = round(new_value - float(holding["market_value"] or 0), 2)
+        conn.execute(
+            """UPDATE portfolio_holdings
+                  SET quantity = ?, total_invested = ?, last_price = ?, market_value = ?,
+                      last_checked_at = CURRENT_TIMESTAMP,
+                      market_value_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?""",
+            (quantity, cost_basis, quote["eur_price"], new_value, holding_id, user_id),
+        )
+        conn.execute(
+            "UPDATE users SET current_investments = ? WHERE user_id = ?",
+            (round(max(0.0, float(total["current_investments"] or 0) + delta), 2), user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
+
+
+@app.route("/v1/crypto/positions/<int:holding_id>", methods=["DELETE"])
+def remove_crypto_position(holding_id: int):
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        begin_write(conn)
+        holding = conn.execute(
+            """SELECT id, COALESCE(market_value, 0) AS market_value
+                 FROM portfolio_holdings
+                WHERE id = ? AND user_id = ?
+                  AND LOWER(COALESCE(instrument_type, '')) = 'crypto'""",
+            (holding_id, user_id),
+        ).fetchone()
+        if not holding:
+            return jsonify({"ok": False, "error": "crypto_position_not_found"}), 404
+        total = conn.execute("SELECT current_investments FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        conn.execute("DELETE FROM portfolio_holdings WHERE id = ? AND user_id = ?", (holding_id, user_id))
+        conn.execute(
+            "UPDATE users SET current_investments = ? WHERE user_id = ?",
+            (round(max(0.0, float(total["current_investments"] or 0) - float(holding["market_value"] or 0)), 2), user_id),
+        )
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, **live_data})
 
 
 @app.route("/v1/investments", methods=["POST"])
@@ -5346,6 +5669,101 @@ def delete_investment_position():
         conn.commit()
 
     return jsonify({"ok": True, "removed": {"asset_type": asset_type, "asset_name": asset_name}, **live_data})
+
+
+@app.route("/v1/crypto/import/screenshot", methods=["POST"])
+def analyze_crypto_screenshot_import():
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        upload = request.files.get("image")
+        if not upload:
+            return jsonify({"ok": False, "error": "screenshot_required"}), 400
+        image_bytes = upload.stream.read(SCREENSHOT_MAX_BYTES + 1)
+        if not image_bytes or len(image_bytes) > SCREENSHOT_MAX_BYTES:
+            return jsonify({"ok": False, "error": "screenshot_too_large"}), 413
+        mime_type = screenshot_mime_type(image_bytes)
+        if not mime_type:
+            return jsonify({"ok": False, "error": "screenshot_format_unsupported"}), 415
+        if not screenshot_attempt_allowed(user_id):
+            return jsonify({"ok": False, "error": "screenshot_daily_limit"}), 429
+        try:
+            result = request_crypto_screenshot_analysis(image_bytes, mime_type)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        rows = normalize_crypto_screenshot_rows(
+            result.get("positions"), user_id, hashlib.sha256(image_bytes).hexdigest()
+        )
+        for row in rows:
+            try:
+                candidates = search_crypto_assets(row["symbol"] or row["name"], limit=6)
+            except ValueError:
+                candidates = []
+            row["candidates"] = candidates
+            if len(candidates) == 1:
+                row.update(candidates[0])
+            else:
+                exact = [candidate for candidate in candidates if (
+                    candidate["symbol"].casefold() == row["symbol"].casefold()
+                    or candidate["name"].casefold() == row["name"].casefold()
+                )]
+                if len(exact) == 1:
+                    row.update(exact[0])
+                else:
+                    row["selected"] = False
+            row["needsCoinSelection"] = not bool(row.get("providerAssetId"))
+    return jsonify({"ok": True, "positions": rows, "imageStored": False})
+
+
+@app.route("/v1/crypto/import/screenshot/commit", methods=["POST"])
+def commit_crypto_screenshot_import():
+    payload = request.get_json(silent=True) or {}
+    requested = payload.get("positions")
+    if not isinstance(requested, list) or not requested or len(requested) > 20:
+        return jsonify({"ok": False, "error": "valid_crypto_positions_required"}), 400
+    try:
+        positions = [_clean_crypto_position_payload({**row, "source": "screenshot"}) for row in requested]
+    except (TypeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc) or "valid_crypto_positions_required"}), 400
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_market_tracking_schema(conn)
+        conn.commit()
+        try:
+            quotes = fetch_crypto_eur_quotes([position["provider_asset_id"] for position in positions])
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        if any(position["provider_asset_id"] not in quotes for position in positions):
+            return jsonify({"ok": False, "error": "crypto_asset_not_found"}), 404
+        begin_write(conn)
+        inserted: list[int] = []
+        skipped: list[dict] = []
+        for position in positions:
+            if position["import_key"]:
+                existing_import = conn.execute(
+                    "SELECT id FROM portfolio_holdings WHERE user_id = ? AND import_key = ?",
+                    (user_id, position["import_key"]),
+                ).fetchone()
+                if existing_import:
+                    skipped.append({"importKey": position["import_key"], "reason": "already_imported"})
+                    continue
+            try:
+                inserted.append(_insert_crypto_holding(
+                    conn, user_id, position, quotes[position["provider_asset_id"]]
+                ))
+            except ValueError as exc:
+                if str(exc) == "crypto_position_already_exists":
+                    skipped.append({"importKey": position["import_key"], "reason": str(exc)})
+                    continue
+                raise
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, "inserted": inserted, "skipped": skipped, **live_data})
 
 
 @app.route("/v1/import/screenshot", methods=["POST"])

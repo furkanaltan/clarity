@@ -1673,18 +1673,8 @@ def _identity(conn: sqlite3.Connection, user_id: int) -> dict:
     return {"email": email, "name": name, "isAdmin": user_id in admin_ids}
 
 
-def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
-    """Netto-Krypto-Wert (Zugänge minus Abgänge) aus investment_events.
-
-    Der Bot wirft ETF/Krypto/Aktien alle in EINE Summe (users.current_investments), merkt sich
-    den Asset-Typ aber pro Ereignis in investment_events (asset_type='crypto' bei Bitcoin/
-    Ethereum/Crypto, siehe bot.py detect_investment_asset). Live-Bug (16.07.): die App zeigte
-    deshalb nur „ETF & Investments" und nie Krypto separat, obwohl im Bot eingetragen.
-
-    Wir carven NUR die Krypto-Summe heraus und lassen den Rest als ETF stehen — dadurch bleibt
-    ETF + Krypto == current_investments exakt erhalten (keine Doppelzählung, kein Drift). Fehlt
-    die Tabelle (alte DB) oder gibt es keine Krypto-Events, kommt 0 zurück (Fallback = altes
-    Verhalten, alles unter ETF)."""
+def _legacy_crypto_value(conn: sqlite3.Connection, user_id: int) -> float:
+    """Legacy crypto remainder that has no quantity or stable coin identity."""
     try:
         row = conn.execute(
             """SELECT
@@ -1699,15 +1689,71 @@ def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
     return max(0.0, net)
 
 
+def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
+    """Current crypto truth: tracked holdings plus untouched legacy remainder."""
+    legacy = _legacy_crypto_value(conn, user_id)
+    try:
+        ensure_market_tracking_schema(conn)
+        row = conn.execute(
+            """SELECT COALESCE(SUM(CASE
+                       WHEN valuation_enabled = 1 AND market_value IS NOT NULL THEN market_value
+                       ELSE 0 END), 0) AS total
+                 FROM portfolio_holdings
+                WHERE user_id = ? AND LOWER(COALESCE(instrument_type, '')) = 'crypto'""",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return legacy
+    return round(legacy + max(0.0, float(row["total"] or 0)), 2)
+
+
 def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
-    """Krypto-Positionen pro Coin (Bitcoin/Ethereum/Solana/XRP …) als [{n, v}], netto Zu-/Abgänge.
+    """Tracked coin holdings plus clearly separated untouched legacy values.
 
     Gruppiert investment_events nach asset_name für asset_type='crypto'. Kein „chg"-Feld: der Bot
     trackt für Krypto keinen Kurs (nur die drei CURATED-ETFs haben Kursdaten) — die App zeigt ohne
     chg sauber nur den Wert (index.html openAssetDetail). Positionen mit Netto <= 0 (komplett wieder
     verkauft) fallen raus. Nach Wert absteigend sortiert."""
+    positions: list[dict] = []
     try:
-        rows = conn.execute(
+        ensure_market_tracking_schema(conn)
+        holding_rows = conn.execute(
+            """SELECT id, instrument_label, price_symbol, quantity, total_invested,
+                      market_value, last_price, market_value_updated_at,
+                      market_data_provider, provider_asset_id, position_source
+                 FROM portfolio_holdings
+                WHERE user_id = ? AND LOWER(COALESCE(instrument_type, '')) = 'crypto'
+                ORDER BY COALESCE(market_value, 0) DESC, instrument_label""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        holding_rows = []
+    for row in holding_rows:
+        market_value = max(0.0, float(row["market_value"] or 0))
+        cost_basis = None if row["total_invested"] is None else max(0.0, float(row["total_invested"]))
+        profit = None if cost_basis is None else round(market_value - cost_basis, 2)
+        profit_pct = None if not cost_basis else round(profit / cost_basis * 100, 2)
+        positions.append({
+            "n": str(row["instrument_label"]),
+            "v": round(market_value, 2),
+            "marketValue": round(market_value, 2),
+            "costBasis": round(cost_basis, 2) if cost_basis is not None else None,
+            "profitLoss": profit,
+            "profitLossPercent": profit_pct,
+            "quantity": round(float(row["quantity"] or 0), 12),
+            "symbol": str(row["price_symbol"] or ""),
+            "provider": str(row["market_data_provider"] or "coinmarketcap"),
+            "providerAssetId": str(row["provider_asset_id"] or ""),
+            "updatedAt": row["market_value_updated_at"],
+            "source": str(row["position_source"] or "manual"),
+            "assetType": "crypto",
+            "holding": True,
+            "holdingId": int(row["id"]),
+            "live": True,
+            "editable": True,
+        })
+    try:
+        legacy_rows = conn.execute(
             """SELECT
                    COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name,
                    COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
@@ -1717,12 +1763,20 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
             (user_id,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return []
-    positions = [
-        {"n": r["name"], "v": round(float(r["net"]), 2)}
-        for r in rows
-        if r["net"] is not None and float(r["net"]) > 0
-    ]
+        legacy_rows = []
+    positions.extend(
+        {
+            "n": "Legacy-Kryptowert",
+            "legacyLabel": str(row["name"]),
+            "v": round(float(row["net"]), 2),
+            "assetType": "crypto",
+            "legacy": True,
+            "editable": False,
+            "live": False,
+        }
+        for row in legacy_rows
+        if row["net"] is not None and float(row["net"]) > 0
+    )
     positions.sort(key=lambda p: p["v"], reverse=True)
     return positions
 
@@ -1752,6 +1806,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
                LEFT JOIN app_etf_position_plans pp
                  ON pp.user_id = ph.user_id AND pp.holding_id = ph.id
                WHERE ph.user_id = ?
+                 AND LOWER(COALESCE(ph.instrument_type, 'etf')) <> 'crypto'
                ORDER BY COALESCE(ph.market_value, ph.total_invested, 0) DESC, ph.instrument_label""",
             (user_id,),
         ).fetchall()

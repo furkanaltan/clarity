@@ -24,6 +24,7 @@ from rove_investment_contributions import (
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 LEEWAY_BASE_URL = "https://api.leeway.tech/api/v1/public"
+COINMARKETCAP_BASE_URL = "https://pro-api.coinmarketcap.com"
 SUPPORTED_QUOTE_CURRENCIES = frozenset({"EUR", "USD", "GBP", "CHF"})
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._:/-]{0,31}$")
 
@@ -44,10 +45,157 @@ def ensure_market_tracking_schema(conn: sqlite3.Connection) -> None:
         ("market_value_updated_at", "ALTER TABLE portfolio_holdings ADD COLUMN market_value_updated_at DATETIME"),
         ("market_data_provider", "ALTER TABLE portfolio_holdings ADD COLUMN market_data_provider TEXT"),
         ("valuation_enabled", "ALTER TABLE portfolio_holdings ADD COLUMN valuation_enabled INTEGER NOT NULL DEFAULT 0"),
+        ("provider_asset_id", "ALTER TABLE portfolio_holdings ADD COLUMN provider_asset_id TEXT"),
+        ("position_source", "ALTER TABLE portfolio_holdings ADD COLUMN position_source TEXT"),
+        ("import_key", "ALTER TABLE portfolio_holdings ADD COLUMN import_key TEXT"),
     )
     for name, ddl in migrations:
         if name not in columns:
             conn.execute(ddl)
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_holding_provider_asset
+           ON portfolio_holdings(user_id, market_data_provider, provider_asset_id)
+           WHERE LOWER(COALESCE(instrument_type, '')) = 'crypto'
+             AND provider_asset_id IS NOT NULL AND TRIM(provider_asset_id) <> ''"""
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_holding_import_key
+           ON portfolio_holdings(user_id, import_key)
+           WHERE import_key IS NOT NULL AND TRIM(import_key) <> ''"""
+    )
+
+
+def _cmc_request_json(
+    path: str, params: dict[str, object], api_key: str | None = None
+) -> dict:
+    key = (api_key or os.getenv("COINMARKETCAP_API_KEY") or "").strip()
+    if not key:
+        raise ValueError("crypto_provider_key_missing")
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(
+        f"{COINMARKETCAP_BASE_URL}{path}?{query}",
+        headers={"User-Agent": "Rov.E/1.0", "X-CMC_PRO_API_KEY": key},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise ValueError("crypto_provider_auth_failed") from exc
+        if exc.code == 429:
+            raise ValueError("crypto_provider_rate_limit") from exc
+        if exc.code in {400, 404, 422}:
+            raise ValueError("crypto_asset_not_found") from exc
+        raise ValueError("crypto_provider_unavailable") from exc
+    except Exception as exc:
+        raise ValueError("crypto_provider_unavailable") from exc
+    if not isinstance(data, dict):
+        raise ValueError("crypto_provider_unavailable")
+    status = data.get("status") if isinstance(data.get("status"), dict) else {}
+    if status.get("error_code"):
+        message = str(status.get("error_message") or "").lower()
+        if "credit" in message or "rate" in message:
+            raise ValueError("crypto_provider_rate_limit")
+        raise ValueError("crypto_provider_unavailable")
+    return data
+
+
+def search_crypto_assets(
+    query: str, api_key: str | None = None, limit: int = 8
+) -> list[dict]:
+    """Resolve an exact CoinMarketCap symbol or slug without exposing the key."""
+    clean = " ".join(str(query or "").strip().split())[:80]
+    if not clean:
+        return []
+    requests: list[dict[str, object]] = []
+    if re.fullmatch(r"[A-Za-z0-9._-]{1,24}", clean):
+        requests.append({"symbol": clean.upper(), "listing_status": "active"})
+    slug = re.sub(r"[^a-z0-9]+", "-", clean.casefold()).strip("-")
+    if slug:
+        requests.append({"slug": slug, "listing_status": "active"})
+    found: dict[int, dict] = {}
+    last_error: ValueError | None = None
+    for params in requests:
+        try:
+            payload = _cmc_request_json("/v1/cryptocurrency/map", params, api_key)
+        except ValueError as exc:
+            last_error = exc
+            continue
+        for row in payload.get("data") or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                asset_id = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            name = str(row.get("name") or "").strip()
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if name and symbol:
+                found[asset_id] = {
+                    "providerAssetId": str(asset_id),
+                    "name": name[:80],
+                    "symbol": symbol[:24],
+                    "provider": "coinmarketcap",
+                }
+    if not found and last_error and str(last_error) not in {"crypto_asset_not_found"}:
+        raise last_error
+    needle = clean.casefold()
+    ranked = sorted(
+        found.values(),
+        key=lambda row: (
+            0 if row["symbol"].casefold() == needle else 1,
+            0 if row["name"].casefold() == needle else 1,
+            row["name"],
+        ),
+    )
+    return ranked[: max(1, min(int(limit), 20))]
+
+
+def fetch_crypto_eur_quotes(
+    provider_asset_ids: list[str | int], api_key: str | None = None
+) -> dict[str, dict]:
+    """Fetch CoinMarketCap quotes in EUR, batched by stable provider IDs."""
+    ids: list[str] = []
+    for value in provider_asset_ids:
+        text = str(value or "").strip()
+        if text.isdigit() and int(text) > 0 and text not in ids:
+            ids.append(text)
+    if not ids:
+        return {}
+    quotes: dict[str, dict] = {}
+    for offset in range(0, len(ids), 100):
+        chunk = ids[offset:offset + 100]
+        payload = _cmc_request_json(
+            "/v2/cryptocurrency/quotes/latest",
+            {"id": ",".join(chunk), "convert": "EUR", "skip_invalid": "true"},
+            api_key,
+        )
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        for asset_id in chunk:
+            row = data.get(asset_id)
+            if isinstance(row, list):
+                row = row[0] if row else None
+            if not isinstance(row, dict):
+                continue
+            eur = row.get("quote", {}).get("EUR", {}) if isinstance(row.get("quote"), dict) else {}
+            try:
+                price = float(eur.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            quotes[asset_id] = {
+                "name": str(row.get("name") or "")[:80],
+                "symbol": str(row.get("symbol") or asset_id).upper(),
+                "resolved_symbol": str(row.get("symbol") or asset_id).upper(),
+                "currency": "EUR",
+                "native_price": round(price, 12),
+                "eur_price": round(price, 12),
+                "provider": "coinmarketcap",
+                "provider_asset_id": asset_id,
+                "updated_at": eur.get("last_updated") or row.get("last_updated"),
+            }
+    return quotes
 
 
 def normalize_symbol(value: object) -> str:
@@ -340,14 +488,51 @@ def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None
         ensure_market_tracking_schema(conn)
         conn.commit()
         rows = conn.execute(
-            """SELECT id, price_symbol, quote_currency
+            """SELECT id, price_symbol, quote_currency, instrument_type,
+                      market_data_provider, provider_asset_id
                  FROM portfolio_holdings
                 WHERE valuation_enabled = 1 AND quantity > 0 AND price_symbol IS NOT NULL"""
         ).fetchall()
     updated = 0
     failures: list[dict[str, str]] = []
     fx_cache: dict[str, float] = {}
+    crypto_rows = [
+        row for row in rows
+        if str(row["instrument_type"] or "").lower() == "crypto"
+        and str(row["market_data_provider"] or "").lower() == "coinmarketcap"
+        and str(row["provider_asset_id"] or "").strip()
+    ]
+    crypto_quotes: dict[str, dict] = {}
+    crypto_batch_failed = False
+    if crypto_rows:
+        try:
+            crypto_quotes = fetch_crypto_eur_quotes(
+                [row["provider_asset_id"] for row in crypto_rows]
+            )
+        except Exception as exc:
+            crypto_batch_failed = True
+            failures.extend({
+                "symbol": str(row["price_symbol"] or ""),
+                "error": str(exc) or exc.__class__.__name__,
+            } for row in crypto_rows)
+    for row in crypto_rows:
+        quote = crypto_quotes.get(str(row["provider_asset_id"] or ""))
+        if not quote:
+            if not crypto_batch_failed:
+                failures.append({"symbol": str(row["price_symbol"] or ""), "error": "crypto_asset_not_found"})
+            continue
+        try:
+            with sqlite3.connect(path, timeout=20) as conn:
+                conn.row_factory = sqlite3.Row
+                apply_market_quote(conn, row["id"], quote, expected_symbol=row["price_symbol"])
+            updated += 1
+        except Exception as exc:
+            failures.append({"symbol": str(row["price_symbol"] or ""), "error": str(exc) or exc.__class__.__name__})
+
+    crypto_ids = {int(row["id"]) for row in crypto_rows}
     for row in rows:
+        if int(row["id"]) in crypto_ids:
+            continue
         try:
             quote = fetch_eur_quote(
                 row["price_symbol"], row["quote_currency"], api_key, fx_cache=fx_cache
