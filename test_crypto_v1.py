@@ -188,9 +188,9 @@ class CryptoV1Tests(unittest.TestCase):
         )
         self.assertIsInstance(sonic["legacyRef"], int)
 
-        removed = self.request("DELETE", "/v1/investments", json={
-            "asset_type": "crypto", "legacy_ref": sonic["legacyRef"],
-        })
+        removed = self.request(
+            "DELETE", f"/v1/crypto/legacy/{sonic['legacyRef']}"
+        )
         self.assertEqual(removed.status_code, 200, removed.get_json())
         self.assertEqual(self.values(), (before_cash, 2200))
 
@@ -263,6 +263,28 @@ class CryptoV1Tests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM portfolio_holdings").fetchone()[0], 0)
 
+    def test_screenshot_sonic_resolution_uses_name_before_ambiguous_s_symbol(self):
+        extracted = {"positions": [{
+            "name": "Sonic", "symbol": "S", "quantity": 100, "confidence": 0.99,
+        }]}
+        assets = [{
+            "providerAssetId": "32684", "name": "Sonic", "symbol": "S",
+            "provider": "coinmarketcap",
+        }]
+        with patch.object(api, "request_crypto_screenshot_analysis", return_value=extracted), \
+             patch.object(api, "screenshot_attempt_allowed", return_value=True), \
+             patch.object(api, "search_crypto_assets", return_value=assets) as search:
+            with api.app.test_client() as client:
+                response = client.post(
+                    "/v1/crypto/import/screenshot",
+                    data={"image": (io.BytesIO(b"\x89PNG\r\n\x1a\nsonic"), "portfolio.png")},
+                    content_type="multipart/form-data",
+                    headers={"Authorization": "Bearer one", "Origin": "https://getrove.de"},
+                )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        search.assert_called_once_with("Sonic", limit=6)
+        self.assertEqual(response.get_json()["positions"][0]["providerAssetId"], "32684")
+
 
 class CryptoProviderTests(unittest.TestCase):
     def test_coin_search_uses_stable_provider_id_and_is_case_insensitive(self):
@@ -286,6 +308,15 @@ class CryptoProviderTests(unittest.TestCase):
             alchemy = market.search_crypto_assets("ACH")
         self.assertEqual(sonic[0]["symbol"], "S")
         self.assertEqual(alchemy[0]["symbol"], "ACH")
+
+    def test_screenshot_resolution_prefers_coin_name_over_ambiguous_symbol(self):
+        rows = api.normalize_crypto_screenshot_rows(
+            [{"name": "Sonic", "symbol": "S", "quantity": 100, "confidence": 0.99}],
+            1,
+            "image",
+        )
+        self.assertEqual(rows[0]["name"], "Sonic")
+        self.assertEqual(rows[0]["symbol"], "S")
 
     def test_batch_quotes_and_missing_coin(self):
         response = {
@@ -354,6 +385,7 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('id="cryptoLegacySave"', self.html)
         self.assertIn('id="cryptoLegacyValue"', self.html)
         self.assertIn("position.legacyRef||null", self.html)
+        self.assertIn("deleteLegacyCryptoPosition(position.legacyRef)", self.html)
         self.assertIn('class="asset-position-edit">Bearbeiten', self.html)
 
 

@@ -405,6 +405,7 @@ def property_options():
 @app.route("/v1/crypto/preview", methods=["OPTIONS"])
 @app.route("/v1/crypto/positions", methods=["OPTIONS"])
 @app.route("/v1/crypto/positions/<int:holding_id>", methods=["OPTIONS"])
+@app.route("/v1/crypto/legacy/<int:legacy_ref>", methods=["OPTIONS"])
 @app.route("/v1/crypto/import/screenshot", methods=["OPTIONS"])
 @app.route("/v1/crypto/import/screenshot/commit", methods=["OPTIONS"])
 def investments_options():
@@ -5254,6 +5255,54 @@ def remove_crypto_position(holding_id: int):
     return jsonify({"ok": True, "removed": {"holding_id": holding_id}})
 
 
+@app.route("/v1/crypto/legacy/<int:legacy_ref>", methods=["DELETE"])
+def remove_legacy_crypto_position(legacy_ref: int):
+    """Close exactly one active legacy crypto group through a stable URL reference."""
+    token = token_from_request()
+    with db() as conn:
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        begin_write(conn)
+        legacy = conn.execute(
+            """SELECT COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name
+                 FROM investment_events
+                WHERE id = ? AND user_id = ? AND asset_type = 'crypto'
+                LIMIT 1""",
+            (legacy_ref, user_id),
+        ).fetchone()
+        if not legacy:
+            return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+        asset_name = str(legacy["name"])
+        row = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
+                 FROM investment_events
+                WHERE user_id = ? AND asset_type = 'crypto'
+                  AND LOWER(TRIM(asset_name)) = LOWER(?)""",
+            (user_id, asset_name),
+        ).fetchone()
+        net = round(max(0.0, float(row["net"] or 0)), 2)
+        if net < 0.01:
+            return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+        total = conn.execute(
+            "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name,
+                    event_type, source, note)
+               VALUES (?, ?, 'out', 'crypto', ?, 'manual_removal', 'app',
+                       'Legacy-Crypto-Position in der App entfernt')""",
+            (user_id, net, asset_name),
+        )
+        conn.execute(
+            "UPDATE users SET current_investments = ? WHERE user_id = ?",
+            (round(max(0.0, float(total["current_investments"] or 0) - net), 2), user_id),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "removed": {"legacy_ref": legacy_ref}})
+
+
 @app.route("/v1/investments", methods=["POST"])
 def update_investment_position():
     """Setzt manuelle Krypto-, Aktien- oder bestehende ETF-Werte ohne Doppelzaehlung."""
@@ -5713,17 +5762,20 @@ def analyze_crypto_screenshot_import():
         )
         for row in rows:
             try:
-                candidates = search_crypto_assets(row["symbol"] or row["name"], limit=6)
+                candidates = search_crypto_assets(row["name"] or row["symbol"], limit=6)
             except ValueError:
                 candidates = []
             row["candidates"] = candidates
             if len(candidates) == 1:
                 row.update(candidates[0])
             else:
-                exact = [candidate for candidate in candidates if (
-                    candidate["symbol"].casefold() == row["symbol"].casefold()
-                    or candidate["name"].casefold() == row["name"].casefold()
+                name_exact = [candidate for candidate in candidates if (
+                    row["name"] and candidate["name"].casefold() == row["name"].casefold()
                 )]
+                symbol_exact = [candidate for candidate in candidates if (
+                    row["symbol"] and candidate["symbol"].casefold() == row["symbol"].casefold()
+                )]
+                exact = name_exact or symbol_exact
                 if len(exact) == 1:
                     row.update(exact[0])
                 else:
