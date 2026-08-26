@@ -269,6 +269,11 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertNotIn("COINMARKETCAP_API_KEY", self.html)
         self.assertNotIn("X-CMC_PRO_API_KEY", self.html)
 
+    def test_screenshot_import_commit_stays_in_sticky_safe_area(self):
+        self.assertIn('class="scan-actions crypto-import-actions"', self.html)
+        self.assertIn('class="scan-confirm" id="cryptoImportCommit"', self.html)
+        self.assertIn("selectedRows.some(row=>row.needsCoinSelection)", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
