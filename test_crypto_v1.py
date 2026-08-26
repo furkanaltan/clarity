@@ -357,6 +357,19 @@ class CryptoProviderTests(unittest.TestCase):
             "provider": "coinmarketcap",
         }])
 
+    def test_search_prefers_the_exact_slug_over_duplicate_sonic_names(self):
+        response = {"data": [
+            {"id": 123, "name": "Sonic", "symbol": "SONIC", "slug": "sonic-app"},
+            {"id": 32684, "name": "Sonic", "symbol": "S", "slug": "sonic"},
+            {"id": 456, "name": "Sonic", "symbol": "SONIC", "slug": "sonic-token"},
+        ]}
+        with patch.object(market, "_cmc_request_json", return_value=response):
+            results = market.search_crypto_assets("Sonic")
+        self.assertEqual(results, [{
+            "providerAssetId": "32684", "name": "Sonic", "symbol": "S",
+            "provider": "coinmarketcap",
+        }])
+
     def test_screenshot_resolution_prefers_coin_name_over_ambiguous_symbol(self):
         rows = api.normalize_crypto_screenshot_rows(
             [{"name": "Sonic", "symbol": "S", "quantity": 100, "confidence": 0.99}],

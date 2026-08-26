@@ -133,6 +133,7 @@ def search_crypto_assets(
                 "name": name[:80],
                 "symbol": symbol[:24],
                 "provider": "coinmarketcap",
+                "_slug": row_slug.casefold(),
             }
 
     for params in requests:
@@ -165,15 +166,26 @@ def search_crypto_assets(
     if not found and last_error and str(last_error) not in {"crypto_asset_not_found"}:
         raise last_error
     needle = clean.casefold()
+    candidates = list(found.values())
+    # A name can legitimately occur more than once on CMC. When the entered text
+    # is also an exact slug, it identifies the canonical asset more reliably than
+    # a duplicate display name or ticker.
+    canonical_slug_matches = [row for row in candidates if slug and row["_slug"] == slug]
+    if canonical_slug_matches:
+        candidates = canonical_slug_matches
     ranked = sorted(
-        found.values(),
+        candidates,
         key=lambda row: (
+            0 if row["_slug"] == slug else 1,
             0 if row["symbol"].casefold() == needle else 1,
             0 if row["name"].casefold() == needle else 1,
             row["name"],
         ),
     )
-    return ranked[: max(1, min(int(limit), 20))]
+    return [
+        {key: value for key, value in row.items() if key != "_slug"}
+        for row in ranked[: max(1, min(int(limit), 20))]
+    ]
 
 
 def fetch_crypto_eur_quotes(
