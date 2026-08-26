@@ -18,7 +18,8 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 CREATE TABLE users (
                     user_id INTEGER PRIMARY KEY, onboarding_step INTEGER DEFAULT 10,
                     income REAL DEFAULT 0, other_income REAL DEFAULT 0, fixed_costs REAL DEFAULT 0,
-                    etf_savings REAL DEFAULT 0, cash_savings REAL DEFAULT 0, current_cash REAL DEFAULT 0
+                    etf_savings REAL DEFAULT 0, cash_savings REAL DEFAULT 0, current_cash REAL DEFAULT 0,
+                    current_investments REAL DEFAULT 0
                 );
                 CREATE TABLE user_access (user_id INTEGER PRIMARY KEY, status TEXT NOT NULL);
                 CREATE TABLE expenses (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT, created_at TEXT);
@@ -27,11 +28,16 @@ class AiChatPhaseOneTests(unittest.TestCase):
                     quantity REAL, total_invested REAL, market_value REAL, valuation_enabled INTEGER,
                     price_symbol TEXT, quote_currency TEXT
                 );
-                INSERT INTO users (user_id, income, fixed_costs) VALUES (1, 3000, 800);
+                CREATE TABLE investment_events (
+                    id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, direction TEXT,
+                    asset_type TEXT, asset_name TEXT
+                );
+                INSERT INTO users (user_id, income, fixed_costs, current_investments) VALUES (1, 3000, 800, 2100);
                 INSERT INTO users (user_id, income, fixed_costs) VALUES (2, 2500, 500);
                 INSERT INTO user_access VALUES (1, 'approved');
                 INSERT INTO user_access VALUES (2, 'approved');
                 INSERT INTO portfolio_holdings VALUES (1, 1, 'Test ETF', 'etf', 10, 1000, 1100, 1, 'TEST', 'EUR');
+                INSERT INTO investment_events VALUES (1, 1, 1000, 'in', 'stock', 'X-Peng');
             """)
             api.ensure_auth_tables(conn)
             conn.execute("INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES ('one@example.test', 1, CURRENT_TIMESTAMP, 'app')")
@@ -105,7 +111,38 @@ class AiChatPhaseOneTests(unittest.TestCase):
             response = self.post(self.client_for(), "Wie ist mein Portfolio aufgebaut?")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Test ETF", seen[-1]["content"])
+        self.assertIn("X-Peng", seen[-1]["content"])
+        self.assertIn('"manual_value": true', seen[-1]["content"])
         self.assertNotIn("two@example.test", seen[-1]["content"])
+
+    def test_general_investment_knowledge_has_no_personal_portfolio_context(self):
+        for question in ("Was ist ein ETF?", "Wo kann man Aktien kaufen?"):
+            seen = []
+            with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Allgemeine Antwort.", 8, 4))):
+                response = self.post(self.client_for(token=f"knowledge-{question}"), question)
+            self.assertEqual(response.status_code, 200)
+            prompt = seen[-1]["content"]
+            self.assertIn('"personal_data": false', prompt)
+            self.assertNotIn("Test ETF", prompt)
+            self.assertNotIn("X-Peng", prompt)
+
+    def test_investment_follow_up_gets_fresh_manual_positions(self):
+        seen = []
+        with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Aktienanteil.", 8, 4))):
+            response = self.post(self.client_for(), "Wie viel davon sind Aktien?")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("X-Peng", seen[-1]["content"])
+
+    def test_off_topic_question_is_not_sent_to_provider(self):
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("provider must not run")):
+            response = self.post(self.client_for(), "Wie baut man ein Flugzeug?")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["kind"], "ai")
+        self.assertIn("Finanzen", response.get_json()["answer"])
+
+    def test_system_prompt_requires_plain_text_without_markdown(self):
+        self.assertIn("keine Sternchen", api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("keine Markdown-Syntax", api.AI_CHAT_SYSTEM_PROMPT)
 
     def test_action_is_never_sent_to_ai_or_written_as_finance_data(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -154,10 +191,12 @@ class AiChatPhaseOneTests(unittest.TestCase):
         self.assertIn("2200.0", seen[-1]["content"])
 
     def test_output_is_plain_text_and_provider_failure_is_neutral(self):
-        with patch.object(api, "ai_chat_provider", self.provider("<script>alert(1)</script>")):
+        with patch.object(api, "ai_chat_provider", self.provider("## **Wichtig** <script>alert(1)</script>")):
             response = self.post(self.client_for(), "Was ist TER?")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("<", response.get_json()["answer"])
+        self.assertNotIn("*", response.get_json()["answer"])
+        self.assertNotIn("#", response.get_json()["answer"])
         with patch.object(api, "ai_chat_provider", side_effect=RuntimeError("ai_provider_unavailable")):
             failed = self.post(self.client_for(token="token-five"), "Was ist KGV?")
         self.assertEqual(failed.status_code, 503)
