@@ -5250,9 +5250,8 @@ def remove_crypto_position(holding_id: int):
             "UPDATE users SET current_investments = ? WHERE user_id = ?",
             (round(max(0.0, float(total["current_investments"] or 0) - float(holding["market_value"] or 0)), 2), user_id),
         )
-        live_data = build_live_app_data(conn, user_id)
         conn.commit()
-    return jsonify({"ok": True, **live_data})
+    return jsonify({"ok": True, "removed": {"holding_id": holding_id}})
 
 
 @app.route("/v1/investments", methods=["POST"])
@@ -5460,9 +5459,18 @@ def delete_investment_position():
         holding_id = max(0, int(payload.get("holding_id") or 0))
     except (TypeError, ValueError):
         holding_id = 0
+    try:
+        legacy_ref = max(0, int(payload.get("legacy_ref") or 0))
+    except (TypeError, ValueError):
+        legacy_ref = 0
     if (
         asset_type not in {"crypto", "stock", "etf"}
-        or (not asset_name and not (delete_all and asset_type == "crypto"))
+        or (
+            not asset_name
+            and not holding_id
+            and not (legacy_ref and asset_type == "crypto")
+            and not (delete_all and asset_type == "crypto")
+        )
     ):
         return jsonify({"ok": False, "error": "valid_investment_position_required"}), 400
 
@@ -5471,6 +5479,18 @@ def delete_investment_position():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         begin_write(conn)
+
+        if legacy_ref and asset_type == "crypto":
+            legacy = conn.execute(
+                """SELECT COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name
+                     FROM investment_events
+                    WHERE id = ? AND user_id = ? AND asset_type = 'crypto'
+                    LIMIT 1""",
+                (legacy_ref, user_id),
+            ).fetchone()
+            if not legacy:
+                return jsonify({"ok": False, "error": "manual_investment_not_found"}), 404
+            asset_name = str(legacy["name"])
 
         if delete_all and asset_type == "crypto":
             rows = conn.execute(
@@ -5510,7 +5530,6 @@ def delete_investment_position():
                 "UPDATE users SET current_investments = ? WHERE user_id = ?",
                 (round(current_total - total_removed, 2), user_id),
             )
-            live_data = build_live_app_data(conn, user_id)
             conn.commit()
             return jsonify({
                 "ok": True,
@@ -5519,7 +5538,6 @@ def delete_investment_position():
                     "positions": len(active_positions),
                     "value": total_removed,
                 },
-                **live_data,
             })
 
         if holding_id:
@@ -5565,11 +5583,10 @@ def delete_investment_position():
                 "UPDATE users SET current_investments = ? WHERE user_id = ?",
                 (round(max(0.0, current_total - current_value), 2), user_id),
             )
-            live_data = build_live_app_data(conn, user_id)
             conn.commit()
             return jsonify({"ok": True, "removed": {
                 "asset_type": stored_type, "asset_name": stored_name,
-            }, **live_data})
+            }})
 
         if asset_type == "etf":
             ensure_market_tracking_schema(conn)
@@ -5628,11 +5645,10 @@ def delete_investment_position():
                 "UPDATE users SET current_investments = ? WHERE user_id = ?",
                 (round(max(0.0, current_total - net), 2), user_id),
             )
-            live_data = build_live_app_data(conn, user_id)
             conn.commit()
             return jsonify({"ok": True, "removed": {
                 "asset_type": asset_type, "asset_name": stored_name,
-            }, **live_data})
+            }})
 
         # Krypto und manuelle Aktien koennen auch aus der frueheren Bot-Zeit stammen.
         # Statt deren Historie zu vernichten, schliesst eine Gegenbuchung die aktive
@@ -5665,10 +5681,9 @@ def delete_investment_position():
             "UPDATE users SET current_investments = ? WHERE user_id = ?",
             (round(max(0.0, current_total - net), 2), user_id),
         )
-        live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
-    return jsonify({"ok": True, "removed": {"asset_type": asset_type, "asset_name": asset_name}, **live_data})
+    return jsonify({"ok": True, "removed": {"asset_type": asset_type, "asset_name": asset_name}})
 
 
 @app.route("/v1/crypto/import/screenshot", methods=["POST"])

@@ -1755,6 +1755,7 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
     try:
         legacy_rows = conn.execute(
             """SELECT
+                   MIN(id) AS legacy_ref,
                    COALESCE(NULLIF(TRIM(asset_name), ''), 'Krypto') AS name,
                    COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
                FROM investment_events
@@ -1767,6 +1768,7 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
     positions.extend(
         {
             "n": "Legacy-Kryptowert",
+            "legacyRef": int(row["legacy_ref"]),
             "legacyLabel": str(row["name"]),
             "v": round(float(row["net"]), 2),
             "assetType": "crypto",

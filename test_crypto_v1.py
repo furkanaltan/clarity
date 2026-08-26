@@ -179,8 +179,17 @@ class CryptoV1Tests(unittest.TestCase):
             conn.commit()
 
         before_cash = self.values()[0]
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            positions = _crypto_positions(conn, 1)
+        sonic = next(
+            position for position in positions
+            if position.get("legacyLabel") == "Sonic"
+        )
+        self.assertIsInstance(sonic["legacyRef"], int)
+
         removed = self.request("DELETE", "/v1/investments", json={
-            "asset_type": "crypto", "asset_name": "Sonic",
+            "asset_type": "crypto", "legacy_ref": sonic["legacyRef"],
         })
         self.assertEqual(removed.status_code, 200, removed.get_json())
         self.assertEqual(self.values(), (before_cash, 2200))
@@ -344,7 +353,7 @@ class CryptoFrontendTests(unittest.TestCase):
     def test_crypto_positions_and_legacy_value_have_visible_management_actions(self):
         self.assertIn('id="cryptoLegacySave"', self.html)
         self.assertIn('id="cryptoLegacyValue"', self.html)
-        self.assertIn('position.legacy?(position.legacyLabel||"Krypto")', self.html)
+        self.assertIn("position.legacyRef||null", self.html)
         self.assertIn('class="asset-position-edit">Bearbeiten', self.html)
 
 
