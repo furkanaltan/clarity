@@ -137,6 +137,37 @@ def search_crypto_assets(
                     "symbol": symbol[:24],
                     "provider": "coinmarketcap",
                 }
+    # Some CMC plans do not apply symbol/slug filters consistently. The map endpoint
+    # itself is the canonical ID directory, so fall back to its active listing and
+    # filter locally instead of hardcoding individual coins or aliases.
+    if not found:
+        try:
+            payload = _cmc_request_json(
+                "/v1/cryptocurrency/map", {"listing_status": "active"}, api_key
+            )
+        except ValueError as exc:
+            last_error = exc
+        else:
+            needle = clean.casefold()
+            for row in payload.get("data") or []:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name") or "").strip()
+                symbol = str(row.get("symbol") or "").strip().upper()
+                slug = str(row.get("slug") or "").strip()
+                if needle not in {name.casefold(), symbol.casefold(), slug.casefold()}:
+                    continue
+                try:
+                    asset_id = int(row.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if name and symbol:
+                    found[asset_id] = {
+                        "providerAssetId": str(asset_id),
+                        "name": name[:80],
+                        "symbol": symbol[:24],
+                        "provider": "coinmarketcap",
+                    }
     if not found and last_error and str(last_error) not in {"crypto_asset_not_found"}:
         raise last_error
     needle = clean.casefold()

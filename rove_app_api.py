@@ -5107,7 +5107,7 @@ def search_crypto_positions():
     with db() as conn:
         if not user_from_token(conn, token):
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-    if len(query) < 2:
+    if len(query) < 1:
         return jsonify({"ok": False, "error": "crypto_search_query_required"}), 400
     try:
         assets = search_crypto_assets(query)

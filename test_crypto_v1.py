@@ -140,6 +140,22 @@ class CryptoV1Tests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
         self.assertEqual(self.values(), (5000, 1000))
 
+    def test_legacy_crypto_can_be_corrected_and_removed_without_touching_cash(self):
+        corrected = self.request("POST", "/v1/investments", json={
+            "asset_type": "crypto", "asset_name": "Krypto", "value": 750,
+        })
+        self.assertEqual(corrected.status_code, 200, corrected.get_json())
+        self.assertEqual(self.values(), (5000, 750))
+        foreign = self.request("DELETE", "/v1/investments", token="two", json={
+            "asset_type": "crypto", "asset_name": "Krypto",
+        })
+        self.assertEqual(foreign.status_code, 404)
+        removed = self.request("DELETE", "/v1/investments", json={
+            "asset_type": "crypto", "asset_name": "Krypto",
+        })
+        self.assertEqual(removed.status_code, 200, removed.get_json())
+        self.assertEqual(self.values(), (5000, 0))
+
     def test_legacy_and_tracked_crypto_are_separate_without_etf_double_counting(self):
         self.request("POST", "/v1/crypto/positions", json=self.payload())
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -211,6 +227,19 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(upper[0]["providerAssetId"], "1")
         self.assertEqual(lower[0]["symbol"], "BTC")
 
+    def test_short_symbol_and_map_fallback_find_active_cmc_assets(self):
+        empty = {"data": []}
+        active_map = {"data": [
+            {"id": 32684, "name": "Sonic", "symbol": "S", "slug": "sonic"},
+            {"id": 6958, "name": "Alchemy Pay", "symbol": "ACH", "slug": "alchemy-pay"},
+        ]}
+        with patch.object(market, "_cmc_request_json", side_effect=[empty, empty, active_map]):
+            sonic = market.search_crypto_assets("S")
+        with patch.object(market, "_cmc_request_json", side_effect=[empty, empty, active_map]):
+            alchemy = market.search_crypto_assets("ACH")
+        self.assertEqual(sonic[0]["symbol"], "S")
+        self.assertEqual(alchemy[0]["symbol"], "ACH")
+
     def test_batch_quotes_and_missing_coin(self):
         response = {
             "data": {
@@ -273,6 +302,12 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('class="scan-actions crypto-import-actions"', self.html)
         self.assertIn('class="scan-confirm" id="cryptoImportCommit"', self.html)
         self.assertIn("selectedRows.some(row=>row.needsCoinSelection)", self.html)
+
+    def test_crypto_positions_and_legacy_value_have_visible_management_actions(self):
+        self.assertIn('id="cryptoLegacySave"', self.html)
+        self.assertIn('id="cryptoLegacyValue"', self.html)
+        self.assertIn('position.legacy?(position.legacyLabel||"Krypto")', self.html)
+        self.assertIn('class="asset-position-edit">Bearbeiten', self.html)
 
 
 if __name__ == "__main__":
