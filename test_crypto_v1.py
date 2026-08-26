@@ -341,6 +341,22 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(sonic[0]["symbol"], "S")
         self.assertEqual(alchemy[0]["symbol"], "ACH")
 
+    def test_search_ignores_provider_rows_that_do_not_match_the_query(self):
+        ignored_rows = {"data": [
+            {"id": 999, "name": "Some Token", "symbol": "S", "slug": "some-token"},
+        ]}
+        active_map = {"data": [
+            {"id": 32684, "name": "Sonic", "symbol": "S", "slug": "sonic"},
+        ]}
+        with patch.object(
+            market, "_cmc_request_json", side_effect=[ignored_rows, ignored_rows, active_map]
+        ):
+            results = market.search_crypto_assets("Sonic")
+        self.assertEqual(results, [{
+            "providerAssetId": "32684", "name": "Sonic", "symbol": "S",
+            "provider": "coinmarketcap",
+        }])
+
     def test_screenshot_resolution_prefers_coin_name_over_ambiguous_symbol(self):
         rows = api.normalize_crypto_screenshot_rows(
             [{"name": "Sonic", "symbol": "S", "quantity": 100, "confidence": 0.99}],
@@ -419,6 +435,10 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn("position.legacyRef||null", self.html)
         self.assertIn("deleteLegacyCryptoPosition(position.legacyRef)", self.html)
         self.assertIn('class="asset-position-edit">Bearbeiten', self.html)
+
+    def test_crypto_delete_keeps_the_open_sheet_scroll_position(self):
+        self.assertIn("function refreshOpenAssetDetail(i, preserveScroll=false)", self.html)
+        self.assertIn("refreshOpenAssetDetail(idx,true)", self.html)
 
 
 if __name__ == "__main__":
