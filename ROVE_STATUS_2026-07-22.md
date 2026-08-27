@@ -4113,3 +4113,13 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   erste moegliche Abschluss ist erst der eingeschriebene, vollstaendig vergangene Monat.
 - Verifikation lokal: 13 gezielte Monthly-Check-in-Tests erfolgreich, Python-Compile und
   `git diff --check` sauber. Kein Deploy erfolgt.
+
+## Update 27.08.2026 - Quick capture close control (lokal, noch nicht deployt)
+
+- Das Schnellerfassen-Sheet hat jetzt oben rechts ein sichtbares X mit einer 40x40-Pixel-
+  Touch-Flaeche. Es verwendet dieselbe bestehende Schliessfunktion wie der Hintergrundklick;
+  eine Eingabe wird dadurch nicht gespeichert oder veraendert.
+- Hintergrundklick bleibt erhalten. Auf Desktop schliesst Escape ausschliesslich das geoeffnete
+  Schnellerfassen-Sheet.
+- Verifikation lokal: 2 gezielte Schnellerfassen- und 13 Monthly-Check-in-Tests erfolgreich,
+  JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.
