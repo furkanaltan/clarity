@@ -1367,34 +1367,9 @@ def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_
             "WeasyPrint fehlt. Installiere es mit: python3 -m pip install weasyprint"
         ) from exc
 
-    try:
-        from pypdf import PdfReader, PdfWriter
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "pypdf fehlt. Installiere es mit: python3 -m pip install pypdf"
-        ) from exc
-
-    # Render each page independently and merge only the first rendered page.
-    # This prevents WeasyPrint from turning one long HTML document into 11+ pages.
-    with TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        writer = PdfWriter()
-        rendered_pages = _render_hell_pages(report_data)
-        for idx, page_html in enumerate(rendered_pages, start=1):
-            single_html_path = tmp_path / f"page_{idx:02d}.html"
-            single_pdf_path = tmp_path / f"page_{idx:02d}.pdf"
-            single_html_path.write_text(
-                build_html_document([page_html]),
-                encoding="utf-8",
-            )
-            HTML(filename=str(single_html_path), base_url=str(html_path.parent)).write_pdf(str(single_pdf_path))
-            reader = PdfReader(str(single_pdf_path))
-            if not reader.pages:
-                raise RuntimeError(f"PDF-Seite {idx} konnte nicht gerendert werden.")
-            writer.add_page(reader.pages[0])
-
-        with output_path.open("wb") as pdf_file:
-            writer.write(pdf_file)
+    # The fixed screen wrappers have explicit page breaks. Rendering the complete
+    # document preserves the reference geometry without an optional PDF merger.
+    HTML(filename=str(html_path), base_url=str(html_path.parent)).write_pdf(str(output_path))
     return output_path
 
 

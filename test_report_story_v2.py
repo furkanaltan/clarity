@@ -269,6 +269,41 @@ class ReportStoryV2Tests(unittest.TestCase):
         self.assertFalse(story["pages"]["page_4"]["available"])
         self.assertTrue(story["pages"]["page_3"]["available"])
 
+    def test_category_name_is_never_used_as_merchant_fallback(self):
+        data = standard_payload()
+        data["report_truth"]["expenses"]["merchants"] = [
+            {"merchant": "Shopping", "category": "SONSTIGES", "amount": 733.0,
+             "transaction_count": 3, "avg_transaction": 244.33, "previous_amount": 0.0},
+            {"merchant": "Hochzeit", "category": "SONSTIGES", "amount": 300.0,
+             "transaction_count": 1, "avg_transaction": 300.0, "previous_amount": 0.0},
+            {"merchant": "Breuninger", "category": "SHOPPING", "amount": 380.0,
+             "transaction_count": 1, "avg_transaction": 380.0, "previous_amount": 0.0},
+        ]
+
+        story = build_report_story_v2(data)
+        merchants = story["pages"]["page_4"]["supporting_metrics"]
+
+        self.assertEqual([item["merchant"] for item in merchants], ["Breuninger", "Hochzeit"])
+
+    def test_user_budget_drives_next_step_without_arbitrary_limit(self):
+        data = standard_payload()
+        data["report_truth"]["expenses"]["categories"] = [
+            {"category": "SHOPPING", "amount": 733.0, "transaction_count": 3,
+             "avg_transaction": 244.33, "share": 100.0, "previous_amount": 200.0,
+             "previous_transaction_count": 1},
+        ]
+        data["report_truth"]["budget"] = {
+            "has_budgets": True, "on_track": False,
+            "items": [{"category": "SHOPPING", "limit": 200.0, "used": 733.0, "over": True}],
+        }
+
+        story = build_report_story_v2(data)
+        step = story["next_month_engine"]["steps"][0]
+
+        self.assertEqual(step["budget_limit"], 200.0)
+        self.assertEqual(step["over_amount"], 533.0)
+        self.assertNotIn("600", step["title"] + step["text"])
+
     def test_few_expenses_still_builds_complete_story(self):
         data = standard_payload()
         data["report_truth"]["expenses"]["total_consumption"] = 12.0

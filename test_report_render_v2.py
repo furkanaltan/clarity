@@ -3,12 +3,14 @@ import unittest
 from pathlib import Path
 
 from report_story_v2 import build_report_story_v2
+from report_html_renderer import _render_hell_pages, build_html_document
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
 from test_report_story_v2 import standard_payload
 
 
 ROOT = Path(__file__).resolve().parent
 WEB_TEMPLATE = ROOT / "report_templates" / "rove_web_report.html"
+PDF_TEMPLATE = ROOT / "report_templates" / "rove_pdf_report.html"
 
 
 def report_payload() -> dict:
@@ -301,6 +303,62 @@ class ReportRenderV2Tests(unittest.TestCase):
 
         self.assertNotEqual(comparison["pct_label"], "Vergleich")
         self.assertTrue(comparison["pct_label"].endswith(" %"))
+
+    def test_pdf_keeps_design_shell_and_uses_v2_truth_fields(self):
+        data = july_truth_payload()
+        html = build_html_document(_render_hell_pages(data))
+
+        self.assertEqual(html.count('data-screen-label="'), 10)
+        self.assertIn("#EAF3FB", html)
+        self.assertIn("#F7F6F3", html)
+        self.assertIn("#155681", html)
+        self.assertNotIn("#42b992", html.lower())
+        self.assertNotIn("#3d8b5b", html.lower())
+        self.assertIn("Shopping", html)
+        self.assertIn("733 €", html)
+        self.assertIn("39,5 %", html)
+        self.assertIn("Lebensmittel", html)
+        self.assertIn("348 €", html)
+        self.assertIn("18,7 %", html)
+        self.assertIn("533 € über deinem gesetzten Budget von 200 €", html)
+        self.assertIn("Breuninger", html)
+        self.assertIn("REWE", html)
+        self.assertIn("Spotify", html)
+        self.assertIn("+533 €", html)
+        self.assertIn("+266,5 %", html)
+        self.assertIn("Kein neuer Beitrag", html)
+        self.assertEqual(html.count("38.991 €"), 1)
+        self.assertIn("9.142 €", html)
+        self.assertIn("20.849 €", html)
+        self.assertIn("9.000 €", html)
+        self.assertIn("Controller", html)
+        self.assertIn("Budget Control", html)
+        self.assertIn(">6<span", html)
+        self.assertIn(">/25</span>", html)
+        self.assertIn("Savings Execution", html)
+        self.assertIn(">25<span", html)
+        self.assertIn("Dubai Urlaub", html)
+        self.assertIn("51 €", html)
+        self.assertIn("3.949 €", html)
+        self.assertNotIn("38.991 €</div><div style=\"font-size:14px;color:#75757B;margin-top:9px;line-height:1.35;\">von 4.000 €", html)
+        self.assertEqual(html.count("Dubai Urlaub"), 1)
+        for phrase in (
+            "Dokumentierte Investmentbeiträge",
+            "keine erfundene Marktperformance",
+            "Truth Layer",
+            "Snapshot",
+            "deterministisch",
+            "Market Movement",
+            "+366 €/Monat",
+            "+4.398 €/Jahr",
+            "wichtiger Baustein",
+            "Sparen läuft",
+            "Das allein hebt dich",
+            "dringend",
+            "Bei deiner geplanten Sparrate",
+            "rund 4 Monaten",
+        ):
+            self.assertNotIn(phrase, html)
 
 
 if __name__ == "__main__":
