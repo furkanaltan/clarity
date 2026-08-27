@@ -4150,3 +4150,21 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   normale Coach-Signale. Score, Monatsabschluss, Buchungen und Datenmodell bleiben unveraendert.
 - Verifikation lokal: 4 gezielte Coach-/Schnellerfassen-Tests, JavaScript-Syntax und
   `git diff --check` erfolgreich. Kein Deploy erfolgt.
+
+## Update 27.08.2026 - Feature Announcements Sprint 2 (lokal, noch nicht deployt)
+
+- Die bestehende Aktivitaetsglocke kombiniert ihren lokalen Ungelesen-Status jetzt mit der
+  serverseitigen Announcement-Wahrheit. Normale Aktivitaeten und Fixkosten bleiben vollstaendig
+  erhalten; ein Announcement wird erst beim tatsaechlich geoeffneten und gerenderten Feed als
+  gesehen markiert, niemals bereits beim App-Start.
+- Ein oder zwei neue Funktionen erscheinen als kompakte Einzelkarten. Ab drei Neuigkeiten zeigt
+  die Glocke eine ruhige Sammelkarte, die das neue `Was ist neu?`-Archiv oeffnet. Das Archiv ist
+  auch in den Einstellungen erreichbar, zeigt hoechstens zehn Eintraege der letzten 90 Tage und
+  sortiert konsequent nach Aktualitaet.
+- Announcement-Taps verwenden ausschliesslich eine feste Deep-Link-Liste fuer Rov.E-Ansichten.
+  Kurze Beispiele und Schrittfolgen erscheinen in einem eigenen mobilen Detail-Sheet; ungueltige
+  Ziele bleiben sicher im Detail. Seen, Opened und Dismissed laufen ueber die vorhandenen
+  session- und PIN-geschuetzten Sprint-1-Endpunkte.
+- Coach, Push, Score und Finanz-Schreibpfade bleiben unveraendert. Verifikation lokal: 52
+  Announcement-/PIN-/Monthly-Check-in-/Schnellerfassen-/Coach-Tests erfolgreich, JavaScript- und
+  Python-Syntax sauber. Kein Commit und kein Deploy erfolgt.
