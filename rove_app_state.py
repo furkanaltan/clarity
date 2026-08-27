@@ -726,6 +726,14 @@ def ensure_app_month_close_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_month_close_enrollment (
+            user_id      INTEGER PRIMARY KEY,
+            starts_month TEXT NOT NULL,
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
 
 
 def _month_key(value: date) -> str:
@@ -750,6 +758,18 @@ def _oldest_open_month_close(conn: sqlite3.Connection, user_id: int, today: date
     This avoids a stack of prompts while preserving an unfinished recent close.
     """
     current_month = _month_key(today)
+    enrollment = conn.execute(
+        "SELECT starts_month FROM app_month_close_enrollment WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if enrollment is None:
+        # The feature must not turn months before its first use into debt.
+        conn.execute(
+            "INSERT INTO app_month_close_enrollment (user_id, starts_month) VALUES (?, ?)",
+            (user_id, current_month),
+        )
+        return None
+    starts_month = str(enrollment["starts_month"])
     lower_bound = _month_close_candidate_start(today)
     candidates = {_previous_month_key(today)}
 
@@ -774,6 +794,8 @@ def _oldest_open_month_close(conn: sqlite3.Connection, user_id: int, today: date
         candidates.update(str(row["month_key"]) for row in rows if row["month_key"])
 
     for month_key in sorted(candidates):
+        if month_key < starts_month:
+            continue
         closed = conn.execute(
             "SELECT 1 FROM app_month_closures WHERE user_id = ? AND month_key = ?",
             (user_id, month_key),

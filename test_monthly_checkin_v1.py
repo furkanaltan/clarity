@@ -32,6 +32,10 @@ class MonthlyCheckinTests(unittest.TestCase):
             INSERT INTO portfolio_holdings VALUES (20, 1, 'ETF Zwei', 'etf');
         """)
         state.ensure_app_etf_position_plans_table(self.conn)
+        state.ensure_app_month_close_table(self.conn)
+        self.conn.execute(
+            "INSERT INTO app_month_close_enrollment (user_id, starts_month) VALUES (1, '2026-02')"
+        )
         self.conn.execute("""INSERT INTO app_etf_position_plans
             (user_id, holding_id, monthly_amount, execution_day, source_account, mode, active, start_month)
             VALUES (1, 10, 100, 15, 'giro', 'confirm', 1, '2026-02')""")
@@ -62,6 +66,18 @@ class MonthlyCheckinTests(unittest.TestCase):
                 self.assertNotIn("2026-08", close_months)
                 self.assertEqual(len(close_months), len(set(close_months)))
 
+    def test_first_feature_read_does_not_create_historical_close_debt(self):
+        self.conn.execute("DELETE FROM app_month_close_enrollment WHERE user_id = 1")
+        august_actions = self.actions(date(2026, 8, 27))
+        self.assertNotIn("month_close", [action["kind"] for action in august_actions])
+
+        september_months = [
+            action["month"]
+            for action in self.actions(date(2026, 9, 1))
+            if action["kind"] == "month_close"
+        ]
+        self.assertEqual(september_months, ["2026-08"])
+
     def test_first_day_of_following_month_offers_only_august(self):
         close_months = [action["month"] for action in self.actions(date(2026, 9, 1)) if action["kind"] == "month_close"]
         self.assertEqual(close_months, ["2026-08"])
@@ -74,6 +90,9 @@ class MonthlyCheckinTests(unittest.TestCase):
         self.assertEqual(close_months, ["2026-07"])
 
     def test_february_waits_until_march_in_both_calendar_variants(self):
+        self.conn.execute(
+            "UPDATE app_month_close_enrollment SET starts_month = '2024-01' WHERE user_id = 1"
+        )
         for today in (date(2025, 2, 28), date(2024, 2, 29)):
             with self.subTest(today=today):
                 self.assertNotIn(
