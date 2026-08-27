@@ -81,6 +81,7 @@ from rove_expense_domain import (
     create_expense_for_user,
 )
 from rove_feature_announcements import (
+    claim_coach_announcement,
     ensure_feature_announcement_tables,
     get_feature_announcements_for_user,
     mark_feature_announcement,
@@ -2769,9 +2770,14 @@ def current_app_state():
         # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
         record_due_etf_plan(conn, user_id)
         state = build_live_app_data(conn, user_id)
-        # Sprint 1 only prepares server truth. The existing local bell UI ignores
-        # this block until its separate integration sprint.
-        state["feature_announcements"] = get_feature_announcements_for_user(conn, user_id)
+        coach_announcement = claim_coach_announcement(
+            conn,
+            user_id,
+            finance_action_due=bool(state.get("monthlyCheckinDueCount", 0)),
+        )
+        feature_announcements = get_feature_announcements_for_user(conn, user_id)
+        feature_announcements["coach"] = coach_announcement
+        state["feature_announcements"] = feature_announcements
         conn.commit()
 
     return jsonify({"ok": True, **state})
@@ -2779,7 +2785,7 @@ def current_app_state():
 
 @app.route("/v1/feature-announcements/<feature_id>/<action>", methods=["POST"])
 def update_feature_announcement_state(feature_id: str, action: str):
-    if action not in {"seen", "opened", "dismissed", "completed"}:
+    if action not in {"seen", "opened", "dismissed", "completed", "coach_shown"}:
         return jsonify({"ok": False, "error": "invalid_announcement_action"}), 404
     with db() as conn:
         begin_write(conn)

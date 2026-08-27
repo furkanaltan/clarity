@@ -4195,3 +4195,18 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Die einheitliche Zielnavigation gilt fuer alle allowlisted Ziele einschliesslich Top-Haendler,
   Monatscheck, Crypto und Rov.E AI. Sie schreibt keine weiteren Announcement-States und greift
   weder in Finanzdaten noch in den normalen Activity-Feed ein.
+
+## Update 27.08.2026 - Feature Announcements Sprint 3 Coach Integration (lokal, noch nicht deployt)
+
+- Die serverseitige Announcement-State-Tabelle erhaelt additiv und rerunnable `coach_shown_at`.
+  Eine transaktionale Auswahl beansprucht pro Nutzer hoechstens eine Security- oder Major-
+  Neuigkeit; Reloads und weitere Geraete koennen denselben Hinweis nicht erneut beanspruchen.
+- Faellige Income-, ETF- oder Monatsabschluss-Aktionen bleiben vor jeder Neuigkeit. Danach gilt
+  Security vor Major, jeweils mit dem neuesten relevanten Eintrag; Minor-Updates bleiben nur in
+  Glocke und `Was ist neu?`. Bereits gesehene, geoeffnete, entfernte, abgeschlossene oder durch
+  echte Nutzung erledigte Funktionen sind fuer den Coach ausgeschlossen.
+- Der Coach zeigt maximal zwei kurze Zeilen und `Ausprobieren`, verwendet fuer Klicks exakt die
+  bestehende Sprint-2-Deep-Link-Logik und setzt durch die reine Anzeige niemals `opened_at`.
+  Ein einmaliger dezenter Pulse wird bei `prefers-reduced-motion` vollstaendig deaktiviert.
+- Verifikation lokal: 116 Announcement-/Monthly-/Coach-/AI-/Crypto-/Report-Regressionstests
+  erfolgreich, Python-Compile, JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.

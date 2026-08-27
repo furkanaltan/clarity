@@ -97,6 +97,7 @@ def ensure_feature_announcement_tables(conn: sqlite3.Connection) -> None:
             opened_at TEXT,
             dismissed_at TEXT,
             completed_at TEXT,
+            coach_shown_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(user_id, feature_id),
@@ -108,6 +109,13 @@ def ensure_feature_announcement_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_feature_announcement_state_user ON "
         "app_feature_announcement_state(user_id, feature_id)"
     )
+    state_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(app_feature_announcement_state)")
+    }
+    if "coach_shown_at" not in state_columns:
+        conn.execute(
+            "ALTER TABLE app_feature_announcement_state ADD COLUMN coach_shown_at TEXT"
+        )
 
 
 def seed_default_feature_announcements(conn: sqlite3.Connection) -> list[str]:
@@ -185,7 +193,8 @@ def _usage_completed(conn: sqlite3.Connection, user_id: int, feature_id: str) ->
 def _eligible_rows(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
     account_created_at = _account_created_at(conn, user_id)
     rows = conn.execute(
-        """SELECT a.*, s.seen_at, s.opened_at, s.dismissed_at, s.completed_at
+        """SELECT a.*, s.seen_at, s.opened_at, s.dismissed_at, s.completed_at,
+                  s.coach_shown_at
              FROM app_feature_announcements a
              LEFT JOIN app_feature_announcement_state s
                ON s.feature_id = a.feature_id AND s.user_id = ?
@@ -224,6 +233,7 @@ def _payload(row: sqlite3.Row, *, usage_completed: bool) -> dict[str, Any]:
             "opened": bool(row["opened_at"]),
             "dismissed": bool(row["dismissed_at"]),
             "completed": completed,
+            "coach_shown": bool(row["coach_shown_at"]),
         },
     }
 
@@ -253,6 +263,43 @@ def _find_eligible_feature(conn: sqlite3.Connection, user_id: int, feature_id: s
     return next((row for row in _eligible_rows(conn, user_id) if row["feature_id"] == feature_id), None)
 
 
+def claim_coach_announcement(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    finance_action_due: bool,
+) -> dict[str, Any] | None:
+    """Claim at most one new security/major announcement for this user's coach."""
+    ensure_feature_announcement_tables(conn)
+    if finance_action_due:
+        return None
+    for row in _eligible_rows(conn, user_id):
+        if str(row["priority"]) not in {"security", "major"}:
+            continue
+        if any((row["seen_at"], row["opened_at"], row["dismissed_at"], row["completed_at"], row["coach_shown_at"])):
+            continue
+        feature_id = str(row["feature_id"])
+        if _usage_completed(conn, user_id, feature_id):
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO app_feature_announcement_state (user_id, feature_id) VALUES (?, ?)",
+            (user_id, feature_id),
+        )
+        updated = conn.execute(
+            """UPDATE app_feature_announcement_state
+                  SET coach_shown_at = CURRENT_TIMESTAMP,
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND feature_id = ? AND coach_shown_at IS NULL""",
+            (user_id, feature_id),
+        )
+        if not updated.rowcount:
+            continue
+        item = _payload(row, usage_completed=False)
+        item["state"]["coach_shown"] = True
+        return item
+    return None
+
+
 def mark_feature_announcement(conn: sqlite3.Connection, user_id: int, feature_id: str, action: str) -> bool:
     """Creates one lazy state row and preserves each action's earliest timestamp."""
     ensure_feature_announcement_tables(conn)
@@ -263,6 +310,7 @@ def mark_feature_announcement(conn: sqlite3.Connection, user_id: int, feature_id
         "opened": ("seen_at", "opened_at"),
         "dismissed": ("dismissed_at",),
         "completed": ("seen_at", "opened_at", "completed_at"),
+        "coach_shown": ("coach_shown_at",),
     }
     columns = actions.get(action)
     if not columns:
