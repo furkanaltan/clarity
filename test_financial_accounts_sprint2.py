@@ -136,6 +136,7 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
         create_db(self.db_path)
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
+            patch.object(api, "user_from_token", lambda _conn, token: {"pilot-token": 1, "other-token": 2}.get(token)),
             patch.object(api, "build_live_app_data", lambda _conn, _uid: {"sts": {"available": 0}, "budgets": []}),
             patch.object(api, "award_tracking_points", lambda *_a, **_k: {"awarded": 0}),
             patch.object(api, "reverse_tracking_points_for_deleted_expense", lambda *_a, **_k: False),

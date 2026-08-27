@@ -163,6 +163,110 @@ class EtfContributionAssignmentTests(unittest.TestCase):
             self.assertEqual(float(financial_giro), 700)
             self.assertEqual(float(legacy_giro), 700)
 
+    def test_tracking_quote_commits_with_metadata_in_one_transaction(self):
+        with closing(self.connect()) as conn:
+            holding_id = self._holding(conn, "sp500", "S&P 500", 10000)
+            before_events = conn.execute(
+                "SELECT COUNT(*) FROM investment_events"
+            ).fetchone()[0]
+            conn.commit()
+            api.begin_write(conn)
+            conn.execute(
+                "UPDATE portfolio_holdings SET quantity=? WHERE id=?",
+                (110, holding_id),
+            )
+            result = apply_market_quote(
+                conn,
+                holding_id,
+                {
+                    "native_price": 110,
+                    "eur_price": 110,
+                    "provider": "test",
+                    "symbol": "SP500",
+                    "resolved_symbol": "SP500",
+                },
+                expected_symbol="SP500",
+                manage_transaction=False,
+            )
+            conn.commit()
+
+            holding = conn.execute(
+                "SELECT quantity, market_value FROM portfolio_holdings WHERE id=?",
+                (holding_id,),
+            ).fetchone()
+            self.assertEqual(float(holding["quantity"]), 110)
+            self.assertEqual(float(holding["market_value"]), result["market_value"])
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM investment_events").fetchone()[0],
+                before_events + 1,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM investment_events WHERE event_type='recurring_plan'"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_tracking_quote_failure_rolls_back_prior_holding_mutation(self):
+        with closing(self.connect()) as conn:
+            holding_id = self._holding(conn, "sp500", "S&P 500", 10000)
+            before = conn.execute(
+                "SELECT quantity, market_value, last_price FROM portfolio_holdings WHERE id=?",
+                (holding_id,),
+            ).fetchone()
+            conn.commit()
+            api.begin_write(conn)
+            conn.execute(
+                "UPDATE portfolio_holdings SET quantity=? WHERE id=?",
+                (110, holding_id),
+            )
+            with self.assertRaises(KeyError):
+                apply_market_quote(
+                    conn,
+                    holding_id,
+                    {
+                        "native_price": 110,
+                        "provider": "test",
+                        "symbol": "SP500",
+                        "resolved_symbol": "SP500",
+                    },
+                    expected_symbol="SP500",
+                    manage_transaction=False,
+                )
+            conn.rollback()
+
+            after = conn.execute(
+                "SELECT quantity, market_value, last_price FROM portfolio_holdings WHERE id=?",
+                (holding_id,),
+            ).fetchone()
+            self.assertEqual(tuple(after), tuple(before))
+
+    def test_market_value_change_does_not_create_contribution(self):
+        with closing(self.connect()) as conn:
+            holding_id = self._holding(conn, "sp500", "S&P 500", 10000)
+            conn.commit()
+            api.begin_write(conn)
+            apply_market_quote(
+                conn,
+                holding_id,
+                {
+                    "native_price": 110,
+                    "eur_price": 110,
+                    "provider": "test",
+                    "symbol": "SP500",
+                    "resolved_symbol": "SP500",
+                },
+                expected_symbol="SP500",
+                manage_transaction=False,
+            )
+            conn.commit()
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM investment_events WHERE event_type IN ('recurring_plan', 'recurring_plan_pending')"
+                ).fetchone()[0],
+                0,
+            )
+
     def test_one_plan_does_not_touch_the_other_etf(self):
         with closing(self.connect()) as conn:
             first_id = self._holding(conn, "first", "S&P 500", 10000)

@@ -53,6 +53,7 @@ from rove_app_state import (
     get_app_goals,
     get_app_etf_savings_plan,
     ensure_app_monthly_plan_table,
+    ensure_app_month_close_table,
     ensure_app_scheduled_savings_table,
     apply_due_scheduled_savings,
     get_app_scheduled_savings,
@@ -2504,7 +2505,8 @@ def _etf_plan_due_day(today: datetime, configured_day: int) -> int:
     return min(max(1, int(configured_day)), last_day)
 
 
-def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool = False) -> dict:
+def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool = False,
+                        holding_id: int | None = None) -> dict:
     """Erfasst einen ETF-Sparplan einmal pro Monat in Rov.E, nie bei Bank oder Broker."""
     ensure_app_etf_savings_plan_table(conn)
     ensure_app_etf_position_plans_table(conn)
@@ -2530,20 +2532,26 @@ def record_due_etf_plan(conn: sqlite3.Connection, user_id: int, *, force: bool =
     ).fetchone()
     position_rows = []
     if has_holdings:
-        position_rows = conn.execute(
-            """SELECT pp.holding_id, pp.monthly_amount, pp.execution_day,
+        position_sql = """SELECT pp.holding_id, pp.monthly_amount, pp.execution_day,
                       pp.source_account, pp.source_account_id, pp.mode,
                       ph.instrument_label, COALESCE(ph.instrument_type, 'etf') AS instrument_type
                  FROM app_etf_position_plans pp
                  JOIN portfolio_holdings ph
                    ON ph.id = pp.holding_id AND ph.user_id = pp.user_id
                 WHERE pp.user_id = ? AND pp.active = 1 AND pp.monthly_amount > 0
-                  AND pp.start_month <= ?
-                ORDER BY pp.holding_id""",
-            (user_id, month_key),
+                  AND pp.start_month <= ?"""
+        params: tuple = (user_id, month_key)
+        if holding_id is not None:
+            position_sql += " AND pp.holding_id = ?"
+            params += (holding_id,)
+        position_rows = conn.execute(
+            position_sql + " ORDER BY pp.holding_id",
+            params,
         ).fetchall()
     position_total = round(sum(float(row["monthly_amount"] or 0) for row in position_rows), 2)
-    positions_match = bool(position_rows) and abs(position_total - amount) < 0.005
+    positions_match = bool(position_rows) and (
+        holding_id is not None or abs(position_total - amount) < 0.005
+    )
 
     allocations: list[dict] = []
     if positions_match:
@@ -3355,6 +3363,41 @@ def update_monthly_plan():
     return jsonify({"ok": True, **live_data})
 
 
+@app.route("/v1/month-close", methods=["POST"])
+def confirm_month_close():
+    """Persist the user's actual savings for one completed month, without moving money."""
+    payload = request.get_json(silent=True) or {}
+    month_key = clean_text(payload.get("month"))
+    try:
+        actual_savings = round(float(payload.get("actual_savings")), 2)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "valid_actual_savings_required"}), 400
+    current_month = datetime.now().strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-\d{2}", month_key) or month_key >= current_month:
+        return jsonify({"ok": False, "error": "completed_month_required"}), 400
+    if not 0 <= actual_savings <= 1_000_000:
+        return jsonify({"ok": False, "error": "actual_savings_out_of_range"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        ensure_app_month_close_table(conn)
+        # A close is intentionally immutable. Reloads and multiple devices must not
+        # rewrite the user's completed-month truth or create a second close.
+        inserted = conn.execute(
+            """INSERT OR IGNORE INTO app_month_closures
+                   (user_id, month_key, actual_savings)
+               VALUES (?, ?, ?)""",
+            (user_id, month_key, actual_savings),
+        ).rowcount
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, "alreadyConfirmed": not bool(inserted), **live_data})
+
+
 @app.route("/v1/etf-plan", methods=["POST", "OPTIONS"])
 def update_etf_plan():
     """Pausiert, aktiviert oder bestaetigt den getrennten ETF-Sparplan."""
@@ -3384,7 +3427,11 @@ def update_etf_plan():
             )
         else:
             apply_due_scheduled_savings(conn, user_id)
-            result = record_due_etf_plan(conn, user_id, force=True)
+            try:
+                holding_id = int(payload.get("holding_id")) if payload.get("holding_id") is not None else None
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "valid_holding_id_required"}), 400
+            result = record_due_etf_plan(conn, user_id, force=True, holding_id=holding_id)
             if not result.get("ok"):
                 return jsonify(result), 400
         live_data = build_live_app_data(conn, user_id)

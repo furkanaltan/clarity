@@ -28,6 +28,7 @@ import logging
 import os
 import secrets
 import sqlite3
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -707,6 +708,129 @@ def ensure_app_monthly_plan_table(conn: sqlite3.Connection) -> None:
             "ALTER TABLE app_monthly_plan_status "
             "ADD COLUMN savings_status TEXT NOT NULL DEFAULT 'planned'"
         )
+
+
+def ensure_app_month_close_table(conn: sqlite3.Connection) -> None:
+    """Stores one explicit, user-confirmed close per completed month.
+
+    A close is deliberately separate from investment events: a deposit is not
+    proof that the planned monthly savings rate was achieved.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_month_closures (
+            user_id              INTEGER NOT NULL,
+            month_key            TEXT NOT NULL,
+            actual_savings       REAL NOT NULL DEFAULT 0.0,
+            savings_confirmed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, month_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+
+
+def _month_key(value: date) -> str:
+    return value.strftime("%Y-%m")
+
+
+def _previous_month_key(value: date) -> str:
+    return (value.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+
+def _due_day(today: date, configured_day: int) -> int:
+    return min(max(1, int(configured_day)), monthrange(today.year, today.month)[1])
+
+
+def get_monthly_checkin_actions(conn: sqlite3.Connection, user_id: int, user: dict) -> list[dict]:
+    """Return only actions that are due *now* and still incomplete.
+
+    This is the single UI/coach/push truth. Existing income and ETF event
+    idempotency remains authoritative; this function only describes work.
+    """
+    ensure_app_monthly_plan_table(conn)
+    ensure_app_month_close_table(conn)
+    ensure_app_etf_position_plans_table(conn)
+    ensure_app_etf_savings_plan_table(conn)
+    today = date.today()
+    current_month = _month_key(today)
+    actions: list[dict] = []
+
+    income = float(user.get("income") or 0) + float(user.get("other_income") or 0)
+    payday = int(user.get("payday") or 0)
+    if income > 0 and 1 <= payday <= 31 and today.day >= _due_day(today, payday):
+        status = conn.execute(
+            """SELECT income_status FROM app_monthly_plan_status
+                 WHERE user_id = ? AND month_key = ?""",
+            (user_id, current_month),
+        ).fetchone()
+        booked = _salary_booked_this_month(conn, user_id, income)
+        if not booked and (not status or status["income_status"] != "confirmed"):
+            actions.append({
+                "id": "income", "kind": "income", "month": current_month,
+                "title": "Dein Gehalt ist bereit", "dueDate": f"{current_month}-{_due_day(today, payday):02d}",
+                "due": True, "completed": False,
+            })
+
+    has_holdings = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'portfolio_holdings'"
+    ).fetchone() is not None
+    plans = conn.execute(
+        """SELECT pp.holding_id, pp.execution_day, pp.mode, ph.instrument_label
+             FROM app_etf_position_plans pp
+             JOIN portfolio_holdings ph ON ph.id = pp.holding_id AND ph.user_id = pp.user_id
+            WHERE pp.user_id = ? AND pp.active = 1 AND pp.monthly_amount > 0
+              AND pp.start_month <= ?
+            ORDER BY pp.holding_id""",
+        (user_id, current_month),
+    ).fetchall() if has_holdings else []
+    for plan in plans:
+        if today.day < _due_day(today, int(plan["execution_day"])):
+            continue
+        executed = conn.execute(
+            """SELECT 1 FROM investment_events
+                 WHERE user_id = ? AND holding_id = ? AND source = 'app_etf_plan'
+                   AND asset_type = 'etf' AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+            (user_id, int(plan["holding_id"]), current_month),
+        ).fetchone()
+        if not executed:
+            actions.append({
+                "id": f"etf_plan:{int(plan['holding_id'])}", "kind": "etf_plan",
+                "holdingId": int(plan["holding_id"]), "month": current_month,
+                "title": "Dein ETF-Sparplan ist bereit", "detail": str(plan["instrument_label"]),
+                "dueDate": f"{current_month}-{_due_day(today, int(plan['execution_day'])):02d}",
+                "due": True, "completed": False, "mode": str(plan["mode"]),
+            })
+
+    # The legacy global plan still exists for accounts without per-position plans.
+    if not plans:
+        plan = conn.execute(
+            """SELECT execution_day, mode, active, start_month FROM app_etf_savings_plan
+                 WHERE user_id = ?""", (user_id,)
+        ).fetchone()
+        if plan and bool(plan["active"]) and str(plan["start_month"]) <= current_month and today.day >= _due_day(today, int(plan["execution_day"])):
+            executed = conn.execute(
+                """SELECT 1 FROM investment_events
+                     WHERE user_id = ? AND holding_id IS NULL AND source = 'app_etf_plan'
+                       AND asset_type = 'etf' AND strftime('%Y-%m', created_at) = ? LIMIT 1""",
+                (user_id, current_month),
+            ).fetchone()
+            if not executed:
+                actions.append({"id": "etf_plan:legacy", "kind": "etf_plan", "month": current_month,
+                                "title": "Dein ETF-Sparplan ist bereit", "dueDate": f"{current_month}-{_due_day(today, int(plan['execution_day'])):02d}", "due": True,
+                                "completed": False, "mode": str(plan["mode"])})
+
+    previous_month = _previous_month_key(today)
+    closed = conn.execute(
+        "SELECT 1 FROM app_month_closures WHERE user_id = ? AND month_key = ?",
+        (user_id, previous_month),
+    ).fetchone()
+    if not closed:
+        actions.append({
+            "id": f"month_close:{previous_month}", "kind": "month_close", "month": previous_month,
+            "title": f"{MONTH_NAMES_DE[int(previous_month[5:])]} abschließen",
+            "detail": f"Wie viel hast du im {MONTH_NAMES_DE[int(previous_month[5:])]} tatsächlich gespart?",
+            "due": True, "completed": False,
+        })
+    return actions
 
 
 def ensure_app_scheduled_savings_table(conn: sqlite3.Connection) -> None:
@@ -1423,6 +1547,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
     available = income - fixed_costs - sparraten - monthly_expenses
     monthly_plan = get_app_monthly_plan(conn, user_id, income, fixed_costs, sparraten)
+    monthly_checkin_actions = get_monthly_checkin_actions(conn, user_id, u)
     score = calculate_score(conn, user_id, u, monthly_expenses)
 
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
@@ -1547,6 +1672,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "budgets": _build_budgets(conn, user_id),
         "reports": _build_reports(conn, user_id),
         "monthlyPlan": monthly_plan,
+        "monthlyCheckinActions": monthly_checkin_actions,
+        "monthlyCheckinDueCount": len(monthly_checkin_actions),
         "etfPlan": etf_plan,
         "scheduledSavings": scheduled_savings,
         "score": score,

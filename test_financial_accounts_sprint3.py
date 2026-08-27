@@ -25,6 +25,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         create_db(self.db_path)
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
+            patch.object(api, "user_from_token", lambda _conn, token: {"pilot-token": 1, "other-token": 2}.get(token)),
             patch.object(api, "build_live_app_data", lambda _c, _u: {"sts": {"available": 0}}),
         ]
         for patcher in self.patchers:
@@ -339,6 +340,68 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM investment_events WHERE source='leeway' AND asset_name='Test ETF'"
             ).fetchone()[0], 1)
+
+    def test_new_stocks_do_not_consume_live_etf_market_or_pending_value(self):
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """CREATE TABLE portfolio_holdings (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       user_id INTEGER NOT NULL,
+                       instrument_key TEXT NOT NULL,
+                       instrument_label TEXT NOT NULL,
+                       isin TEXT NOT NULL,
+                       price_symbol TEXT,
+                       monthly_contribution REAL NOT NULL DEFAULT 0,
+                       total_invested REAL,
+                       start_price REAL,
+                       last_price REAL,
+                       last_checked_at DATETIME,
+                       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                       UNIQUE(user_id, instrument_key)
+                   )"""
+            )
+            api.ensure_market_tracking_schema(conn)
+            api.ensure_investment_contribution_schema(conn)
+            cursor = conn.execute(
+                """INSERT INTO portfolio_holdings
+                       (user_id, instrument_key, instrument_label, isin, total_invested,
+                        market_value, instrument_type, quantity, price_symbol,
+                        quote_currency, valuation_enabled)
+                   VALUES (1, 'sp500', 'S&P 500', '', 8349.32, 8671.32, 'etf',
+                           66.135209, 'AUM5', 'EUR', 1)"""
+            )
+            holding_id = int(cursor.lastrowid)
+            conn.execute(
+                """INSERT INTO investment_events
+                       (user_id, amount, direction, asset_type, asset_name, event_type,
+                        source, holding_id)
+                   VALUES (1, 300, 'in', 'etf', 'S&P 500',
+                           'recurring_plan_pending', 'app_etf_plan', ?)""",
+                (holding_id,),
+            )
+            conn.execute("UPDATE users SET current_investments=8971.32 WHERE user_id=1")
+            conn.commit()
+
+        under_armour = self.request("POST", "/v1/investments", json={
+            "asset_type": "stock", "asset_name": "Under Armour", "value": 1500,
+        })
+        xpeng = self.request("POST", "/v1/investments", json={
+            "asset_type": "stock", "asset_name": "X-Peng", "value": 1000,
+        })
+        self.assertEqual(under_armour.status_code, 200, under_armour.get_json())
+        self.assertEqual(xpeng.status_code, 200, xpeng.get_json())
+
+        with closing(self.connect()) as conn:
+            current = float(conn.execute(
+                "SELECT current_investments FROM users WHERE user_id=1"
+            ).fetchone()[0])
+            stocks = float(conn.execute(
+                """SELECT SUM(CASE WHEN direction='out' THEN -amount ELSE amount END)
+                     FROM investment_events WHERE user_id=1 AND asset_type='stock'"""
+            ).fetchone()[0])
+        self.assertAlmostEqual(current, 11471.32, places=2)
+        self.assertAlmostEqual(stocks, 2500, places=2)
 
     def test_legacy_crypto_can_be_removed_with_a_compensating_event(self):
         with closing(self.connect()) as conn:

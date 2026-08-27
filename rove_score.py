@@ -136,20 +136,16 @@ def tracking_days_90(conn: sqlite3.Connection, user_id: int, today: date | None 
 
 
 def savings_confirmed(conn: sqlite3.Connection, user_id: int, report_month: str) -> bool:
-    if _table_exists(conn, "user_badges"):
-        badge_key = f"inv_{report_month.replace('-', '_')}"
-        if conn.execute(
-            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
-            (user_id, badge_key),
-        ).fetchone():
-            return True
-    if not _table_exists(conn, "investment_events"):
+    """Only an explicit month close confirms the planned savings rate.
+
+    Investments and historical badges describe financial activity, not whether
+    the user confirmed their actual savings for that completed month.
+    """
+    if not _table_exists(conn, "app_month_closures"):
         return False
     return conn.execute(
-        """SELECT 1 FROM investment_events
-             WHERE user_id = ?
-               AND source IN ('investiert_command', 'app_monthly_plan', 'app_etf_plan')
-               AND strftime('%Y-%m', created_at) = ?
+        """SELECT 1 FROM app_month_closures
+             WHERE user_id = ? AND month_key = ?
              LIMIT 1""",
         (user_id, report_month),
     ).fetchone() is not None

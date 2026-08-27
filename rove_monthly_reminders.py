@@ -12,7 +12,7 @@ import argparse
 from datetime import date, datetime
 
 from rove_app_api import db, send_push_to_user
-from rove_app_state import ensure_app_monthly_plan_table
+from rove_app_state import get_monthly_checkin_actions
 
 
 def ensure_delivery_log(conn) -> None:
@@ -27,67 +27,41 @@ def ensure_delivery_log(conn) -> None:
     )
 
 
-def missing_plan_parts(row) -> list[str]:
-    missing = []
-    if row["income_status"] != "confirmed":
-        missing.append("Einkommen")
-    if row["fixed_costs_status"] != "confirmed":
-        missing.append("Fixkosten")
-    # ETF-Sparpläne werden separat am eigenen Ausführungstag gebucht. Die
-    # Zahltags-Erinnerung soll deshalb nur noch flexibles Cash-Sparen anmahnen.
-    if float(row["cash_savings"] or 0) > 0 and row["savings_status"] != "confirmed":
-        missing.append("Sparrate")
-    return missing
-
-
 def send_due_monthly_reminders(today: date | None = None) -> int:
     today = today or date.today()
     month_key = today.strftime("%Y-%m")
 
     with db() as conn:
-        ensure_app_monthly_plan_table(conn)
         ensure_delivery_log(conn)
         rows = conn.execute(
-            """SELECT u.user_id,
-                      COALESCE(s.income_status, 'planned') AS income_status,
-                      COALESCE(s.fixed_costs_status, 'planned') AS fixed_costs_status,
-                      COALESCE(s.savings_status, 'planned') AS savings_status,
-                      COALESCE(u.cash_savings, 0) AS cash_savings
-                 FROM users u
-                 LEFT JOIN app_monthly_plan_status s
-                   ON s.user_id = u.user_id AND s.month_key = ?
-                 LEFT JOIN app_push_delivery_log d
-                   ON d.user_id = u.user_id
-                  AND d.event_key = 'monthly_check'
-                  AND d.month_key = ?
-                WHERE u.onboarding_step >= 10
-                  AND u.payday = ?
-                  AND d.user_id IS NULL""",
-            (month_key, month_key, today.day),
+            "SELECT * FROM users WHERE onboarding_step >= 10",
         ).fetchall()
 
         delivered = 0
         for row in rows:
-            missing = missing_plan_parts(row)
-            if not missing:
-                continue
-            sent = send_push_to_user(
-                conn,
-                int(row["user_id"]),
-                "Dein Monatscheck ist bereit",
-                "Heute ist dein Zahltag. Bitte pruefe noch: " + ", ".join(missing) + ".",
-                tag=f"rove-monthly-check-{month_key}",
-                url="./",
-            )
-            # Nur nach einer echten Zustellung sperren. Aktiviert jemand Push erst spaeter am
-            # Zahltag, darf der naechste Timer-Lauf die Erinnerung noch senden.
-            if sent:
-                conn.execute(
-                    """INSERT INTO app_push_delivery_log (user_id, event_key, month_key)
-                       VALUES (?, 'monthly_check', ?)""",
-                    (int(row["user_id"]), month_key),
+            for action in get_monthly_checkin_actions(conn, int(row["user_id"]), dict(row)):
+                # Month close is deliberately surfaced on the first app start in
+                # the following month, not pushed by the daily background timer.
+                if action["kind"] == "month_close" or action.get("dueDate") != today.isoformat():
+                    continue
+                event_key = f"monthly_check:{action['id']}"
+                exists = conn.execute(
+                    "SELECT 1 FROM app_push_delivery_log WHERE user_id = ? AND event_key = ? AND month_key = ?",
+                    (int(row["user_id"]), event_key, month_key),
+                ).fetchone()
+                if exists:
+                    continue
+                sent = send_push_to_user(
+                    conn, int(row["user_id"]), action["title"],
+                    action.get("detail") or "Öffne deinen Monatscheck.",
+                    tag=f"rove-monthly-check-{action['id']}-{month_key}", url="./",
                 )
-                delivered += sent
+                if sent:
+                    conn.execute(
+                        """INSERT INTO app_push_delivery_log (user_id, event_key, month_key)
+                           VALUES (?, ?, ?)""", (int(row["user_id"]), event_key, month_key),
+                    )
+                    delivered += sent
         conn.commit()
     return delivered
 
