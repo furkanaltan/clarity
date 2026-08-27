@@ -4123,3 +4123,13 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   Schnellerfassen-Sheet.
 - Verifikation lokal: 2 gezielte Schnellerfassen- und 13 Monthly-Check-in-Tests erfolgreich,
   JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.
+
+## Update 27.08.2026 - Coach suppresses non-actionable savings reminder (lokal, noch nicht deployt)
+
+- Eine geplante Sparquote ab 20 Prozent bleibt bis zum Monatsabschluss bewusst als unbestaetigte
+  Score-Umsetzung bewertet. Sie erscheint aber nicht mehr taeglich als `Naechster Hebel`, solange
+  der Nutzer den laufenden Monat noch gar nicht abschliessen kann.
+- Niedrige Sparraten und bereits faellige beziehungsweise bestaetigte Sparraten bleiben weiterhin
+  normale Coach-Signale. Score, Monatsabschluss, Buchungen und Datenmodell bleiben unveraendert.
+- Verifikation lokal: 4 gezielte Coach-/Schnellerfassen-Tests, JavaScript-Syntax und
+  `git diff --check` erfolgreich. Kein Deploy erfolgt.
