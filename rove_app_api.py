@@ -80,6 +80,11 @@ from rove_expense_domain import (
     begin_expense_write,
     create_expense_for_user,
 )
+from rove_feature_announcements import (
+    ensure_feature_announcement_tables,
+    get_feature_announcements_for_user,
+    mark_feature_announcement,
+)
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
     archive_financial_account,
@@ -385,6 +390,11 @@ def transactions_options():
 
 @app.route("/v1/state", methods=["OPTIONS"])
 def state_options():
+    return ("", 204)
+
+
+@app.route("/v1/feature-announcements/<feature_id>/<action>", methods=["OPTIONS"])
+def feature_announcement_options(feature_id: str, action: str):
     return ("", 204)
 
 
@@ -2759,9 +2769,27 @@ def current_app_state():
         # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
         record_due_etf_plan(conn, user_id)
         state = build_live_app_data(conn, user_id)
+        # Sprint 1 only prepares server truth. The existing local bell UI ignores
+        # this block until its separate integration sprint.
+        state["feature_announcements"] = get_feature_announcements_for_user(conn, user_id)
         conn.commit()
 
     return jsonify({"ok": True, **state})
+
+
+@app.route("/v1/feature-announcements/<feature_id>/<action>", methods=["POST"])
+def update_feature_announcement_state(feature_id: str, action: str):
+    if action not in {"seen", "opened", "dismissed", "completed"}:
+        return jsonify({"ok": False, "error": "invalid_announcement_action"}), 404
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token_from_request())
+        if not user_id:
+            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+        if not mark_feature_announcement(conn, user_id, feature_id, action):
+            return jsonify({"ok": False, "error": "announcement_not_available"}), 404
+        conn.commit()
+    return jsonify({"ok": True, "feature_id": feature_id, "action": action})
 
 
 @app.route("/v1/admin/overview", methods=["GET"])

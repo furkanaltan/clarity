@@ -99,6 +99,23 @@
 - Lokal geprüft: 12 AI-Sicherheits-, Routing- und Kontexttests erfolgreich; Python-Compile und
   `git diff --check` für die betroffenen Dateien sauber. Der Quick-Fix ist noch nicht deployed.
 
+### Feature Announcements – Sprint 1 (Production Gate gruen, Deploy freigegeben)
+
+- Eine additive serverseitige Grundlage trennt globale Feature-Definitionen von
+  nutzergebundenem Interaktionsstatus. State-Zeilen entstehen erst bei einer tatsächlichen
+  Interaktion, nicht beim Veröffentlichen eines Features.
+- Die Eligibility berücksichtigt aktive Zeitfenster, einen 90-Tage-Zeitraum für prominente
+  Neuigkeiten, das Kontoalter, optionale bestehende Feature-Flags sowie eine feste interne
+  Deep-Link-Positivliste. Externe URLs werden nie ausgeliefert.
+- Die vorbereiteten Interaktionspfade für `seen`, `opened`, `dismissed` und `completed` sind
+  Cookie-, PIN- und nutzergebunden sowie idempotent. AI-, Crypto- und Report-Nutzung können
+  ausschließlich als Boolean-Signal als erledigt erkannt werden.
+- Der State liefert den neuen Block bereits passiv mit. Glocke, localStorage-Activity-Feed,
+  Coach und Push bleiben unverändert; es gibt keine produktiv sichtbaren Test-Ankündigungen.
+- Der Production-Snapshot-Gate lief gegen acht aktive Nutzer vollständig grün: Schema additiv
+  und wiederholbar, Eligibility und Smart-Dismiss korrekt, Multi-Device-State ohne Duplikate
+  sowie Integrity, Foreign Keys, Cash- und Investment-Drift vor und nach der Simulation sauber.
+
 ### Verbindliche Quellen und Deployment
 
 - Einzige bearbeitete App-Quelle:
