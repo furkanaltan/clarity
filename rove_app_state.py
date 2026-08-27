@@ -736,6 +736,53 @@ def _previous_month_key(value: date) -> str:
     return (value.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
 
 
+def _month_close_candidate_start(value: date) -> str:
+    """Limit catch-up prompts to the three most recently completed months."""
+    index = value.year * 12 + value.month - 1 - 3
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def _oldest_open_month_close(conn: sqlite3.Connection, user_id: int, today: date) -> str | None:
+    """Return one useful, completed month only; never the running month.
+
+    The previous month is always eligible. Older months are considered only when
+    they have real monthly activity, and only within a short catch-up window.
+    This avoids a stack of prompts while preserving an unfinished recent close.
+    """
+    current_month = _month_key(today)
+    lower_bound = _month_close_candidate_start(today)
+    candidates = {_previous_month_key(today)}
+
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone() is not None
+
+    monthly_sources = (
+        ("app_monthly_plan_status", "month_key"),
+        ("investment_events", "strftime('%Y-%m', created_at)"),
+        ("app_cash_movements", "strftime('%Y-%m', created_at)"),
+    )
+    for table, month_expression in monthly_sources:
+        if not has_table(table):
+            continue
+        rows = conn.execute(
+            f"""SELECT DISTINCT {month_expression} AS month_key FROM {table}
+                 WHERE user_id = ? AND {month_expression} >= ? AND {month_expression} < ?""",
+            (user_id, lower_bound, current_month),
+        ).fetchall()
+        candidates.update(str(row["month_key"]) for row in rows if row["month_key"])
+
+    for month_key in sorted(candidates):
+        closed = conn.execute(
+            "SELECT 1 FROM app_month_closures WHERE user_id = ? AND month_key = ?",
+            (user_id, month_key),
+        ).fetchone()
+        if not closed:
+            return month_key
+    return None
+
+
 def _due_day(today: date, configured_day: int) -> int:
     return min(max(1, int(configured_day)), monthrange(today.year, today.month)[1])
 
@@ -818,16 +865,12 @@ def get_monthly_checkin_actions(conn: sqlite3.Connection, user_id: int, user: di
                                 "title": "Dein ETF-Sparplan ist bereit", "dueDate": f"{current_month}-{_due_day(today, int(plan['execution_day'])):02d}", "due": True,
                                 "completed": False, "mode": str(plan["mode"])})
 
-    previous_month = _previous_month_key(today)
-    closed = conn.execute(
-        "SELECT 1 FROM app_month_closures WHERE user_id = ? AND month_key = ?",
-        (user_id, previous_month),
-    ).fetchone()
-    if not closed:
+    month_to_close = _oldest_open_month_close(conn, user_id, today)
+    if month_to_close:
         actions.append({
-            "id": f"month_close:{previous_month}", "kind": "month_close", "month": previous_month,
-            "title": f"{MONTH_NAMES_DE[int(previous_month[5:])]} abschließen",
-            "detail": f"Wie viel hast du im {MONTH_NAMES_DE[int(previous_month[5:])]} tatsächlich gespart?",
+            "id": f"month_close:{month_to_close}", "kind": "month_close", "month": month_to_close,
+            "title": f"{MONTH_NAMES_DE[int(month_to_close[5:])]} abschließen",
+            "detail": f"Wie viel hast du im {MONTH_NAMES_DE[int(month_to_close[5:])]} tatsächlich gespart?",
             "due": True, "completed": False,
         })
     return actions

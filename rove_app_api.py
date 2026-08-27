@@ -52,6 +52,7 @@ from rove_app_state import (
     ensure_app_goals_table,
     get_app_goals,
     get_app_etf_savings_plan,
+    get_monthly_checkin_actions,
     ensure_app_monthly_plan_table,
     ensure_app_month_close_table,
     ensure_app_scheduled_savings_table,
@@ -3387,6 +3388,17 @@ def confirm_month_close():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         ensure_app_month_close_table(conn)
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        due_months = {
+            str(action["month"])
+            for action in get_monthly_checkin_actions(conn, user_id, dict(user or {}))
+            if action.get("kind") == "month_close" and action.get("due") and not action.get("completed")
+        }
+        # The client may only confirm the one month currently offered by the
+        # server. Stale tabs cannot close the running month or queue old months.
+        if month_key not in due_months:
+            conn.commit()
+            return jsonify({"ok": False, "error": "month_close_not_due"}), 409
         # A close is intentionally immutable. Reloads and multiple devices must not
         # rewrite the user's completed-month truth or create a second close.
         inserted = conn.execute(

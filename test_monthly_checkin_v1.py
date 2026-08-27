@@ -55,6 +55,36 @@ class MonthlyCheckinTests(unittest.TestCase):
         actions = self.actions(date(2026, 3, 1))
         self.assertEqual([action["kind"] for action in actions], ["month_close"])
 
+    def test_month_close_never_offers_the_running_august_month(self):
+        for today in (date(2026, 8, 27), date(2026, 8, 30), date(2026, 8, 31)):
+            with self.subTest(today=today):
+                close_months = [action["month"] for action in self.actions(today) if action["kind"] == "month_close"]
+                self.assertNotIn("2026-08", close_months)
+                self.assertEqual(len(close_months), len(set(close_months)))
+
+    def test_first_day_of_following_month_offers_only_august(self):
+        close_months = [action["month"] for action in self.actions(date(2026, 9, 1)) if action["kind"] == "month_close"]
+        self.assertEqual(close_months, ["2026-08"])
+
+    def test_oldest_recent_open_month_is_the_only_catch_up_prompt(self):
+        self.conn.execute("""INSERT INTO investment_events
+            (user_id, amount, direction, asset_type, source, created_at)
+            VALUES (1, 100, 'in', 'etf', 'app_etf_plan', '2026-07-15')""")
+        close_months = [action["month"] for action in self.actions(date(2026, 9, 1)) if action["kind"] == "month_close"]
+        self.assertEqual(close_months, ["2026-07"])
+
+    def test_february_waits_until_march_in_both_calendar_variants(self):
+        for today in (date(2025, 2, 28), date(2024, 2, 29)):
+            with self.subTest(today=today):
+                self.assertNotIn(
+                    "2025-02" if today.year == 2025 else "2024-02",
+                    [action["month"] for action in self.actions(today) if action["kind"] == "month_close"],
+                )
+        self.assertEqual(
+            [action["month"] for action in self.actions(date(2025, 3, 1)) if action["kind"] == "month_close"],
+            ["2025-02"],
+        )
+
     def test_income_and_first_etf_are_due_on_their_days(self):
         actions = self.actions(date(2026, 3, 15))
         self.assertEqual({action["id"] for action in actions}, {"income", "etf_plan:10", "month_close:2026-02"})
@@ -78,6 +108,12 @@ class MonthlyCheckinTests(unittest.TestCase):
         actions = self.actions(date(2026, 3, 15))
         self.assertNotIn("etf_plan:10", {action["id"] for action in actions})
         self.assertNotIn("month_close:2026-02", {action["id"] for action in actions})
+
+    def test_closed_previous_month_does_not_fall_through_to_running_month(self):
+        state.ensure_app_month_close_table(self.conn)
+        self.conn.execute("INSERT INTO app_month_closures (user_id, month_key, actual_savings) VALUES (1, '2026-07', 50)")
+        close_months = [action["month"] for action in self.actions(date(2026, 8, 27)) if action["kind"] == "month_close"]
+        self.assertEqual(close_months, [])
 
     def test_only_month_close_confirms_savings_for_score(self):
         self.conn.execute("""INSERT INTO investment_events

@@ -4086,7 +4086,7 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   keine History-Rewrites, Integrity ok, Foreign Keys und Cash Drift jeweils 0. Commit
   `1682f44` ist mit API, Bot und Frontend ausgerollt.
 
-## Update 27.08.2026 - PIN grace period (lokal, noch nicht deployt)
+## Update 27.08.2026 - PIN grace period (deployed)
 
 - Ein erfolgreich entsperrtes Geraet behaelt den serverseitigen PIN-Unlock jetzt fuer genau
   zwei Minuten ohne geschuetzte Aktivitaet. Aktive Nutzung aktualisiert den bestehenden
@@ -4096,5 +4096,17 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   Finanzansicht sofort und fragt beim Zurueckkehren zuerst den Server. Innerhalb von zwei
   Minuten wird der State erneut geladen; danach erscheint der PIN-Screen ohne Finance-Flash.
 - Logout, Passwort-Reset, Session-Widerruf, PIN-Lockout und Device-Isolation bleiben unveraendert.
-- Verifikation lokal: 30 PIN-/Frontend-/Monthly-Check-in-Tests erfolgreich, Python-Compile,
+- Verifikation: 30 PIN-/Frontend-/Monthly-Check-in-Tests erfolgreich, Python-Compile,
+  JavaScript-Syntax und `git diff --check` sauber. Commit `69c0c80` ist mit API und Frontend
+  ausgerollt; API Healthcheck, Integrity und Foreign Keys sind gruen.
+
+## Update 27.08.2026 - Monthly close due-date correction (lokal, noch nicht deployt)
+
+- Ein Monatsabschluss wird ausschliesslich fuer vollstaendig vergangene Monate angeboten; der
+  laufende Monat ist auch am Monatsende nie parallel als abgeschlossen markiert. Die bevorzugte
+  Semantik ist der erste App-Start im Folgemonat.
+- Bei mehreren offenen, juengeren Monaten zeigt Rov.E nur den aeltesten sinnvollen Rueckstand.
+  Der API-Endpunkt akzeptiert zudem nur genau den aktuell durch den Server angebotenen Monat;
+  alte Tabs oder manipulierte Requests koennen keinen laufenden oder zweiten Monat schliessen.
+- Verifikation lokal: 24 Monthly-Check-in-/PIN-Regressionstests erfolgreich, Python-Compile,
   JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.
