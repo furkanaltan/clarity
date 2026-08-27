@@ -47,6 +47,7 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn("function pinEntryComplete(id)", self.frontend)
         self.assertIn("setTimeout(submitPinUnlock,80)", self.frontend)
         self.assertIn('PIN_PAD_TARGET="pinSetupConfirm"', self.frontend)
+        self.assertNotIn('pinSetupConfirm")?.focus()', self.frontend)
         self.assertIn('Gib zum Einloggen deine PIN ein.', self.frontend)
 
     def test_pin_is_never_persisted_in_browser_storage_or_cookie(self):
@@ -75,7 +76,11 @@ class FrontendPinTests(unittest.TestCase):
         self.assertNotIn('type="password"', pin_field)
         self.assertNotIn('current-password', pin_field)
         self.assertNotIn('one-time-code', pin_field)
-        self.assertIn('-webkit-text-security:disc', self.frontend)
+        self.assertNotIn('-webkit-text-security', self.frontend)
+        self.assertIn('pin-entry${withPad?"":" pin-entry-compact"}', pin_field)
+        self.assertIn('id="${id}Dots"', pin_field)
+        self.assertIn('readonly aria-readonly="true" tabindex="-1"', pin_field)
+        self.assertIn('.pin-entry .pin-pad-input{pointer-events:none}', self.frontend)
 
     def test_onboarding_finishes_at_pin_setup_not_home(self):
         finish = self.function_body("finishOnboarding")
@@ -84,21 +89,23 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('showPinScreen("setup")', tail)
         self.assertNotIn("location.href=location.pathname", tail)
 
-    def test_inactivity_relocks_and_active_use_touches_server(self):
-        self.assertIn("const PIN_INACTIVITY_MS=5*60*1000;", self.frontend)
+    def test_two_minute_inactivity_relocks_and_active_use_touches_server(self):
+        self.assertIn("const PIN_INACTIVITY_MS=2*60*1000;", self.frontend)
         self.assertIn('pinRequest("/v1/auth/pin/activity"', self.frontend)
         self.assertIn('pinRequest("/v1/auth/pin/lock"', self.frontend)
         self.assertIn("Date.now()-PIN_LAST_LOCAL_ACTIVITY>=PIN_INACTIVITY_MS", self.frontend)
 
-    def test_leaving_app_locks_session_and_rechecks_pin_on_return(self):
-        self.assertIn("function lockPinOnExit()", self.frontend)
-        self.assertIn("navigator.sendBeacon", self.frontend)
-        self.assertIn("keepalive:true", self.frontend)
-        self.assertIn('window.addEventListener("pagehide",lockPinOnExit)', self.frontend)
+    def test_background_uses_server_checked_grace_without_a_finance_flash(self):
+        self.assertIn("async function resumePinAfterBackground()", self.frontend)
+        self.assertNotIn("function lockPinOnExit()", self.frontend)
+        self.assertNotIn('window.addEventListener("pagehide",lockPinOnExit)', self.frontend)
         visibility_start = self.frontend.rindex('document.addEventListener("visibilitychange"')
         visibility = self.frontend[visibility_start:self.frontend.index('setInterval(()=>', visibility_start)]
-        self.assertIn("lockPinOnExit();", visibility)
-        self.assertIn("fetchPinStatus();", visibility)
+        self.assertIn('document.getElementById("app")?.setAttribute("hidden","")', visibility)
+        self.assertIn("resumePinAfterBackground();", visibility)
+        resume = self.function_body("resumePinAfterBackground")
+        self.assertLess(resume.index('setAttribute("hidden","")'), resume.index("fetchPinStatus()"))
+        self.assertLess(resume.index("fetchPinStatus()"), resume.index('removeAttribute("hidden")'))
 
     def test_recovery_change_logout_and_locked_event_are_wired(self):
         for endpoint in (

@@ -4067,7 +4067,7 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Die Money Map bleibt mit sechs Kategorien vollstaendig oberhalb der festen Fusszeile, und die
   Score-Seite zeigt den Wert wieder im sichtbaren Kreis.
 
-## Update 27.08.2026 - Monthly Check-in V1 (lokal, noch nicht deployt)
+## Update 27.08.2026 - Monthly Check-in V1 (deployed)
 
 - Eine additive Monatsabschluss-Tabelle speichert pro Nutzer und abgeschlossenem Monat genau
   einen vom Nutzer bestätigten tatsächlichen Sparbetrag. Sie erzeugt keine Cash- oder
@@ -4080,7 +4080,21 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Die App nutzt Mentor, dezenten reduzierbaren Pulse, Monatsplan-Badge und die bestehende
   Benachrichtigungsinfrastruktur. Es gibt bewusst kein hartes Popup; Monatsabschlüsse erscheinen
   beim ersten Start im Folgemonat.
-- Verifikation lokal: 79 neue und bestehende Monatsplan-/ETF-/Financial-Accounts-/Report-Story-
+- Verifikation: 79 neue und bestehende Monatsplan-/ETF-/Financial-Accounts-/Report-Story-
   Regressionstests erfolgreich, Python-Compile, JavaScript-Syntax und `git diff --check` sauber.
-  Der separate PDF-Render-Test benötigt zusätzlich `reportlab`, das in der lokalen Auth-Testumgebung
-  nicht installiert ist; kein Produktionscodefehler. Kein Deploy erfolgt.
+  Produktions-Gate mit acht aktiven Nutzern: keine Zukunftsaktion offen, Score 0-100,
+  keine History-Rewrites, Integrity ok, Foreign Keys und Cash Drift jeweils 0. Commit
+  `1682f44` ist mit API, Bot und Frontend ausgerollt.
+
+## Update 27.08.2026 - PIN grace period (lokal, noch nicht deployt)
+
+- Ein erfolgreich entsperrtes Geraet behaelt den serverseitigen PIN-Unlock jetzt fuer genau
+  zwei Minuten ohne geschuetzte Aktivitaet. Aktive Nutzung aktualisiert den bestehenden
+  sessiongebundenen Server-State weiter; ein Browser-Zeitstempel kann keinen Finanz-Endpunkt
+  entsperren.
+- Beim Wechsel in den Hintergrund sendet die PWA keinen Sofort-Lock mehr. Sie verdeckt die
+  Finanzansicht sofort und fragt beim Zurueckkehren zuerst den Server. Innerhalb von zwei
+  Minuten wird der State erneut geladen; danach erscheint der PIN-Screen ohne Finance-Flash.
+- Logout, Passwort-Reset, Session-Widerruf, PIN-Lockout und Device-Isolation bleiben unveraendert.
+- Verifikation lokal: 30 PIN-/Frontend-/Monthly-Check-in-Tests erfolgreich, Python-Compile,
+  JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.
