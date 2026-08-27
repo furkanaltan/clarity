@@ -194,6 +194,26 @@ process.stdout.write(JSON.stringify({{
         self.assertIn('sendAnnouncementAction(featureId,"opened")', opener)
         self.assertIn('sendAnnouncementAction(body.dataset.featureId,"dismissed")', self.frontend)
 
+    def test_announcement_navigation_closes_only_announcement_overlays_first(self):
+        closer = self.function_source("closeAnnouncementOverlays")
+        for sheet_id in ("actsheet", "whatsnewsheet", "announcementdetailsheet"):
+            self.assertIn(sheet_id, closer)
+        self.assertIn('sheetBg.classList.remove("on")', closer)
+        opener = self.function_source("openFeatureAnnouncement")
+        self.assertIn('openAnnouncementTarget(item.deep_link)', opener)
+        self.assertNotIn("hasTutorial", opener)
+        self.assertIn('openAnnouncementTarget(body.dataset.deepLink)', self.frontend)
+
+    def test_targeted_open_precedes_overlay_close_without_cross_feature_state(self):
+        opener = self.function_source("openFeatureAnnouncement")
+        self.assertLess(
+            opener.index('sendAnnouncementAction(featureId,"opened")'),
+            opener.index("openAnnouncementTarget(item.deep_link)"),
+        )
+        self.assertNotIn("markRenderedAnnouncementsSeen", opener)
+        self.assertNotIn("dismissed", opener)
+        self.assertNotIn("completed", opener)
+
     def test_tutorials_are_small_and_no_overlay_tour_is_added(self):
         tutorial = self.function_source("announcementTutorialSteps")
         self.assertIn("quick_examples", tutorial)

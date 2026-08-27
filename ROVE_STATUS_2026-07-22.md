@@ -4186,3 +4186,12 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   zweite unabhaengige Karte bestehen.
 - Crypto- und Monatscheck-Tutorials sind jetzt explizit an ihre jeweilige `feature_id` gebunden.
   Dadurch kann ein Monatscheck weder Crypto-Schritte noch dessen Zielansicht uebernehmen.
+
+## Update 27.08.2026 - Feature Announcements bell auto-close (lokal, noch nicht deployt)
+
+- Ein Announcement markiert weiterhin nur seine eigene `feature_id` als geoeffnet. Vor einem
+  erfolgreichen Deep Link werden ausschliesslich Glocke, Neuigkeiten-Archiv und Announcement-
+  Detail geschlossen; danach ist die Zielansicht ohne verdeckendes Overlay sichtbar.
+- Die einheitliche Zielnavigation gilt fuer alle allowlisted Ziele einschliesslich Top-Haendler,
+  Monatscheck, Crypto und Rov.E AI. Sie schreibt keine weiteren Announcement-States und greift
+  weder in Finanzdaten noch in den normalen Activity-Feed ein.
