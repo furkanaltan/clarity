@@ -21,6 +21,51 @@ SAFE_DEEP_LINKS = frozenset({
 PROMINENT_DAYS = 90
 _FEATURE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{1,79}")
 
+# Releases are published explicitly by the deployment command, never while a
+# user merely loads state. This keeps the release moment and audience clear.
+DEFAULT_FEATURE_ANNOUNCEMENTS: tuple[dict[str, str], ...] = (
+    {
+        "feature_id": "rove_ai_v1",
+        "version": "1",
+        "title": "Rov.E AI",
+        "short_message": "Frag Rov.E direkt zu deinen Finanzen.",
+        "message": "Rov.E AI beantwortet Finanzfragen und hilft dir, deine Zahlen besser einzuordnen.",
+        "priority": "major",
+        "deep_link": "talk",
+        "tutorial_type": "quick_examples",
+    },
+    {
+        "feature_id": "crypto_tracking_v1",
+        "version": "1",
+        "title": "Crypto Tracking",
+        "short_message": "Erfasse Kryptowerte per Suche oder Screenshot.",
+        "message": "Lege deine Coins einzeln an und behalte ihre Werte in Rov.E im Blick.",
+        "priority": "major",
+        "deep_link": "asset-krypto",
+        "tutorial_type": "steps",
+    },
+    {
+        "feature_id": "top_merchants_v1",
+        "version": "1",
+        "title": "Top-Haendler",
+        "short_message": "Sieh, wo du diesen Monat am meisten ausgegeben hast.",
+        "message": "In der Analyse findest du deine wichtigsten Haendler und Ausgabenmuster.",
+        "priority": "minor",
+        "deep_link": "analysis-merchants",
+        "tutorial_type": "none",
+    },
+    {
+        "feature_id": "monthly_checkin_v1",
+        "version": "1",
+        "title": "Monatscheck",
+        "short_message": "Behalte deine faelligen Monatsaktionen im Blick.",
+        "message": "Rov.E erinnert dich nur dann an Einkommen, ETF-Ausfuehrungen oder den Monatsabschluss, wenn etwas wirklich faellig ist.",
+        "priority": "minor",
+        "deep_link": "monthly-checkin",
+        "tutorial_type": "steps",
+    },
+)
+
 
 def ensure_feature_announcement_tables(conn: sqlite3.Connection) -> None:
     """Create the additive, rerunnable announcement schema."""
@@ -63,6 +108,32 @@ def ensure_feature_announcement_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_feature_announcement_state_user ON "
         "app_feature_announcement_state(user_id, feature_id)"
     )
+
+
+def seed_default_feature_announcements(conn: sqlite3.Connection) -> list[str]:
+    """Publish the initial release set once without creating user state rows."""
+    ensure_feature_announcement_tables(conn)
+    published: list[str] = []
+    for announcement in DEFAULT_FEATURE_ANNOUNCEMENTS:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO app_feature_announcements (
+                   feature_id, version, title, short_message, message, priority,
+                   deep_link, tutorial_type, published_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (
+                announcement["feature_id"],
+                announcement["version"],
+                announcement["title"],
+                announcement["short_message"],
+                announcement["message"],
+                announcement["priority"],
+                announcement["deep_link"],
+                announcement["tutorial_type"],
+            ),
+        )
+        if cursor.rowcount:
+            published.append(announcement["feature_id"])
+    return published
 
 
 def _account_created_at(conn: sqlite3.Connection, user_id: int) -> str:

@@ -8,9 +8,11 @@ from unittest.mock import patch
 
 import rove_app_api as api
 from rove_feature_announcements import (
+    DEFAULT_FEATURE_ANNOUNCEMENTS,
     SAFE_DEEP_LINKS,
     ensure_feature_announcement_tables,
     get_feature_announcements_for_user,
+    seed_default_feature_announcements,
 )
 from rove_financial_accounts import ensure_financial_account_reference_schema, set_feature_enabled
 
@@ -93,6 +95,27 @@ class FeatureAnnouncementSprintOneTests(unittest.TestCase):
             ensure_feature_announcement_tables(conn)
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"app_feature_announcements", "app_feature_announcement_state"} <= tables)
+
+    def test_initial_release_is_explicit_idempotent_and_creates_no_user_state(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(seed_default_feature_announcements(conn), [
+                item["feature_id"] for item in DEFAULT_FEATURE_ANNOUNCEMENTS
+            ])
+            first_published_at = dict(conn.execute(
+                "SELECT feature_id, published_at FROM app_feature_announcements"
+            ).fetchall())
+            self.assertEqual(seed_default_feature_announcements(conn), [])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_feature_announcement_state"
+            ).fetchone()[0], 0)
+            self.assertEqual(dict(conn.execute(
+                "SELECT feature_id, published_at FROM app_feature_announcements"
+            ).fetchall()), first_published_at)
+            conn.commit()
+        self.assertEqual(
+            {item["feature_id"] for item in self._for_user()["archive"]},
+            {item["feature_id"] for item in DEFAULT_FEATURE_ANNOUNCEMENTS},
+        )
 
     def test_global_definition_is_lazy_and_state_actions_are_idempotent(self):
         self._insert("rove_ai_v1")

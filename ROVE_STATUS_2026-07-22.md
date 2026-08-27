@@ -4151,7 +4151,7 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Verifikation lokal: 4 gezielte Coach-/Schnellerfassen-Tests, JavaScript-Syntax und
   `git diff --check` erfolgreich. Kein Deploy erfolgt.
 
-## Update 27.08.2026 - Feature Announcements Sprint 2 (lokal, noch nicht deployt)
+## Update 27.08.2026 - Feature Announcements Sprint 2 (deployed)
 
 - Die bestehende Aktivitaetsglocke kombiniert ihren lokalen Ungelesen-Status jetzt mit der
   serverseitigen Announcement-Wahrheit. Normale Aktivitaeten und Fixkosten bleiben vollstaendig
@@ -4167,4 +4167,13 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   session- und PIN-geschuetzten Sprint-1-Endpunkte.
 - Coach, Push, Score und Finanz-Schreibpfade bleiben unveraendert. Verifikation lokal: 52
   Announcement-/PIN-/Monthly-Check-in-/Schnellerfassen-/Coach-Tests erfolgreich, JavaScript- und
-  Python-Syntax sauber. Kein Commit und kein Deploy erfolgt.
+  Python-Syntax sauber. Commit `8b330b6` ist mit Frontend und serverseitigen Tests ausgerollt.
+
+## Update 27.08.2026 - Feature Announcements initialer Release (lokal, noch nicht deployt)
+
+- Die Sprint-1/Sprint-2-Infrastruktur veroeffentlicht absichtlich keine Inhalte beim Schema-Setup.
+  Ein expliziter, idempotenter Publisher legt deshalb die vier initialen Release-Definitionen
+  (Rov.E AI, Crypto Tracking, Top-Haendler und Monatscheck) genau einmal an.
+- Der Publisher erzeugt keine nutzerspezifischen State-Zeilen. Sein Zeitpunkt ist zugleich der
+  Release-Zeitpunkt: bestehende Accounts sehen die Neuigkeiten, zukuenftige Accounts werden nicht
+  mit alten Releases ueberflutet. Ein wiederholter Lauf behaelt die urspruenglichen Zeitstempel bei.
