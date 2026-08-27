@@ -4177,3 +4177,12 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Der Publisher erzeugt keine nutzerspezifischen State-Zeilen. Sein Zeitpunkt ist zugleich der
   Release-Zeitpunkt: bestehende Accounts sehen die Neuigkeiten, zukuenftige Accounts werden nicht
   mit alten Releases ueberflutet. Ein wiederholter Lauf behaelt die urspruenglichen Zeitstempel bei.
+
+## Update 27.08.2026 - Feature Announcements isolation bugfix (lokal, noch nicht deployt)
+
+- `seen` bleibt ausschliesslich ein Lesestatus. Gesehene Neuigkeiten bleiben als eigenstaendige
+  Karten sichtbar, bis genau diese Funktion geoeffnet, entfernt oder fachlich abgeschlossen ist.
+  Der Glockenpunkt folgt offenen, noch nicht geoeffneten Neuigkeiten und bleibt daher fuer eine
+  zweite unabhaengige Karte bestehen.
+- Crypto- und Monatscheck-Tutorials sind jetzt explizit an ihre jeweilige `feature_id` gebunden.
+  Dadurch kann ein Monatscheck weder Crypto-Schritte noch dessen Zielansicht uebernehmen.

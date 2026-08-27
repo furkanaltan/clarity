@@ -51,6 +51,7 @@ class FeatureAnnouncementSprint2Tests(unittest.TestCase):
             self.skipTest("Node.js is not installed")
         functions = "\n".join(self.function_source(name) for name in (
             "normalizeFeatureAnnouncements",
+            "announcementRelevantItems",
             "announcementUnseenItems",
             "announcementFeedModel",
         ))
@@ -78,17 +79,60 @@ process.stdout.write(JSON.stringify(output));
              [3, "bundle", 3], [4, "bundle", 4]],
         )
 
+    def test_seen_items_remain_separate_feed_cards_until_targeted_resolution(self):
+        if not shutil.which("node"):
+            self.skipTest("Node.js is not installed")
+        functions = "\n".join(self.function_source(name) for name in (
+            "normalizeFeatureAnnouncements",
+            "announcementRelevantItems",
+            "announcementUnseenItems",
+            "announcementUnresolvedItems",
+            "announcementFeedModel",
+            "updateAnnouncementLocalState",
+        ))
+        script = f"""
+const DATA={{featureAnnouncements:normalizeFeatureAnnouncements({{
+  eligible:[
+    {{feature_id:"crypto_tracking_v1",title:"Neu: Crypto Tracking",deep_link:"asset-krypto",state:{{}}}},
+    {{feature_id:"monthly_checkin_v1",title:"Neu: Monatscheck",deep_link:"monthly-checkin",state:{{}}}}
+  ], archive:[]
+}})}};
+{functions}
+for(const item of DATA.featureAnnouncements.eligible) item.state.seen=true;
+updateAnnouncementLocalState("crypto_tracking_v1","opened");
+process.stdout.write(JSON.stringify({{
+  feed:announcementFeedModel().items.map(item=>[item.feature_id,item.title,item.deep_link]),
+  unresolved:announcementUnresolvedItems().map(item=>item.feature_id),
+  crypto:DATA.featureAnnouncements.eligible[0].state,
+  monthly:DATA.featureAnnouncements.eligible[1].state
+}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script], check=True, capture_output=True, text=True
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["feed"], [
+            ["crypto_tracking_v1", "Neu: Crypto Tracking", "asset-krypto"],
+            ["monthly_checkin_v1", "Neu: Monatscheck", "monthly-checkin"],
+        ])
+        self.assertEqual(payload["unresolved"], ["monthly_checkin_v1"])
+        self.assertTrue(payload["crypto"]["opened"])
+        self.assertFalse(payload["monthly"]["opened"])
+        self.assertFalse(payload["monthly"]["completed"])
+
     def test_bell_dot_combines_activity_and_server_announcements(self):
         body = self.function_source("updateBellDot")
         self.assertIn("latestActivityTs() > readActivitySeenTs()", body)
-        self.assertIn("announcementUnseenItems().length>0", body)
+        self.assertIn("announcementUnresolvedItems().length>0", body)
         self.assertIn('classList.toggle("has-unread", hasUnread)', body)
 
-    def test_seen_dismissed_and_completed_items_are_not_prominent(self):
+    def test_seen_items_stay_visible_and_only_dismissed_or_completed_items_are_removed(self):
         body = self.function_source("announcementUnseenItems")
         self.assertIn("!item.state?.seen", body)
-        self.assertIn("!item.state?.dismissed", body)
-        self.assertIn("!item.state?.completed", body)
+        relevant = self.function_source("announcementRelevantItems")
+        self.assertNotIn("!item.state?.seen", relevant)
+        self.assertIn("!item.state?.dismissed", relevant)
+        self.assertIn("!item.state?.completed", relevant)
         local_state = self.function_source("updateAnnouncementLocalState")
         self.assertIn('action==="opened"?["seen","opened"]', local_state)
         self.assertIn('action==="completed"?["seen","opened","completed"]', local_state)
@@ -130,6 +174,12 @@ process.stdout.write(JSON.stringify(output));
                 self.assertIn(route, body)
         self.assertIn("if(!action) return false", body)
 
+    def test_crypto_and_monthly_tutorials_are_bound_to_their_feature_ids(self):
+        tutorial = self.function_source("announcementTutorialSteps")
+        self.assertIn('feature==="crypto_tracking_v1"', tutorial)
+        self.assertIn('feature==="monthly_checkin_v1"', tutorial)
+        self.assertNotIn('item?.tutorial_type==="steps"||feature.includes("crypto")', tutorial)
+
     def test_analysis_merchants_uses_existing_analysis_view(self):
         body = self.function_source("openAnalysisMerchants")
         self.assertIn("openAnalysis()", body)
@@ -147,7 +197,8 @@ process.stdout.write(JSON.stringify(output));
     def test_tutorials_are_small_and_no_overlay_tour_is_added(self):
         tutorial = self.function_source("announcementTutorialSteps")
         self.assertIn("quick_examples", tutorial)
-        self.assertIn("steps", tutorial)
+        self.assertIn('feature==="crypto_tracking_v1"', tutorial)
+        self.assertIn('feature==="monthly_checkin_v1"', tutorial)
         self.assertIn("Was ist ein ETF?", tutorial)
         self.assertIn("Hinterlege Menge und Einstandswert", tutorial)
         self.assertNotIn("joyride", self.frontend.lower())
