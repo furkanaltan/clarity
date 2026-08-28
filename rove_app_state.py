@@ -1683,6 +1683,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
     etf = investments - crypto
     crypto_positions = _crypto_positions(conn, user_id) if crypto else []
+    crypto_header_logo_url = _crypto_header_logo_url() if crypto else ""
     crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
                   if crypto_positions else "aus dem Bot")
     etf_positions = _etf_positions(conn, user_id) if etf else []
@@ -1783,6 +1784,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
              **({"positions": etf_positions} if etf_positions else {})} if etf else None,
             {"assetKey": "asset:crypto", "name": "Krypto", "source": "bot", "icon": "bitcoin", "tint": "#F7931A",
              "value": round(crypto, 2), "sub": crypto_sub,
+             **({"headerLogoUrl": crypto_header_logo_url} if crypto_header_logo_url else {}),
              **({"positions": crypto_positions} if crypto_positions else {})} if crypto else None,
             {"assetKey": "asset:property", "name": "Immobilie", "source": "app", "icon": "house", "tint": "#D8B66A",
              "value": property_data["equity"], "sub": "Eigenkapital",
@@ -1967,6 +1969,11 @@ def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
     except sqlite3.OperationalError:
         return legacy
     return round(legacy + max(0.0, float(row["total"] or 0)), 2)
+
+
+def _crypto_header_logo_url() -> str:
+    """Returns Bitcoin's cached CMC logo for the crypto summary without creating a holding."""
+    return str(fetch_crypto_metadata(["1"]).get("1", {}).get("logo_url") or "")
 
 
 def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:

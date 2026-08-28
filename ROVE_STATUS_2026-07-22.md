@@ -4236,3 +4236,14 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   Holdings benötigen keine Migration; IDs, Mengen, Marktwerte, Einstandswerte und P/L bleiben
   unverändert. Die App zeigt echte CMC-Logos, mit Symbol-Badge bei fehlendem oder defektem Bild.
 - Verifikation: 29 Crypto-Tests, Python- und JavaScript-Syntax sowie `git diff --check` OK.
+# Update 28.08.2026 - Crypto Header-Logo und Edit-Polish (lokal, noch nicht deployt)
+
+- Das Krypto-Summary erhaelt Bitcoin als optionale `headerLogoUrl` aus derselben gecachten
+  CoinMarketCap-Metadatenquelle wie die Coin-Positionen. Die CMC-ID `1` wird nicht als Holding
+  angelegt; dadurch erscheinen weder neue Positionen noch beeinflusst der Header Mengen, Werte,
+  Einstand oder P/L. Ist das Logo nicht verfuegbar, bleibt das vorhandene Krypto-Symbol sichtbar.
+- Bearbeitbare Coin-Zeilen verwenden einen kompakten SVG-Stift mit einem 42px Touch-Target statt
+  des breiten sichtbaren Textes `Bearbeiten`. Die bestehende Edit-Aktion und die Wertdarstellung
+  bleiben unveraendert.
+- Verifikation lokal: 31 Crypto-Tests erfolgreich, Python- und JavaScript-Syntax OK,
+  `git diff --check` OK. Kein Deploy erfolgt.

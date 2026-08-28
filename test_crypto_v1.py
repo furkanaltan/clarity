@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import rove_app_api as api
 import rove_market_data as market
-from rove_app_state import _crypto_holdings_value, _crypto_positions, _etf_positions
+from rove_app_state import _crypto_header_logo_url, _crypto_holdings_value, _crypto_positions, _etf_positions
 
 
 def create_crypto_db(path: Path) -> None:
@@ -279,6 +279,14 @@ class CryptoV1Tests(unittest.TestCase):
         self.assertEqual(bitcoin["marketValue"], 5000)
         self.assertEqual(self.values(), before)
 
+    def test_crypto_header_logo_uses_cached_bitcoin_metadata_without_a_holding(self):
+        with patch("rove_app_state.fetch_crypto_metadata", return_value={"1": {
+            "logo_url": "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+        }}):
+            logo_url = _crypto_header_logo_url()
+        self.assertEqual(logo_url, "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png")
+        self.assertEqual(self.values(), (5000, 1000))
+
     def test_screenshot_commit_is_explicit_idempotent_and_requires_quantity(self):
         bad = self.request("POST", "/v1/crypto/import/screenshot/commit", json={"positions": [{
             **self.payload(), "quantity": None, "importKey": "a" * 32,
@@ -526,7 +534,8 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('id="cryptoLegacyValue"', self.html)
         self.assertIn("position.legacyRef||null", self.html)
         self.assertIn("deleteLegacyCryptoPosition(position.legacyRef)", self.html)
-        self.assertIn('class="asset-position-edit">Bearbeiten', self.html)
+        self.assertIn('class="crypto-position-edit"', self.html)
+        self.assertIn('aria-label="Position bearbeiten"', self.html)
 
     def test_crypto_delete_keeps_the_open_sheet_scroll_position(self):
         self.assertIn("function refreshOpenAssetDetail(i, preserveScroll=false)", self.html)
@@ -538,6 +547,14 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('class="crypto-position-fallback"', self.html)
         self.assertIn("this.hidden=true;this.nextElementSibling.hidden=false", self.html)
         self.assertIn("s2\\.coinmarketcap\\.com", self.html)
+
+    def test_crypto_header_reuses_bitcoin_logo_and_keeps_existing_fallback(self):
+        self.assertIn("function cryptoHeaderLogo(position, fallback)", self.html)
+        self.assertIn('String(position?.providerAssetId||"")==="1"', self.html)
+        self.assertIn('class="crypto-header-logo"', self.html)
+        self.assertIn("cryptoLogo||`<div class=\"gicon\"", self.html)
+        self.assertIn("cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},ic(a.icon))", self.html)
+        self.assertIn("width:42px;height:42px", self.html)
 
 
 if __name__ == "__main__":
