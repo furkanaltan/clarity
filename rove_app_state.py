@@ -33,7 +33,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rove_score import calculate_score
-from rove_market_data import ensure_market_tracking_schema
+from rove_market_data import ensure_market_tracking_schema, fetch_crypto_metadata
 from rove_investment_contributions import (
     ensure_investment_contribution_schema,
     holding_contribution_summary,
@@ -1990,12 +1990,16 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
         ).fetchall()
     except sqlite3.OperationalError:
         holding_rows = []
+    metadata = fetch_crypto_metadata([
+        row["provider_asset_id"] for row in holding_rows
+        if str(row["provider_asset_id"] or "").strip()
+    ])
     for row in holding_rows:
         market_value = max(0.0, float(row["market_value"] or 0))
         cost_basis = None if row["total_invested"] is None else max(0.0, float(row["total_invested"]))
         profit = None if cost_basis is None else round(market_value - cost_basis, 2)
         profit_pct = None if not cost_basis else round(profit / cost_basis * 100, 2)
-        positions.append({
+        position = {
             "n": str(row["instrument_label"]),
             "v": round(market_value, 2),
             "marketValue": round(market_value, 2),
@@ -2013,7 +2017,11 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
             "holdingId": int(row["id"]),
             "live": True,
             "editable": True,
-        })
+        }
+        logo_url = metadata.get(str(row["provider_asset_id"] or ""), {}).get("logo_url")
+        if logo_url:
+            position["logoUrl"] = logo_url
+        positions.append(position)
     try:
         legacy_rows = conn.execute(
             """SELECT

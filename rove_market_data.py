@@ -11,9 +11,11 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rove_investment_contributions import (
@@ -25,8 +27,11 @@ from rove_investment_contributions import (
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 LEEWAY_BASE_URL = "https://api.leeway.tech/api/v1/public"
 COINMARKETCAP_BASE_URL = "https://pro-api.coinmarketcap.com"
+CRYPTO_METADATA_CACHE_TTL = timedelta(days=7)
 SUPPORTED_QUOTE_CURRENCIES = frozenset({"EUR", "USD", "GBP", "CHF"})
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._:/-]{0,31}$")
+_CRYPTO_METADATA_CACHE: dict[str, dict] = {}
+_CRYPTO_METADATA_LOCK = threading.Lock()
 
 
 def ensure_market_tracking_schema(conn: sqlite3.Connection) -> None:
@@ -233,6 +238,82 @@ def fetch_crypto_eur_quotes(
                 "updated_at": eur.get("last_updated") or row.get("last_updated"),
             }
     return quotes
+
+
+def _valid_cmc_logo_url(value: object) -> str | None:
+    """Accept only CoinMarketCap's HTTPS image host for browser-facing metadata."""
+    text = str(value or "").strip()
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme != "https" or parsed.hostname != "s2.coinmarketcap.com":
+        return None
+    return text
+
+
+def fetch_crypto_metadata(
+    provider_asset_ids: list[str | int],
+    api_key: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict]:
+    """Return cached CMC logo metadata, refreshing stale IDs in batched requests.
+
+    Metadata is optional presentation data. Provider failures therefore return any
+    stale cache entries instead of affecting quotes or portfolio state.
+    """
+    ids: list[str] = []
+    for value in provider_asset_ids:
+        text = str(value or "").strip()
+        if text.isdigit() and int(text) > 0 and text not in ids:
+            ids.append(text)
+    if not ids:
+        return {}
+
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+
+    with _CRYPTO_METADATA_LOCK:
+        cached = {
+            asset_id: dict(_CRYPTO_METADATA_CACHE[asset_id])
+            for asset_id in ids
+            if asset_id in _CRYPTO_METADATA_CACHE
+        }
+        refresh_ids = [
+            asset_id for asset_id in ids
+            if asset_id not in cached or cached[asset_id]["expires_at"] <= checked_at
+        ]
+        if not refresh_ids:
+            return cached
+
+        refreshed_at = checked_at.isoformat()
+        expires_at = checked_at + CRYPTO_METADATA_CACHE_TTL
+        for offset in range(0, len(refresh_ids), 100):
+            chunk = refresh_ids[offset:offset + 100]
+            try:
+                payload = _cmc_request_json(
+                    "/v2/cryptocurrency/info",
+                    {"id": ",".join(chunk), "aux": "logo"},
+                    api_key,
+                )
+            except ValueError:
+                continue
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            for asset_id in chunk:
+                row = data.get(asset_id)
+                if isinstance(row, list):
+                    row = row[0] if row else None
+                row = row if isinstance(row, dict) else {}
+                entry = {
+                    "provider_asset_id": asset_id,
+                    "name": str(row.get("name") or "")[:80],
+                    "symbol": str(row.get("symbol") or "").upper()[:24],
+                    "logo_url": _valid_cmc_logo_url(row.get("logo")),
+                    "fetched_at": refreshed_at,
+                    "expires_at": expires_at,
+                }
+                _CRYPTO_METADATA_CACHE[asset_id] = entry
+                cached[asset_id] = dict(entry)
+        return cached
 
 
 def normalize_symbol(value: object) -> str:

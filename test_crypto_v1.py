@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import io
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -258,6 +259,26 @@ class CryptoV1Tests(unittest.TestCase):
             self.assertIsNone(positions["ETH"]["costBasis"])
             self.assertIsNone(positions["ETH"]["profitLoss"])
 
+    def test_existing_holding_gets_optional_logo_without_finance_change(self):
+        self.request("POST", "/v1/crypto/positions", json=self.payload())
+        before = self.values()
+        with patch("rove_app_state.fetch_crypto_metadata", return_value={"1": {
+            "logo_url": "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+        }}):
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                bitcoin = next(
+                    row for row in _crypto_positions(conn, 1)
+                    if row.get("providerAssetId") == "1"
+                )
+        self.assertEqual(
+            bitcoin["logoUrl"],
+            "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+        )
+        self.assertEqual(bitcoin["quantity"], 0.1)
+        self.assertEqual(bitcoin["marketValue"], 5000)
+        self.assertEqual(self.values(), before)
+
     def test_screenshot_commit_is_explicit_idempotent_and_requires_quantity(self):
         bad = self.request("POST", "/v1/crypto/import/screenshot/commit", json={"positions": [{
             **self.payload(), "quantity": None, "importKey": "a" * 32,
@@ -319,6 +340,9 @@ class CryptoV1Tests(unittest.TestCase):
 
 
 class CryptoProviderTests(unittest.TestCase):
+    def setUp(self):
+        market._CRYPTO_METADATA_CACHE.clear()
+
     def test_coin_search_uses_stable_provider_id_and_is_case_insensitive(self):
         response = {"data": [{"id": 1, "name": "Bitcoin", "symbol": "BTC"}]}
         with patch.object(market, "_cmc_request_json", return_value=response):
@@ -391,6 +415,61 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(set(quotes), {"1", "1027"})
         self.assertEqual(provider.call_count, 1)
 
+    def test_metadata_batches_known_ids_and_deduplicates(self):
+        response = {"data": {
+            "1": {"id": 1, "name": "Bitcoin", "symbol": "BTC", "logo": "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png"},
+            "1027": {"id": 1027, "name": "Ethereum", "symbol": "ETH", "logo": "https://s2.coinmarketcap.com/static/img/coins/64x64/1027.png"},
+            "6636": {"id": 6636, "name": "Polkadot", "symbol": "DOT", "logo": "https://s2.coinmarketcap.com/static/img/coins/64x64/6636.png"},
+        }}
+        with patch.object(market, "_cmc_request_json", return_value=response) as provider:
+            metadata = market.fetch_crypto_metadata([1, 1027, 6636, "1"])
+        self.assertEqual(set(metadata), {"1", "1027", "6636"})
+        self.assertEqual(metadata["1"]["symbol"], "BTC")
+        self.assertEqual(metadata["1027"]["symbol"], "ETH")
+        self.assertEqual(metadata["6636"]["symbol"], "DOT")
+        provider.assert_called_once()
+        self.assertEqual(provider.call_args.args[1]["id"], "1,1027,6636")
+
+    def test_metadata_cache_hit_and_expiry(self):
+        response = {"data": {"1": {
+            "id": 1, "name": "Bitcoin", "symbol": "BTC",
+            "logo": "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+        }}}
+        started = datetime(2026, 8, 28, tzinfo=timezone.utc)
+        with patch.object(market, "_cmc_request_json", return_value=response) as provider:
+            first = market.fetch_crypto_metadata([1], now=started)
+            cached = market.fetch_crypto_metadata([1], now=started + timedelta(days=6))
+            refreshed = market.fetch_crypto_metadata([1], now=started + timedelta(days=8))
+        self.assertEqual(first["1"]["logo_url"], cached["1"]["logo_url"])
+        self.assertEqual(refreshed["1"]["logo_url"], first["1"]["logo_url"])
+        self.assertEqual(provider.call_count, 2)
+
+    def test_metadata_failure_keeps_portfolio_available_and_rejects_foreign_logo_host(self):
+        temp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(temp.name) / "clarity.db"
+            create_crypto_db(path)
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                position = api._clean_crypto_position_payload({
+                    "providerAssetId": "1", "name": "Bitcoin", "symbol": "BTC",
+                    "quantity": 0.1, "costBasis": 4000,
+                })
+                api._insert_crypto_holding(conn, 1, position, quote("1", 50000, "BTC")["1"])
+                conn.commit()
+            with patch.object(market, "_cmc_request_json", side_effect=ValueError("crypto_provider_unavailable")):
+                with closing(sqlite3.connect(path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    positions = _crypto_positions(conn, 1)
+            bitcoin = next(row for row in positions if row.get("providerAssetId") == "1")
+            self.assertEqual(bitcoin["quantity"], 0.1)
+            self.assertEqual(bitcoin["marketValue"], 5000)
+            self.assertEqual(bitcoin["profitLoss"], 1000)
+            self.assertNotIn("logoUrl", bitcoin)
+            self.assertIsNone(market._valid_cmc_logo_url("https://example.com/1.png"))
+        finally:
+            temp.cleanup()
+
     def test_refresh_failure_preserves_old_value_and_other_coin_continues(self):
         temp = tempfile.TemporaryDirectory()
         try:
@@ -452,6 +531,13 @@ class CryptoFrontendTests(unittest.TestCase):
     def test_crypto_delete_keeps_the_open_sheet_scroll_position(self):
         self.assertIn("function refreshOpenAssetDetail(i, preserveScroll=false)", self.html)
         self.assertIn("refreshOpenAssetDetail(idx,true)", self.html)
+
+    def test_crypto_logo_uses_optional_state_url_and_symbol_fallback(self):
+        self.assertIn("function cryptoPositionMark(position)", self.html)
+        self.assertIn("position?.logoUrl", self.html)
+        self.assertIn('class="crypto-position-fallback"', self.html)
+        self.assertIn("this.hidden=true;this.nextElementSibling.hidden=false", self.html)
+        self.assertIn("s2\\.coinmarketcap\\.com", self.html)
 
 
 if __name__ == "__main__":

@@ -4225,3 +4225,14 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   ueber seinem Budget. Score und History verwenden weiterhin ihren bisherigen Eingang.
 - Verifikation lokal: 142 kombinierte Announcement-/Monthly-/Crypto-/Finanzkonto-/ETF-/Coach-Tests
   erfolgreich; Python-Compile, alle JavaScript-Bloecke und Scope-Diff sauber. Kein Deploy erfolgt.
+
+## Update 28.08.2026 - CoinMarketCap Coin-Logos V1 (bereit zum Deploy)
+
+- `rove_market_data.py` reichert stabile CMC-IDs über einen einzelnen gebündelten
+  `/v2/cryptocurrency/info`-Request mit optionalen Logo-Metadaten an. Der prozessweite Cache
+  dedupliziert IDs und hält Ergebnisse sieben Tage; bei Providerfehlern bleiben Portfolio-State,
+  Quotes und alle Finanzwerte vollständig verfügbar.
+- `rove_app_state.py` liefert für getrackte Coin-Positionen optional `logoUrl`. Bestehende
+  Holdings benötigen keine Migration; IDs, Mengen, Marktwerte, Einstandswerte und P/L bleiben
+  unverändert. Die App zeigt echte CMC-Logos, mit Symbol-Badge bei fehlendem oder defektem Bild.
+- Verifikation: 29 Crypto-Tests, Python- und JavaScript-Syntax sowie `git diff --check` OK.
