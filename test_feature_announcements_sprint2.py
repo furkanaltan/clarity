@@ -79,7 +79,7 @@ process.stdout.write(JSON.stringify(output));
              [3, "bundle", 3], [4, "bundle", 4]],
         )
 
-    def test_seen_items_remain_separate_feed_cards_until_targeted_resolution(self):
+    def test_seen_items_remain_prominent_but_opened_item_is_removed(self):
         if not shutil.which("node"):
             self.skipTest("Node.js is not installed")
         functions = "\n".join(self.function_source(name) for name in (
@@ -112,7 +112,6 @@ process.stdout.write(JSON.stringify({{
         )
         payload = json.loads(result.stdout)
         self.assertEqual(payload["feed"], [
-            ["crypto_tracking_v1", "Neu: Crypto Tracking", "asset-krypto"],
             ["monthly_checkin_v1", "Neu: Monatscheck", "monthly-checkin"],
         ])
         self.assertEqual(payload["unresolved"], ["monthly_checkin_v1"])
@@ -126,11 +125,12 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("announcementUnresolvedItems().length>0", body)
         self.assertIn('classList.toggle("has-unread", hasUnread)', body)
 
-    def test_seen_items_stay_visible_and_only_dismissed_or_completed_items_are_removed(self):
+    def test_seen_items_stay_visible_and_opened_dismissed_or_completed_are_removed(self):
         body = self.function_source("announcementUnseenItems")
         self.assertIn("!item.state?.seen", body)
         relevant = self.function_source("announcementRelevantItems")
         self.assertNotIn("!item.state?.seen", relevant)
+        self.assertIn("!item.state?.opened", relevant)
         self.assertIn("!item.state?.dismissed", relevant)
         self.assertIn("!item.state?.completed", relevant)
         local_state = self.function_source("updateAnnouncementLocalState")
@@ -185,6 +185,17 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("openAnalysis()", body)
         self.assertIn('analysisView="merchants"', body)
         self.assertIn("renderAnalysis()", body)
+
+    def test_crypto_deep_link_opens_management_or_add_flow(self):
+        body = self.function_source("openFeatureDeepLink")
+        self.assertIn('if(index>=0) openAssetDetail(index)', body)
+        self.assertIn('else openAssetKind("crypto")', body)
+        self.assertNotIn("if(index<0) return false", body)
+
+    def test_monthly_plan_has_a_clear_nothing_due_state(self):
+        body = self.function_source("renderMonthlyPlan")
+        self.assertIn("Aktuell ist nichts fällig.", body)
+        self.assertIn("dueActions.length", body)
 
     def test_opened_seen_and_dismissed_use_existing_server_endpoint(self):
         sender = self.function_source("sendAnnouncementAction")

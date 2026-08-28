@@ -251,10 +251,21 @@ def get_feature_announcements_for_user(conn: sqlite3.Connection, user_id: int) -
             "SELECT datetime(?) >= datetime('now', 'localtime', ?) ",
             (row["published_at"], f"-{PROMINENT_DAYS} days"),
         ).fetchone()[0])
-        if is_recent and not item["state"]["dismissed"] and not item["state"]["completed"]:
+        if (
+            is_recent
+            and not item["state"]["opened"]
+            and not item["state"]["dismissed"]
+            and not item["state"]["completed"]
+        ):
             prominent.append(item)
-    unseen_count = sum(1 for item in prominent if not item["state"]["seen"])
-    return {"unseen_count": unseen_count, "eligible": prominent, "archive": archive}
+    prominent_count = len(prominent)
+    return {
+        # Keep the legacy key until every installed client reads prominent_count.
+        "unseen_count": prominent_count,
+        "prominent_count": prominent_count,
+        "eligible": prominent,
+        "archive": archive,
+    }
 
 
 def _find_eligible_feature(conn: sqlite3.Connection, user_id: int, feature_id: str) -> sqlite3.Row | None:

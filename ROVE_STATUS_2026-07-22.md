@@ -4210,3 +4210,18 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   Ein einmaliger dezenter Pulse wird bei `prefers-reduced-motion` vollstaendig deaktiviert.
 - Verifikation lokal: 116 Announcement-/Monthly-/Coach-/AI-/Crypto-/Report-Regressionstests
   erfolgreich, Python-Compile, JavaScript-Syntax und `git diff --check` sauber. Kein Deploy erfolgt.
+
+## Update 27.08.2026 - Finaler Fix vor Sprint-3-Gate (lokal, noch nicht deployt)
+
+- Der prominente Announcement-Feed verwendet server- und clientseitig dieselbe Wahrheit:
+  `seen` bleibt sichtbar, `opened`, `dismissed` und `completed` werden nur noch im Archiv gezeigt.
+  Der Zaehler wird direkt aus genau dieser prominenten Liste gebildet.
+- Der Crypto-Deep-Link oeffnet mit vorhandenem Bestand die Verwaltung und ohne Bestand den
+  bestehenden Hinzufuegen-Flow. Der Monatscheck zeigt ohne faellige Aktion den ruhigen Zustand
+  `Aktuell ist nichts faellig.` und fuehrt dabei keine Finanzaktion aus.
+- Die Budget-Wahrheit ist serverseitig in Kategorie-Rest und gesamten Monatsplan-Rest getrennt.
+  Fixkosten, Sparrate, Transfers und Investments werden nicht doppelt gezaehlt. Der Coach benennt
+  beide Werte eindeutig und behauptet bei noch offenen Budgettoepfen nicht mehr, der Nutzer sei
+  ueber seinem Budget. Score und History verwenden weiterhin ihren bisherigen Eingang.
+- Verifikation lokal: 142 kombinierte Announcement-/Monthly-/Crypto-/Finanzkonto-/ETF-/Coach-Tests
+  erfolgreich; Python-Compile, alle JavaScript-Bloecke und Scope-Diff sauber. Kein Deploy erfolgt.

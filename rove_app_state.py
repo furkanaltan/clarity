@@ -97,6 +97,17 @@ INCOME_TINT = "#155681"
 # planmaessige Belastung, die im Budget laengst beruecksichtigt ist.
 FIXED_TINT = "#5B6675"
 
+# These rows are already represented by users.fixed_costs or are account/investment
+# movements rather than variable consumption. Keeping them out of the monthly truth
+# prevents fixed costs and savings from being subtracted twice.
+NON_VARIABLE_EXPENSE_CATEGORIES = {
+    "abos", "miete", "wohnen", "strom", "gas", "wasser", "internet", "handy",
+    "versicherung", "versicherungen", "kredit", "kredite", "kreditrate",
+    "hausgeld", "hausverwaltung", "immobilie", "fixkosten",
+    "bargeld", "umbuchung", "transfer", "einnahme",
+    "investment", "investments", "etf", "krypto", "crypto", "sparrate",
+}
+
 # details-Struktur aus bot.py (fixed_costs_details, siehe /verfeinern) — flache Zahlen pro
 # Unterschlüssel, kein Abbuchungstag, keine Kündbarkeit. Labels hier nur fürs Anzeigen.
 DETAIL_LABELS = {
@@ -419,6 +430,53 @@ def _build_budgets(
             "source": "bot",
         })
     return budgets
+
+
+def _monthly_budget_truth(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    income: float,
+    fixed_costs: float,
+    savings: float,
+    month_key: str | None = None,
+) -> dict[str, float]:
+    """Return category-envelope and whole-month truth from one server calculation."""
+    month_key = month_key or date.today().strftime("%Y-%m")
+    budgets = _build_budgets(conn, user_id, month_key)
+    limits = {
+        str(budget["cat"]).strip().casefold(): float(budget["limit"] or 0)
+        for budget in budgets
+    }
+    category_limit_total = round(sum(limits.values()), 2)
+    category_spent = 0.0
+    variable_expenses = 0.0
+    rows = conn.execute(
+        """SELECT amount, category
+             FROM expenses
+            WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?""",
+        (user_id, month_key),
+    ).fetchall()
+    for row in rows:
+        category = _category_label(row["category"]).strip().casefold()
+        if category in NON_VARIABLE_EXPENSE_CATEGORIES:
+            continue
+        amount = max(0.0, float(row["amount"] or 0))
+        variable_expenses += amount
+        if category in limits:
+            category_spent += amount
+    category_spent = round(category_spent, 2)
+    variable_expenses = round(variable_expenses, 2)
+    return {
+        "category_limit_total": category_limit_total,
+        "category_spent": category_spent,
+        "category_remaining": round(category_limit_total - category_spent, 2),
+        "variable_expenses": variable_expenses,
+        "free_month_remaining": round(
+            float(income) - float(fixed_costs) - float(savings) - variable_expenses,
+            2,
+        ),
+    }
 
 
 def _previous_month_keys(count: int = 3) -> list[str]:
@@ -1610,7 +1668,14 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         (user_id,),
     ).fetchone()["total"] or 0)
     income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
-    available = income - fixed_costs - sparraten - monthly_expenses
+    budget_truth = _monthly_budget_truth(
+        conn,
+        user_id,
+        income=income,
+        fixed_costs=fixed_costs,
+        savings=sparraten,
+    )
+    available = budget_truth["free_month_remaining"]
     monthly_plan = get_app_monthly_plan(conn, user_id, income, fixed_costs, sparraten)
     monthly_checkin_actions = get_monthly_checkin_actions(conn, user_id, u)
     score = calculate_score(conn, user_id, u, monthly_expenses)
@@ -1753,7 +1818,12 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             # Der Bot ist die Quelle der Wahrheit fuer das freie Monatsbudget. Die App nutzt
             # diesen Wert statt Fixkosten und Ausgaben ein zweites Mal anders zu kombinieren.
             "available": round(available, 2),
+            "category_remaining": budget_truth["category_remaining"],
+            "free_month_remaining": budget_truth["free_month_remaining"],
+            "category_budget_total": budget_truth["category_limit_total"],
+            "category_spent": budget_truth["category_spent"],
             "monthExpenses": round(monthly_expenses, 2),
+            "variableMonthExpenses": budget_truth["variable_expenses"],
         },
         "vertraege": build_app_contract_groups(conn, user_id, details),
         "goals": ([{
