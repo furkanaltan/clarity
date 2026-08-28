@@ -4226,17 +4226,163 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
 - Verifikation lokal: 142 kombinierte Announcement-/Monthly-/Crypto-/Finanzkonto-/ETF-/Coach-Tests
   erfolgreich; Python-Compile, alle JavaScript-Bloecke und Scope-Diff sauber. Kein Deploy erfolgt.
 
-## Update 28.08.2026 - CoinMarketCap Coin-Logos V1 (bereit zum Deploy)
+## Update 28.08.2026 - Home Screen Redesign Sprint 1 (lokal, noch nicht deployt)
 
-- `rove_market_data.py` reichert stabile CMC-IDs über einen einzelnen gebündelten
-  `/v2/cryptocurrency/info`-Request mit optionalen Logo-Metadaten an. Der prozessweite Cache
-  dedupliziert IDs und hält Ergebnisse sieben Tage; bei Providerfehlern bleiben Portfolio-State,
-  Quotes und alle Finanzwerte vollständig verfügbar.
-- `rove_app_state.py` liefert für getrackte Coin-Positionen optional `logoUrl`. Bestehende
-  Holdings benötigen keine Migration; IDs, Mengen, Marktwerte, Einstandswerte und P/L bleiben
-  unverändert. Die App zeigt echte CMC-Logos, mit Symbol-Badge bei fehlendem oder defektem Bild.
-- Verifikation: 29 Crypto-Tests, Python- und JavaScript-Syntax sowie `git diff --check` OK.
-# Update 28.08.2026 - Crypto Header-Logo und Edit-Polish (lokal, noch nicht deployt)
+- Die Home-Uebersicht nutzt jetzt eine ruhigere Material-Hierarchie: Chart und Vermoegensliste
+  erhalten getrennte, dezente Glasflaechen mit silbernen Kanten, feiner Innenlichtkante und
+  kontextgerechter Tiefe.
+- Die Vermoegenswert-Icons sind als eigene, kompakte Material-Badges ausgearbeitet. Werte,
+  Reihenfolge, Klickziele und bestehende aktive Kartenlogik bleiben unveraendert.
+- Die Bottom-Navigation, Finanzberechnung, API-/State-Pfade, Coach, Ziele, Analyse, Vertraege,
+  Score und Reports wurden nicht geaendert. Nur Home-CSS in `rove-app/index.html` wurde angepasst.
+
+## Update 28.08.2026 - Home Icon Reference Polish (lokal, noch nicht deployt)
+
+- Die bestehenden Home-SVGs fuer Girokonto, Tagesgeld, Investments, Krypto und Immobilie bleiben
+  die funktionale Quelle, erhalten aber ausschliesslich auf Home ein gemeinsames dunkles Gloss-
+  Material mit silberner Kontur, feiner Innenkante und groesserer, klarerer Linienfuehrung.
+- `ETF & Investments` wird nur in der Home-Liste als `Investments` angezeigt. Der kanonische
+  Name fuer Asset-Schluessel, Details, API und Finanzzuordnung bleibt unveraendert.
+- Der Chart-Container hat am unteren Rand mehr Luft. Keine Navigation, Interaktion, Berechnung
+  oder sonstige UI ausserhalb der Home-Oberflaeche wurde angepasst.
+
+## Update 28.08.2026 - Home Coach Polish (lokal, noch nicht deployt)
+
+- Die Home-Coaching-Leiste verwendet jetzt dieselbe ruhige dunkle Glas-Hierarchie wie Chart und
+  Vermoegensliste: eine dezente Silberkante, weiche Rundung, Innenlicht und kontrollierte Tiefe.
+  Das Face-Icon und der bestehende Interaktionshinweis sind als kleine, neutrale Materialelemente
+  ausgearbeitet; Blau bleibt auf gezielte Text-Akzente begrenzt.
+- Ausschliesslich Home-CSS wurde geaendert. Coach-Prioritaet, Inhalte, Klickverhalten, Deep Links,
+  Announcement-State, Animationen und alle Finanz-/API-/State-Pfade bleiben unveraendert.
+
+## Update 28.08.2026 - Home Icon Silhouettes (lokal, noch nicht deployt)
+
+- Die Home-Asset-Liste verwendet jetzt fuer Girokonto, Tagesgeld, Cash, Investments, Krypto und
+  Immobilie ein eigenes, konsistentes Linien-SVG-Set nach der freigegebenen dunklen Premium-
+  Referenz. Es ist auf Home begrenzt; Details, Onboarding und alle anderen Ansichten behalten ihre
+  bestehenden Icon-Quellen.
+- Die neue `homeAssetIcon()`-Zuordnung ist ausschliesslich eine Darstellungsschicht. Asset-Namen,
+  Schluessel, Werte, Klickziele und alle Finanz-/State-Pfade bleiben unveraendert.
+- Investments und Krypto verwenden darin bewusst reduzierte, grosszuegige Linienformen mit mehr
+  Innenabstand, damit sie in der mobilen Icon-Kachel nicht gedrungen oder verzogen wirken.
+- Das Home-Krypto-Icon verwendet nach visueller Pruefung wieder das zuvor bewaehrte Rov.E-
+  Bitcoin-Symbol. Dadurch bleibt die neue Home-Kachel erhalten, ohne eine doppelte Bitcoin-Marke.
+
+## Update 28.08.2026 - Goals Design Sprint V1 (lokal, noch nicht deployt)
+
+- Der Ziele-Bereich ist als eigene, auf `#tab-ziele` begrenzte Materialschicht veredelt: dunkle
+  Glass-Karten, silberne Kanten, ruhige Innen-Tiefe, einheitliche Icon-Badges und klarere
+  Betrags-/Fortschritts-Hierarchie. Die Progressbar zeigt denselben Wert, nur in einer
+  zur Home-Oberflaeche passenden, gedeckten silber-blauen Darstellung.
+- CTA und Empty State folgen derselben visuellen Ordnung. Goal-Daten, Berechnung, Fortschritt,
+  Sparrate, API, State, Routing, Navigation und alle anderen Screens bleiben unveraendert.
+
+## Update 28.08.2026 - Goals Fix und Cashflow Depth Polish (lokal, noch nicht deployt)
+
+- Goal-Icons haben keine dekorative Animation mehr. Ihre bisherigen individuellen Tints werden im
+  Ziele-Screen in ein einheitliches dunkles Icon-Material ueberfuehrt; Progress bleibt der einzige
+  kleine, semantische Farbakzent. Damit kann keine einzelne Goal-Card gruenlich aus dem Set fallen.
+- Cashflow behaelt alle vorhandenen blauen Statusflaechen, Filter, Plan- und Budgetinhalte. Nur
+  deren Oberflaechen erhalten lokal auf `#tab-tx` feinere Kanten, Innenlicht und dunkle Tiefe.
+  Merchant-Logos, Layout, Daten, Filter und Interaktionen bleiben unveraendert.
+
+## Update 28.08.2026 - Analyse Polish (lokal, noch nicht deployt)
+
+- Bekannte Haendler behalten in der Analyse weiterhin ihr vorhandenes Markenlogo. Fuer freie oder
+  generische Buchungen verwendet die reine Darstellungshilfe `analysisMerchantLogo()` stattdessen
+  das vorhandene Kategorien-SVG in einem neutralen Rov.E-Glass-Badge. Daten, Haendlerzuordnung,
+  Kategorien und Aggregation bleiben unveraendert.
+- Analyse-Tiles, Kategorien, Listen, Filter und Badges sind ausschliesslich innerhalb von
+  `#tab-analysis` an die dunkle Premium-Materialitaet angeglichen. Die Kategorie-Detailansicht
+  erhaelt dieselbe Oberflaeche; Home, Cashflow, Navigation und alle funktionalen Pfade bleiben
+  unveraendert.
+
+## Update 28.08.2026 - Monatsplan und Cashflow Material Polish (lokal, noch nicht deployt)
+
+- Der Monatsplan verwendet jetzt eigene, auf `#monthlyplansheet` begrenzte Glas-Karten mit klarer
+  Hierarchie fuer Status, Betraege und vorhandene Aktionen. Fällige Monatsabschluss- und ETF-
+  Aktionen werden nur visuell durch eine dezente kuehl-blaue Materialebene hervorgehoben; ihre
+  Fälligkeit, Inhalte und Klickpfade bleiben unveraendert.
+- Cashflow-Listen und Filter sind nur innerhalb von `#tab-tx` veredelt. Einnahmen, Ausgaben und
+  Budget-Filter erhalten kleine gedeckte Gruen-, Rose- und Amber-Akzente; die grossen Flaechen
+  bleiben dunkel und neutral. Buchungen, Budgets, Fixkosten, Suche, Filter und Berechnungen sind
+  unveraendert.
+
+## Update 28.08.2026 - Cashflow und Ausgaben Final Polish (lokal, noch nicht deployt)
+
+- Cashflow-Belege behalten die semantische Gruen-/Rose-Orientierung ausschliesslich bei den
+  Betraegen. Die Hauptkarten und Budget-Zusammenfassungen bleiben dunkle, neutrale Glass-Flächen
+  mit feinen silbernen Kanten.
+- Echte Händlerlogos in der Buchungsliste bleiben unverändert. Buchungen ohne Markenlogo erhalten
+  dagegen eine einheitliche neutrale Rov.E-Glass-Huelle, ohne Daten, Kategorien oder den
+  Buchungsablauf zu verändern.
+
+## Update 28.08.2026 - Vertrags-Polish (lokal, noch nicht deployt)
+
+- Der Verträge-Screen verwendet jetzt dieselbe dunkle Premium-Materialität wie Home und Goals:
+  neutrale Fixkosten-Zusammenfassung, Glass-Karten, bessere Zeilenhierarchie und ruhige
+  Statuschips. Die kleine Rosé-Markierung bleibt auf Vertragsbeträge und Warnungen begrenzt.
+- Generische Vertragstypen behalten ihre vorhandenen Rov.E-Linien-SVGs, erhalten aber eine
+  einheitliche silberne Glass-Hülle. Vorhandene Anbieterlogos werden weder ersetzt noch verändert.
+  Vertragslogik, Legacy-Pfade, CRUD, Kündigung, Daten und Navigation bleiben unverändert.
+
+## Update 28.08.2026 - Vertragsbeträge neutralisiert (lokal, noch nicht deployt)
+
+- Normale Vertrags- und Fixkostenbeträge sind im Verträge-Screen jetzt hell silbern statt Rosé.
+  Status- und Warnchips bleiben unverändert semantisch eingefärbt; Karten, Logos, Icons und alle
+  funktionalen Pfade bleiben unverändert.
+
+## Update 28.08.2026 - Final Design-System Rollout (lokal, noch nicht deployt)
+
+- Aktivitaetscenter, Neuigkeiten, Einstellungen, Reports, Score, Mentor-Chat, Mentoring-Zugang
+  und Admin verwenden jetzt jeweils eine lokal begrenzte dunkle Glass-Materialschicht mit feinen
+  silbernen Kanten, ruhiger Innentiefe und klaren Statusakzenten.
+- Bestehende Markenlogos, Announcement-States, Report-/Score-Inhalte, Chat-Bubbles, Admin-Aktionen
+  und alle vorhandenen Klick- und Navigationspfade wurden nicht veraendert. Der Rollout ergaenzt
+  ausschliesslich CSS in `rove-app/index.html`; JavaScript, API, State und Finanzlogik bleiben
+  unveraendert.
+
+## Update 28.08.2026 - Beta Feedback Crypto-Auswahl und PIN-Texte (lokal, noch nicht deployt)
+
+- Beim manuellen Krypto-Hinzufuegen bleiben Menge, Einstandswert, Vorschau und Speichern jetzt so
+  lange verborgen, bis ein konkreter Coin aus der Trefferliste ausgewaehlt wurde. Treffer besitzen
+  eine eindeutige Auswahlaktion; der gewaehlte Coin erscheint danach als eigene Card mit
+  `Ausgewaehlt`-Status und einer sichtbaren `Aendern`-Aktion.
+- Eine neue Suche oder geaenderte Sucheingabe verwirft die vorherige Coin-Auswahl, Vorschau und
+  Eingabeentwuerfe. Der bestehende CMC-ID-, Preview- und Portfolio-Speicherpfad wurde nicht
+  veraendert; ohne gewaehlten Coin ist der Speicher-CTA nicht vorhanden und der bestehende Guard
+  bleibt zusaetzlich aktiv.
+- Der vorhandene sichere PIN-Recovery-Pfad bleibt technisch unveraendert. Angepasst wurden nur die
+  sichtbaren Texte fuer `PIN vergessen?`, Passwortbestaetigung, den Zustand nach fuenf Fehlversuchen
+  und den vorhandenen Passwort-Reset.
+- Verifikation lokal: JavaScript-Syntax OK, `git diff --check` OK, 24 Crypto-Tests und 11 PIN-Tests
+  erfolgreich. Mobile lokale Vorschau laedt ohne Console-Fehler. Kein Deploy erfolgt.
+
+## Update 28.08.2026 - Crypto-Label Cleanup (lokal, noch nicht deployt)
+
+- Normale Coin-Positionen zeigen innerhalb des Krypto-Bereichs nicht mehr redundant die Kategorie
+  `Krypto`; die Meta-Zeile beginnt direkt mit Menge und Symbol. Der Seitentitel, interne Asset- und
+  Type-Werte sowie gemischte Investmentbereiche bleiben unveraendert.
+- Legacy-Positionen behalten den fachlich notwendigen Hinweis `Legacy · manuell`. Portfolio-, CMC-,
+  Speicher-, Marktwert-, Routing- und andere Investmentpfade wurden nicht angepasst.
+- Verifikation lokal: JavaScript-Syntax OK, `git diff --check` OK. Kein Deploy erfolgt.
+
+## Update 28.08.2026 - CoinMarketCap Coin-Logos V1 (lokal, noch nicht deployt)
+
+- `rove_market_data.py` reichert stabile CMC-IDs ueber einen einzigen gebuendelten
+  `/v2/cryptocurrency/info`-Request mit optionalen Logo-Metadaten an. Ein prozessweiter Cache
+  dedupliziert IDs und haelt positive wie fehlende Ergebnisse sieben Tage; Providerfehler liefern
+  weiterhin den vollstaendigen Portfolio-State und beeinflussen weder Quotes noch Finanzwerte.
+- `rove_app_state.py` gibt fuer getrackte Coin-Positionen optional `logoUrl` aus. Bestehende
+  Holdings benoetigen keine Migration; IDs, Mengen, Marktwerte, Einstandswerte und P/L bleiben
+  unveraendert.
+- Coin-Zeilen zeigen das echte CMC-Logo in einer kompakten runden Flaeche. Fehlende, ungueltige
+  oder im Browser nicht ladbare Bilder fallen ohne Broken-Image auf einen dunklen Symbol-Badge
+  zurueck. Suche und Add-Flow erzeugen weiterhin keine Metadata-Calls pro Eingabe.
+- Verifikation lokal: 29 Crypto-Tests erfolgreich, Python- und JavaScript-Syntax OK,
+  `git diff --check` OK. Kein Deploy erfolgt.
+
+## Update 28.08.2026 - Crypto Header-Logo und Edit-Polish (lokal, noch nicht deployt)
 
 - Das Krypto-Summary erhaelt Bitcoin als optionale `headerLogoUrl` aus derselben gecachten
   CoinMarketCap-Metadatenquelle wie die Coin-Positionen. Die CMC-ID `1` wird nicht als Holding
@@ -4247,3 +4393,11 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   bleiben unveraendert.
 - Verifikation lokal: 31 Crypto-Tests erfolgreich, Python- und JavaScript-Syntax OK,
   `git diff --check` OK. Kein Deploy erfolgt.
+
+## Update 28.08.2026 - Contracts Press-Animation Fix (lokal, noch nicht deployt)
+
+- Die globale `.card:active`-Regel konnte beim Tippen auf eine Vertragszeile den uebergeordneten
+  Vertragsgruppen-Container skalieren. Die Gruppenkarte bleibt daher beim Press-Zustand starr;
+  nur die direkt gedrueckte Zeile erhaelt eine kurze `scale(.99)`-Rueckmeldung ohne Translation
+  oder Layout-Aenderung.
+- Verifikation lokal: JavaScript-Syntax OK, `git diff --check` OK. Kein Deploy erfolgt.
