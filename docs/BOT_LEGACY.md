@@ -294,3 +294,187 @@ Blockers:
 
 SAFE TO START SEPARATION WORK: **YES**, provided each step remains tested,
 reversible and independent from production shutdown.
+
+## Wave 7 retirement classification
+
+Product decision: Telegram reminders, daily Telegram nudges and the Telegram
+evening recap are not part of the future Rov.E app. This decision permits a
+separate local removal changeset later; it does not authorize a production
+service or timer change.
+
+| Function area | Current purpose | Category | App/API equivalent | DB writes | Dependencies and side effects | Safe to remove now | Reason |
+|---|---|---|---|---|---|---:|---|
+| Telegram polling, menu and reply adapter | Telegram transport | KEEP_TEMPORARILY | NO, transport-specific | indirect | token, TeleBot, live Telegram users | NO | channel activity remains UNKNOWN |
+| Telegram onboarding/refinement | create and edit legacy profile | MIGRATE | PARTIAL | users, investments, snapshots | Telegram state machine and shared DB | NO | behavior parity and user migration are unproved |
+| Free-form expense entry | parse and book Telegram expenses | KEEP_TEMPORARILY | YES/PARTIAL | shared expense writer | Telegram messages, category parser, AI fallback | NO | activity is unknown; writer is shared but routing is not |
+| Free-form investment/portfolio entry | mutate wealth and holdings | MIGRATE | YES/PARTIAL | investments, snapshots, holdings | score, badges, quote provider | NO | semantics differ from app portfolio flows |
+| Score/RP/badges/streak | reward and present progress | MIGRATE | PARTIAL | users, badges, score history | expense activity and legacy RP rules | NO | app score exists, RP/badge parity does not |
+| Telegram-only report delivery | send links and PDFs to non-app users | KEEP_TEMPORARILY | PARTIAL | report artifacts/status through engine | report engine, Telegram, legacy users | NO | Telegram-only recipients may still exist |
+| Bot-local report queue copy | enqueue/claim/update report jobs | RETIRE | YES | report jobs | no active bot scheduler call; systemd worker owns runtime | NO | remove only in a tested local changeset with worker parity proof |
+| Evening recap scheduler and `/ruhe` | daily Telegram recap and preference | RETIRE | NO exact equivalent and none required by product decision | recap preference only | APScheduler, expenses, Telegram send | NO | technically separable, but code and runtime removal need separate gates |
+| Access approval/request transport | legacy Telegram access workflow | MIGRATE | YES/PARTIAL | user access | admin API/cockpit and Telegram notifications | NO | notification and identity behavior still differ |
+| Bulk nudge/rename/migration commands | manual Telegram broadcasts | RETIRE | NO | none | admin command and Telegram recipients | NO | operational use remains UNKNOWN |
+| Admin overview/health/report jobs | Telegram operations UI | MIGRATE | YES/PARTIAL | none | admin API/cockpit and report worker | NO | confirm cockpit coverage and operator acceptance first |
+| `/backupnow` | manual DB backup from Telegram | VERIFY | PARTIAL | backup file, not DB rows | filesystem, SQLite backup API | UNKNOWN | automated timer exists; manual usage is unknown |
+| `/testreport` and `/testrecap` | Telegram admin diagnostics | VERIFY | PARTIAL/NO | possible report artifacts | report engine, Telegram | UNKNOWN | replace with safe operational tests before retirement |
+| `init_db` schema bootstrap in bot | create/alter shared schema on bot start | MIGRATE | PARTIAL | schema | bot startup and shared production DB | NO | high-risk implicit migration owner |
+
+Summary:
+
+- RETIRE: evening recap/reminder path, dormant bot report queue copy, historical
+  bulk Telegram messaging after usage verification.
+- MIGRATE: onboarding, investment/portfolio, RP/badges, access administration,
+  admin diagnostics and schema ownership.
+- KEEP_TEMPORARILY: Telegram transport, free-form expense adapter and legacy
+  report delivery until activity and account migration evidence exists.
+- VERIFY/UNKNOWN: manual backup/test commands, recent Telegram activity, recent
+  bot writes and Telegram-only report recipients.
+
+## Telegram reminder retirement assessment
+
+| Reminder path | Scheduler owner | Calls | DB writes | Report dependency | Admin dependency | App user dependency | Telegram-only | Technically safe to retire |
+|---|---|---|---|---:|---:|---:|---:|---|
+| Evening recap 20:30 | bot APScheduler | candidate query, recap builder, `bot.send_message` | NO during send | NO | NO | NO | YES | YES, in a separate code changeset |
+| `/ruhe` recap preference | command, no scheduler | `toggle_recap_muted` | YES, `user_badges` | NO | NO | NO | YES | YES together with recap path |
+| `/testrecap` | manual admin command | recap builder and Telegram send | NO | NO | YES | NO | YES | YES together with recap path |
+| `/nudge_inactive` | manual admin command | candidate query and Telegram sends | NO | NO | YES | NO | YES | PARTIAL; usage must be verified |
+| Rename/app-migration broadcasts | manual admin commands | recipient queries and Telegram sends | NO | NO | YES | NO | YES | PARTIAL; usage/migration state unknown |
+| App tracking reminder | systemd timer | `rove_tracking_reminders.py`, web push | delivery-log writes | NO | NO | YES | NO | NO; outside Telegram retirement |
+| App monthly reminder | systemd timer | `rove_monthly_reminders.py`, web push | delivery-log writes | NO | NO | YES | NO | NO; outside Telegram retirement |
+
+No additional automatic daily Telegram tracking reminder was found in
+`bot.py`. The only active in-process scheduled Telegram notification is the
+20:30 evening recap.
+
+## Prioritization of the 37 direct write functions
+
+Categories:
+
+- A: replacement already exists.
+- B: suitable for extraction into an existing/shared service.
+- C: bot-exclusive and still required while Telegram remains supported.
+- D: likely obsolete because an independent owner exists or the product retired
+  the behavior.
+- E: high-risk or unclear and requires parity/evidence first.
+
+Counts: **A=10, B=7, C=7, D=6, E=7**.
+
+| Category | Functions |
+|---|---|
+| A (10) | `get_or_create_user`, `maybe_delete_logged_expense`, `approve_user_access`, `revoke_user_access`, `save_category_budget`, `delete_category_budgets`, `save_portfolio_holding`, `save_portfolio_total_invested`, `maybe_delete_portfolio_holding`, `reverse_app_paid_expense` |
+| B (7) | `update_latest_expense_for_rule`, `update_user_field`, `save_investment_event`, `save_portfolio_snapshot`, `update_expense_amount`, `_set_app_account_amount`, `sync_app_paid_expense_amount` |
+| C (7) | `save_user_category_rule`, `find_user_category_rule`, `add_cp`, `ensure_access_record`, `remember_budget_marker`, `remember_monthly_moment`, `award_badge` |
+| D (6) | `create_monthly_report_jobs`, `claim_due_report_jobs`, `mark_report_job_sent`, `mark_report_job_failed`, `mark_report_job_skipped`, `toggle_recap_muted` |
+| E (7) | `init_db`, `reset_user_data`, `replace_onboarding_investment_start`, `replace_onboarding_portfolio_snapshots`, `record_score_history_if_needed`, `handle_month_transition`, direct SQL branches in `handle_commands` |
+
+A does not mean immediate deletion: Telegram call sites still need a shared
+service boundary. D is the first retirement pool, but every removal remains a
+separate tested change. The delegated `create_expense_for_user` path is not part
+of the 37 because its SQL owner is already the shared expense module.
+
+## Future owner for duplicated domains
+
+| Domain | Bot owner | App/API owner | Preferred future owner | Behavioral difference | Drift risk | Extraction risk |
+|---|---|---|---|---|---|---|
+| Expense creation | Telegram parser and orchestration | shared expense domain and API | `rove_expense_domain` plus transport adapters | parsing/reward flow differs | MEDIUM | LOW |
+| Expense edit/delete | bot SQL/cash helpers | API expense endpoints | shared expense domain | amount-edit and reversal semantics differ | HIGH | MEDIUM |
+| Profile/onboarding | bot state machine | app API/state | app API/domain service | steps, identity and reset differ | HIGH | HIGH |
+| Budget | bot formulas/CRUD | API/state budget truth | app budget domain/API | formulas and markers differ | HIGH | MEDIUM |
+| Portfolio/investments | bot events/snapshots/holdings | API/state portfolio | portfolio domain modules/API | asset identity and month semantics differ | HIGH | HIGH |
+| Score/RP | bot wrapper and writes | `rove_score` and app state | `rove_score` plus one history service | RP/badge side effects differ | MEDIUM | MEDIUM |
+| Goals | bot read/forecast | API/state goal CRUD | app goal domain/API | primary-goal fallback differs | MEDIUM | LOW |
+| Monthly close | first Telegram contact | due-only app month close | app monthly-plan domain | timing, confirmation and rewards differ | HIGH | HIGH |
+| Access administration | Telegram access functions | admin API/cockpit | shared access service called by API/adapters | status and notification behavior differ | MEDIUM | MEDIUM |
+| Reports | bot queue copy/delivery | report worker and app archive | `rove_report_worker` plus delivery adapters | legacy Telegram delivery differs | HIGH | MEDIUM |
+| Notifications | recap/nudges/broadcasts | app web-push/announcements | app workers; no Telegram reminder owner | channel and preference model differ | HIGH | LOW for recap retirement, MEDIUM otherwise |
+| AI assistant | bot prompt/booking | app AI endpoint/router | shared intent/domain service or app API | prompts, routing and booking differ | HIGH | HIGH |
+
+## First separation candidates
+
+### 1. Telegram evening recap retirement
+
+- Why first: explicit product retirement decision; one isolated scheduler job;
+  no report, auth or app-user dependency.
+- Files affected later: `bot.py` and focused bot tests only.
+- Tests: prove scheduler no longer registers recap, `/ruhe` and `/testrecap`
+  behavior is intentionally removed, report worker remains unaffected, full suite.
+- Rollback: restore the single local commit and restart only during a separately
+  approved production gate.
+- Risk: LOW locally, runtime change still requires its own gate.
+
+### 2. Remove unreachable bot-local report maintenance helpers
+
+- Candidate: `cleanup_expired_web_reports` and `archive_old_pdf_reports`, which
+  have definitions but no bot call sites.
+- Why first: runtime ownership already sits in `rove_report_worker.py`; removing
+  unreachable helpers does not change the scheduler.
+- Files affected later: `bot.py`, bot/report separation tests.
+- Tests: static no-call assertion, report worker tests and full suite.
+- Rollback: revert one local commit.
+- Risk: LOW, subject to a final call-graph check.
+
+### 3. Extract access approve/revoke writes
+
+- Why first: app API and Telegram currently implement the same access domain and
+  the cockpit already exposes both operations.
+- Files affected later: a shared access service, `bot.py`, `rove_app_api.py` and
+  focused auth/admin tests.
+- Tests: approve/revoke parity, session revocation, Telegram callback isolation,
+  admin authorization and full suite.
+- Rollback: keep existing wrappers and revert the extraction commit.
+- Risk: MEDIUM because auth/session side effects must remain identical.
+
+No product code change is proposed inside Wave 7. Candidate 1 should be the
+first separately approved implementation; candidates 2 and 3 must not be
+bundled with it.
+
+## Reminder retirement plan
+
+1. Phase 1 - confirm dependencies: retain the call-graph evidence above and
+   verify no hidden production override registers another bot scheduler job.
+2. Phase 2 - isolate locally: remove only recap registration, recap functions,
+   `/ruhe` and `/testrecap`; do not touch app web-push timers.
+3. Phase 3 - add tests: scheduler registration, command behavior, report-worker
+   independence and full regression suite.
+4. Phase 4 - runtime later: deploy through a dedicated gate and restart the bot
+   only after explicit approval; do not disable `clarity-bot.service` yet.
+5. Phase 5 - archive after observation: confirm no reminder errors or required
+   Telegram behavior before removing residual preference data/code.
+
+## Remaining admin and report blockers
+
+Admin blockers:
+
+1. Current use of `/nudge_inactive`, rename/migration broadcasts,
+   `/testreport`, `/testrecap` and `/backupnow` is UNKNOWN.
+2. Access-request Telegram notifications are not identical to cockpit behavior.
+3. A safe non-Telegram replacement for test-report diagnostics is not formally
+   documented.
+4. Operator acceptance of timer-only backup operations is unverified.
+
+Report blockers:
+
+1. Telegram-only users may still need link/PDF delivery through a bot object.
+2. The number and last delivery date of Telegram-only report recipients is
+   UNKNOWN.
+3. Bot-local queue code is duplicated even though it is not scheduled.
+4. A production gate must prove all eligible users have verified app accounts or
+   an explicitly retained delivery adapter.
+
+## Evidence required for the final decommission gate
+
+Only aggregate, privacy-safe read-only evidence is required:
+
+- timestamp of the last Telegram update/command;
+- timestamp of the last DB write attributable to a `telegram:*` request or bot
+  source;
+- count of recently active Telegram users, without IDs;
+- count and latest delivery date of reports sent to Telegram-only users;
+- count of approved Telegram users without a verified app account;
+- usage counts for the remaining admin-only Telegram commands.
+
+Until that evidence and the migrations above are complete:
+
+- SAFE TO DECOMMISSION BOT NOW: **NO**
+- SAFE TO RETIRE TELEGRAM REMINDER PATHS LATER: **YES**, through the phased plan
+- SAFE TO START SEPARATION: **YES**
