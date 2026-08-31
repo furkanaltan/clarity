@@ -26,6 +26,21 @@ rove-report-maintenance.timer
 rove-db-backup.timer
 ```
 
+## Lokale Tests
+
+Die gesamte bestehende Suite wird ueber einen gemeinsamen Einstieg gestartet:
+
+```bash
+bash scripts/test.sh full
+```
+
+Gezielte Teilmengen koennen mit `auth`, `finance`, `frontend`, `reports` oder
+`stability` ausgefuehrt werden. Der Runner setzt standardmaessig den
+kanonischen Frontendpfad. Die aktuelle Testbaseline und lokale
+Laufzeitkonfiguration stehen in [docs/TESTING.md](docs/TESTING.md). Fehler
+werden nicht ausgeblendet und muessen gegen die dokumentierte Baseline
+klassifiziert werden.
+
 ## Backend-Deploy
 
 Backend-Aenderungen werden lokal getestet, im kanonischen Repository committed

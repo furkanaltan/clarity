@@ -47,6 +47,11 @@ bereits abgeschlossene Zielarchitektur.
 - Migrationen und Reparaturskripte liegen aktuell ebenfalls im Root.
 - Beide Gruppen werden erst in einer spaeteren, separat geprueften Phase
   verschoben, damit Imports und bekannte Betriebsbefehle stabil bleiben.
+- Testinventar und Runner: [docs/TESTING.md](docs/TESTING.md) und
+  `scripts/test.sh`.
+- Script- und Migrationsinventar: [docs/SCRIPTS.md](docs/SCRIPTS.md) und
+  [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
+- Laufzeit- und Paketabhaengigkeiten: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ## Nicht-kanonische Kopien
 

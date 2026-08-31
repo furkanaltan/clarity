@@ -26,6 +26,10 @@ Systemd-Pfade davon abhaengen.
 - [ARCHITECTURE.md](ARCHITECTURE.md): System- und Datenfluss
 - [RUNBOOK.md](RUNBOOK.md): Deploy, Diagnose, Backup und Restore
 - [CHANGELOG.md](CHANGELOG.md): kanonisch gepflegte Aenderungen
+- [docs/TESTING.md](docs/TESTING.md): Tests, Teilmengen und bekannte Baseline
+- [docs/SCRIPTS.md](docs/SCRIPTS.md): Runtime-, Operations- und Legacy-Inventar
+- [docs/MIGRATIONS.md](docs/MIGRATIONS.md): Migrationen und Wiederholbarkeit
+- [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md): Laufzeiten und Abhaengigkeiten
 
 ## Lokale Pruefungen
 
@@ -38,8 +42,12 @@ python3 -m py_compile DATEI.py
 Gesamte bestehende Test-Suite:
 
 ```bash
-ROVE_FRONTEND_PATH="$PWD/frontend/index.html" python3 -m unittest discover -p 'test_*.py'
+bash scripts/test.sh full
 ```
+
+Gezielte Teilmengen sind `auth`, `finance`, `frontend`, `reports` und
+`stability`. Details und die aktuelle Testbaseline stehen in
+[docs/TESTING.md](docs/TESTING.md).
 
 JavaScript aus dem monolithischen Frontend muss vor einem Frontend-Deploy mit
 `node --check` geprueft werden. Die statischen Assets werden relativ zu
@@ -51,6 +59,8 @@ Produktion verwendet Python 3.12. Die API laeuft in
 `/root/rove-app-api-venv`, Bot und mehrere Worker verwenden `/usr/bin/python3`.
 Diese Laufzeiten sind aktuell absichtlich noch nicht vereinheitlicht. Die
 vorhandene `requirements-auth.txt` ist keine vollstaendige Abhaengigkeitsliste.
+Das aktuelle Inventar und die empfohlene spaetere Requirements-Struktur stehen
+in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ## Sicherheit
 
