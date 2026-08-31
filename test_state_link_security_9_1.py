@@ -2,13 +2,13 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import rove_app_api as api
 import rove_app_state as state
 import retire_legacy_app_state as retirement
+from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 
 
 class StateLinkSecurityTests(unittest.TestCase):
@@ -52,13 +52,7 @@ class StateLinkSecurityTests(unittest.TestCase):
         self.temp.cleanup()
 
     def session(self, user_id, raw_token):
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            account_id = conn.execute("SELECT id FROM app_accounts WHERE user_id=?", (user_id,)).fetchone()[0]
-            conn.execute(
-                "INSERT INTO app_sessions(token_hash,account_id,expires_at) VALUES (?,?,?)",
-                (api.keyed_hash(raw_token), account_id, (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")),
-            )
-            conn.commit()
+        ensure_unlocked_test_session(self.db_path, user_id, raw_token)
 
     def state_request(self, user_id=None, raw_token="session-one", bearer=None):
         with api.app.test_client() as client:

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import rove_app_api as api
+from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 
 
 class PasswordAuthTests(unittest.TestCase):
@@ -110,6 +111,7 @@ class PasswordAuthTests(unittest.TestCase):
     def test_change_password_requires_current_password_and_reissues_session(self):
         self.issue_session(raw_token="first-session")
         self.assertEqual(self.setup_password("first-session").status_code, 200)
+        ensure_unlocked_test_session(self.db_path, 1, "first-session")
         self.issue_session(raw_token="other-device")
         with api.app.test_client() as client:
             client.set_cookie(api.SESSION_COOKIE_NAME, "first-session", domain="localhost", path="/")

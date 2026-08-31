@@ -12,6 +12,7 @@ from unittest.mock import patch
 import rove_app_api as api
 from rove_app_state import apply_due_scheduled_savings, build_live_app_data, get_app_cash_accounts
 from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, set_feature_enabled
+from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 from test_financial_accounts_sprint2 import create_db
 
 
@@ -104,16 +105,18 @@ class StabilitySprint1Tests(unittest.TestCase):
             conn.commit()
 
         statuses = []
+        raw_token = "parallel-session"
 
         def request_transactions():
             with api.app.test_client() as client:
-                response = client.get(
-                    "/v1/transactions",
-                    headers={"Authorization": "Bearer pilot-token", "Origin": "https://getrove.de"},
-                )
+                client.set_cookie(api.SESSION_COOKIE_NAME, raw_token, domain="localhost", path="/")
+                response = client.get("/v1/transactions", headers={"Origin": "https://getrove.de"})
                 statuses.append(response.status_code)
 
-        with patch.object(api, "DB_PATH", self.db_path):
+        with patch.object(api, "DB_PATH", self.db_path), patch.object(
+            api, "AUTH_SECRET", "parallel-transaction-test-secret"
+        ):
+            ensure_unlocked_test_session(self.db_path, 1, raw_token)
             threads = [threading.Thread(target=request_transactions) for _ in range(2)]
             for thread in threads:
                 thread.start()

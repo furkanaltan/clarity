@@ -233,8 +233,8 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["merchant_rows"][1]["average"], "60 €")
         self.assertEqual(context["merchant_rows"][1]["category"], "Lebensmittel")
         self.assertNotIn(" · Sonstiges", html)
-        self.assertIn("24 Tage getrackt", html)
-        self.assertIn("Shopping mit 733 €", html)
+        self.assertIn(">24 Tagen</span> aktiv getrackt", html)
+        self.assertIn(">Shopping</span> mit 733 €.", html)
         self.assertIn(
             "Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
             html,
@@ -245,9 +245,10 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn("kein neuer Investment- oder Sparbeitrag", context["build_summary_text"])
         self.assertIn("Spar-Teilscore liegt bei 25/25", context["rank_blurb"])
         self.assertEqual(context["goal_title_text"], "Dein Ziel: Dubai Urlaub.")
-        self.assertEqual(html.count("Dubai Urlaub"), 1)
+        self.assertEqual(html.count("Dubai Urlaub"), 2)
         self.assertNotIn("Dein Ziel: Dubai Urlaub.", html)
-        self.assertIn("Noch offen", html)
+        self.assertIn(">Noch</div>", html)
+        self.assertIn(context["goal_remaining_amount"], html)
         self.assertIn("white-space: nowrap;", html)
         self.assertIn("Noch 1.009 €", context["milestone_headline"])
         self.assertIn("Shopping-Budget von 200 €", context["plan_step2_title"])
@@ -260,15 +261,15 @@ class ReportRenderV2Tests(unittest.TestCase):
         )
         self.assertEqual(context["money_map_category_count"], 6)
         self.assertEqual(context["money_map_transaction_count"], 23)
-        self.assertIn('data-screen-label="05 Vormonatsvergleich"', html)
-        self.assertIn("Vergleichsbasis", html)
+        self.assertIn('data-screen-label="05 Money Map"', html)
+        self.assertIn(">Vormonatsvergleich</div>", html)
         self.assertEqual(html.count("Shopping lag 533 € über deinem gesetzten Budget von 200 €."), 1)
         for category in context["money_map_categories"]:
             self.assertIn(category["name"], html)
             self.assertIn(category["amount_text"], html)
             self.assertIn(f'{category["pct_text"]} %', html)
+        self.assertIn("Rov.E zeigt nur relevante Kategorien aus deinem Snapshot.", html)
         for phrase in (
-            "Rov.E zeigt nur relevante Kategorien aus deinem Snapshot.",
             "dokumentierter Beitrag",
             "Konsum und Marktbewegung",
             "Die Rechnung verwendet",

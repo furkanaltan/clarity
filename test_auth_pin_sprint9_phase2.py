@@ -12,6 +12,60 @@ from argon2.low_level import Type
 import rove_app_api as api
 
 
+def ensure_unlocked_test_session(db_path, user_id, raw_token, pin="1234"):
+    """Create the current cookie-session/PIN fixture without weakening product auth."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        api.ensure_auth_tables(conn)
+        account = conn.execute(
+            "SELECT id FROM app_accounts WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if account:
+            account_id = int(account[0])
+        else:
+            cursor = conn.execute(
+                """INSERT INTO app_accounts (email, user_id, verified_at, source)
+                   VALUES (?, ?, CURRENT_TIMESTAMP, 'app')""",
+                (f"wave4-user-{user_id}@example.test", user_id),
+            )
+            account_id = int(cursor.lastrowid)
+
+        token_hash = api.keyed_hash(raw_token)
+        session = conn.execute(
+            "SELECT id FROM app_sessions WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        if session:
+            session_id = int(session[0])
+        else:
+            cursor = conn.execute(
+                """INSERT INTO app_sessions (token_hash, account_id, expires_at)
+                   VALUES (?, ?, ?)""",
+                (
+                    token_hash,
+                    account_id,
+                    (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            session_id = int(cursor.lastrowid)
+
+        verifier = api.PASSWORD_HASHER.hash(api.pin_secret_value(session_id, pin))
+        conn.execute(
+            """INSERT INTO app_session_pins
+                   (session_id, pin_verifier, failed_attempts, locked_out_at,
+                    unlocked_at, last_activity_at, updated_at)
+               VALUES (?, ?, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(session_id) DO UPDATE SET
+                   pin_verifier = excluded.pin_verifier,
+                   failed_attempts = 0,
+                   locked_out_at = NULL,
+                   unlocked_at = CURRENT_TIMESTAMP,
+                   last_activity_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (session_id, verifier),
+        )
+        conn.commit()
+    return session_id
+
+
 class AppPinAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

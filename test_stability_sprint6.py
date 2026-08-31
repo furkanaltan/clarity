@@ -9,6 +9,7 @@ from unittest.mock import patch
 import rove_app_api as api
 from rove_app_state import get_app_contracts, normalize_legacy_contracts
 from migrate_legacy_contracts import run as migration_run
+from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 
 
 class StabilitySprint6ContractTests(unittest.TestCase):
@@ -41,11 +42,14 @@ class StabilitySprint6ContractTests(unittest.TestCase):
             conn.commit()
         self.patchers = [
             patch.object(api, "DB_PATH", self.path),
+            patch.object(api, "AUTH_SECRET", "legacy-contract-test-secret"),
             patch.object(api, "build_live_app_data", lambda *_args: {"sts": {"available": 0}, "vertraege": []}),
         ]
         for patcher in self.patchers:
             patcher.start()
         api.app.config.update(TESTING=True)
+        ensure_unlocked_test_session(self.path, 1, "user-one-session")
+        ensure_unlocked_test_session(self.path, 2, "user-two-session")
 
     def tearDown(self):
         for patcher in reversed(self.patchers):
@@ -59,7 +63,8 @@ class StabilitySprint6ContractTests(unittest.TestCase):
 
     def request(self, token, payload):
         with api.app.test_client() as client:
-            return client.post("/v1/contracts", json=payload, headers={"Authorization": f"Bearer {token}"})
+            client.set_cookie(api.SESSION_COOKIE_NAME, token, domain="localhost", path="/")
+            return client.post("/v1/contracts", json=payload)
 
     def test_normalization_is_idempotent_and_keeps_fixed_cost_total(self):
         with closing(self.connect()) as conn:
@@ -83,15 +88,15 @@ class StabilitySprint6ContractTests(unittest.TestCase):
             conn.commit()
             contract_id = next(item["id"] for item in get_app_contracts(conn, 1) if item["n"] == "Spotify")
 
-        edited = self.request("user-one", {"action": "update", "contract_id": contract_id, "amount": 60})
+        edited = self.request("user-one-session", {"action": "update", "contract_id": contract_id, "amount": 60})
         self.assertEqual(edited.status_code, 200, edited.get_json())
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute("SELECT fixed_costs FROM users WHERE user_id=1").fetchone()[0], 960)
             self.assertEqual(conn.execute("SELECT source FROM app_contracts WHERE contract_id=?", (contract_id,)).fetchone()[0], "telegram_legacy")
 
-        forbidden = self.request("user-two", {"action": "delete", "contract_id": contract_id})
+        forbidden = self.request("user-two-session", {"action": "delete", "contract_id": contract_id})
         self.assertEqual(forbidden.status_code, 404)
-        deleted = self.request("user-one", {"action": "delete", "contract_id": contract_id})
+        deleted = self.request("user-one-session", {"action": "delete", "contract_id": contract_id})
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id=1 AND contract_id=?", (contract_id,)).fetchone()[0], 0)
