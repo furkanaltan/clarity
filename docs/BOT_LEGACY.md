@@ -4,6 +4,10 @@ Stand: 31.08.2026. This is a read-only architecture inventory. It does not
 authorize stopping `clarity-bot.service`, changing production, migrating data or
 retiring a feature.
 
+The inventory through Wave 7 is the pre-cleanup baseline. Wave 8 records a
+local-only retirement below; production still runs the pre-Wave-8 bot until a
+separate deployment is explicitly approved.
+
 ## Audit evidence and limits
 
 - Local source inspected: `bot.py`, `rove_app_api.py`, `rove_app_state.py`,
@@ -478,3 +482,47 @@ Until that evidence and the migrations above are complete:
 - SAFE TO DECOMMISSION BOT NOW: **NO**
 - SAFE TO RETIRE TELEGRAM REMINDER PATHS LATER: **YES**, through the phased plan
 - SAFE TO START SEPARATION: **YES**
+
+## Wave 8 local-only retirement
+
+Status: **RETIRED IN LOCAL CODE - NOT YET DEPLOYED**.
+
+The following isolated Telegram reminder paths were removed from local
+`bot.py` after confirming that they had no API, worker, systemd, timer or test
+callers:
+
+- the 20:30 `send_evening_recaps` APScheduler registration and its scheduler;
+- `send_evening_recaps`, `build_evening_recap` and
+  `get_evening_recap_candidates`;
+- the `/ruhe` preference command, `toggle_recap_muted`, `is_recap_muted` and the
+  now-unused recap preference constant;
+- the admin-only `/testrecap` command.
+
+The removed `/ruhe` path previously wrote only the Telegram-specific recap
+preference to `user_badges`. That write disappeared together with the retired
+Telegram reminder; no general badge function, badge award or badge history was
+removed.
+
+The following dormant bot-local report queue and maintenance helpers were also
+removed after proving that their call graph was closed inside `bot.py` and had
+no live entrypoint:
+
+- `previous_month_key`, `get_active_user_ids`, `report_now` and
+  `random_report_time_for_today`;
+- `create_monthly_report_jobs`, `has_report_jobs_for_month`,
+  `ensure_monthly_report_jobs` and `claim_due_report_jobs`;
+- `mark_report_job_sent`, `mark_report_job_failed`,
+  `mark_report_job_skipped`, `process_report_job` and
+  `process_due_report_jobs`;
+- `cleanup_expired_web_reports` and `archive_old_pdf_reports`.
+
+Report production remains owned by `rove_report_worker.py`, its systemd units
+and the existing report engine. Wave 8 does not change those paths, any app
+web-push reminder, database schema or production runtime. The historical
+37-write-path classification above remains the Wave-7 audit baseline; six
+category-D write paths are now absent from local `bot.py` but remain present in
+production until a later approved deploy.
+
+Wave 8 does not make the Telegram bot safe to decommission. Long polling,
+Telegram expense/onboarding flows, access administration and legacy report
+delivery remain active in local code and production.

@@ -6,7 +6,6 @@ import logging
 import sqlite3
 import json
 import re
-import random
 import calendar
 import math
 import fcntl
@@ -14,20 +13,12 @@ import urllib.request
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager
 from pathlib import Path
-from zoneinfo import ZoneInfo
 import telebot
 import openai
 from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
 from rove_expense_domain import begin_expense_write, create_expense_for_user
 from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, is_feature_enabled
-
-try:
-    from apscheduler.schedulers.background import BackgroundScheduler
-    from apscheduler.triggers.cron import CronTrigger
-except ImportError:
-    BackgroundScheduler = None
-    CronTrigger = None
 
 # ====================== KONFIGURATION ======================
 load_dotenv()
@@ -47,14 +38,6 @@ ADMIN_USER_IDS = {
 }
 USER_APPROVAL_ENABLED = os.getenv("CLARITY_USER_APPROVAL", "1").lower() not in {"0", "false", "no"}
 
-REPORT_SEND_WINDOW_START_HOUR = int(os.getenv("REPORT_SEND_WINDOW_START_HOUR", "8"))
-REPORT_SEND_WINDOW_END_HOUR = int(os.getenv("REPORT_SEND_WINDOW_END_HOUR", "14"))
-REPORT_WORKER_BATCH_SIZE = int(os.getenv("REPORT_WORKER_BATCH_SIZE", "1"))
-REPORT_WORKER_INTERVAL_SECONDS = int(os.getenv("REPORT_WORKER_INTERVAL_SECONDS", "10"))
-REPORT_MAX_ATTEMPTS = int(os.getenv("REPORT_MAX_ATTEMPTS", "3"))
-REPORT_RETRY_DELAY_MINUTES = int(os.getenv("REPORT_RETRY_DELAY_MINUTES", "15"))
-REPORT_CREATION_MISFIRE_GRACE_SECONDS = int(os.getenv("REPORT_CREATION_MISFIRE_GRACE_SECONDS", "21600"))
-REPORT_TIMEZONE = ZoneInfo("Europe/Berlin")
 BOT_LOCK_FILE = os.getenv("CLARITY_BOT_LOCK_FILE", "clarity_bot.lock")
 APP_DISPLAY_NAME = "Rov.E"
 SCORE_DISPLAY_NAME = "Rov.E Score"
@@ -1930,7 +1913,7 @@ def get_command_token(text: str) -> str:
 
 ADMIN_COMMANDS = {
     "/admin", "/pending", "/approve", "/revoke", "/adminusers",
-    "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive", "/testrecap",
+    "/health", "/reportjobs", "/backupnow", "/testreport", "/nudge_inactive",
     "/announce_rename", "/announce_app_migration", "/appwechsel",
 }
 
@@ -4887,7 +4870,6 @@ def build_health_report() -> str:
         ).fetchone()
 
     db_size = Path(DB_NAME).stat().st_size if Path(DB_NAME).exists() else 0
-    scheduler_state = "aktiv" if REPORT_SCHEDULER and getattr(REPORT_SCHEDULER, "running", False) else "nicht aktiv"
     access_text = ", ".join(f"{row['status']}: {row['c']}" for row in access_rows) or "keine"
     jobs_text = ", ".join(f"{row['status']}: {row['c']}" for row in job_rows) or "keine"
     error_text = "Keine aktuellen Report-Fehler."
@@ -4900,7 +4882,6 @@ def build_health_report() -> str:
     return (
         "*Rov.E Health*\n\n"
         f"Bot: läuft\n"
-        f"Scheduler: {scheduler_state}\n"
         f"User: {users_total}\n"
         f"Ausgaben: {expenses_total}\n"
         f"Zugänge: {access_text}\n"
@@ -5041,7 +5022,6 @@ def handle_admin_command(message, cmd: str) -> bool:
             "/announce_rename send – Ankündigung an alle freigegebenen Nutzer senden\n"
             "/appwechsel – App-Wechsel als Vorschau\n"
             "/appwechsel send – nur nicht migrierte Nutzer informieren\n"
-            "/testrecap – Abend-Recap an dich testen\n"
             "/testreport YYYY-MM – Testreport erstellen",
             parse_mode="Markdown"
         )
@@ -5221,17 +5201,6 @@ def handle_admin_command(message, cmd: str) -> bool:
         )
         return True
 
-    if cmd == "/testrecap":
-        text = build_evening_recap(actor_id)
-        if not text:
-            bot.send_message(
-                uid,
-                "Für heute gibt es noch keinen Abend-Recap. Trage kurz eine Ausgabe ein und teste dann nochmal."
-            )
-            return True
-        bot.send_message(uid, text, parse_mode="Markdown")
-        return True
-
     if cmd == "/health":
         bot.send_message(uid, build_health_report(), parse_mode="Markdown")
         return True
@@ -5276,7 +5245,7 @@ def handle_admin_command(message, cmd: str) -> bool:
     'start', 'help', 'score', 'scoreinfo', 'badges', 'verfeinern', 'portfolio', 'undo', 'editlast', 'id',
     'settings', 'goal', 'status', 'stats', 'reset', 'reset_confirm', 'investiert', 'testreport',
     'admin', 'pending', 'approve', 'revoke', 'adminusers', 'health', 'reportjobs', 'backupnow',
-    'nudge_inactive', 'testrecap', 'ruhe', 'announce_rename', 'announce_app_migration', 'appwechsel', 'app'
+    'nudge_inactive', 'announce_rename', 'announce_app_migration', 'appwechsel', 'app'
 ])
 def handle_commands(message):
     uid = message.chat.id
@@ -5331,21 +5300,6 @@ def handle_commands(message):
 
     elif cmd == '/help':
         bot.send_message(uid, build_help_answer(), parse_mode="Markdown")
-
-    elif cmd == '/ruhe':
-        now_off = toggle_recap_muted(uid)
-        if now_off:
-            bot.send_message(
-                uid,
-                "Alles klar — kein Abend-Update mehr.\n\n"
-                "Wieder einschalten: /ruhe"
-            )
-        else:
-            bot.send_message(
-                uid,
-                "Abend-Update ist wieder an.\n"
-                "Du bekommst abends eine kurze Zusammenfassung, wenn du getrackt hast."
-            )
 
     elif cmd == '/score':
         with get_db() as conn:
@@ -5735,7 +5689,6 @@ def handle_msg(message):
             "letzte löschen": "/undo",
             "badges": "/badges", "erfolge": "/badges",
             "ziel": "/goal", "mein ziel": "/goal", "sparziel": "/goal",
-            "ruhe": "/ruhe",
         }
         alias_cmd = COMMAND_ALIASES.get(text_lower.rstrip("!?."))
         if alias_cmd:
@@ -6484,345 +6437,9 @@ Nutzereingabe: {text_input}"""
         bot.send_message(uid, build_not_understood_answer(), parse_mode="Markdown")
 
 
-# ====================== REPORT QUEUE ======================
-def previous_month_key(today: date = None) -> str:
-    today = today or date.today()
-    if today.month == 1:
-        return f"{today.year - 1}-12"
-    return f"{today.year}-{today.month - 1:02d}"
-
-
-def get_active_user_ids() -> list:
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT u.user_id
-               FROM users u
-               LEFT JOIN user_access a ON a.user_id = u.user_id
-               WHERE u.onboarding_step = ?
-               AND COALESCE(a.status, 'approved') IN ('approved', 'app_only')""",
-            (STEP_NORMAL,)
-        )
-        return [row["user_id"] for row in cursor.fetchall()]
-
-
-def report_now() -> datetime:
-    """Keep every report-queue timestamp in the scheduler's Berlin timezone."""
-    return datetime.now(REPORT_TIMEZONE).replace(tzinfo=None)
-
-
-def random_report_time_for_today() -> str:
-    now = report_now()
-    start = datetime(now.year, now.month, now.day, REPORT_SEND_WINDOW_START_HOUR, 0, 0)
-    end = datetime(now.year, now.month, now.day, REPORT_SEND_WINDOW_END_HOUR, 0, 0)
-    if now > start:
-        start = now + timedelta(minutes=1)
-    if start >= end:
-        end = start + timedelta(hours=6)
-    seconds = max(1, int((end - start).total_seconds()))
-    scheduled = start + timedelta(seconds=random.randint(0, seconds))
-    return scheduled.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def create_monthly_report_jobs(report_month: str = None) -> int:
-    report_month = report_month or previous_month_key()
-    users = get_active_user_ids()
-    created = 0
-    with get_db() as conn:
-        cursor = conn.cursor()
-        for user_id in users:
-            cursor.execute(
-                """INSERT OR IGNORE INTO report_jobs
-                   (user_id, report_month, scheduled_at, status, attempts, last_error)
-                   VALUES (?, ?, ?, 'pending', 0, '')""",
-                (user_id, report_month, random_report_time_for_today())
-            )
-            created += cursor.rowcount
-        conn.commit()
-    logger.info(f"Report-Jobs fuer {report_month}: {created} neu, {len(users) - created} bereits vorhanden.")
-    return created
-
-
-def has_report_jobs_for_month(report_month: str) -> bool:
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM report_jobs WHERE report_month = ? LIMIT 1",
-            (report_month,)
-        ).fetchone()
-    return row is not None
-
-
-def ensure_monthly_report_jobs(today: date = None) -> int:
-    today = today or date.today()
-    if today.day not in {1, 2}:
-        return 0
-
-    report_month = previous_month_key(today)
-    if has_report_jobs_for_month(report_month):
-        return 0
-
-    created = create_monthly_report_jobs(report_month)
-    logger.warning(
-        f"Report-Safety-Net hat fehlende Jobs fuer {report_month} nacherzeugt: {created}."
-    )
-    return created
-
-
-def claim_due_report_jobs(limit: int = None) -> list:
-    limit = limit or REPORT_WORKER_BATCH_SIZE
-    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
-    with get_db() as conn:
-        cursor = conn.cursor()
-        conn.execute("BEGIN IMMEDIATE")
-        cursor.execute(
-            """SELECT * FROM report_jobs
-               WHERE status = 'pending' AND scheduled_at <= ? AND attempts < ?
-               ORDER BY scheduled_at ASC LIMIT ?""",
-            (now, REPORT_MAX_ATTEMPTS, limit)
-        )
-        jobs = [dict(row) for row in cursor.fetchall()]
-        for job in jobs:
-            cursor.execute(
-                """UPDATE report_jobs
-                   SET status = 'processing', attempts = attempts + 1, updated_at = ?
-                   WHERE id = ?""",
-                (now, job["id"])
-            )
-            job["attempts"] = (job.get("attempts") or 0) + 1
-        conn.commit()
-    return jobs
-
-
-def mark_report_job_sent(job_id: int):
-    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
-    with get_db() as conn:
-        conn.execute("UPDATE report_jobs SET status = 'sent', last_error = '', updated_at = ? WHERE id = ?", (now, job_id))
-        conn.commit()
-
-
-def mark_report_job_failed(job: dict, error: str):
-    now_dt = report_now()
-    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-    attempts = job.get("attempts") or 0
-    final_failed = attempts >= REPORT_MAX_ATTEMPTS
-    next_status = "failed" if final_failed else "pending"
-    next_time = now if final_failed else (now_dt + timedelta(minutes=REPORT_RETRY_DELAY_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
-    clean_error = (error or "Unbekannter Fehler")[:1000]
-    with get_db() as conn:
-        conn.execute(
-            """UPDATE report_jobs
-               SET status = ?, scheduled_at = ?, last_error = ?, updated_at = ?
-               WHERE id = ?""",
-            (next_status, next_time, clean_error, now, job["id"])
-        )
-        conn.commit()
-
-
-def mark_report_job_skipped(job: dict, reason: str):
-    now = report_now().strftime("%Y-%m-%d %H:%M:%S")
-    clean_reason = (reason or "Report übersprungen")[:1000]
-    with get_db() as conn:
-        conn.execute(
-            """UPDATE report_jobs
-               SET status = 'skipped', last_error = ?, updated_at = ?
-               WHERE id = ?""",
-            (clean_reason, now, job["id"])
-        )
-        conn.commit()
-
-
-def process_report_job(job: dict):
-    try:
-        import report_engine
-        report_engine.ensure_net_worth_column()
-        ok = report_engine.send_report_to_user(job["user_id"], job["report_month"], bot)
-        if ok:
-            mark_report_job_sent(job["id"])
-        else:
-            mark_report_job_failed(job, "send_report_to_user returned False")
-    except Exception as e:
-        if type(e).__name__ == "ReportSkipped":
-            logger.info(f"Report-Job {job.get('id')} übersprungen: {e}")
-            mark_report_job_skipped(job, str(e))
-            return
-        logger.error(f"Report-Job-Fehler {job.get('id')}: {e}", exc_info=True)
-        mark_report_job_failed(job, f"{type(e).__name__}: {e}")
-
-
-def process_due_report_jobs():
-    jobs = claim_due_report_jobs(REPORT_WORKER_BATCH_SIZE)
-    if not jobs:
-        return
-    logger.info(f"Report-Worker verarbeitet {len(jobs)} Job(s).")
-    for job in jobs:
-        process_report_job(job)
-
-
-def cleanup_expired_web_reports():
-    try:
-        import rove_web_report_renderer
-        removed = rove_web_report_renderer.cleanup_expired_reports()
-        if removed:
-            logger.info(f"Abgelaufene Web-Reports entfernt: {removed}")
-    except Exception as e:
-        logger.warning(f"Web-Report-Cleanup fehlgeschlagen: {e}")
-
-
-def archive_old_pdf_reports():
-    """Komprimiert alte PDF-Reports (reports/archive/*.pdf.gz), loescht nichts inhaltlich."""
-    try:
-        import report_engine
-        archived = report_engine.archive_old_reports()
-        if archived:
-            logger.info(f"PDF-Reports archiviert: {archived}")
-    except Exception as e:
-        logger.warning(f"PDF-Report-Archivierung fehlgeschlagen: {e}")
-
-
-# ====================== REPORT SCHEDULER ======================
-REPORT_SCHEDULER = None
-
-# ====================== ABEND-RECAP ======================
-RECAP_OFF_BADGE = "setting_recap_off"
-
-
-def is_recap_muted(user_id: int) -> bool:
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
-            (user_id, RECAP_OFF_BADGE)
-        ).fetchone()
-    return row is not None
-
-
-def toggle_recap_muted(user_id: int) -> bool:
-    """Schaltet den Abend-Recap um. Gibt True zurueck, wenn er jetzt AUS ist."""
-    with get_db() as conn:
-        if conn.execute(
-            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
-            (user_id, RECAP_OFF_BADGE)
-        ).fetchone():
-            conn.execute(
-                "DELETE FROM user_badges WHERE user_id = ? AND badge_key = ?",
-                (user_id, RECAP_OFF_BADGE)
-            )
-            conn.commit()
-            return False
-        conn.execute(
-            "INSERT INTO user_badges (user_id, badge_key) VALUES (?, ?)",
-            (user_id, RECAP_OFF_BADGE)
-        )
-        conn.commit()
-        return True
-
-
-def get_evening_recap_candidates() -> list:
-    """Nur User, die HEUTE getrackt haben. Inaktive werden bewusst nicht angeschrieben."""
-    with get_db() as conn:
-        return conn.execute(
-            """SELECT u.user_id
-               FROM users u
-               LEFT JOIN user_access a ON a.user_id = u.user_id
-               WHERE COALESCE(a.status, 'approved') = 'approved'
-                 AND u.onboarding_step >= ?
-                 AND EXISTS (
-                    SELECT 1 FROM expenses e
-                    WHERE e.user_id = u.user_id
-                      AND DATE(e.created_at) = DATE('now', 'localtime')
-                 )
-                 AND NOT EXISTS (
-                    SELECT 1 FROM user_badges b
-                    WHERE b.user_id = u.user_id AND b.badge_key = ?
-                 )""",
-            (STEP_NORMAL, RECAP_OFF_BADGE)
-        ).fetchall()
-
-
-def build_evening_recap(user_id: int) -> str:
-    with get_db() as conn:
-        today_rows = conn.execute(
-            """SELECT category, COUNT(*) AS cnt, SUM(amount) AS total
-               FROM expenses
-               WHERE user_id = ? AND DATE(created_at) = DATE('now', 'localtime')
-               GROUP BY category ORDER BY total DESC""",
-            (user_id,)
-        ).fetchall()
-        week_row = conn.execute(
-            """SELECT COALESCE(SUM(amount), 0) AS total
-               FROM expenses
-               WHERE user_id = ?
-                 AND DATE(created_at) >= DATE('now', 'localtime', 'weekday 0', '-6 days')""",
-            (user_id,)
-        ).fetchone()
-        user_row = conn.execute(
-            "SELECT streak_days FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-
-    if not today_rows:
-        return ""
-
-    day_total = sum(r["total"] or 0 for r in today_rows)
-    day_count = sum(r["cnt"] or 0 for r in today_rows)
-    top = today_rows[0]
-    top_emoji = CATEGORY_EMOJIS.get(top["category"], "")
-    week_total = week_row["total"] or 0
-    streak = (user_row["streak_days"] or 0) if user_row else 0
-
-    lines = [
-        f"*Dein Tag:* {day_count} {'Ausgabe' if day_count == 1 else 'Ausgaben'} · {day_total:.2f}€"
-    ]
-    if len(today_rows) > 1:
-        lines.append(f"Größter Posten: {top_emoji} {top['category'].title()} ({top['total']:.2f}€)")
-    lines.append(f"Diese Woche: {week_total:.2f}€")
-    if streak >= 2:
-        lines.append(f"Streak: {streak} Tage 🔥")
-    lines.append("_(Abend-Update abschaltbar mit /ruhe)_")
-    return "\n".join(lines)
-
-
-def send_evening_recaps():
-    candidates = get_evening_recap_candidates()
-    sent = 0
-    for row in candidates:
-        uid = row["user_id"]
-        try:
-            text = build_evening_recap(uid)
-            if text:
-                bot.send_message(uid, text, parse_mode="Markdown")
-                sent += 1
-        except Exception as e:
-            logger.warning(f"Abend-Recap an {uid} fehlgeschlagen: {e}")
-    logger.info(f"Abend-Recap: {sent} gesendet, {len(candidates)} Kandidaten.")
-
-
-def setup_monthly_report_scheduler():
-    """Startet Queue-Erzeugung und Worker fuer Monatsreports."""
-    if BackgroundScheduler is None or CronTrigger is None:
-        logger.warning("APScheduler ist nicht installiert. Monatliche Reports werden nicht automatisch versendet.")
-        return None
-
-    scheduler = BackgroundScheduler(timezone="Europe/Berlin")
-    scheduler.add_job(
-        send_evening_recaps,
-        trigger=CronTrigger(hour=20, minute=30, timezone="Europe/Berlin"),
-        id="send_evening_recaps",
-        replace_existing=True,
-        misfire_grace_time=1800,
-        coalesce=True,
-        max_instances=1,
-    )
-    scheduler.start()
-    logger.info("Telegram-Abend-Recap aktiv; App-Reports laufen im eigenen systemd-Worker.")
-    return scheduler
-
 # ====================== GRACEFUL SHUTDOWN ======================
 def signal_handler(sig, frame):
     logger.info("Bot wird sicher heruntergefahren...")
-    if REPORT_SCHEDULER is not None:
-        try:
-            REPORT_SCHEDULER.shutdown(wait=False)
-        except Exception as e:
-            logger.warning(f"Scheduler konnte nicht sauber beendet werden: {e}")
     bot.stop_polling()
     sys.exit(0)
 
@@ -6850,7 +6467,6 @@ if __name__ == "__main__":
     BOT_LOCK_HANDLE = acquire_bot_lock()
     init_db()
     setup_bot_menu()
-    REPORT_SCHEDULER = setup_monthly_report_scheduler()
     logger.info("🚀 Project Clarity – Pro Edition gestartet")
     bot.delete_webhook(drop_pending_updates=True)
     try:
