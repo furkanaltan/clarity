@@ -4,6 +4,10 @@ Stand: 31.08.2026. Befehle mit Root-Rechten werden ausschliesslich kontrolliert
 auf dem Produktionsserver ausgefuehrt. Secrets und Datenbankinhalte duerfen
 nicht in Terminalausgaben oder Git gelangen.
 
+Der verifizierte Runtime-Aufbau und der Clean-Room-Plan stehen in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dieses Runbook beschreibt die
+operativen Gates, nicht die automatische Installation eines neuen Hosts.
+
 ## Produktionspfade
 
 - Backend-Checkout: `/root/clarity`

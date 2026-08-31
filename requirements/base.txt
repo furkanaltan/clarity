@@ -1,0 +1,2 @@
+# Verified on production system Python 3.12.3 on 31.08.2026.
+python-dotenv==1.2.2

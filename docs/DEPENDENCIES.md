@@ -26,9 +26,11 @@ Diese Laufzeiten werden in Wave 3 nicht vereinheitlicht.
 | `reportlab` | Report-Engine und PDF-Renderer |
 | `WeasyPrint` | HTML-/Web-/Light-PDF-Rendering |
 
-Die exakten produktiven Versionen sind noch nicht vollstaendig aus beiden
-Server-Laufzeiten erfasst. Deshalb werden in Wave 3 keine erfundenen Pins und
-kein lokales `pip freeze` als Produktionswahrheit committed.
+Wave 5 hat den produktiven System-Python read-only inventarisiert. Verifiziert
+sind `APScheduler 3.11.2`, `python-dotenv 1.2.2`, `openai 2.38.0`,
+`pyTelegramBotAPI 4.33.0`, `reportlab 4.1.0`, `WeasyPrint 69.0`, `Jinja2 3.1.2`
+und `Pillow 12.2.0`. Die Versionen im separaten API-Venv bleiben `UNKNOWN`,
+weil der read-only SSH-Account den Venv-Pfad nicht inspizieren kann.
 
 ## Optional Dependencies
 
@@ -63,7 +65,7 @@ Die plattformspezifischen WeasyPrint-Pakete und Fonts muessen auf dem Server
 separat inventarisiert werden, bevor ein reproduzierbares Setup als vollstaendig
 gilt.
 
-## Empfohlene spaetere Struktur
+## Requirements-Struktur
 
 ```text
 requirements/base.txt
@@ -73,14 +75,14 @@ requirements/reports.txt
 requirements/dev.txt
 ```
 
-Versionen duerfen erst nach Abgleich der aktiven API-, Bot- und Worker-Umgebung
-festgeschrieben werden. Das Erstellen dieser Dateien ist ein eigenes,
-getestetes Changeset.
+Die Dateien sind als Wave-5-Foundation vorhanden. Pins in `base.txt`, `bot.txt`
+und `reports.txt` stammen aus dem produktiven System-Python. API-Pakete bleiben
+bewusst ungepinnt, bis deren aktive Venv-Versionen verifiziert sind.
 
 ## Aktueller Reproduzierbarkeitsstatus
 
 - Source- und Testeinstieg: dokumentiert
-- Python-Abhaengigkeiten: statisch inventarisiert
-- Exakte produktive Versionen: unvollstaendig
-- Native Report-Abhaengigkeiten: unvollstaendig
+- Python-Abhaengigkeiten: nach Runtime gruppiert und teilweise verifiziert
+- Exakte produktive Versionen: System-Python verifiziert, API-Venv unvollstaendig
+- Native Report-Abhaengigkeiten: Kernpakete und Fonts verifiziert
 - Vollstaendiger Clean-Room-Aufbau: noch nicht garantiert

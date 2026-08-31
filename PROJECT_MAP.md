@@ -52,6 +52,7 @@ bereits abgeschlossene Zielarchitektur.
 - Script- und Migrationsinventar: [docs/SCRIPTS.md](docs/SCRIPTS.md) und
   [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 - Laufzeit- und Paketabhaengigkeiten: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+- Deployment-, Runtime- und Recovery-Foundation: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Nicht-kanonische Kopien
 

@@ -25,6 +25,8 @@ Systemd-Pfade davon abhaengen.
 - [PROJECT_MAP.md](PROJECT_MAP.md): Funktionen, Dateien und Entry Points
 - [ARCHITECTURE.md](ARCHITECTURE.md): System- und Datenfluss
 - [RUNBOOK.md](RUNBOOK.md): Deploy, Diagnose, Backup und Restore
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): reproduzierbarer Serveraufbau und Runtime-Inventar
+- [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md): Variablen-, Secret- und Default-Inventar
 - [CHANGELOG.md](CHANGELOG.md): kanonisch gepflegte Aenderungen
 - [docs/TESTING.md](docs/TESTING.md): Tests, Teilmengen und bekannte Baseline
 - [docs/SCRIPTS.md](docs/SCRIPTS.md): Runtime-, Operations- und Legacy-Inventar
