@@ -509,7 +509,7 @@ class CryptoFrontendTests(unittest.TestCase):
     def setUpClass(cls):
         frontend_path = Path(os.environ.get(
             "ROVE_FRONTEND_PATH",
-            Path(__file__).resolve().parent.parent / "rove-app" / "index.html",
+            Path(__file__).resolve().parent / "frontend" / "index.html",
         ))
         cls.html = frontend_path.read_text(encoding="utf-8")
 

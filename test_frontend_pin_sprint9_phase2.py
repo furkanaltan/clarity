@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 
-FRONTEND_PATH = Path(__file__).resolve().parent.parent / "rove-app" / "index.html"
+FRONTEND_PATH = Path(__file__).resolve().parent / "frontend" / "index.html"
 
 
 class FrontendPinTests(unittest.TestCase):

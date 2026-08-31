@@ -1,8 +1,15 @@
 venv/
+.venv/
+.venv*/
 __pycache__/
+*.py[cod]
 *.db
+*.db-wal
+*.db-shm
 *.log
 .env
+.env.*
+!.env.example
 reports/
 *.pdf
 bot.py.save*
@@ -21,9 +28,19 @@ clarity-bot/
 .wget-hsts
 
 .DS_Store
-*.db-shm
-*.db-wal
 *.lock
 *.zip
+
+# Local runtime and generated output. Keep source templates versioned.
+tmp/
+output/
+generated/
+backups/
+*.backup_*
+*.save*
+
+# Historical frontend snapshots are recovery artifacts, not source files.
+index.STAND-*.html
+index.ROLLBACK-*.html
 
 report_html/report-main/generated/

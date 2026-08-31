@@ -8,7 +8,7 @@ from pathlib import Path
 FRONTEND_PATH = Path(
     os.environ.get(
         "ROVE_FRONTEND_PATH",
-        str(Path(__file__).resolve().parent.parent / "rove-app" / "index.html"),
+        str(Path(__file__).resolve().parent / "frontend" / "index.html"),
     )
 )
 

@@ -115,7 +115,7 @@ class StateLinkSecurityTests(unittest.TestCase):
         self.assertEqual(retirement.inventory(self.db_path, self.state_dir)["files"], 0)
 
     def test_frontend_has_no_state_url_or_bearer_bootstrap(self):
-        frontend = (Path(__file__).resolve().parent.parent / "rove-app" / "index.html").read_text(encoding="utf-8")
+        frontend = (Path(__file__).resolve().parent / "frontend" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("app-state", frontend)
         self.assertNotIn("ROVE_API.token", frontend)
         self.assertNotIn('Authorization":`Bearer', frontend)
