@@ -526,3 +526,155 @@ production until a later approved deploy.
 Wave 8 does not make the Telegram bot safe to decommission. Long polling,
 Telegram expense/onboarding flows, access administration and legacy report
 delivery remain active in local code and production.
+
+## Telegram decommission gate (Wave 12)
+
+This is a read-only readiness assessment. It does not stop, disable, restart
+or modify `clarity-bot.service`, and it does not authorize deletion of
+Telegram data. Telegram-only behavior is not migrated merely to preserve the
+retiring channel.
+
+### Non-Telegram dependency result
+
+No non-Telegram production runtime service was found to import `bot.py`, start
+it as part of App operation, or require `clarity-bot.service` in systemd
+ordering. `dashboard.py` can start the bot as an optional operator convenience;
+that does not make it an App runtime dependency. The following runtimes are
+separate from the bot process:
+
+| Component | Depends on bot process | What stops working if bot stops | Blocker |
+|---|---:|---|---:|
+| `rove_app_api.py` | NO | No App API endpoint identified | NO |
+| `rove_app_state.py` and domain modules | NO | App state and domain reads/writes continue; historical bot-sourced rows remain readable | NO |
+| `rove_report_worker.py` and report engine | NO for App reports | App report enqueue, processing, storage and App delivery continue; Telegram-only delivery does not | YES for legacy recipients |
+| `rove_monthly_reminders.py` | NO | App monthly push reminders continue | NO |
+| `rove_tracking_reminders.py` | NO | App tracking reminders continue | NO |
+| `refresh_market_positions.py` | NO | Scheduled market refresh continues | NO |
+| `backup_clarity_db.py` | NO | Automated DB backups continue | NO |
+| frontend and App authentication | NO | No App runtime dependency identified | NO |
+| `dashboard.py` | NO | Only optional operator convenience for starting `bot.py` disappears | NO for App runtime |
+
+The App and bot share SQLite and historical data contracts. This is a data
+compatibility concern, not a requirement for the bot process to continuously
+run. Category-budget bot writes, Telegram onboarding, portfolio commands and
+Telegram undo do not need migration solely to preserve Telegram functionality
+after the channel is retired.
+
+### `clarity-bot.service` responsibility
+
+The inspected unit defines:
+
+| Field | Value |
+|---|---|
+| `ExecStart` | `/usr/bin/python3 /root/clarity/bot.py` |
+| `WorkingDirectory` | `/root/clarity` |
+| Environment | optional `/root/clarity/.rove-leeway.env`; `bot.py` also loads `.env` |
+| Restart | `always`, `RestartSec=5` |
+| Dependencies | `After=network.target`; no `Requires`/`Wants` from App units |
+| Wanted by | `multi-user.target` |
+| Shared files | source tree and environment files; no App import dependency |
+| Shared DB | `/root/clarity/clarity.db`; historical rows remain valid if the process stops |
+
+Its exclusive responsibility is Telegram transport, handlers and remaining
+Telegram-specific administration/legacy flows. No other inspected service
+requires it or orders itself after/before it.
+
+### Remaining bot-only responsibilities
+
+| Responsibility | Classification | App runtime required | Shutdown blocker |
+|---|---|---:|---:|
+| Telegram polling, menu and replies | A: Telegram-only / obsolete product channel | NO | YES until retirement gate is approved |
+| Telegram onboarding and refinement | A: Telegram-only / obsolete | NO | YES for unmigrated users |
+| Free-form Telegram expense and investment entry | A: Telegram-only / obsolete | NO | YES while active users depend on it |
+| Telegram-only report delivery | A: Telegram-only / obsolete | NO | YES while recipients remain |
+| Access approval/revocation notifications in Telegram | D: admin/operations dependency | NO | CONDITIONAL; cockpit coverage and acceptance required |
+| `/nudge_inactive`, rename/migration broadcasts | D: admin/operations convenience | NO | NO, current use is UNKNOWN |
+| `/testreport` and diagnostic commands | D: admin/operations convenience | NO | CONDITIONAL until replacement is accepted |
+| `/backupnow` | D: admin/operations convenience | NO; timer exists | NO for routine runtime, manual usage UNKNOWN |
+
+The local Wave-8 source contains no active scheduler registration; its runtime
+entrypoint is Telegram long polling. Production still runs the previously
+deployed bot version and must be checked separately before any runtime action.
+
+### Report gate
+
+- App report generation: **YES, independent of `bot.py`**.
+- App report storage/archive: **YES, independent of `bot.py`**.
+- App report delivery for verified App accounts: **YES, independent of `bot.py`**.
+- Delivery to Telegram-only recipients: **NO, it still requires Telegram transport**.
+- Normal App reports after Telegram retirement: **YES**, once user-account and
+  pending-delivery checks pass.
+
+### Scheduler gate
+
+No remaining scheduler/background job was found inside local Wave-8 `bot.py`.
+App background work is owned by separate systemd services and timers for
+reports, monthly reminders, tracking reminders, market refresh and DB backup.
+The old production bot may still contain pre-Wave-8 scheduler behavior until
+a separate production comparison proves otherwise.
+
+### User and data gate
+
+The following production evidence remains **UNKNOWN** and must be collected as
+aggregate, privacy-safe counts or timestamps before shutdown:
+
+- recent active Telegram users;
+- approved users without a verified App account;
+- last Telegram command/write activity;
+- pending Telegram report deliveries and Telegram-only recipients;
+- recent use of admin convenience commands.
+
+Historical Telegram rows do not by themselves block shutdown. Active runtime
+dependency, pending delivery and account migration do.
+
+### Database gate
+
+- Bot shutdown requires DB migration: **NO**.
+- Bot shutdown requires data deletion: **NO**.
+- Bot shutdown can leave legacy data in place: **YES**.
+- No App component was found to require continuous bot maintenance of a DB
+  table. Shared historical rows must remain readable and must not be deleted as
+  part of the runtime stop.
+
+### Separate shutdown phases
+
+1. **Phase A - stop/disable runtime later:** only after all gate conditions are
+   proven; do not combine this with code removal.
+2. **Phase B - observation:** monitor App health, reports, reminders, backups,
+   auth and Telegram-dependent errors for at least seven days, including one
+   report and monthly-reminder cycle where applicable.
+3. **Phase C - remove Telegram-only code:** only after observation and user
+   migration evidence pass.
+4. **Phase D - legacy data/schema review:** separate decision; retain historical
+   rows unless a later approved retention decision says otherwise.
+
+### Rollback plan
+
+Re-enable and start `clarity-bot.service` from the known production release,
+verify the process lock and Telegram polling, and confirm that only one bot
+instance is active. No DB restoration is expected because shutdown does not
+delete or migrate data. A DB restore is only for a separately documented data
+incident.
+
+### Decommission checklist
+
+- [ ] no non-Telegram runtime dependency
+- [ ] App reports independent
+- [ ] critical App operations independent
+- [ ] scheduler responsibilities replaced or obsolete
+- [ ] relevant users confirmed on App
+- [ ] no required pending Telegram delivery
+- [x] rollback documented
+- [ ] production backup/current state known for shutdown window
+- [ ] shutdown smoke tests defined and executed
+
+### Wave 12 decision
+
+**SAFE TO STOP BOT RUNTIME LATER: CONDITIONAL.** The App runtime is
+independent, but active Telegram users, Telegram-only report recipients and
+admin/operations usage are not verified. **SAFE TO DELETE BOT CODE NOW: NO.**
+**USER ACTIVITY VERIFICATION STILL NEEDED: YES.**
+
+The Wave-11 category-budget migration remains intentionally stopped. Because
+Telegram is being retired as a product channel, those bot writes must not be
+migrated unless the App or another non-Telegram runtime is shown to need them.
