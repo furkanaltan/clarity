@@ -57,8 +57,8 @@ Production secrets must stay in root-readable environment files outside Git.
 | `REPORT_RETRY_DELAY_MINUTES` | Report retry policy | NO | NO | `15` |
 | `REPORT_PROCESSING_TIMEOUT_MINUTES` | Stale report recovery | NO | NO | `45` |
 | `REPORT_CREATION_MISFIRE_GRACE_SECONDS` | Report scheduler catch-up | NO | NO | `21600` |
-| `ROVE_REPORT_PUBLIC_DIR` | Generated public report storage | YES for report links | NO | `/root/clarity/public/reports` |
-| `ROVE_REPORT_PUBLIC_BASE_URL` | Public report URL generation | YES for report links | NO | Empty; configure explicitly |
+| `ROVE_REPORT_PUBLIC_DIR` | Generated public report storage | YES for report links | NO | `/var/www/reports` |
+| `ROVE_REPORT_PUBLIC_BASE_URL` | Public report URL generation | YES for report links | NO | `https://getrove.de/reports` |
 | `ROVE_REPORT_LINK_TTL_DAYS` | Public report link expiry | NO | NO | `30` |
 | `ROVE_WEB_TEMPLATE_PATH` | HTML report rendering | YES for web reports | NO | Canonical template path from the template |
 | `ROVE_APP_STATE_PUBLIC_DIR` | Retired app-state compatibility | NO | NO | `/root/clarity/public/app-state` |

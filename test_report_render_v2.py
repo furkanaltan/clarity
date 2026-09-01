@@ -69,6 +69,10 @@ def july_truth_payload() -> dict:
         "net_contributions": 0.0, "recurring_in": 0.0, "one_time_in": 0.0,
         "out": 0.0, "events_count": 0, "by_asset": [],
     }
+    truth["savings"] = {
+        "actual_amount": 0.0, "confirmed": False,
+        "automatic_etf_amount": 0.0, "source": "unconfirmed",
+    }
     truth["investments"]["holdings"] = []
     truth["wealth"] = {
         "total": 38991.0, "cash": 9142.0, "investments": 20849.0,
@@ -175,10 +179,14 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn(">1.000 €</div>", html)
 
     def test_web_renders_exactly_ten_pages_with_localized_copy(self):
-        html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), report_payload())
+        payload = report_payload()
+        context = build_render_context(payload)
+        html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), payload)
         self.assertEqual(html.count("<section data-screen-label="), 10)
         self.assertIn("Juli 2026", html)
-        self.assertIn("800 € investiert oder zurückgelegt", html)
+        self.assertEqual(context["freedom_step_text"], "+800 €")
+        self.assertEqual(context["freedom_step_subline"], "tatsächlich gespart")
+        self.assertIn("+800 €", html)
         self.assertRegex(html, r'data-screen-label="02 (Überblick|Dein Geldfluss)"')
         self.assertIn('data-screen-label="03 Deine Kategorien"', html)
         self.assertIn('data-screen-label="04 Händler und Ausgabenmuster"', html)
@@ -360,6 +368,30 @@ class ReportRenderV2Tests(unittest.TestCase):
             "rund 4 Monaten",
         ):
             self.assertNotIn(phrase, html)
+
+    def test_pdf_wealth_allocation_supports_six_asset_classes(self):
+        data = report_payload()
+        data["report_truth"]["wealth"]["allocation"] = [
+            {"key": "cash:giro", "label": "Girokonto", "asset_class": "checking",
+             "amount": 737.69, "share": 1.8},
+            {"key": "cash:savings", "label": "Tagesgeld", "asset_class": "savings",
+             "amount": 7118.0, "share": 17.6},
+            {"key": "cash:wallet", "label": "Bargeld", "asset_class": "cash",
+             "amount": 40.0, "share": 0.1},
+            {"key": "investment:crypto", "label": "Krypto", "asset_class": "investment",
+             "amount": 12090.41, "share": 29.9},
+            {"key": "investment:etfs", "label": "ETFs", "asset_class": "investment",
+             "amount": 8500.0, "share": 21.0},
+            {"key": "investment:stocks", "label": "Aktien", "asset_class": "investment",
+             "amount": 11905.9, "share": 29.6},
+        ]
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        html = build_html_document(_render_hell_pages(data))
+
+        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", html)
+        for label in ("Girokonto", "Tagesgeld", "Bargeld", "Krypto", "ETFs", "Aktien"):
+            self.assertIn(label, html)
 
 
 if __name__ == "__main__":

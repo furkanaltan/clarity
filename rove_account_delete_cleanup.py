@@ -14,7 +14,7 @@ def configured_roots(app_dir: Path) -> tuple[Path, Path, Path, Path]:
     reports_dir = Path(os.getenv("CLARITY_REPORTS_DIR", str(app_dir / "reports")))
     return (
         Path(os.getenv("ROVE_APP_STATE_PUBLIC_DIR", str(app_dir / "public" / "app-state"))),
-        Path(os.getenv("ROVE_REPORT_PUBLIC_DIR", str(app_dir / "public" / "reports"))),
+        Path(os.getenv("ROVE_REPORT_PUBLIC_DIR", "/var/www/reports")),
         reports_dir,
         reports_dir / "archive",
     )

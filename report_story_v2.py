@@ -302,14 +302,20 @@ def _monthly_plan(data: dict) -> dict:
 def _savings_context(data: dict, truth: dict) -> dict:
     plan = _monthly_plan(data)
     contributions = ((truth.get("investments") or {}).get("contributions") or {})
-    actual = _money(contributions.get("net_contributions"))
+    savings_truth = truth.get("savings") or {}
+    confirmed = bool(savings_truth.get("confirmed"))
+    actual = (
+        _money(savings_truth.get("actual_amount"))
+        if confirmed
+        else _money(contributions.get("net_contributions"))
+    )
     planned = plan["planned_savings"]
     return {
         "planned": planned,
         "actual": actual,
         "gap": round(max(0.0, planned - actual), 2),
         "goal_reached": planned > 0 and actual + 0.01 >= planned,
-        "confirmed": bool((plan.get("execution") or {}).get("savings_confirmed")),
+        "confirmed": confirmed,
         "recurring": _money(contributions.get("recurring_in")),
     }
 
@@ -429,6 +435,7 @@ def build_insight_candidates(data: dict, truth: dict, categories: list[dict],
 def _select_month_facts(data: dict, truth: dict, categories: list[dict], changes: list[dict]) -> list[dict]:
     expenses = truth.get("expenses") or {}
     contributions = ((truth.get("investments") or {}).get("contributions") or {})
+    savings = truth.get("savings") or {}
     budget = truth.get("budget") or {}
     wealth = _wealth(truth, data)
     facts = []
@@ -439,7 +446,14 @@ def _select_month_facts(data: dict, truth: dict, categories: list[dict], changes
             "value": changes[0]["context"],
             "priority": 10,
         })
-    if _money(contributions.get("net_contributions")) > 0:
+    if savings.get("confirmed"):
+        facts.append({
+            "key": "confirmed_savings",
+            "label": "Tatsächlich gespart",
+            "value": _money(savings.get("actual_amount")),
+            "priority": 9,
+        })
+    elif _money(contributions.get("net_contributions")) > 0:
         facts.append({"key": "investment_contribution", "label": "Investiert", "value": _money(contributions.get("net_contributions")), "priority": 9})
     if budget.get("has_budgets"):
         facts.append({"key": "budget_status", "label": "Budgetstatus", "value": "im Rahmen" if budget.get("on_track") else "über Plan", "priority": 8})
@@ -477,15 +491,31 @@ def _comparison_changes(truth: dict, categories: list[dict], merchants: list[dic
             "delta_percent": _defensive_delta_pct(current_total, previous_total),
             "context": _change_label(current_total, previous_total),
         })
-    current_contributions = _money(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions"))
+    current_savings = truth.get("savings") or {}
+    previous_savings = (truth.get("previous_month") or {}).get("savings") or {}
+    current_contribution_data = ((truth.get("investments") or {}).get("contributions") or {})
     previous_contribution_data = (truth.get("previous_month") or {}).get("investment_contributions")
-    if previous_contribution_data is not None:
+    if current_savings.get("confirmed") and previous_savings.get("confirmed"):
+        current_contributions = _money(current_savings.get("actual_amount"))
+        previous_contributions = _money(previous_savings.get("actual_amount"))
+        comparison_label = "Sparleistung"
+        comparison_type = "confirmed_savings"
+    elif previous_contribution_data is not None:
+        current_contributions = _money(current_contribution_data.get("net_contributions"))
         previous_contributions = _money(previous_contribution_data.get("net_contributions"))
+        comparison_label = "Investmentbeiträge"
+        comparison_type = "investment_contribution"
+    else:
+        current_contributions = None
+        previous_contributions = None
+        comparison_label = ""
+        comparison_type = ""
+    if current_contributions is not None and previous_contributions is not None:
         contribution_delta = round(current_contributions - previous_contributions, 2)
         if abs(contribution_delta) >= max(25.0, max(current_contributions, previous_contributions) * 0.05):
             changes.append({
-                "type": "investment_contribution",
-                "label": "Investmentbeiträge",
+                "type": comparison_type,
+                "label": comparison_label,
                 "current": current_contributions,
                 "previous": previous_contributions,
                 "delta": contribution_delta,
@@ -645,7 +675,9 @@ def build_report_story_v2(report_data: dict) -> dict:
     consumption = _money(expenses.get("total_consumption"))
     contributions = ((truth.get("investments") or {}).get("contributions") or {})
     invested = _money(contributions.get("net_contributions"))
-    difference = round(income - fixed - consumption - invested, 2) if income > 0 else None
+    savings = truth.get("savings") or {}
+    saved = _money(savings.get("actual_amount"))
+    difference = round(income - fixed - consumption - saved, 2) if income > 0 else None
     wealth = _wealth(truth, report_data)
     comparison_available = _previous_available(truth)
     changes = _comparison_changes(truth, categories, merchants) if comparison_available else []
@@ -691,8 +723,9 @@ def build_report_story_v2(report_data: dict) -> dict:
                 {"key": "income", "label": "Eingang", "value": income, "confirmed": bool((truth.get("income") or {}).get("confirmed"))},
                 {"key": "fixed_costs", "label": "Fixkosten", "value": fixed, "confirmed": bool((truth.get("fixed_costs") or {}).get("confirmed"))},
                 {"key": "consumption", "label": "Alltag & Konsum", "value": consumption},
-                {"key": "invested", "label": "Investiert", "value": invested},
-            ], visual={"type": "flow", "data": [income, fixed, consumption, invested, difference]},
+                {"key": "saved", "label": "Gespart & investiert", "value": saved,
+                 "confirmed": bool(savings.get("confirmed"))},
+            ], visual={"type": "flow", "data": [income, fixed, consumption, saved, difference]},
             text="Die Differenz ist ein Geldfluss-Ergebnis, keine automatisch bestätigte Sparleistung.",
             empty_state="Für einen vollständigen Geldfluss fehlt ein verwendbarer Einkommenswert.", available=income > 0),
         "page_3": _page(3, "Deine Kategorien", "Wofür hast du dein Geld ausgegeben?",
@@ -716,11 +749,24 @@ def build_report_story_v2(report_data: dict) -> dict:
             text="Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
             empty_state="Noch keine Vermögenswerte erfasst.", available=_money(wealth.get("total")) > 0),
         "page_7": _page(7, "Was hast du aufgebaut?", "Was hast du wirklich gespart oder investiert?",
-            {"semantic_key": "investment_contributions", "label": "Dokumentierte Beiträge", "value": invested},
+            {
+                "semantic_key": "confirmed_savings" if savings.get("confirmed") else "investment_contributions",
+                "label": "Bestätigte Sparleistung" if savings.get("confirmed") else "Dokumentierte Beiträge",
+                "value": saved if savings.get("confirmed") else invested,
+            },
             supporting_metrics=contribution_breakdown,
             visual={"type": "contribution_breakdown", "data": contribution_breakdown},
-            text=(f"Du hast {invested:.2f} EUR investiert. Es ist keine belastbare Marktbewegung verfügbar." if invested else "Für diesen Monat sind keine belastbaren Investmentbeiträge dokumentiert."),
-            empty_state="Keine Investmentbeiträge dokumentiert; es wird keine Sparleistung erfunden.", available=invested != 0),
+            text=(
+                f"Du hast {saved:.2f} EUR als tatsächliche Sparleistung bestätigt."
+                if savings.get("confirmed")
+                else (
+                    f"Du hast {invested:.2f} EUR investiert. Es ist keine belastbare Marktbewegung verfügbar."
+                    if invested
+                    else "Für diesen Monat sind keine belastbaren Investmentbeiträge dokumentiert."
+                )
+            ),
+            empty_state="Keine bestätigte Sparleistung oder Investmentbeiträge dokumentiert.",
+            available=bool(savings.get("confirmed")) or invested != 0),
         "page_8": _page(8, "Score & Ziele", "Wie steht deine finanzielle Struktur und wie weit bist du bei deinen Zielen?",
             {"semantic_key": "rove_score", "label": "Rov.E Score", "value": _integer(score.get("clarity_score", score_parts.get("total")))},
             supporting_metrics=[

@@ -32,6 +32,13 @@ MIN_TRACKING_DAYS = int(os.getenv("MIN_TRACKING_DAYS", "14"))
 APP_PUSH_INTERNAL_URL = os.getenv("ROVE_APP_INTERNAL_PUSH_URL", "http://127.0.0.1:5057/v1/internal/push")
 APP_PUSH_INTERNAL_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 
+REPORT_CONTRIBUTION_SOURCES = (
+    "investiert_command",
+    "app_monthly_plan",
+    "app_etf_plan",
+)
+REPORT_CONTRIBUTION_SOURCE_SQL = ", ".join("?" for _ in REPORT_CONTRIBUTION_SOURCES)
+
 
 class ReportSkipped(Exception):
     pass
@@ -381,7 +388,7 @@ def ensure_net_worth_column():
             conn.commit()
 
 
-REPORT_SNAPSHOT_SCHEMA_VERSION = 2
+REPORT_SNAPSHOT_SCHEMA_VERSION = 3
 
 
 def ensure_report_snapshots_v2_table(conn: sqlite3.Connection | None = None) -> None:
@@ -834,28 +841,28 @@ def get_investment_summary(user_id: int, report_month: str, cutoff_date: str | N
             return empty
 
         rows = conn.execute(
-            """
+            f"""
             SELECT amount, direction, asset_type, asset_name, event_type, source, created_at
             FROM investment_events
             WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-              AND event_type NOT IN ('manual_adjustment', 'asset_update', 'correction', 'market_valuation')
+              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
             ORDER BY created_at ASC, id ASC
             """,
-            (user_id, start, end),
+            (user_id, start, end, *REPORT_CONTRIBUTION_SOURCES),
         ).fetchall()
 
         by_asset_rows = conn.execute(
-            """
+            f"""
             SELECT asset_type, COALESCE(SUM(
                 CASE WHEN direction = 'out' THEN -amount ELSE amount END
             ), 0) AS total
             FROM investment_events
             WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-              AND event_type NOT IN ('manual_adjustment', 'asset_update', 'correction', 'market_valuation')
+              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
             GROUP BY asset_type
             ORDER BY total DESC
             """,
-            (user_id, start, end),
+            (user_id, start, end, *REPORT_CONTRIBUTION_SOURCES),
         ).fetchall()
 
     summary = dict(empty)
@@ -918,6 +925,15 @@ def get_monthly_execution(user_id: int, report_month: str) -> dict:
             execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
             execution["savings_confirmed"] = row["savings_status"] == "confirmed"
 
+        if table_exists(conn, "app_month_closures"):
+            month_close = conn.execute(
+                """SELECT 1 FROM app_month_closures
+                    WHERE user_id = ? AND month_key = ? LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone()
+            if month_close:
+                execution["savings_confirmed"] = True
+
         # Ein ETF-Sparplan kann automatisch laufen, waehrend die flexible
         # Cash-Sparrate noch offen ist. Deshalb gilt ausschliesslich die
         # explizite Monatsplan-Bestaetigung als bestaetigte Gesamtsparrate.
@@ -928,38 +944,52 @@ def get_monthly_execution(user_id: int, report_month: str) -> dict:
 def get_report_savings_progress(user_id: int, report_month: str, execution: dict) -> dict:
     """Return only savings-plan progress that the App can substantiate.
 
-    The investment summary intentionally includes all investment activity. That is
-    useful on the wealth page, but it must not turn a one-off investment or a
-    legacy booking into a completed monthly savings rate on the cover.
+    A month-close value is the confirmed total savings amount. ETF events remain
+    available as a breakdown, but must never be added to that total a second time.
     """
     progress = {
         "full_plan_confirmed": bool(execution.get("savings_confirmed")),
         "full_plan_amount": 0.0,
         "automatic_etf_amount": 0.0,
+        "confirmation_source": "",
     }
     with get_db() as conn:
-        if not table_exists(conn, "investment_events"):
-            return progress
-        rows = conn.execute(
-            """SELECT source, COALESCE(SUM(amount), 0) AS amount
-                 FROM investment_events
-                WHERE user_id = ?
-                  AND direction != 'out'
-                  AND strftime('%Y-%m', created_at) = ?
-                  AND source IN ('app_monthly_plan', 'app_etf_plan')
-                GROUP BY source""",
-            (user_id, report_month),
-        ).fetchall()
+        close_row = None
+        if table_exists(conn, "app_month_closures"):
+            close_row = conn.execute(
+                """SELECT actual_savings FROM app_month_closures
+                    WHERE user_id = ? AND month_key = ? LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone()
+        rows = []
+        if table_exists(conn, "investment_events"):
+            rows = conn.execute(
+                """SELECT source, COALESCE(SUM(amount), 0) AS amount
+                     FROM investment_events
+                    WHERE user_id = ?
+                      AND direction != 'out'
+                      AND strftime('%Y-%m', created_at) = ?
+                      AND source IN ('app_monthly_plan', 'app_etf_plan')
+                    GROUP BY source""",
+                (user_id, report_month),
+            ).fetchall()
 
     amounts = {str(row["source"]): float(row["amount"] or 0) for row in rows}
     progress["automatic_etf_amount"] = max(0.0, amounts.get("app_etf_plan", 0.0))
-    if progress["full_plan_confirmed"]:
+    if close_row is not None:
+        progress["full_plan_confirmed"] = True
+        progress["full_plan_amount"] = max(0.0, float(close_row["actual_savings"] or 0))
+        progress["confirmation_source"] = "month_close"
+    elif progress["full_plan_confirmed"]:
         # A confirmed plan can contain cash-only bookings, or cash plus the
         # separately scheduled ETF plan. Both belong to the confirmed plan.
         progress["full_plan_amount"] = max(
             0.0,
             amounts.get("app_monthly_plan", 0.0) + progress["automatic_etf_amount"],
         )
+        progress["confirmation_source"] = "legacy_monthly_plan"
+    elif progress["automatic_etf_amount"] > 0:
+        progress["confirmation_source"] = "app_etf_plan"
     return progress
 
 
@@ -1216,14 +1246,21 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     else:
         development_text = f"Dein Nettovermögen liegt {abs(net_worth_delta):.2f} EUR unter dem Vormonat."
 
+    confirmed_savings_amount = float(savings_progress.get("full_plan_amount") or 0)
     if (
         monthly_execution["income_confirmed"]
         and monthly_execution["fixed_costs_confirmed"]
-        and monthly_execution["savings_confirmed"]
+        and savings_progress["full_plan_confirmed"]
     ):
-        best_decision = "Dein Monatsplan wurde bestätigt: Gehalt, Fixkosten und Sparrate sind erfasst."
-    elif monthly_execution["savings_confirmed"]:
-        best_decision = f"Deine Sparrate von {savings_plan:.2f} EUR wurde für diesen Monat bestätigt."
+        best_decision = (
+            "Dein Monatsplan wurde bestätigt: Gehalt, Fixkosten und "
+            f"{confirmed_savings_amount:.2f} EUR tatsächliche Sparleistung sind erfasst."
+        )
+    elif savings_progress["full_plan_confirmed"]:
+        best_decision = (
+            f"Deine tatsächliche Sparleistung von {confirmed_savings_amount:.2f} EUR "
+            "wurde für diesen Monat bestätigt."
+        )
     elif investment_summary["net_contributions"] > 0:
         best_decision = f"Du hast {investment_summary['net_contributions']:.2f} EUR investiert oder zurückgelegt."
     elif savings_plan > 0:
@@ -1309,7 +1346,11 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "cover": {
                 "period": month_label,
                 # A planned savings rate is not a completed step toward a goal.
-                "freedom_step": investment_summary["net_contributions"],
+                "freedom_step": (
+                    confirmed_savings_amount
+                    if savings_progress["full_plan_confirmed"]
+                    else savings_progress["automatic_etf_amount"]
+                ),
                 "development": net_worth_delta,
                 "development_percent": net_worth_delta_percent,
                 "development_text": development_text,
@@ -1531,11 +1572,18 @@ def _report_investment_truth(user_id: int, report_month: str, cutoff_date: str |
                 contribution_rows = {}
                 if "holding_id" in {item[1] for item in conn.execute("PRAGMA table_info(investment_events)").fetchall()}:
                     events = conn.execute(
-                        """SELECT holding_id, COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS amount
+                        f"""SELECT holding_id, COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS amount
                              FROM investment_events
                             WHERE user_id = ? AND strftime('%Y-%m', created_at) = ? AND holding_id IS NOT NULL
                               AND DATE(created_at) <= DATE(?)
-                            GROUP BY holding_id""", (user_id, report_month, cutoff_date or month_bounds(report_month)[1])
+                              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
+                            GROUP BY holding_id""",
+                        (
+                            user_id,
+                            report_month,
+                            cutoff_date or month_bounds(report_month)[1],
+                            *REPORT_CONTRIBUTION_SOURCES,
+                        ),
                     ).fetchall()
                     contribution_rows = {int(row["holding_id"]): round(float(row["amount"] or 0), 2) for row in events}
                 for row in rows:
@@ -1730,8 +1778,22 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
     budget = data.get("pages", {}).get("budget", {})
     cash = _report_cash_truth(user_id)
     investments = _report_investment_truth(user_id, report_month, current_end)
+    savings_progress = data.get("pages", {}).get("wealth_journey", {}).get("savings_progress", {})
     previous_eligible = [row for row in previous_rows if row["classification"] == "consumption"]
     previous_investments = get_investment_summary(user_id, previous_month, previous_end)
+    previous_savings = get_report_savings_progress(
+        user_id, previous_month, get_monthly_execution(user_id, previous_month)
+    )
+    previous_savings_amount = (
+        previous_savings.get("full_plan_amount")
+        if previous_savings.get("full_plan_confirmed")
+        else previous_savings.get("automatic_etf_amount")
+    )
+    savings_amount = (
+        float(savings_progress.get("full_plan_amount") or 0)
+        if savings_progress.get("full_plan_confirmed")
+        else float(savings_progress.get("automatic_etf_amount") or 0)
+    )
     return {
         "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
         "period": data.get("meta", {}),
@@ -1759,6 +1821,14 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         },
         "budget": budget,
         "cash": cash,
+        "savings": {
+            "actual_amount": round(max(0.0, savings_amount), 2),
+            "confirmed": bool(savings_progress.get("full_plan_confirmed")),
+            "automatic_etf_amount": round(
+                max(0.0, float(savings_progress.get("automatic_etf_amount") or 0)), 2
+            ),
+            "source": str(savings_progress.get("confirmation_source") or "unconfirmed"),
+        },
         "investments": investments,
         "property": {
             "equity": profile.get("property_equity", 0),
@@ -1776,6 +1846,11 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "period_end": previous_end,
             "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
             "investment_contributions": previous_investments,
+            "savings": {
+                "actual_amount": round(max(0.0, float(previous_savings_amount or 0)), 2),
+                "confirmed": bool(previous_savings.get("full_plan_confirmed")),
+                "source": str(previous_savings.get("confirmation_source") or "unconfirmed"),
+            },
         },
     }
 

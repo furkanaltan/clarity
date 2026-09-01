@@ -36,6 +36,15 @@ class ReportSnapshotV2Tests(unittest.TestCase):
                     user_id INTEGER, goal_id TEXT, name TEXT,
                     target_amount REAL, current_amount REAL, is_primary INTEGER
                 );
+                CREATE TABLE investment_events (
+                    id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL,
+                    direction TEXT, asset_type TEXT, asset_name TEXT,
+                    event_type TEXT, source TEXT, created_at TEXT, holding_id INTEGER
+                );
+                CREATE TABLE app_month_closures (
+                    user_id INTEGER, month_key TEXT, actual_savings REAL,
+                    PRIMARY KEY (user_id, month_key)
+                );
                 """
             )
             conn.execute("INSERT INTO users VALUES (1, 1000.0)")
@@ -61,6 +70,52 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         self.assertEqual(total, 75.0)
         self.assertEqual(tracked_days, 2)
         self.assertEqual(categories[0]["category"], "Restaurant")
+
+    def test_merchant_name_never_overwrites_expense_category(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "INSERT INTO expenses VALUES (4, 1, 303.0, 'Shopping', 'Restaurant', '', '2026-08-12 12:00:00')"
+            )
+        rows = report_engine.get_report_expense_rows(1, "2026-08")
+        inserted = next(row for row in rows if row["id"] == 4)
+        self.assertEqual(inserted["merchant"], "Restaurant")
+        self.assertEqual(inserted["category"], "Shopping")
+
+    def test_onboarding_start_value_is_not_a_monthly_contribution(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.executemany(
+                """INSERT INTO investment_events
+                   VALUES (?, 1, ?, 'in', 'etf', ?, ?, ?, ?, NULL)""",
+                [
+                    (1, 53772.56, "Startbestand", "initial_balance", "app_onboarding", "2026-07-10 12:00:00"),
+                    (2, 300.0, "ETF Sparplan", "recurring_plan", "app_etf_plan", "2026-08-15 12:00:00"),
+                ],
+            )
+        july = report_engine.get_investment_summary(1, "2026-07")
+        august = report_engine.get_investment_summary(1, "2026-08")
+        self.assertEqual(july["net_contributions"], 0.0)
+        self.assertEqual(july["events_count"], 0)
+        self.assertEqual(august["net_contributions"], 300.0)
+        self.assertEqual(august["events_count"], 1)
+
+    def test_month_close_total_does_not_double_count_etf(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                """INSERT INTO investment_events
+                   VALUES (1, 1, 300.0, 'in', 'etf', 'ETF Sparplan',
+                           'recurring_plan', 'app_etf_plan', '2026-08-15 12:00:00', NULL)"""
+            )
+            conn.execute("INSERT INTO app_month_closures VALUES (1, '2026-08', 1000.0)")
+        progress = report_engine.get_report_savings_progress(
+            1, "2026-08", {"savings_confirmed": True}
+        )
+        self.assertEqual(progress["full_plan_amount"], 1000.0)
+        self.assertEqual(progress["automatic_etf_amount"], 300.0)
+        self.assertEqual(progress["confirmation_source"], "month_close")
+        self.assertNotEqual(progress["full_plan_amount"], 1300.0)
+
+    def test_corrected_snapshots_use_new_schema_without_rewriting_v2(self):
+        self.assertEqual(report_engine.REPORT_SNAPSHOT_SCHEMA_VERSION, 3)
 
     def test_open_month_window_uses_same_day_in_previous_month(self):
         window = report_engine.report_period_window("2026-08", date(2026, 8, 21))

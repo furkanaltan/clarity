@@ -29,7 +29,7 @@ TEMPLATE_PATH = Path(
     os.getenv("ROVE_WEB_TEMPLATE_PATH", str(APP_DIR / "report_templates" / "rove_web_report.html"))
 )
 PUBLIC_REPORT_DIR = Path(
-    os.getenv("ROVE_REPORT_PUBLIC_DIR", str(APP_DIR / "public" / "reports"))
+    os.getenv("ROVE_REPORT_PUBLIC_DIR", "/var/www/reports")
 )
 PUBLIC_REPORT_BASE_URL = os.getenv("ROVE_REPORT_PUBLIC_BASE_URL", "").rstrip("/")
 REPORT_LINK_TTL_DAYS = int(os.getenv("ROVE_REPORT_LINK_TTL_DAYS", "30"))
@@ -873,9 +873,19 @@ def build_story_render_context(data: dict) -> dict:
     ]
 
     budget = truth.get("budget") or {}
-    contribution_total = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
+    savings_truth = truth.get("savings") or {}
+    investment_contribution_total = float(
+        ((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0
+    )
+    contribution_total = (
+        float(savings_truth.get("actual_amount") or 0)
+        if savings_truth.get("confirmed")
+        else investment_contribution_total
+    )
     if budget.get("has_budgets") and budget.get("on_track"):
         recap_good = "Deine gesetzten Budgets lagen im Rahmen."
+    elif savings_truth.get("confirmed"):
+        recap_good = f"Du hast {_story_money(contribution_total)} tatsächliche Sparleistung bestätigt."
     elif contribution_total > 0:
         recap_good = f"Du hast {_story_money(contribution_total)} investiert."
     else:
@@ -912,7 +922,9 @@ def build_story_render_context(data: dict) -> dict:
         "allocation": allocation,
         "contributions": contributions,
         "contribution_label": (
-            "Diesen Monat investiert oder zurückgelegt"
+            "Diesen Monat tatsächlich gespart"
+            if savings_truth.get("confirmed")
+            else "Diesen Monat investiert oder zurückgelegt"
             if contribution_total > 0 else "Kein neuer Beitrag in diesem Monat"
         ),
         "contribution_empty_text": "Keine Position mit neuem Beitrag in diesem Monat.",
@@ -980,7 +992,15 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     ]
     month_short = report["month_label"].split(" ", 1)[0]
     next_month_name = report["next_month_label"].split(" ", 1)[0]
-    contribution_total_raw = float(((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0)
+    savings_truth = truth.get("savings") or {}
+    investment_contribution_total = float(
+        ((truth.get("investments") or {}).get("contributions") or {}).get("net_contributions") or 0
+    )
+    contribution_total_raw = (
+        float(savings_truth.get("actual_amount") or 0)
+        if savings_truth.get("confirmed")
+        else investment_contribution_total
+    )
     wealth_available = bool(wealth.get("available"))
     net_worth_raw = float(wealth.get("total") or 0)
     cash_raw = float(wealth.get("cash") or 0)
@@ -1071,7 +1091,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     weakest_name = score_names.get((weakest_part or {}).get("key"), (weakest_part or {}).get("label", "deinem nächsten Teilbereich"))
     if contribution_total_raw <= 0 and any(item.get("key") == "savings" and item["value"] >= item["max"] for item in score_parts):
         rank_blurb = (
-            "Der Spar-Teilscore liegt bei 25/25; im Juli ist jedoch kein neuer "
+            "Der Spar-Teilscore liegt bei 25/25; in diesem Monat ist jedoch kein neuer "
             f"Investment- oder Sparbeitrag hinzugekommen. Bei {weakest_name} liegt dein nächster Prüfpunkt."
         )
     elif strong_parts:
@@ -1105,7 +1125,9 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     )
 
     contribution_text = (
-        f"{_story_money(contribution_total_raw)} investiert oder zurückgelegt."
+        f"{_story_money(contribution_total_raw)} tatsächlich gespart."
+        if savings_truth.get("confirmed") and contribution_total_raw > 0
+        else f"{_story_money(contribution_total_raw)} investiert oder zurückgelegt."
         if contribution_total_raw > 0
         else "In diesem Monat ist kein neuer Investment- oder Sparbeitrag hinzugekommen."
     )
@@ -1126,7 +1148,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     )
 
     if budget_issue:
-        recap_good = "Du hast im Juli aktiv Vermögen aufgebaut." if contribution_total_raw > 0 else "Deine Ausgaben sind klar nach Kategorien aufgeschlüsselt."
+        recap_good = "Du hast in diesem Monat aktiv Vermögen aufgebaut." if contribution_total_raw > 0 else "Deine Ausgaben sind klar nach Kategorien aufgeschlüsselt."
         recap_attention = budget_fact
         recap_lever = "Prüfe im nächsten Monat, ob diese Abweichung einmalig war oder erneut auftritt."
     elif (truth.get("budget") or {}).get("has_budgets") and (truth.get("budget") or {}).get("on_track"):
@@ -1213,7 +1235,13 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "month_short": h(month_short),
         "freedom_step_label": "Diesen Monat aufgebaut",
         "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "Kein neuer Beitrag",
-        "freedom_step_subline": "investiert oder zurückgelegt" if contribution_total_raw > 0 else "kein neuer Beitrag",
+        "freedom_step_subline": (
+            "tatsächlich gespart"
+            if savings_truth.get("confirmed") and contribution_total_raw > 0
+            else "investiert oder zurückgelegt"
+            if contribution_total_raw > 0
+            else "kein neuer Beitrag"
+        ),
         "development_percent_text": development_text,
         "development_subline": h(
             f"{report['changes'][0]['label']} zum Vormonat"
@@ -1726,6 +1754,12 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
 
     public_url = f"{PUBLIC_REPORT_BASE_URL}/{token}/" if PUBLIC_REPORT_BASE_URL else ""
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """UPDATE report_links
+                  SET status = 'superseded'
+                WHERE user_id = ? AND report_month = ? AND status = 'active'""",
+            (user_id, report_month),
+        )
         conn.execute(
             """INSERT INTO report_links
                (token, user_id, report_month, html_path, public_url, expires_at, status)

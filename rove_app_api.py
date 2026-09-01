@@ -111,7 +111,7 @@ APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
 PUBLIC_REPORT_DIR = Path(
-    os.getenv("ROVE_REPORT_PUBLIC_DIR", str(APP_DIR / "public" / "reports"))
+    os.getenv("ROVE_REPORT_PUBLIC_DIR", "/var/www/reports")
 )
 
 _configured_origins = os.getenv("ROVE_APP_ALLOWED_ORIGINS")

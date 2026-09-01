@@ -5,14 +5,14 @@
 </div>
 {%- endmacro %}
 {% macro page_start(label, background='#F7F6F3') -%}
-<div data-screen-label="{{ label }}" style="position:relative;width:820px;min-height:1080px;background:{{ background }};color:#16161A;padding:60px 60px 44px;display:flex;flex-direction:column;overflow:hidden;">
+<div data-screen-label="{{ label }}" style="position:relative;width:820px;min-height:1080px;box-sizing:border-box;background:{{ background }};color:#16161A;padding:60px 60px 44px;display:flex;flex-direction:column;overflow:hidden;">
 {%- endmacro %}
 {% macro heading(kicker, title, accent='') -%}
 <div style="font-size:11px;font-weight:600;letter-spacing:.28em;text-transform:uppercase;color:#155681;">{{ kicker }}</div>
 <div style="font-family:'Newsreader',serif;font-size:58px;line-height:1.03;font-weight:400;letter-spacing:-.025em;color:#16161A;margin-top:28px;max-width:680px;">{{ title }}{% if accent %}<br><span style="font-style:italic;color:#155681;">{{ accent }}</span>{% endif %}</div>
 {%- endmacro %}
 {% macro small_card(label, value, note='', accent=false, value_size=42, value_margin='36px', note_size=14) -%}
-<div style="flex:1;background:#FFFFFF;border:1px solid {{ '#BFDFF3' if accent else '#D9D8D4' }};border-radius:22px;padding:25px;min-height:190px;display:flex;flex-direction:column;">
+<div style="flex:1;min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid {{ '#BFDFF3' if accent else '#D9D8D4' }};border-radius:22px;padding:25px;min-height:190px;display:flex;flex-direction:column;">
   <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:{{ '#155681' if accent else '#75757B' }};">{{ label }}</div>
   <div style="margin-top:{{ value_margin }};font-family:'Newsreader',serif;font-size:{{ value_size }}px;line-height:1;color:{{ '#155681' if accent else '#16161A' }};font-variant-numeric:tabular-nums;white-space:nowrap;">{{ value }}</div>
   {% if note %}<div style="font-size:{{ note_size }}px;color:#75757B;margin-top:10px;line-height:1.35;">{{ note }}</div>{% endif %}
@@ -57,9 +57,9 @@
   {{ heading('Vormonatsvergleich', 'Was sich im Vergleich', 'verändert hat.') }}
   <div style="font-size:16px;color:#75757B;margin-top:26px;line-height:1.55;">{{ milestone_eta_text }}</div>
   {% if comparison_rows %}
-  <div style="display:flex;gap:14px;margin-top:54px;">
+    <div style="display:flex;gap:14px;margin-top:54px;min-width:0;">
     {% for item in comparison_rows[:3] %}
-    <div style="flex:1;background:#FFFFFF;border:1px solid #BFDFF3;border-radius:22px;padding:26px;min-height:250px;display:flex;flex-direction:column;">
+    <div style="flex:1;min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #BFDFF3;border-radius:22px;padding:26px;min-height:250px;display:flex;flex-direction:column;">
       <div style="font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">{{ item.name }}</div>
       <div style="margin-top:86px;font-family:'Newsreader',serif;font-size:44px;color:#155681;white-space:nowrap;">{{ item.amount_text }}</div>
       <div style="font-size:17px;color:#75757B;margin-top:9px;white-space:nowrap;">{{ item.pct_label }}</div>
@@ -82,11 +82,11 @@
       {% for item in report.allocation %}<div style="width:{{ item.share_raw }}%;background:{{ ['#155681','#65B6E7','#A6C9DE','#B9B5AE','#7C98A8'][loop.index0 % 5] }};"></div>{% endfor %}
     </div>
   </div>
-  <div style="display:flex;gap:14px;margin-top:14px;">
+  <div style="display:grid;grid-template-columns:repeat({{ report.allocation|length if report.allocation|length < 4 else 3 }},minmax(0,1fr));gap:14px;margin-top:14px;min-width:0;">
     {% for item in report.allocation %}
-    <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:24px;min-height:155px;">
+    <div style="min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:20px;min-height:135px;">
       <div style="font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">{{ item.label }}</div>
-      <div style="font-family:'Newsreader',serif;font-size:32px;margin-top:24px;white-space:nowrap;">{{ item.amount }}</div>
+      <div style="font-family:'Newsreader',serif;font-size:28px;margin-top:20px;white-space:nowrap;">{{ item.amount }}</div>
       <div style="font-size:13px;color:#75757B;margin-top:6px;">{{ item.share }}</div>
     </div>
     {% endfor %}

@@ -778,6 +778,9 @@ def monthly_investment_summary(data: dict) -> dict:
 
 
 def actual_month_progress(data: dict) -> float:
+    progress = data["pages"]["wealth_journey"].get("savings_progress") or {}
+    if progress.get("full_plan_confirmed"):
+        return float(progress.get("full_plan_amount") or 0)
     summary = monthly_investment_summary(data)
     return float(summary.get("net_contributions") or 0)
 
@@ -1343,7 +1346,9 @@ def build_html_document(pages: list[str]) -> str:
   html, body { margin: 0 !important; padding: 0 !important; }
   body { background: #E3E1DC; }
   body > div { min-height: 0 !important; padding: 0 !important; gap: 0 !important; display: block !important; }
-  [data-screen-label] { border-radius: 0 !important; box-shadow: none !important; break-after: page; }
+  [data-screen-label] { box-sizing: border-box; width: 820px !important; min-width: 0 !important; border-radius: 0 !important; box-shadow: none !important; break-after: page; }
+  [data-screen-label] [style*="display:flex"] { min-width: 0; }
+  [data-screen-label] [style*="display:flex"] > * { min-width: 0; box-sizing: border-box; }
   [data-screen-label]:last-child { break-after: auto; }
 </style>
 """

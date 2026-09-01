@@ -24,6 +24,10 @@ def standard_payload() -> dict:
         "report_truth": {
             "income": {"amount": 4000.0, "confirmed": True, "source": "confirmed_month"},
             "fixed_costs": {"amount": 1500.0, "confirmed": True, "source": "confirmed_month"},
+            "savings": {
+                "actual_amount": 800.0, "confirmed": True,
+                "automatic_etf_amount": 800.0, "source": "month_close",
+            },
             "expenses": {
                 "total_consumption": 900.0,
                 "transaction_count": 14,
@@ -164,6 +168,10 @@ class ReportStoryV2Tests(unittest.TestCase):
 
     def test_savings_gap_connected_to_flexible_delta(self):
         data = standard_payload()
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 730.0, "source": "app_etf_plan",
+        }
         data["report_truth"]["investments"]["contributions"]["net_contributions"] = 730.0
         data["report_truth"]["investments"]["contributions"]["recurring_in"] = 730.0
         data["report_truth"]["budget"]["has_budgets"] = False
@@ -177,6 +185,10 @@ class ReportStoryV2Tests(unittest.TestCase):
     def test_food_increase_remains_neutral(self):
         data = standard_payload()
         data["profile"]["savings_plan"] = 0.0
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 0.0, "source": "unconfirmed",
+        }
         data["report_truth"]["investments"]["contributions"] = {
             "net_contributions": 0.0, "recurring_in": 0.0, "by_asset": []
         }
@@ -202,6 +214,10 @@ class ReportStoryV2Tests(unittest.TestCase):
 
     def test_discretionary_budget_overrun_can_create_candidate(self):
         data = standard_payload()
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 600.0, "source": "app_etf_plan",
+        }
         data["report_truth"]["budget"]["on_track"] = False
         data["report_truth"]["budget"]["items"][1].update({"limit": 200.0, "used": 300.0, "over": True})
         data["report_truth"]["investments"]["contributions"]["net_contributions"] = 600.0
@@ -213,6 +229,10 @@ class ReportStoryV2Tests(unittest.TestCase):
     def test_no_anomaly_uses_stable_month(self):
         data = standard_payload()
         data["profile"]["savings_plan"] = 0.0
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 0.0, "source": "unconfirmed",
+        }
         data["report_truth"]["budget"] = {"has_budgets": False, "items": [], "on_track": None}
         data["report_truth"]["investments"]["contributions"] = {
             "net_contributions": 0.0, "recurring_in": 0.0, "by_asset": []
@@ -225,8 +245,26 @@ class ReportStoryV2Tests(unittest.TestCase):
         story = build_report_story_v2(data)
         self.assertEqual(story["insight_engine"]["selected"]["type"], "stable_month")
 
-    def test_contribution_never_becomes_market_performance(self):
-        story = build_report_story_v2(standard_payload())
+    def test_confirmed_savings_controls_build_page_without_double_counting(self):
+        data = standard_payload()
+        data["report_truth"]["savings"]["actual_amount"] = 1000.0
+        data["report_truth"]["savings"]["automatic_etf_amount"] = 300.0
+        data["report_truth"]["investments"]["contributions"]["net_contributions"] = 300.0
+        data["report_truth"]["investments"]["contributions"]["recurring_in"] = 300.0
+        story = build_report_story_v2(data)
+        page = story["pages"]["page_7"]
+        self.assertEqual(page["primary_metric"]["value"], 1000.0)
+        self.assertIn("1000.00 EUR", page["text"])
+        self.assertNotEqual(page["primary_metric"]["value"], 1300.0)
+        self.assertNotIn("Kursanstieg", page["text"])
+
+    def test_unconfirmed_contribution_never_becomes_market_performance(self):
+        data = standard_payload()
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 800.0, "source": "app_etf_plan",
+        }
+        story = build_report_story_v2(data)
         page = story["pages"]["page_7"]
         self.assertEqual(page["primary_metric"]["value"], 800.0)
         self.assertIn("keine belastbare Marktbewegung", page["text"])
@@ -234,6 +272,10 @@ class ReportStoryV2Tests(unittest.TestCase):
 
     def test_without_investments_page_seven_degrades(self):
         data = standard_payload()
+        data["report_truth"]["savings"] = {
+            "actual_amount": 0.0, "confirmed": False,
+            "automatic_etf_amount": 0.0, "source": "unconfirmed",
+        }
         data["profile"]["current_investments"] = 0.0
         data["report_truth"]["investments"] = {
             "contributions": {"net_contributions": 0.0, "recurring_in": 0.0, "by_asset": []},
@@ -241,7 +283,7 @@ class ReportStoryV2Tests(unittest.TestCase):
         }
         story = build_report_story_v2(data)
         self.assertFalse(story["pages"]["page_7"]["available"])
-        self.assertIn("keine Sparleistung erfunden", story["pages"]["page_7"]["empty_state"])
+        self.assertIn("Keine bestätigte Sparleistung", story["pages"]["page_7"]["empty_state"])
 
     def test_without_goals_no_random_primary_is_selected(self):
         data = standard_payload()
@@ -344,7 +386,7 @@ class ReportStoryV2Tests(unittest.TestCase):
         story = build_report_story_v2(standard_payload())
         flow = {item["key"]: item["value"] for item in story["pages"]["page_2"]["supporting_metrics"]}
         self.assertEqual(flow["consumption"], 900.0)
-        self.assertEqual(flow["invested"], 800.0)
+        self.assertEqual(flow["saved"], 800.0)
         self.assertEqual(story["pages"]["page_6"]["primary_metric"]["value"], 15000.0)
 
 
