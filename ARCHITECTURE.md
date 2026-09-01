@@ -48,11 +48,11 @@ noch.
 
 ## Bot und Worker
 
-`bot.py` ist weiterhin ein produktiver, schreibender Telegram-Entry-Point und
-betreibt einen internen Report-Scheduler. Systemd-Timer verarbeiten zusaetzlich
-Reports, Monats- und Tracking-Erinnerungen, Marktwerte und Datenbankbackups.
-Der Bot darf daher nicht ohne gesonderten Nutzungs- und Write-Path-Audit
-abgeschaltet werden.
+`bot.py` ist der getrennte Telegram-Entry-Point. Die Produktion befindet sich
+aktuell in einer 7-taegigen Stop-Beobachtung; der Code bleibt fuer Rollback
+erhalten. App-Reports, Monats- und Tracking-Erinnerungen, Marktwerte und
+Datenbankbackups werden durch getrennte systemd-Timer verarbeitet und benoetigen
+den Bot-Prozess nicht.
 
 ## Reports
 

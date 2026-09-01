@@ -32,6 +32,7 @@ Systemd-Pfade davon abhaengen.
 - [docs/SCRIPTS.md](docs/SCRIPTS.md): Runtime-, Operations- und Legacy-Inventar
 - [docs/MIGRATIONS.md](docs/MIGRATIONS.md): Migrationen und Wiederholbarkeit
 - [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md): Laufzeiten und Abhaengigkeiten
+- [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md): dauerhafte Repository- und Ownership-Regeln
 
 ## Lokale Pruefungen
 
@@ -69,3 +70,14 @@ in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 Folgende Dateien gehoeren niemals in Git: `.env*`, `*.db*`, Logs, Tokens,
 Zertifikate und produktive Backups. Beispielkonfigurationen duerfen nur Namen
 und Platzhalter enthalten.
+
+## Telegram status
+
+Der Telegram-Bot ist in Produktion voruebergehend `STOPPED FOR OBSERVATION`.
+Die App, App-Reports und die systemd-Worker laufen unabhaengig weiter. Bot-Code
+und historische Telegram-Daten werden in dieser Beobachtungsphase nicht
+geloescht.
+
+Vor Änderungen zuerst [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md),
+`PROJECT_MAP.md` und den passenden Domain-Owner pruefen. Nicht aus alten
+`work/`-Kopien deployen.

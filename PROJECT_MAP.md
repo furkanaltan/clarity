@@ -5,17 +5,17 @@ bereits abgeschlossene Zielarchitektur.
 
 ## Produktive Entry Points
 
-| Bereich | Entry Point | Produktionspfad |
-|---|---|---|
-| Web-App | `frontend/index.html` | `/var/www/getrove/app/index.html` |
-| Service Worker | `frontend/sw.js` | `/var/www/getrove/app/sw.js` |
-| Flask API | `rove_app_api.py` | `/root/clarity/rove_app_api.py` |
-| Telegram-Bot | `bot.py` | `/root/clarity/bot.py` |
-| Report Worker | `rove_report_worker.py` | `/root/clarity/rove_report_worker.py` |
-| Monats-Erinnerungen | `rove_monthly_reminders.py` | `/root/clarity/rove_monthly_reminders.py` |
-| Tracking-Erinnerungen | `rove_tracking_reminders.py` | `/root/clarity/rove_tracking_reminders.py` |
-| Marktaktualisierung | `refresh_market_positions.py` | `/root/clarity/refresh_market_positions.py` |
-| DB-Backup | `backup_clarity_db.py` | `/root/clarity/backup_clarity_db.py` |
+| Bereich | Entry Point | Produktionspfad | Status |
+|---|---|---|---|
+| Web-App | `frontend/index.html` | `/var/www/getrove/app/index.html` | ACTIVE |
+| Service Worker | `frontend/sw.js` | `/var/www/getrove/app/sw.js` | ACTIVE |
+| Flask API | `rove_app_api.py` | `/root/clarity/rove_app_api.py` | ACTIVE |
+| Telegram-Bot | `bot.py` | `/root/clarity/bot.py` | STOPPED FOR OBSERVATION IN PRODUCTION |
+| Report Worker | `rove_report_worker.py` | `/root/clarity/rove_report_worker.py` | ACTIVE VIA TIMER |
+| Monats-Erinnerungen | `rove_monthly_reminders.py` | `/root/clarity/rove_monthly_reminders.py` | ACTIVE VIA TIMER |
+| Tracking-Erinnerungen | `rove_tracking_reminders.py` | `/root/clarity/rove_tracking_reminders.py` | ACTIVE VIA TIMER |
+| Marktaktualisierung | `refresh_market_positions.py` | `/root/clarity/refresh_market_positions.py` | ACTIVE VIA TIMER |
+| DB-Backup | `backup_clarity_db.py` | `/root/clarity/backup_clarity_db.py` | ACTIVE VIA TIMER |
 
 ## Fachliche Zuordnung
 
@@ -53,6 +53,7 @@ bereits abgeschlossene Zielarchitektur.
   [docs/MIGRATIONS.md](docs/MIGRATIONS.md).
 - Laufzeit- und Paketabhaengigkeiten: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 - Deployment-, Runtime- und Recovery-Foundation: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- Dauerhafte Repository-Regeln: [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md).
 
 ## Nicht-kanonische Kopien
 

@@ -20,7 +20,7 @@ operativen Gates, nicht die automatische Installation eines neuen Hosts.
 
 ```text
 rove-app-api.service
-clarity-bot.service
+clarity-bot.service (STOPPED FOR OBSERVATION bis 08.09.2026)
 rove-monthly-reminders.timer
 rove-tracking-reminders.timer
 rove-market-refresh.timer
@@ -77,6 +77,12 @@ curl -s https://getrove.de/app-api/health
 
 Erwartung: benoetigte Services sind `active`, der Healthcheck liefert
 `"ok": true`.
+
+## Telegram-Beobachtung
+
+`clarity-bot.service` bleibt bis zum 08.09.2026 gestoppt. Die Beobachtung
+prueft read-only, dass API, App-Reports und die getrennten Worker unabhaengig
+laufen. Der Bot darf in dieser Phase weder gestartet noch geloescht werden.
 
 ## Logs und Diagnose
 
