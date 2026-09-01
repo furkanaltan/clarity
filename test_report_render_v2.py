@@ -201,6 +201,7 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn('@keyframes clarity-drift', html)
         self.assertIn('@keyframes roveRingPulse', html)
         self.assertIn('data-ring=', html)
+        self.assertIn('data-ring-circumference="540.4"', html)
         self.assertIn('data-count=', html)
         self.assertIn('data-rove-assistant', html)
         for phrase in (
@@ -211,6 +212,30 @@ class ReportRenderV2Tests(unittest.TestCase):
             "Market Movement nicht verfügbar",
         ):
             self.assertNotIn(phrase, html)
+
+    def test_pdf_wealth_allocation_supports_six_asset_classes(self):
+        data = report_payload()
+        data["report_truth"]["wealth"]["allocation"] = [
+            {"key": "cash:giro", "label": "Girokonto", "asset_class": "checking",
+             "amount": 737.69, "share": 1.8},
+            {"key": "cash:savings", "label": "Tagesgeld", "asset_class": "savings",
+             "amount": 7118.0, "share": 17.6},
+            {"key": "cash:wallet", "label": "Bargeld", "asset_class": "cash",
+             "amount": 40.0, "share": 0.1},
+            {"key": "investment:crypto", "label": "Krypto", "asset_class": "investment",
+             "amount": 12090.41, "share": 29.9},
+            {"key": "investment:etfs", "label": "ETFs", "asset_class": "investment",
+             "amount": 8500.0, "share": 21.0},
+            {"key": "investment:stocks", "label": "Aktien", "asset_class": "investment",
+             "amount": 11905.9, "share": 29.6},
+        ]
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        html = build_html_document(_render_hell_pages(data))
+
+        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", html)
+        for label in ("Girokonto", "Tagesgeld", "Bargeld", "Krypto", "ETFs", "Aktien"):
+            self.assertIn(label, html)
 
     def test_empty_investments_and_goals_degrade_without_fake_values(self):
         data = copy.deepcopy(standard_payload())
@@ -241,8 +266,8 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["merchant_rows"][1]["average"], "60 €")
         self.assertEqual(context["merchant_rows"][1]["category"], "Lebensmittel")
         self.assertNotIn(" · Sonstiges", html)
-        self.assertIn(">24 Tagen</span> aktiv getrackt", html)
-        self.assertIn(">Shopping</span> mit 733 €.", html)
+        self.assertIn("24 Tage getrackt", html)
+        self.assertIn("Shopping mit 733 €", html)
         self.assertIn(
             "Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
             html,
@@ -253,31 +278,35 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn("kein neuer Investment- oder Sparbeitrag", context["build_summary_text"])
         self.assertIn("Spar-Teilscore liegt bei 25/25", context["rank_blurb"])
         self.assertEqual(context["goal_title_text"], "Dein Ziel: Dubai Urlaub.")
-        self.assertEqual(html.count("Dubai Urlaub"), 2)
+        self.assertEqual(html.count("Dubai Urlaub"), 1)
         self.assertNotIn("Dein Ziel: Dubai Urlaub.", html)
-        self.assertIn(">Noch</div>", html)
-        self.assertIn(context["goal_remaining_amount"], html)
+        self.assertIn("Noch offen", html)
         self.assertIn("white-space: nowrap;", html)
         self.assertIn("Noch 1.009 €", context["milestone_headline"])
         self.assertIn("Shopping-Budget von 200 €", context["plan_step2_title"])
         self.assertIn("geplante Sparrate von 1.000 €", context["plan_step3_title"])
         self.assertEqual(context["comparison_rows"][0]["name"], "Shopping")
         self.assertEqual(context["comparison_rows"][0]["amount_text"], "+533 €")
+        self.assertIn('class="report-merchant-row"', html)
+        self.assertIn('class="report-comparison-row"', html)
+        self.assertIn('class="report-comparison-badge"', html)
+        self.assertIn('grid-template-columns: minmax(0, 1fr) 76px', html)
+        self.assertIn('overflow-wrap: normal;', html)
         self.assertEqual(
             [item["name"] for item in context["money_map_categories"]],
             ["Shopping", "Lebensmittel", "Sonstiges", "Mobilität", "Restaurant", "Pflege"],
         )
         self.assertEqual(context["money_map_category_count"], 6)
         self.assertEqual(context["money_map_transaction_count"], 23)
-        self.assertIn('data-screen-label="05 Money Map"', html)
-        self.assertIn(">Vormonatsvergleich</div>", html)
+        self.assertIn('data-screen-label="05 Vormonatsvergleich"', html)
+        self.assertIn("Vergleichsbasis", html)
         self.assertEqual(html.count("Shopping lag 533 € über deinem gesetzten Budget von 200 €."), 1)
         for category in context["money_map_categories"]:
             self.assertIn(category["name"], html)
             self.assertIn(category["amount_text"], html)
             self.assertIn(f'{category["pct_text"]} %', html)
-        self.assertIn("Rov.E zeigt nur relevante Kategorien aus deinem Snapshot.", html)
         for phrase in (
+            "Rov.E zeigt nur relevante Kategorien aus deinem Snapshot.",
             "dokumentierter Beitrag",
             "Konsum und Marktbewegung",
             "Die Rechnung verwendet",
@@ -368,30 +397,6 @@ class ReportRenderV2Tests(unittest.TestCase):
             "rund 4 Monaten",
         ):
             self.assertNotIn(phrase, html)
-
-    def test_pdf_wealth_allocation_supports_six_asset_classes(self):
-        data = report_payload()
-        data["report_truth"]["wealth"]["allocation"] = [
-            {"key": "cash:giro", "label": "Girokonto", "asset_class": "checking",
-             "amount": 737.69, "share": 1.8},
-            {"key": "cash:savings", "label": "Tagesgeld", "asset_class": "savings",
-             "amount": 7118.0, "share": 17.6},
-            {"key": "cash:wallet", "label": "Bargeld", "asset_class": "cash",
-             "amount": 40.0, "share": 0.1},
-            {"key": "investment:crypto", "label": "Krypto", "asset_class": "investment",
-             "amount": 12090.41, "share": 29.9},
-            {"key": "investment:etfs", "label": "ETFs", "asset_class": "investment",
-             "amount": 8500.0, "share": 21.0},
-            {"key": "investment:stocks", "label": "Aktien", "asset_class": "investment",
-             "amount": 11905.9, "share": 29.6},
-        ]
-        data["report_story_v2"] = build_report_story_v2(data)
-
-        html = build_html_document(_render_hell_pages(data))
-
-        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", html)
-        for label in ("Girokonto", "Tagesgeld", "Bargeld", "Krypto", "ETFs", "Aktien"):
-            self.assertIn(label, html)
 
 
 if __name__ == "__main__":
