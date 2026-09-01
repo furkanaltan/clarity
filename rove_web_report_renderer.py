@@ -1745,12 +1745,15 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
     expires_at = datetime.now() + timedelta(days=REPORT_LINK_TTL_DAYS)
     output_dir = PUBLIC_REPORT_DIR / token
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Nginx needs traverse permission for the opaque, public report URL.
+    output_dir.chmod(0o755)
     output_path = output_dir / "index.html"
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     doc = render_template(template, report_data)
     doc = inject_expiry_meta(doc, expires_at)
     output_path.write_text(doc, encoding="utf-8")
+    output_path.chmod(0o644)
 
     public_url = f"{PUBLIC_REPORT_BASE_URL}/{token}/" if PUBLIC_REPORT_BASE_URL else ""
     with sqlite3.connect(DB_PATH) as conn:

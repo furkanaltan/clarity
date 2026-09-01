@@ -1,4 +1,5 @@
 import sqlite3
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +95,8 @@ class RepairReportMonthTests(unittest.TestCase):
         self.assertEqual(old_status, "superseded")
         self.assertEqual(other_status, "active")
         self.assertEqual(new_status, "active")
+        self.assertEqual(stat.S_IMODE(Path(result["path"]).stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(Path(result["path"]).parent.stat().st_mode), 0o755)
 
     def test_failed_web_build_keeps_previous_link_active(self):
         template = Path(self.tmp.name) / "report.html"
