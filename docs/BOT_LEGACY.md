@@ -678,3 +678,38 @@ admin/operations usage are not verified. **SAFE TO DELETE BOT CODE NOW: NO.**
 The Wave-11 category-budget migration remains intentionally stopped. Because
 Telegram is being retired as a product channel, those bot writes must not be
 migrated unless the App or another non-Telegram runtime is shown to need them.
+
+## Wave 13 production readiness evidence
+
+Read-only check performed on 01.09.2026. No service, file, database, queue or
+Telegram state was modified.
+
+### Verified production facts
+
+- `clarity-bot.service`: **ACTIVE / RUNNING**.
+- `ExecStart`: `/usr/bin/python3 /root/clarity/bot.py`.
+- Working directory: `/root/clarity`.
+- Restart policy: `always`, five-second delay.
+- Systemd target: `multi-user.target`.
+- App API, report, reminder, market-refresh and DB-backup units are separate
+  from the bot unit; their timers do not require `clarity-bot.service`.
+- Local Wave-8 `bot.py` has no active internal scheduler registration.
+
+### Production values not verifiable with current read-only account
+
+The SSH account could not read `/root/clarity/bot.py` or the production DB,
+including through non-interactive privilege escalation. Therefore these values
+remain **UNKNOWN** rather than inferred:
+
+- production Git branch, commit, bot hash and line count;
+- whether the deployed production bot still contains the pre-Wave-8 evening
+  recap or removed dead helpers;
+- recent Telegram updates, commands, callbacks, outputs and last activity;
+- `/testreport`, `/backupnow` and broadcast usage;
+- Telegram report deliveries and active Telegram-only recipients;
+- recent bot-specific DB write activity and affected domains;
+- verified App-account coverage for relevant Telegram users.
+
+The journal query returned no usable privacy-safe activity event. This is not
+evidence of inactivity. The production shutdown gates therefore remain
+conditional and no shutdown observation phase has started.
