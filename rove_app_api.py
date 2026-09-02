@@ -4897,10 +4897,12 @@ def configure_portfolio_tracking():
     with db() as conn:
         ensure_market_tracking_schema(conn)
         conn.commit()
+        # Lock before session_user_from_cookie() touches last_seen_at; that
+        # session refresh otherwise opens a transaction before BEGIN IMMEDIATE.
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-        begin_write(conn)
         holding = conn.execute(
             """SELECT id, instrument_key, instrument_type, isin, quantity, valuation_enabled,
                       COALESCE(market_value, total_invested, 0) AS value
