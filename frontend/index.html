@@ -4560,7 +4560,7 @@ function openAssetDetail(i){
   const bitcoinPosition=a.name==="Krypto" ? (a.positions||[]).find(position=>String(position?.providerAssetId||"")==="1") : null;
   const cryptoLogo=cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},ic(a.icon));
   let body=`<div class="dhead detail-header${isInvestmentGroup?" investment-hero":""}">
-    ${cryptoLogo||`<div class="gicon" style="background:${a.tint}22;color:${a.tint};width:44px;height:44px">${ic(a.icon)}</div>`}
+    ${cryptoLogo||`<div class="gicon rov-icon detail-header-icon" aria-hidden="true">${ic(a.icon)}</div>`}
     <div class="detail-header-main"><div class="dt">${detailTitle}</div><div class="dv">${a.sub}${dvExtra}</div></div>
     <div class="dtot">${eur(a.value)}</div>
   </div>`;
