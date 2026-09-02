@@ -10611,6 +10611,67 @@ function go(tab){
   target.scrollTop=0;
 }
 document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click",()=>go(t.dataset.tab)));
+
+// Push-Ziele sind keine allgemeinen URLs. Sie werden nur fuer diese Sitzung behalten und erst
+// nach Login, PIN und erfolgreichem State-Laden mit den bestehenden View-Funktionen ausgefuehrt.
+let PENDING_NOTIFICATION_TARGET=null;
+function normalizeNotificationTarget(value){
+  if(!value||typeof value!=="object"||Array.isArray(value)) return null;
+  const type=String(value.type||""), keys=Object.keys(value).sort().join(",");
+  if(type==="report"&&keys==="month,type"&&/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(value.month||""))){
+    return {type:"report",month:String(value.month)};
+  }
+  if(["monthlyPlan","analysis","transactions"].includes(type)&&keys==="type") return {type};
+  return null;
+}
+function notificationTargetFromUrl(value=location.href){
+  let url;
+  try{url=new URL(value,location.href);}catch(_){return null;}
+  if(url.origin!==location.origin) return null;
+  const type=url.searchParams.get("rove_target");
+  if(!type) return null;
+  return normalizeNotificationTarget({type, ...(type==="report"?{month:url.searchParams.get("month")||""}:{})});
+}
+function queueNotificationTarget(value){
+  const target=normalizeNotificationTarget(value);
+  if(!target) return false;
+  PENDING_NOTIFICATION_TARGET=target;
+  return true;
+}
+function clearNotificationTargetFromUrl(){
+  try{
+    const url=new URL(location.href);
+    url.searchParams.delete("rove_target");
+    url.searchParams.delete("month");
+    history.replaceState(null,"",url.pathname+url.search+url.hash);
+  }catch(_){}
+}
+function applyNotificationTarget(target){
+  if(target.type==="report"){
+    openReports();
+    const index=(DATA.reports||[]).findIndex(report=>report?.month===target.month);
+    if(index>=0) openReportDetail(index);
+    return true;
+  }
+  if(target.type==="monthlyPlan"){openMonthlyPlan();return true;}
+  if(target.type==="analysis"){openAnalysis();return true;}
+  if(target.type==="transactions"){closeSheet();go("tx");return true;}
+  return false;
+}
+function consumePendingNotificationTarget(){
+  if(APP_MODE!=="bridge"||PIN_SESSION_STATE!=="unlocked"||!PENDING_NOTIFICATION_TARGET) return false;
+  const target=PENDING_NOTIFICATION_TARGET;
+  PENDING_NOTIFICATION_TARGET=null;
+  clearNotificationTargetFromUrl();
+  return applyNotificationTarget(target);
+}
+queueNotificationTarget(notificationTargetFromUrl());
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.addEventListener("message",event=>{
+    if(event.data?.type!=="rove:notification-target") return;
+    if(queueNotificationTarget(event.data.target)) consumePendingNotificationTarget();
+  });
+}
 if(location.hash){ const h=location.hash.slice(1); if(h==="empty"){ enterEmptyDemo(); } else if(h==="empty-ziele"){ enterEmptyDemo(); go("ziele"); } else if(h==="empty-tx"){ enterEmptyDemo(); go("tx"); } else if(h==="offline"){ enterOfflineDemo(); } else if(h==="add"){ openSheet(); } else if(h==="goal"){ go("ziele"); openGoalSheet(1); } else if(h==="asset"){ openAssetDetail(2); } else if(h==="asset-real"){ openAssetDetail(4); } else if(h==="bell"){ openActivity(); } else if(h==="celebrate"){ go("ziele"); celebrate({title:"Ziel erreicht!", sub:`„<b>Urlaub 2026</b>“ steht bei <b>100 %</b> — 3.000 € beisammen. Stark durchgezogen.`, tint:"#35D07F"}); } else if(h==="payday"){ openPayday(2450); } else if(h==="profile"){ openProfile(); } else if(h==="score"){ openScore(); } else if(h==="reports"){ openReports(); } else if(h==="settings"){ openSettings(); } else if(h==="access"){ openAccess(); } else if(h==="talk"){ openTalk(); } else if(h==="budgets"){ go("tx"); document.querySelector('#txPills [data-f="budget"]')?.click(); } else if(h==="asset-krypto"){ openAssetDetail(3); } else if(document.getElementById("tab-"+h)){ go(h); } }
 
 // ===================== AUTHENTIFIZIERTE WEB-APP =====================
@@ -11017,6 +11078,7 @@ async function loadBridgeState(){
     // nachladen, sobald die echte Nutzerverbindung feststeht.
     initPush();
     document.getElementById("app")?.removeAttribute("hidden");
+    consumePendingNotificationTarget();
     // Kein setTimeout(refreshAppDataFromServer, 250) mehr: die Startsequenz wartet die Live-Abfrage
     // jetzt selbst ab, bevor der Splash geht. Vorher liefen beim Start drei Server-Anfragen.
     return true;

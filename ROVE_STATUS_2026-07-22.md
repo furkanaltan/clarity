@@ -4401,3 +4401,15 @@ Rov.E formulieren, dass ein Betrag diesen Monat frei verfuegbar ist.
   nur die direkt gedrueckte Zeile erhaelt eine kurze `scale(.99)`-Rueckmeldung ohne Translation
   oder Layout-Aenderung.
 - Verifikation lokal: JavaScript-Syntax OK, `git diff --check` OK. Kein Deploy erfolgt.
+
+## Update 02.09.2026 - Sichere Push-Deep-Links (lokal, noch nicht deployt)
+
+- Report-Pushes tragen jetzt nur ein allowlisted Ziel aus Typ und Monatskey, zum Beispiel
+  `report` mit `2026-08`. Ein bereits offenes App-Fenster erhaelt dieses Ziel per Message; eine
+  geschlossene App wird mit einer kontrollierten internen URL geoeffnet.
+- Das Frontend bewahrt ein validiertes Ziel nur fuer die laufende Sitzung auf und fuehrt es erst
+  nach bestehendem Login-, PIN- und State-Ladepfad aus. Nicht vorhandene oder abgelaufene Reports
+  oeffnen sicher die Reportliste. Freie externe URLs, unbekannte Zieltypen und ungueltige Monate
+  werden verworfen.
+- Verifikation lokal: 304 Tests erfolgreich, Python- und JavaScript-Syntax OK,
+  `git diff --check` OK. Kein Push oder Deploy erfolgt.

@@ -2235,6 +2235,7 @@ def send_report_push(user_id: int, report_month: str) -> None:
         "body": f"Dein Monatsreport fuer {month_label} wartet in deiner App.",
         "tag": f"rove-report-{report_month}",
         "url": "./",
+        "target": {"type": "report", "month": report_month},
     }).encode("utf-8")
     req = urllib.request.Request(
         APP_PUSH_INTERNAL_URL,

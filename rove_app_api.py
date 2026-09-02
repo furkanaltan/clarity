@@ -3550,8 +3550,30 @@ def valid_push_timezone(value: object) -> str | None:
     return timezone
 
 
+def normalize_notification_target(value: object) -> dict[str, str] | None:
+    """Accept only small, internal app navigation targets for web push."""
+    if not isinstance(value, dict):
+        return None
+    target_type = str(value.get("type") or "").strip()
+    keys = set(value)
+    if target_type == "report":
+        month = str(value.get("month") or "").strip()
+        if keys == {"type", "month"} and re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", month):
+            return {"type": "report", "month": month}
+        return None
+    if target_type in {"monthlyPlan", "analysis", "transactions"} and keys == {"type"}:
+        return {"type": target_type}
+    return None
+
+
+def safe_legacy_push_url(value: object) -> str | None:
+    """Keep the two historic relative app URLs without permitting arbitrary links."""
+    candidate = str(value or "").strip()
+    return candidate if candidate in {"./", "./#add"} else None
+
+
 def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: str,
-                      tag: str = "rove", url: str = "./") -> int:
+                      tag: str = "rove", url: str = "./", target: dict | None = None) -> int:
     """Schickt eine Benachrichtigung an alle Geraete eines Nutzers. Gibt die Anzahl Zustellungen zurueck.
 
     Abgelaufene Abos (404/410 vom Push-Dienst) werden geloescht — sonst sammeln sich tote Endpunkte
@@ -3569,7 +3591,15 @@ def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: 
     except sqlite3.OperationalError:
         return 0
 
-    nutzlast = json.dumps({"title": title, "body": body, "tag": tag, "url": url})
+    safe_target = normalize_notification_target(target)
+    safe_url = safe_legacy_push_url(url) or "./"
+    nutzlast = json.dumps({
+        "title": title,
+        "body": body,
+        "tag": tag,
+        "url": safe_url,
+        "target": safe_target,
+    })
     zugestellt = 0
     for row in rows:
         try:
@@ -3743,12 +3773,17 @@ def internal_push():
     title = clean_text(payload.get("title"))[:120]
     body = clean_text(payload.get("body"))[:500]
     tag = clean_text(payload.get("tag"))[:120] or "rove"
-    url = clean_text(payload.get("url"))[:300] or "./"
+    raw_url = payload.get("url", "./")
+    url = safe_legacy_push_url(raw_url)
+    target_supplied = "target" in payload
+    target = normalize_notification_target(payload.get("target"))
     if user_id <= 0 or not title:
         return jsonify({"ok": False, "error": "invalid_push_payload"}), 400
+    if url is None or (target_supplied and target is None):
+        return jsonify({"ok": False, "error": "invalid_push_target"}), 400
 
     with db() as conn:
-        sent = send_push_to_user(conn, user_id, title, body, tag=tag, url=url)
+        sent = send_push_to_user(conn, user_id, title, body, tag=tag, url=url, target=target)
         conn.commit()
     return jsonify({"ok": True, "sent": sent})
 

@@ -18,6 +18,32 @@
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
+function validNotificationTarget(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const type = String(value.type || "");
+  const keys = Object.keys(value).sort().join(",");
+  if (type === "report" && keys === "month,type" && /^20\d{2}-(0[1-9]|1[0-2])$/.test(String(value.month || ""))) {
+    return { type: "report", month: String(value.month) };
+  }
+  if (["monthlyPlan", "analysis", "transactions"].includes(type) && keys === "type") {
+    return { type };
+  }
+  return null;
+}
+
+function appUrlForTarget(target) {
+  const url = new URL("./", self.registration.scope);
+  if (target) {
+    url.searchParams.set("rove_target", target.type);
+    if (target.month) url.searchParams.set("month", target.month);
+  }
+  return url.toString();
+}
+
+function validLegacyAppUrl(value) {
+  return value === "./#add" ? value : "./";
+}
+
 self.addEventListener("push", (event) => {
   let daten = {};
   try { daten = event.data ? event.data.json() : {}; } catch (e) { daten = {}; }
@@ -29,21 +55,31 @@ self.addEventListener("push", (event) => {
     badge: "app-icon.png",
     tag: daten.tag || "rove",          // gleiche tag = ersetzt statt stapelt, kein Spam
     renotify: false,
-    data: { url: daten.url || "./" },
+    // Ziele sind strukturiert und allowlisted. Alte url-Payloads bleiben als sicherer
+    // App-Einstieg kompatibel, duerfen aber nie eine fremde URL oeffnen.
+    data: {
+      target: validNotificationTarget(daten.target),
+      legacyUrl: validLegacyAppUrl(daten.url),
+    },
   };
   event.waitUntil(self.registration.showNotification(titel, optionen));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const ziel = (event.notification.data && event.notification.data.url) || "./";
+  const target = validNotificationTarget(event.notification.data && event.notification.data.target);
+  const legacyUrl = validLegacyAppUrl(event.notification.data && event.notification.data.legacyUrl);
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((fenster) => {
-      // Läuft die App schon irgendwo? Dann dorthin, statt einen zweiten Zustand aufzumachen.
+      // Laeuft die App schon? Fokus plus Nachricht erhaelt deren bestehenden Zustand.
       for (const f of fenster) {
-        if ("focus" in f) return f.focus();
+        if ("focus" in f) {
+          return Promise.resolve(f.focus()).then(() => {
+            f.postMessage({ type: "rove:notification-target", target });
+          });
+        }
       }
-      return self.clients.openWindow(ziel);
+      return self.clients.openWindow(target ? appUrlForTarget(target) : new URL(legacyUrl, self.registration.scope).toString());
     })
   );
 });
