@@ -593,8 +593,8 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn("function investmentPositionMark(position)", self.html)
         self.assertIn('position?.logoUrl', self.html)
         self.assertIn('class="asset-position-mark"', self.html)
-        self.assertIn('trackingHint?.symbol', self.html)
-        self.assertIn('trackingHint?.currency', self.html)
+        self.assertIn('const hint=position.trackingHint||{}', self.html)
+        self.assertIn('currency:MARKET_TRACKING_FORM.currency', self.html)
 
     def test_crypto_header_reuses_bitcoin_logo_and_keeps_existing_fallback(self):
         self.assertIn("function cryptoHeaderLogo(position, fallback)", self.html)
