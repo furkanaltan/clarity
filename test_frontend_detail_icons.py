@@ -22,6 +22,19 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn("investmentPositionMark(p)", self.frontend)
         self.assertIn("function cryptoHeaderLogo", self.frontend)
 
+    def test_contract_detail_reuses_neutral_icon_system(self):
+        self.assertIn('class="logo rov-icon rov-icon--regular detail-contract-icon"', self.frontend)
+        self.assertNotIn(
+            'class="logo rov-icon rov-icon--regular" style="background:${v.tint||\'#8FA8BC\'}22;color:${v.tint||\'#8FA8BC\'}"',
+            self.frontend,
+        )
+
+    def test_expense_detail_neutralizes_only_generic_icons(self):
+        self.assertIn("function transactionDetailLogo(t)", self.frontend)
+        self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)
+        self.assertIn("if(merchantDomain(t?.n)) return transactionLogo(t);", self.frontend)
+        self.assertIn("const detailLogo=transactionDetailLogo(item);", self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5318,6 +5318,11 @@ function transactionLogo(t){
   const source=`https://cdn.brandfetch.io/domain/${encodeURIComponent(domain)}/h/96/w/96/icon.png?c=${BRANDFETCH_CLIENT_ID}`;
   return `<div class="logo merchant"><span class="merchant-letter">${fallback}</span><img class="merchant-logo" src="${source}" alt="" loading="lazy" onerror="this.style.display='none'" /></div>`;
 }
+function transactionDetailLogo(t){
+  if(merchantDomain(t?.n)) return transactionLogo(t);
+  const fallback=String(t?.i||t?.n||"?").trim().slice(0,1).toUpperCase();
+  return `<div class="logo rov-icon rov-icon--regular detail-expense-icon">${fallback}</div>`;
+}
 // Kein Kategorie-Badge in der Liste (Furkan 25.07.: „jeder weiß, dass Lidl Lebensmittel sind").
 // Die Kategorie bleibt vollständig erhalten — sie steht im Buchungsdetail (openTxSheet zeigt
 // „Tag · Kategorie" plus die Chips zum Ändern), Rov.E ordnet weiter automatisch ein, die Suche
@@ -6040,7 +6045,7 @@ function openTxSheet(id){
   closeAllSheetsSoft();
   const {day,item}=hit; txdId=id;
   const logo=document.getElementById("txdLogo");
-  const detailLogo=transactionLogo(item);
+  const detailLogo=transactionDetailLogo(item);
   logo.outerHTML=detailLogo.replace('<div class="logo', '<div id="txdLogo" class="logo');
   document.getElementById("txdName").textContent=item.n;
   document.getElementById("txdDate").textContent=`${day.d} · ${item.cat}${multiCashEnabled()&&item.accountName?` · ${item.accountName}`:""}`;
@@ -7957,7 +7962,7 @@ function openContract(name){
   const status = v.warn ? v.warn : v.cancel ? "Kündbar" : "Basis-Vertrag";
   document.getElementById("vdbody").innerHTML=`
     <div class="txd-head">
-      <div class="logo rov-icon rov-icon--regular" style="background:${v.tint||'#8FA8BC'}22;color:${v.tint||'#8FA8BC'}">${ic(v.icon)}</div>
+      <div class="logo rov-icon rov-icon--regular detail-contract-icon" aria-hidden="true">${ic(v.icon)}</div>
       <div class="txd-mid">
         <div class="txd-name">${v.n}</div>
         <div class="txd-date">${group.cat}</div>
