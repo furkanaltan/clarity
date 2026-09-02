@@ -1419,6 +1419,23 @@
   .investment-overview .investment-position .k{font-size:15.5px;font-weight:780;letter-spacing:-.18px}
   .investment-overview .investment-position .k small{margin-top:5px;font-size:12px;font-weight:560;line-height:1.35}
   .investment-overview .investment-position .v{font-size:17px;font-weight:780;letter-spacing:-.2px}
+  .investment-position-main{min-width:0}
+  .investment-position-main .k{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .investment-position-details{grid-column:2 / -1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 14px;align-items:center;margin:2px 0 0;padding:10px 0 1px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;line-height:1.45}
+  .investment-position-details[hidden]{display:none}
+  .investment-position-detail-copy{min-width:0;overflow-wrap:anywhere}
+  .investment-position-detail-action{min-height:36px;padding:7px 10px;border:1px solid var(--line2);border-radius:11px;background:var(--card);color:var(--blue);font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  .investment-position-detail-action:active{transform:scale(.985);opacity:.78}
+  .investment-position-expand{display:grid;place-items:center;width:44px;height:44px;margin:-8px -6px -8px 0;padding:0;border:0;border-radius:12px;background:transparent;color:var(--faint);cursor:pointer}
+  .investment-position-expand:active{transform:scale(.96);background:rgba(255,255,255,.06)}
+  .investment-position-expand svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform .22s cubic-bezier(.22,1,.36,1)}
+  .investment-position-expand[aria-expanded="true"] svg{transform:rotate(180deg)}
+  :root[data-theme="light"] .investment-position-expand:active{background:rgba(44,62,76,.06)}
+  @media (max-width:360px){
+    .investment-position-details{grid-template-columns:minmax(0,1fr)}
+    .investment-position-detail-action{justify-self:start}
+  }
+  @media (prefers-reduced-motion: reduce){.investment-position-expand svg{transition:none}}
   .investment-overview .investment-position.asset-position-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:11px}
   .asset-position-mark{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgba(218,229,243,.2);border-radius:50%;overflow:hidden;background:linear-gradient(150deg,rgba(255,255,255,.1),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.1);color:#edf4fc}
   .asset-position-mark img{width:100%;height:100%;display:block;object-fit:contain;background:rgba(255,255,255,.96)}
@@ -4641,14 +4658,38 @@ function openAssetDetail(i){
             <span class="v">${eur(p.v)} <span style="color:var(--blue);font-weight:400;padding:2px 4px">✎</span></span>
           </div>`;
 	          const positionType=isCrypto?(p.legacy?"Legacy · manuell":""):p.assetType==="etf"?"ETF":"Aktie";
-	          const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}${p.costBasis==null?" · Einstand unbekannt":` · Einstand ${eur2(p.costBasis)}`}${p.profitLoss==null?"":` · P/L ${p.profitLoss>=0?"+":"−"}${eur2(Math.abs(p.profitLoss))}`}`:"";
-          return `<div class="drow investment-position${isCrypto&&!p.legacy?" crypto-position-row":!isCrypto?" asset-position-row":""}" ${editablePosition(p)?`data-invest-edit="${idx}" style="cursor:pointer"`:""}>
+          const investmentDetails=!isCrypto?[
+            positionType,
+            p.live&&p.quantity!=null?`${String(p.quantity).replace(".",",")} Stück`:"",
+            p.live&&p.symbol?`Symbol ${p.symbol}`:"",
+            p.live&&p.provider?(p.provider==="leeway"?"Xetra":"Twelve Data"):"",
+            Number(p.pendingContribution||0)>.009?`${eur2(p.pendingContribution)} Sparrate zugeordnet`:"",
+            !p.live?"Wert manuell gepflegt":""
+          ].filter(Boolean).join(" · "):"";
+          const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}${p.costBasis==null?" · Einstand unbekannt":` · Einstand ${eur2(p.costBasis)}`}${p.profitLoss==null?"":` · P/L ${p.profitLoss>=0?"+":"−"}${eur2(Math.abs(p.profitLoss))}`}`:"";
+          return `<div class="drow investment-position${isCrypto&&!p.legacy?" crypto-position-row":!isCrypto?" asset-position-row":""}" ${!isCrypto?`data-invest-position="${idx}"`:editablePosition(p)?`data-invest-edit="${idx}" style="cursor:pointer"`:""}>
             ${isCrypto&&!p.legacy?cryptoPositionMark(p):!isCrypto?investmentPositionMark(p):""}
-	            <span class="k">${p.n}<small style="color:${p.live?"var(--green)":"var(--faint)"}">${positionType}${cryptoMeta}${p.live&&!isCrypto?` · ${String(p.quantity).replace(".",",")} Stück · ${p.symbol} · täglich${p.provider?` · ${p.provider==="leeway"?"Xetra":"Twelve Data"}`:""}${Number(p.pendingContribution||0)>.009?` · ${eur2(p.pendingContribution)} Sparrate zugeordnet`:""}`:(!isCrypto?" · Wert manuell gepflegt":"")}</small></span>
+	            <span class="investment-position-main"><span class="k">${p.n}<small style="color:${p.live?"var(--green)":"var(--faint)"}">${isCrypto?positionType+cryptoMeta:positionType}</small></span></span>
 	            <span class="v"><span class="crypto-position-value">${eur(p.v)}${p.chg?` <span style="color:${chgCol};font-weight:600;font-size:12.5px">${p.chg}</span>`:""}</span>${isCrypto&&editablePosition(p)?`<button type="button" class="crypto-position-edit" aria-label="Position bearbeiten"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 19.5 4.1-1 9.1-9.1a2.1 2.1 0 0 0-3-3l-9.1 9.1-1.1 4zM13.4 7.7l3 3"/></svg></button>`:(!isCrypto&&editablePosition(p)?` <span class="asset-position-edit">Bearbeiten</span>`:"")}</span>
           </div>`;
         }).join("")
       : `<div class="hint">Noch keine einzelne ${isCrypto?"Kryptowährung":"ETF- oder Aktienposition"} eingetragen.</div>`;
+    const positionRows=isCrypto?positions:(a.positions||[]).map((p,idx)=>{
+      const positionType=p.assetType==="etf"?"ETF":"Aktie";
+      const detailParts=[
+        p.live&&p.quantity!=null?`${String(p.quantity).replace(".",",")} Stück`:"",
+        p.live&&p.symbol?`Symbol ${p.symbol}`:"",
+        p.live&&p.provider?(p.provider==="leeway"?"Xetra":"Twelve Data"):"",
+        Number(p.pendingContribution||0)>.009?`${eur2(p.pendingContribution)} Sparrate zugeordnet`:"",
+        !p.live?"Wert manuell gepflegt":""
+      ].filter(Boolean).join(" · ");
+      return `<div class="drow investment-position asset-position-row" data-invest-position="${idx}">
+        ${investmentPositionMark(p)}
+        <span class="investment-position-main"><span class="k">${p.n}<small style="color:${p.live?"var(--green)":"var(--faint)"}">${positionType}</small></span></span>
+        <span class="v"><span class="crypto-position-value">${eur(p.v)}${p.chg?` <span style="color:${chgCol};font-weight:600;font-size:12.5px">${p.chg}</span>`:""}</span><button type="button" class="investment-position-expand" data-invest-expand="${idx}" aria-expanded="false" aria-controls="investment-details-${idx}" aria-label="Details anzeigen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></span>
+        <div class="investment-position-details" id="investment-details-${idx}" hidden><span class="investment-position-detail-copy">${detailParts}</span>${editablePosition(p)?`<button type="button" class="investment-position-detail-action" data-invest-edit="${idx}">Bearbeiten</button>`:""}</div>
+      </div>`;
+    }).join("");
     const editPosition=Number.isInteger(investFormEditIndex) ? a.positions[investFormEditIndex] : null;
     const formTitle=editPosition ? `${editPosition.n} aktualisieren` : "Neue Position";
     const showEtfPlan=Boolean(editPosition?.holding && editPosition?.assetType==="etf");
@@ -4663,7 +4704,7 @@ function openAssetDetail(i){
           : "Sparplan einrichten");
     body += `<div class="detail-section investment-overview">
       <div class="detail-section-label">Deine Positionen</div>
-      <div class="detail-rows">${positions}</div>
+      <div class="detail-rows">${positionRows}</div>
       <button class="position-add" id="investFormToggle" aria-expanded="${investFormOpen}"><span>${editPosition?"Bearbeitung schließen":"Position hinzufügen"}</span><span class="position-plus">${investFormOpen?"−":"+"}</span></button>
       <div class="position-form detail-form ${investFormOpen?"on":""}" ${investFormOpen?"":"inert"}>
         <div id="investFormTitle" style="margin:10px 0 9px;color:var(--faint);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase">${formTitle}</div>
@@ -4933,7 +4974,7 @@ document.getElementById("dbody").addEventListener("click",e=>{
     buzz(); return;
   }
   const cryptoGroupDelete=e.target.closest("#cryptoGroupDelete");
-  if(cryptoGroupDelete){
+	  if(cryptoGroupDelete){
     if(cryptoGroupDelete.dataset.armed!=="1"){
       cryptoGroupDelete.dataset.armed="1";
       cryptoGroupDelete.classList.add("armed");
@@ -4946,6 +4987,15 @@ document.getElementById("dbody").addEventListener("click",e=>{
       closeSheet(); renderAssets();
       showToast("Krypto entfernt"); buzz();
     });
+	    return;
+	  }
+	  const investExpand=e.target.closest("[data-invest-expand]");
+	  if(investExpand){
+	    const row=investExpand.closest("[data-invest-position]"), details=row?.querySelector(".investment-position-details");
+    if(!row || !details) return;
+    const expanded=investExpand.getAttribute("aria-expanded")==="true";
+    investExpand.setAttribute("aria-expanded",String(!expanded));
+    details.hidden=expanded;
     return;
   }
 	  const investEdit=e.target.closest("[data-invest-edit]");
@@ -5338,6 +5388,11 @@ function txMatchesSearch(transaction,query,aliasCats){
   if(!/^\d[\d.,]*$/.test(amountQuery)) return false;
   return txAmountSearchValues(transaction.a).some(value=>value.includes(amountQuery));
 }
+// Echte Kontenumbuchungen sind keine Ausgaben. Sie bleiben in DATA.tx und damit in
+// Detail-/Kontenpfaden erhalten, werden aber nicht als Ausgabezeile präsentiert.
+function isInternalTransfer(transaction){
+  return Boolean(transaction?.transfer===true && transaction?.csid!=null && transaction?.targetAccountId!=null);
+}
 function syncTxSearchUi(hasTransactions){
   const wrap=document.getElementById("txSearchWrap");
   const toggle=document.getElementById("txSearchToggle");
@@ -5351,17 +5406,17 @@ function syncTxSearchUi(hasTransactions){
 }
 function renderTx(){
   updateMonthlyPlanEntryPoint();
-  const all = DATA.tx.flatMap(d=>d.items);
   const isCurrent = monthOffset===0;
   document.getElementById("mnNext").disabled = isCurrent;
   document.getElementById("mnPrev").disabled = monthOffset<=-3;
   const src = isCurrent ? DATA.tx : (DATA.txHistory[monthKey(monthOffset)]||[]);
-  const hasAny = src.some(d=>d.items.length);
-  document.getElementById("mnLabel").textContent = `${monthLabel(monthOffset)}${hasAny?` · ${src.flatMap(d=>d.items).length} Buchungen`:""}`;
+  const visibleSrc = src.map(d=>({...d,items:(d.items||[]).filter(t=>!isInternalTransfer(t))}));
+  const hasAny = visibleSrc.some(d=>d.items.length);
+  document.getElementById("mnLabel").textContent = `${monthLabel(monthOffset)}${hasAny?` · ${visibleSrc.flatMap(d=>d.items).length} Buchungen`:""}`;
   const q=normalizeTxSearch(txQuery);
   // Alltagswort → Kategorien (gleiche Alias-Map wie der Assistent): „essen" findet Lebensmittel+Restaurant
   const aliasCats = q ? (CAT_ALIASES.find(([rx])=>rx.test(q))||[])[1]||[] : [];
-  const days = src
+  const days = visibleSrc
     .map(d=>({d:d.d, items:d.items
       .filter(t=> txFilter==="in"? t.a>0 : txFilter==="out"? t.a<0 : true)
       .filter(t=>txMatchesSearch(t,q,aliasCats))}))
