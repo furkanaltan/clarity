@@ -458,6 +458,24 @@ def _leeway_symbol_candidates(symbol: str, currency: str) -> tuple[str, ...]:
     return (primary,)
 
 
+def market_logo_symbol_candidates(
+    symbol: object, currency: object = "EUR", provider: object = ""
+) -> tuple[str, ...]:
+    """Return provider-qualified symbols that may expose logo metadata.
+
+    Quotes can resolve an exchange suffix without changing the user's stored
+    identity. Logo lookup must try the same provider-qualified candidates.
+    """
+    clean_symbol = normalize_symbol(symbol)
+    clean_currency = normalize_currency(currency)
+    clean_provider = str(provider or "").strip().lower()
+    if not clean_symbol:
+        return ()
+    if clean_provider == "leeway":
+        return _leeway_symbol_candidates(clean_symbol, clean_currency)
+    return (clean_symbol,)
+
+
 def _request_single_leeway_quote(provider_symbol: str, currency: str, key: str) -> dict:
     query = urllib.parse.urlencode({"apitoken": key})
     request = urllib.request.Request(

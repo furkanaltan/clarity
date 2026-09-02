@@ -38,6 +38,7 @@ from rove_market_data import (
     ensure_market_tracking_schema,
     fetch_crypto_metadata,
     fetch_market_metadata,
+    market_logo_symbol_candidates,
 )
 from rove_investment_contributions import (
     ensure_investment_contribution_schema,
@@ -2097,10 +2098,17 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     except sqlite3.OperationalError:
         return []
     out = []
-    metadata = fetch_market_metadata([
-        row["price_symbol"] for row in rows
-        if row["valuation_enabled"] and row["price_symbol"]
-    ])
+    metadata_keys = {}
+    metadata_symbols = []
+    for row in rows:
+        if not row["valuation_enabled"] or not row["price_symbol"]:
+            continue
+        candidates = market_logo_symbol_candidates(
+            row["price_symbol"], row["quote_currency"] or "EUR", row["market_data_provider"]
+        )
+        metadata_keys[int(row["id"])] = candidates
+        metadata_symbols.extend(candidates)
+    metadata = fetch_market_metadata(metadata_symbols)
     for r in rows:
         instrument_type = str(r["instrument_type"] or "etf").lower()
         is_live = bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"])
@@ -2138,7 +2146,10 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         hint = canonical_market_instrument(r["instrument_label"], instrument_type, r["isin"])
         if hint:
             pos["trackingHint"] = hint
-        logo_url = metadata.get(str(r["price_symbol"] or "").upper(), {}).get("logo_url")
+        logo_url = next(
+            (metadata.get(symbol, {}).get("logo_url") for symbol in metadata_keys.get(int(r["id"]), ())),
+            None,
+        )
         if logo_url:
             pos["logoUrl"] = logo_url
         if r["plan_day"] is not None:

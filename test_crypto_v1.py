@@ -461,6 +461,16 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(hint["isin"], "KYG982AW1003")
         self.assertIsNone(market.canonical_market_instrument("XPEV", "stock"))
 
+    def test_logo_candidates_follow_provider_resolved_identity(self):
+        self.assertEqual(
+            market.market_logo_symbol_candidates("8XP", "EUR", "leeway"),
+            ("8XP.XETRA", "8XP.F"),
+        )
+        self.assertEqual(
+            market.market_logo_symbol_candidates("AAPL", "USD", "twelve_data"),
+            ("AAPL",),
+        )
+
     def test_generic_stock_etf_metadata_cache_and_logo_fallbacks(self):
         stock, etf, unknown, failed = (
             "ROVE_TEST_STOCK",
