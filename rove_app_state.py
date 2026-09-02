@@ -33,7 +33,12 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rove_score import calculate_score
-from rove_market_data import ensure_market_tracking_schema, fetch_crypto_metadata
+from rove_market_data import (
+    canonical_market_instrument,
+    ensure_market_tracking_schema,
+    fetch_crypto_metadata,
+    fetch_market_metadata,
+)
 from rove_investment_contributions import (
     ensure_investment_contribution_schema,
     holding_contribution_summary,
@@ -2076,7 +2081,7 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         rows = conn.execute(
             """SELECT ph.id, ph.instrument_label, ph.instrument_type,
                       ph.total_invested, ph.market_value, ph.start_price, ph.last_price,
-                      ph.price_symbol, ph.quantity, ph.quote_currency,
+                      ph.price_symbol, ph.quantity, ph.quote_currency, ph.isin,
                       ph.valuation_enabled, ph.market_value_updated_at, ph.market_data_provider,
                       pp.monthly_amount AS plan_amount, pp.execution_day AS plan_day,
                       pp.source_account AS plan_source, pp.source_account_id AS plan_source_id, pp.mode AS plan_mode,
@@ -2092,6 +2097,10 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     except sqlite3.OperationalError:
         return []
     out = []
+    metadata = fetch_market_metadata([
+        row["price_symbol"] for row in rows
+        if row["valuation_enabled"] and row["price_symbol"]
+    ])
     for r in rows:
         instrument_type = str(r["instrument_type"] or "etf").lower()
         is_live = bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"])
@@ -2126,6 +2135,12 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
             "assetType": instrument_type,
             "live": is_live,
         }
+        hint = canonical_market_instrument(r["instrument_label"], instrument_type, r["isin"])
+        if hint:
+            pos["trackingHint"] = hint
+        logo_url = metadata.get(str(r["price_symbol"] or "").upper(), {}).get("logo_url")
+        if logo_url:
+            pos["logoUrl"] = logo_url
         if r["plan_day"] is not None:
             pos["positionPlan"] = {
                 "configured": True,

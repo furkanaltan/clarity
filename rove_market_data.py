@@ -28,10 +28,37 @@ TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 LEEWAY_BASE_URL = "https://api.leeway.tech/api/v1/public"
 COINMARKETCAP_BASE_URL = "https://pro-api.coinmarketcap.com"
 CRYPTO_METADATA_CACHE_TTL = timedelta(days=7)
+MARKET_METADATA_CACHE_TTL = timedelta(days=7)
 SUPPORTED_QUOTE_CURRENCIES = frozenset({"EUR", "USD", "GBP", "CHF"})
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._:/-]{0,31}$")
 _CRYPTO_METADATA_CACHE: dict[str, dict] = {}
 _CRYPTO_METADATA_LOCK = threading.Lock()
+_MARKET_METADATA_CACHE: dict[str, dict] = {}
+_MARKET_METADATA_LOCK = threading.Lock()
+
+# Canonical identity for the European XPeng listing. XPEV is the separate US ADR.
+XPENG_INSTRUMENT = {
+    "name": "XPENG INC.",
+    "isin": "KYG982AW1003",
+    "symbol": "8XP",
+    "currency": "EUR",
+    "asset_type": "stock",
+}
+_XPENG_ALIASES = frozenset({"xpeng", "xpeng inc", "xpeng inc."})
+
+
+def canonical_market_instrument(
+    label: object, instrument_type: object = "stock", isin: object = ""
+) -> dict | None:
+    """Return a narrowly-scoped provider hint without changing stored identity."""
+    clean_type = str(instrument_type or "").strip().lower()
+    clean_isin = str(isin or "").strip().upper()
+    clean_label = " ".join(str(label or "").strip().casefold().split())
+    if clean_type == "stock" and (
+        clean_isin == XPENG_INSTRUMENT["isin"] or clean_label in _XPENG_ALIASES
+    ):
+        return dict(XPENG_INSTRUMENT)
+    return None
 
 
 def ensure_market_tracking_schema(conn: sqlite3.Connection) -> None:
@@ -361,6 +388,53 @@ def _request_json(path: str, params: dict[str, object], api_key: str | None = No
     if data.get("status") == "error" or provider_code:
         raise ValueError("market_symbol_not_found")
     return data
+
+
+def _valid_market_logo_url(value: object) -> str | None:
+    """Allow only provider-hosted HTTPS logos for browser-facing metadata."""
+    text = str(value or "").strip()
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme != "https" or parsed.hostname not in {"api.twelvedata.com", "logo.twelvedata.com"}:
+        return None
+    return text
+
+
+def fetch_market_metadata(
+    symbols: list[str], api_key: str | None = None, *,
+    now: datetime | None = None,
+) -> dict[str, dict]:
+    """Return optional stock/ETF logo metadata with a bounded in-process cache."""
+    clean_symbols: list[str] = []
+    for value in symbols:
+        symbol = normalize_symbol(value)
+        if symbol and symbol not in clean_symbols:
+            clean_symbols.append(symbol)
+    if not clean_symbols:
+        return {}
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    with _MARKET_METADATA_LOCK:
+        result = {
+            symbol: dict(_MARKET_METADATA_CACHE[symbol])
+            for symbol in clean_symbols if symbol in _MARKET_METADATA_CACHE
+        }
+        refresh = [
+            symbol for symbol in clean_symbols
+            if symbol not in result or result[symbol]["expires_at"] <= checked_at
+        ]
+        expires_at = checked_at + MARKET_METADATA_CACHE_TTL
+        for symbol in refresh:
+            logo_url = None
+            try:
+                payload = _request_json("/logo", {"symbol": symbol}, api_key)
+                logo_url = _valid_market_logo_url(payload.get("url"))
+            except ValueError:
+                pass
+            entry = {"symbol": symbol, "logo_url": logo_url, "expires_at": expires_at}
+            _MARKET_METADATA_CACHE[symbol] = entry
+            result[symbol] = dict(entry)
+        return result
 
 
 def _leeway_symbol(symbol: str, currency: str) -> str:

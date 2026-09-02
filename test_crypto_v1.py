@@ -452,6 +452,47 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(refreshed["1"]["logo_url"], first["1"]["logo_url"])
         self.assertEqual(provider.call_count, 2)
 
+    def test_xpeng_uses_european_identity_without_adr_substitution(self):
+        hint = market.canonical_market_instrument(
+            "XPENG INC.", "stock", "KYG982AW1003"
+        )
+        self.assertEqual(hint["symbol"], "8XP")
+        self.assertEqual(hint["currency"], "EUR")
+        self.assertEqual(hint["isin"], "KYG982AW1003")
+        self.assertIsNone(market.canonical_market_instrument("XPEV", "stock"))
+
+    def test_generic_stock_etf_metadata_cache_and_logo_fallbacks(self):
+        stock, etf, unknown, failed = (
+            "ROVE_TEST_STOCK",
+            "ROVE_TEST_ETF",
+            "ROVE_UNKNOWN_STOCK",
+            "ROVE_FAILED_ETF",
+        )
+        market._MARKET_METADATA_CACHE.clear()
+
+        def provider(path, params, _api_key=None):
+            self.assertEqual(path, "/logo")
+            symbol = params["symbol"]
+            if symbol == stock:
+                return {"url": "https://api.twelvedata.com/logo/stock.png"}
+            if symbol == etf:
+                return {"url": "https://logo.twelvedata.com/logo/etf.png"}
+            if symbol == failed:
+                raise ValueError("market_provider_unavailable")
+            return {}
+
+        with patch.object(market, "_request_json", side_effect=provider) as requests:
+            first = market.fetch_market_metadata([stock, etf, unknown, failed])
+            second = market.fetch_market_metadata([stock, etf, unknown, failed])
+
+        self.assertEqual(first[stock]["logo_url"], "https://api.twelvedata.com/logo/stock.png")
+        self.assertEqual(first[etf]["logo_url"], "https://logo.twelvedata.com/logo/etf.png")
+        self.assertIsNone(first[unknown]["logo_url"])
+        self.assertIsNone(first[failed]["logo_url"])
+        self.assertEqual(first, second)
+        self.assertEqual(requests.call_count, 4)
+        self.assertIsNone(market._valid_market_logo_url("https://example.com/logo.png"))
+
     def test_metadata_failure_keeps_portfolio_available_and_rejects_foreign_logo_host(self):
         temp = tempfile.TemporaryDirectory()
         try:
@@ -547,6 +588,13 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('class="crypto-position-fallback"', self.html)
         self.assertIn("this.hidden=true;this.nextElementSibling.hidden=false", self.html)
         self.assertIn("s2\\.coinmarketcap\\.com", self.html)
+
+    def test_stock_and_etf_positions_have_premium_logo_fallback(self):
+        self.assertIn("function investmentPositionMark(position)", self.html)
+        self.assertIn('position?.logoUrl', self.html)
+        self.assertIn('class="asset-position-mark"', self.html)
+        self.assertIn('trackingHint?.symbol', self.html)
+        self.assertIn('trackingHint?.currency', self.html)
 
     def test_crypto_header_reuses_bitcoin_logo_and_keeps_existing_fallback(self):
         self.assertIn("function cryptoHeaderLogo(position, fallback)", self.html)

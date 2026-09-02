@@ -1419,6 +1419,11 @@
   .investment-overview .investment-position .k{font-size:15.5px;font-weight:780;letter-spacing:-.18px}
   .investment-overview .investment-position .k small{margin-top:5px;font-size:12px;font-weight:560;line-height:1.35}
   .investment-overview .investment-position .v{font-size:17px;font-weight:780;letter-spacing:-.2px}
+  .investment-overview .investment-position.asset-position-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:11px}
+  .asset-position-mark{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgba(218,229,243,.2);border-radius:50%;overflow:hidden;background:linear-gradient(150deg,rgba(255,255,255,.1),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.1);color:#edf4fc}
+  .asset-position-mark img{width:100%;height:100%;display:block;object-fit:contain;background:rgba(255,255,255,.96)}
+  .asset-position-mark svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+  :root[data-theme="light"] .asset-position-mark{border-color:rgba(83,103,117,.28);background:linear-gradient(145deg,rgba(255,255,255,.88),rgba(220,229,235,.72));color:#344453}
   .investment-overview .investment-position.crypto-position-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:11px}
   .crypto-position-mark{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgba(218,229,243,.2);border-radius:50%;overflow:hidden;background:linear-gradient(150deg,rgba(255,255,255,.1),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.1);color:#edf4fc;font-size:10px;font-weight:800;letter-spacing:-.02em}
   .crypto-position-mark img{width:100%;height:100%;display:block;object-fit:contain;background:rgba(255,255,255,.96)}
@@ -4356,6 +4361,15 @@ function cryptoHeaderLogo(position, fallback){
   if(!/^https:\/\/s2\.coinmarketcap\.com\//i.test(logo)) return "";
   return `<span class="crypto-header-logo" aria-hidden="true"><img src="${scanEsc(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="crypto-header-fallback" hidden>${fallback}</span></span>`;
 }
+function investmentPositionMark(position){
+  const type=String(position?.assetType||"stock").toLowerCase()==="etf"?"etf":"stock";
+  const fallback=type==="etf"
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7m5 10V5m5 12v-7m5 7V3M3 19h18"/></svg>`
+    : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V8l8-4 8 4v12M7 20v-6h10v6M9 10h.01M15 10h.01"/></svg>`;
+  const logo=String(position?.logoUrl||"").trim();
+  if(!/^https:\/\/(?:api|logo)\.twelvedata\.com\//i.test(logo)) return `<span class="asset-position-mark" aria-hidden="true">${fallback}</span>`;
+  return `<span class="asset-position-mark" aria-hidden="true"><img src="${scanEsc(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>${fallback}</span></span>`;
+}
 function cryptoFormHtml(editPosition){
   if(editPosition?.legacy) return `<div class="asset-note">Alter Gesamtwert ohne Coin-ID und Menge. Du kannst seinen Wert korrigieren oder ihn entfernen. Für Live-Kurse füge die einzelnen Coins anschließend neu hinzu.</div><div class="field" style="margin-top:10px"><input id="cryptoLegacyValue" type="text" inputmode="decimal" autocomplete="off" value="${editPosition.v??""}" placeholder="Aktueller Gesamtwert"></div><button type="button" class="vd-btn" id="cryptoLegacySave" style="width:100%;margin-top:13px">Wert speichern</button><button type="button" class="investment-delete" id="investDelete">Legacy-Position entfernen</button>`;
   const asset=editPosition?.holding?{
@@ -4450,8 +4464,9 @@ function renderMarketTrackingSheet(){
 }
 function openMarketTrackingSheet(position){
   if(!position || position.unassigned) return;
+  const hint=position.trackingHint||{};
   MARKET_TRACKING_FORM={
-    position,currency:position.currency||"EUR",symbol:position.symbol||"",
+    position,currency:position.currency||hint.currency||"EUR",symbol:position.symbol||hint.symbol||"",
     quantity:position.quantity||""
   };
   openOnly("markettrackingsheet",renderMarketTrackingSheet);
@@ -4627,8 +4642,8 @@ function openAssetDetail(i){
           </div>`;
 	          const positionType=isCrypto?(p.legacy?"Legacy · manuell":""):p.assetType==="etf"?"ETF":"Aktie";
 	          const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}${p.costBasis==null?" · Einstand unbekannt":` · Einstand ${eur2(p.costBasis)}`}${p.profitLoss==null?"":` · P/L ${p.profitLoss>=0?"+":"−"}${eur2(Math.abs(p.profitLoss))}`}`:"";
-	          return `<div class="drow investment-position${isCrypto&&!p.legacy?" crypto-position-row":""}" ${editablePosition(p)?`data-invest-edit="${idx}" style="cursor:pointer"`:""}>
-	            ${isCrypto&&!p.legacy?cryptoPositionMark(p):""}
+          return `<div class="drow investment-position${isCrypto&&!p.legacy?" crypto-position-row":!isCrypto?" asset-position-row":""}" ${editablePosition(p)?`data-invest-edit="${idx}" style="cursor:pointer"`:""}>
+            ${isCrypto&&!p.legacy?cryptoPositionMark(p):!isCrypto?investmentPositionMark(p):""}
 	            <span class="k">${p.n}<small style="color:${p.live?"var(--green)":"var(--faint)"}">${positionType}${cryptoMeta}${p.live&&!isCrypto?` · ${String(p.quantity).replace(".",",")} Stück · ${p.symbol} · täglich${p.provider?` · ${p.provider==="leeway"?"Xetra":"Twelve Data"}`:""}${Number(p.pendingContribution||0)>.009?` · ${eur2(p.pendingContribution)} Sparrate zugeordnet`:""}`:(!isCrypto?" · Wert manuell gepflegt":"")}</small></span>
 	            <span class="v"><span class="crypto-position-value">${eur(p.v)}${p.chg?` <span style="color:${chgCol};font-weight:600;font-size:12.5px">${p.chg}</span>`:""}</span>${isCrypto&&editablePosition(p)?`<button type="button" class="crypto-position-edit" aria-label="Position bearbeiten"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 19.5 4.1-1 9.1-9.1a2.1 2.1 0 0 0-3-3l-9.1 9.1-1.1 4zM13.4 7.7l3 3"/></svg></button>`:(!isCrypto&&editablePosition(p)?` <span class="asset-position-edit">Bearbeiten</span>`:"")}</span>
           </div>`;

@@ -64,6 +64,7 @@ from rove_app_state import (
 from rove_score import award_tracking_points, calculate_score, reverse_tracking_points_for_deleted_expense
 from rove_market_data import (
     apply_market_quote,
+    canonical_market_instrument,
     ensure_market_tracking_schema,
     fetch_eur_quote,
     fetch_crypto_eur_quotes,
@@ -4901,13 +4902,20 @@ def configure_portfolio_tracking():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         begin_write(conn)
         holding = conn.execute(
-            """SELECT id, instrument_key, quantity, valuation_enabled,
+            """SELECT id, instrument_key, instrument_type, isin, quantity, valuation_enabled,
                       COALESCE(market_value, total_invested, 0) AS value
                  FROM portfolio_holdings
                 WHERE user_id = ? AND LOWER(TRIM(instrument_label)) = LOWER(?)
                 LIMIT 1""",
             (user_id, label),
         ).fetchone()
+        hint = canonical_market_instrument(
+            label,
+            holding["instrument_type"] if holding else instrument_type,
+            holding["isin"] if holding else "",
+        )
+        if hint and (symbol != hint["symbol"] or currency != hint["currency"]):
+            return jsonify({"ok": False, "error": "canonical_market_instrument_required"}), 422
         if not holding:
             manual = conn.execute(
                 """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS value
