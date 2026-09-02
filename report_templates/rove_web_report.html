@@ -82,13 +82,35 @@
       word-break: normal;
       hyphens: none;
     }
+    .report-merchant-name { overflow-wrap: anywhere; }
     .report-comparison-row {
       display: grid;
-      grid-template-columns: 130px minmax(32px, 1fr) minmax(86px, 110px);
-      gap: 22px;
+      grid-template-columns: minmax(0, 1fr) minmax(92px, max-content) minmax(148px, max-content);
+      gap: 16px;
       align-items: center;
     }
-    .report-comparison-badge { white-space: nowrap; }
+    .report-comparison-label { min-width: 0; overflow-wrap: anywhere; }
+    .report-comparison-bar {
+      grid-column: 2;
+      width: auto !important;
+      min-width: 0 !important;
+      height: auto !important;
+      overflow: visible !important;
+      background: transparent !important;
+    }
+    .report-comparison-badge {
+      width: auto !important;
+      min-width: 92px;
+      height: 32px !important;
+      justify-content: center !important;
+      padding: 0 12px !important;
+      white-space: nowrap;
+    }
+    .report-comparison-amount {
+      grid-column: 3;
+      width: 148px !important;
+      min-width: 148px;
+    }
     @media (max-width: 760px) {
       .rove-report-assistant {
         top: 94px;
@@ -113,20 +135,23 @@
       .report-merchant-amount { font-size: clamp(20px, 6vw, 24px) !important; white-space: nowrap; }
       .report-comparison-card { padding: 30px 20px !important; gap: 20px !important; }
       .report-comparison-row {
-        grid-template-columns: minmax(0, 1fr) 76px minmax(86px, max-content);
-        gap: 10px;
+        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-areas:
+          "label amount"
+          "badge amount";
+        gap: 8px 12px;
+        align-items: center;
       }
-      .report-comparison-label { width: auto !important; letter-spacing: 0.05em !important; }
-      .report-comparison-bar { width: 76px !important; min-width: 76px !important; height: 32px !important; overflow: visible !important; }
+      .report-comparison-label { grid-area: label; width: auto !important; letter-spacing: 0.05em !important; }
+      .report-comparison-bar { grid-area: badge; }
       .report-comparison-badge {
-        width: 100% !important;
+        width: max-content !important;
+        min-width: 86px;
         height: 100% !important;
-        justify-content: center !important;
-        padding-right: 0 !important;
         border-radius: 9px !important;
         font-size: 12px !important;
       }
-      .report-comparison-amount { width: auto !important; font-size: clamp(21px, 6vw, 24px) !important; white-space: nowrap; }
+      .report-comparison-amount { grid-area: amount; width: auto !important; min-width: 0; font-size: clamp(21px, 6vw, 24px) !important; white-space: nowrap; }
     }
     /* Cover-Cameo: Rove fliegt einmal kurz durchs Bild. */
     .rove-cover-cameo {

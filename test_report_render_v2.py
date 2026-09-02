@@ -1,6 +1,9 @@
 import copy
+import re
 import unittest
 from pathlib import Path
+
+from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
 from report_html_renderer import _render_hell_pages, build_html_document
@@ -98,6 +101,85 @@ def july_truth_payload() -> dict:
 
 
 class ReportRenderV2Tests(unittest.TestCase):
+    def test_top_merchants_keep_unbroken_names_inside_mobile_card(self):
+        template = WEB_TEMPLATE.read_text(encoding="utf-8")
+        styles = re.search(r"<style>(.*?)</style>", template, re.DOTALL).group(1)
+        merchant_rows = "".join(
+            f'''<div class="report-merchant-row"><div class="report-merchant-rank">{rank}</div>
+                <div style="min-width:0"><div class="report-merchant-name">{name}</div>
+                <div class="report-merchant-meta">12 Ausgaben · Ø 102,88 €</div></div>
+                <div class="report-merchant-amount">{amount}</div></div>'''
+            for rank, name, amount in (
+                (1, "Aldi", "-12,50 €"),
+                (2, "Deutsche Bahn", "-915,33 €"),
+                (3, "Restaurant Zum Goldenen Stern", "303,00 €"),
+                (4, "SehrLangerHaendlernameOhneLeerzeichen123456789", "-1.249,99 €"),
+                (5, "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789", "360,00 €"),
+            )
+        )
+        html = f"<style>{styles}</style><div class=\"report-merchant-card\">{merchant_rows}</div>"
+
+        for width in (320, 360, 375, 390, 430):
+            document = HTML(string=html).render(
+                stylesheets=[CSS(string=f"@page {{ size: {width}px 1600px; margin: 0; }}")]
+            )
+            self.assertEqual(len(document.pages), 1, width)
+            for box in document.pages[0]._page_box.descendants():
+                self.assertLessEqual(box.position_x + box.width, width + 0.1, width)
+
+    def test_comparison_rows_keep_badges_and_deltas_aligned(self):
+        template = WEB_TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn(
+            "grid-template-columns: minmax(0, 1fr) minmax(92px, max-content) minmax(148px, max-content);",
+            template,
+        )
+        self.assertIn('grid-template-areas:\n          "label amount"\n          "badge amount";', template)
+        self.assertIn(".report-comparison-badge {", template)
+        self.assertIn("width: max-content !important;", template)
+        self.assertIn("width: 148px !important;", template)
+
+        comparison_rows = "".join(
+            f'''<div class="report-comparison-row"><div class="report-comparison-label">{label}</div>
+                <div class="report-comparison-bar"><div class="report-comparison-badge">{badge}</div></div>
+                <div class="report-comparison-amount">{amount}</div></div>'''
+            for label, badge, amount in (
+                ("Shopping", "+266,5 %", "+533 €"),
+                ("Gesamtkonsum", "+32,6 %", "+456,54 €"),
+                ("Breuninger", "Vergleich", "+380 €"),
+                ("Sehr lange Ausgabenkategorie ohne kuerzeren Namen", "-96,4 %", "-1.249,99 €"),
+                ("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789", "-7,2 %", "-915,33 €"),
+            )
+        )
+        layout_css = """
+            * { box-sizing: border-box; }
+            body { margin: 0; }
+            .report-comparison-card { padding: 30px 20px; }
+            .report-comparison-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(92px, max-content) minmax(148px, max-content); gap: 16px; align-items: center; }
+            .report-comparison-label { min-width: 0; overflow-wrap: anywhere; font: 13px sans-serif; }
+            .report-comparison-bar { width: auto; min-width: 0; height: auto; overflow: visible; }
+            .report-comparison-badge { width: auto; min-width: 92px; height: 32px; padding: 0 12px; white-space: nowrap; font: 12px sans-serif; }
+            .report-comparison-amount { width: 148px; min-width: 148px; text-align: right; white-space: nowrap; font: 24px sans-serif; }
+        """
+        mobile_css = """
+            .report-comparison-row { grid-template-columns: minmax(0, 1fr) max-content; grid-template-areas: 'label amount' 'badge amount'; gap: 8px 12px; }
+            .report-comparison-label { grid-area: label; }
+            .report-comparison-bar { grid-area: badge; }
+            .report-comparison-badge { width: max-content; min-width: 86px; }
+            .report-comparison-amount { grid-area: amount; width: auto; min-width: 0; }
+        """
+        html = f"<style>{layout_css}</style><div class=\"report-comparison-card\">{comparison_rows}</div>"
+
+        for width, css in ((1280, layout_css), (1440, layout_css), (320, layout_css + mobile_css),
+                           (360, layout_css + mobile_css), (375, layout_css + mobile_css),
+                           (390, layout_css + mobile_css), (430, layout_css + mobile_css)):
+            document = HTML(string=html).render(stylesheets=[CSS(string=f"{css} @page {{ size: {width}px 1600px; margin: 0; }}")])
+            for page in document.pages:
+                for box in page._page_box.descendants():
+                    element = getattr(box, "element", None)
+                    classes = (element.get("class") or "").split() if element is not None else []
+                    if any(name.startswith("report-comparison-") for name in classes):
+                        self.assertLessEqual(box.position_x + box.width, width + 0.1, width)
+
     def test_shared_context_is_snapshot_story_only(self):
         context = build_render_context(report_payload())
         self.assertIn("report", context)
@@ -290,7 +372,7 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn('class="report-merchant-row"', html)
         self.assertIn('class="report-comparison-row"', html)
         self.assertIn('class="report-comparison-badge"', html)
-        self.assertIn('grid-template-columns: minmax(0, 1fr) 76px', html)
+        self.assertIn('grid-template-columns: minmax(0, 1fr) max-content;', html)
         self.assertIn('overflow-wrap: normal;', html)
         self.assertEqual(
             [item["name"] for item in context["money_map_categories"]],
