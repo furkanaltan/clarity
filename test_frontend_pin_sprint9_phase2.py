@@ -128,6 +128,12 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('showPinScreen("reauth_required")', unlock)
         self.assertNotIn('location.reload', unlock)
 
+    def test_pin_recovery_screen_has_defined_shared_header(self):
+        screen = self.function_body("showPinScreen")
+        definition = 'const common=`<div class="ob-glow"></div><img class="ob-logo" src="logo.png" alt="Rov.E">`;'
+        self.assertIn(definition, screen)
+        self.assertLess(screen.index(definition), screen.index('${common}'))
+
     def test_no_retired_bearer_or_state_link_bypass_returns(self):
         for forbidden in ("ROVE_API.token", "Authorization: Bearer", "app-state", "state_url", "?state="):
             with self.subTest(forbidden=forbidden):

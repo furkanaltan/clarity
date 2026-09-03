@@ -10798,6 +10798,7 @@ function showPinScreen(mode="locked"){
   document.getElementById("app")?.setAttribute("hidden","");
   const onboard=document.getElementById("onboard"), body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
   if(!onboard||!body||!foot)return;
+  const common=`<div class="ob-glow"></div><img class="ob-logo" src="logo.png" alt="Rov.E">`;
   onboard.hidden=false;
   onboard.classList.add("go");
   onboard.classList.add("pin-mode");
