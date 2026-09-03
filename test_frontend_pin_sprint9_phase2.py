@@ -124,10 +124,8 @@ class FrontendPinTests(unittest.TestCase):
     def test_server_lockout_enters_existing_recovery_without_reload(self):
         unlock = self.function_body("submitPinUnlock")
         self.assertIn('res.status===423||data.reauth_required', unlock)
-        self.assertIn('await rejectPinUnlock(', unlock)
-        self.assertIn('"reauth_required"', unlock)
-        reject = self.function_body("rejectPinUnlock")
-        self.assertIn('if(nextMode)showPinScreen(nextMode)', reject)
+        self.assertIn('clearPinEntry("pinUnlock")', unlock)
+        self.assertIn('showPinScreen("reauth_required")', unlock)
         self.assertNotIn('location.reload', unlock)
 
     def test_no_retired_bearer_or_state_link_bypass_returns(self):

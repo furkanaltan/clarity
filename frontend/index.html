@@ -10898,7 +10898,8 @@ async function submitPinUnlock(){
     const res=await pinRequest("/v1/auth/pin/unlock",{method:"POST",body:JSON.stringify({pin})});
     const data=await res.json().catch(()=>({}));
     if(res.status===423||data.reauth_required){
-      await rejectPinUnlock("Zu viele Fehlversuche. Bestätige dein Passwort, um eine neue PIN festzulegen.","reauth_required");
+      clearPinEntry("pinUnlock");
+      showPinScreen("reauth_required");
       return;
     }
     if(res.status===400&&data.error==="invalid_pin"){
