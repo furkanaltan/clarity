@@ -23,6 +23,7 @@ class QuickCaptureCloseTests(unittest.TestCase):
         self.assertIn('e.key==="Escape" && sheet.classList.contains("on")', self.frontend)
         self.assertIn('"sheet"', self.frontend[self.frontend.index("const SWIPE_DISMISS_SHEET_IDS"):])
         self.assertNotIn('id="quickClose"', self.frontend)
+        self.assertNotIn('getElementById("quickClose")', self.frontend)
 
     def test_quick_capture_has_swipe_and_overlay_dismissal(self):
         self.assertIn('function closeSheet()', self.frontend)
