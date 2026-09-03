@@ -2338,7 +2338,6 @@
   <div class="sheet-bg" id="sheetBg"></div>
   <div class="sheet" id="sheet">
     <div class="grab"></div>
-    <button class="sheet-dismiss" id="quickClose" type="button" aria-label="Schnellerfassen schließen">×</button>
     <h3>Schnell erfassen</h3>
     <div class="hint">Trag deine Ausgabe oder Einnahme ein.</div>
     <div class="field">
@@ -6806,11 +6805,11 @@ function closeSheet(){ sheetBg.classList.remove("on"); closeAllSheetsSoft(); lif
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
   "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet",
-  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet"
+  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
-  "importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","abosheet","immosheet",
-  "contractsheet","categorysheet","talksheet","dsheet","accountaddsheet","paysheet",
+  "importsheet","gsheet","bsheet","ngsheet","abosheet","immosheet",
+  "contractsheet","categorysheet","talksheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","monthlyplansheet","etfplansheet",
   "markettrackingsheet","savingssheet"
 ]);
