@@ -5622,6 +5622,9 @@ function analysisMerchantData(offset=analysisMonthOffset){
 function analysisPreviousAvailable(){
   return Object.prototype.hasOwnProperty.call(DATA.txHistory||{},monthKey(analysisMonthOffset-1));
 }
+function analysisIsCurrentCalendarMonth(offset=analysisMonthOffset){
+  return monthKey(offset)===monthKey(0);
+}
 function analysisComparison(current,previous,available=analysisPreviousAvailable()){
   if(!available)return {kind:"unavailable",text:"Noch kein Vergleich verfügbar"};
   if(!(previous>0))return {kind:"new",text:"Kein Wert im Vormonat"};
@@ -5749,14 +5752,15 @@ function analysisMerchantsView(merchants){
   if(!merchants.length)return `<div class="analysis-view-head"><h2>Bei wem gibst du dein Geld aus?</h2><p>Deine größten Händler im ausgewählten Monat.</p></div>
     <div class="analysis-empty">${emptyCard({icon:"receipt",title:"Noch keine Händlerdaten",sub:"Für diese Auswahl sind keine eindeutigen Händler vorhanden.",cta:"",action:""})}</div>`;
   const previous=new Map(analysisMerchantData(analysisMonthOffset-1).map(item=>[item.key,item.amount]));
+  const isCurrentMonth=analysisIsCurrentCalendarMonth();
   return `<div class="analysis-view-head"><h2>Bei wem gibst du dein Geld aus?</h2><p>Deine größten Händler im ausgewählten Monat.</p></div>
     <div class="analysis-detail-list">${merchants.map((merchant,index)=>{
-      const comparison=analysisComparison(merchant.amount,previous.get(merchant.key)||0);
+      const comparison=isCurrentMonth?null:analysisComparison(merchant.amount,previous.get(merchant.key)||0);
       return `<div class="analysis-detail-row" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}">
         <div class="analysis-merchant-logo">${analysisMerchantLogo(merchant.sample)}<span class="analysis-rank">${index+1}</span></div>
         <span class="analysis-detail-copy"><b>${analysisEsc(merchant.label)}</b><span class="meta">${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
         <span class="analysis-detail-amount">${analysisEsc(eur2(merchant.amount))}</span>
-        ${analysisChangeHtml(comparison)}
+        ${comparison?analysisChangeHtml(comparison):""}
       </div>`;
     }).join("")}</div>`;
 }
