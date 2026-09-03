@@ -228,45 +228,19 @@ process.stdout.write(JSON.stringify({empty,due:el.innerHTML.includes("Monat absc
             self.frontend.count("DATA.sts.free_month_remaining=data.available;"), 3
         )
 
-    def test_home_budget_status_uses_only_canonical_month_truth(self):
-        status = self.function_source("renderHomeBudgetStatus")
-        self.assertIn("financial_month_budget", status)
-        self.assertIn("free_month_remaining", status)
-        self.assertNotIn("budgetFrameStatus", status)
-        self.assertNotIn("monthlyPlanBudget", status)
-        self.assertNotIn("daysLeftInMonth", status)
-
-    def test_home_budget_status_has_clear_positive_overrun_and_unviable_states(self):
-        if not shutil.which("node"):
-            self.skipTest("Node.js is not installed")
-        status = self.function_source("renderHomeBudgetStatus")
-        script = """
-const card={hidden:false,classList:{toggle(){}}};
-const label={textContent:""}; const amount={textContent:""};
-const document={getElementById:id=>({homeBudgetStatus:card,homeBudgetStatusLabel:label,homeBudgetStatusAmount:amount}[id])};
-const DATA={sts:{}};
-function eur(value){return `${Number(value).toFixed(2)} €`;}
-""" + status + """
-const states=[];
-DATA.sts={financial_month_budget:1324.68,free_month_remaining:1324.68};
-renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
-DATA.sts={financial_month_budget:1324.68,free_month_remaining:1304.68};
-renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
-DATA.sts={financial_month_budget:1324.68,free_month_remaining:-75.32};
-renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
-DATA.sts={financial_month_budget:-50,free_month_remaining:-70};
-renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
-process.stdout.write(JSON.stringify(states));
-"""
-        result = subprocess.run(
-            ["node", "-e", script], check=True, capture_output=True, text=True
-        )
-        self.assertEqual(json.loads(result.stdout), [
-            ["Noch im Budget", "1324.68 €"],
-            ["Noch im Budget", "1304.68 €"],
-            ["Budget überschritten", "75.32 €"],
-            ["Monatsplan nicht gedeckt", "50.00 €"],
-        ])
+    def test_cashflow_budget_summary_uses_canonical_month_truth(self):
+        summary_start = self.frontend.index("const canonicalBudget=")
+        summary_end = self.frontend.index("box.innerHTML", summary_start)
+        summary = self.frontend[summary_start:summary_end]
+        self.assertIn("financial_month_budget", summary)
+        self.assertIn("free_month_remaining", summary)
+        self.assertIn("variableMonthExpenses", summary)
+        self.assertIn("Budget um ${eur(Math.abs(remaining))} überschritten", summary)
+        self.assertIn("Monatsplan nicht gedeckt", summary)
+        self.assertNotIn("eur(totalLimit)", summary)
+        self.assertNotIn("eur(budgetLeft)", summary)
+        self.assertNotIn("homeBudgetStatus", self.frontend)
+        self.assertNotIn("renderHomeBudgetStatus", self.frontend)
 
     def test_divergent_budget_truth_renders_without_contradiction(self):
         if not shutil.which("node"):

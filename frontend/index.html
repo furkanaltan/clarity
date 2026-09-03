@@ -406,17 +406,6 @@
   #tab-home .home-top{align-items:center;margin-bottom:18px}
   .home-heading{min-width:0;margin-bottom:20px}
   .home-title{font-size:23px;font-weight:750;letter-spacing:-.45px;line-height:1.1;margin:0}
-  .home-budget-status{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin:18px 0 0;padding:15px 16px 16px;border:1px solid rgba(53,208,127,.18);border-radius:18px;background:radial-gradient(110% 120% at 0% 0%,rgba(53,208,127,.09),transparent 55%),linear-gradient(145deg,rgba(29,40,51,.82),rgba(10,17,25,.62));box-shadow:inset 0 1px 0 rgba(255,255,255,.075),inset 0 -12px 22px rgba(0,0,0,.08),0 10px 24px rgba(0,0,0,.1);backdrop-filter:blur(16px) saturate(112%);-webkit-backdrop-filter:blur(16px) saturate(112%)}
-  .home-budget-status[hidden]{display:none}
-  .home-budget-status .label{font-size:10.5px;font-weight:720;letter-spacing:.115em;line-height:1.25;text-transform:uppercase;color:var(--green)}
-  .home-budget-status .amount{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Helvetica Neue",sans-serif;font-size:29px;font-weight:720;letter-spacing:-.85px;line-height:1.06;white-space:nowrap;font-variant-numeric:proportional-nums;color:var(--ink)}
-  .home-budget-status.is-over{border-color:rgba(255,107,107,.24);background:radial-gradient(110% 120% at 0% 0%,rgba(255,107,107,.11),transparent 55%),linear-gradient(145deg,rgba(42,31,38,.84),rgba(20,15,21,.66))}
-  .home-budget-status.is-over .label{color:var(--red)}
-  .home-budget-status.is-unviable{border-color:rgba(216,182,106,.26);background:radial-gradient(110% 120% at 0% 0%,rgba(216,182,106,.12),transparent 55%),linear-gradient(145deg,rgba(42,37,29,.84),rgba(20,18,14,.66))}
-  .home-budget-status.is-unviable .label{color:var(--gold)}
-  :root[data-theme="light"] .home-budget-status{border-color:rgba(35,155,94,.18);background:radial-gradient(110% 120% at 0% 0%,rgba(53,208,127,.1),transparent 56%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(235,241,245,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),inset 0 -10px 18px rgba(71,94,109,.04),0 10px 24px rgba(40,67,84,.07)}
-  :root[data-theme="light"] .home-budget-status.is-over{border-color:rgba(207,72,72,.23);background:radial-gradient(110% 120% at 0% 0%,rgba(255,107,107,.1),transparent 56%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(248,237,238,.9))}
-  :root[data-theme="light"] .home-budget-status.is-unviable{border-color:rgba(170,125,45,.25);background:radial-gradient(110% 120% at 0% 0%,rgba(216,182,106,.13),transparent 56%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,242,230,.9))}
   .scr-sub{display:block;font-size:14px;color:var(--muted);line-height:1.4;margin:0 0 16px}
 
   /* Aktivitätscenter */
@@ -2218,11 +2207,6 @@
         <svg id="changeArrow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l8 8h-5v8h-6v-8H4z"/></svg>
         <span id="change">—</span>
       </button>
-    </div>
-
-    <div class="home-budget-status" id="homeBudgetStatus" hidden aria-live="polite">
-      <span class="label" id="homeBudgetStatusLabel"></span>
-      <strong class="amount" id="homeBudgetStatusAmount"></strong>
     </div>
 
     <div class="chart-wrap">
@@ -6557,17 +6541,22 @@ function renderBudgets(){
   const frame=budgetFrameStatus();
   const totalLimit=frame.total, rawFree=freeBudget(), spent=frame.spent;
   const budgetLeft=frame.left;
-  const summary=useBotBudgets()
-    ? `<div class="card" style="padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <span style="font-size:13px;color:var(--muted)">Budget <b style="color:var(--ink)">${eur(totalLimit)}</b> · in Kategorien ausgegeben ${eur(spent)}</span>
-        <span style="font-size:13px;font-weight:700;color:${budgetLeft>0?'var(--green)':'var(--red)'}">Noch ${eur(budgetLeft)} im Rahmen</span>
-      </div>`
-    : rawFree<=0
-      ? `<div class="card" style="padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px">
-          <span style="font-size:13px;color:var(--muted)">Budgetrahmen <b style="color:var(--ink)">${eur(totalLimit)}</b></span>
-          <span style="font-size:13px;font-weight:700;color:var(--red)">Freies Monatsbudget ausgeschöpft</span>
-        </div>`
-      : ``;
+  const canonicalBudget=Number(DATA.sts?.financial_month_budget);
+  const hasCanonicalBudget=Number.isFinite(canonicalBudget);
+  const summaryBudget=hasCanonicalBudget ? canonicalBudget : totalLimit;
+  const actualSpent=hasCanonicalBudget && DATA.sts?.variableMonthExpenses!=null
+    ? Number(DATA.sts.variableMonthExpenses)||0 : spent;
+  const remaining=hasCanonicalBudget && DATA.sts?.free_month_remaining!=null
+    ? Number(DATA.sts.free_month_remaining)||0 : (hasCanonicalBudget ? rawFree : budgetLeft);
+  const rightSummary=hasCanonicalBudget && canonicalBudget<0
+    ? `Monatsplan nicht gedeckt`
+    : remaining<0
+      ? `Budget um ${eur(Math.abs(remaining))} überschritten`
+      : `Noch ${eur(remaining)} im Budget`;
+  const summary=`<div class="card budget-truth-summary" style="padding:12px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <span style="font-size:13px;color:var(--muted)">Budget <b style="color:var(--ink)">${eur(summaryBudget)}</b> · ausgegeben ${eur(actualSpent)}</span>
+      <span style="font-size:13px;font-weight:700;color:${canonicalBudget<0?'var(--gold)':remaining<0?'var(--red)':'var(--green)'}">${rightSummary}</span>
+    </div>`;
   box.innerHTML = `<div class="budget-hint">Wähle eine Kategorie, um den Rahmen anzupassen.</div>`+summary+`<div class="card">`+DATA.budgets.map((b,i)=>{
     const sp=catSpent(b.cat), p=Math.round(sp/b.limit*100), over=sp>b.limit, near=p>=75 && !over;
     const col = over? "var(--red)" : near? "var(--gold)" : "var(--green)";
@@ -7087,7 +7076,6 @@ async function syncIncomeToServer(e, raw, before){
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
-      renderHomeBudgetStatus();
       mentorLine(); renderBudgets();
     }
   }catch(err){
@@ -7159,7 +7147,6 @@ async function syncExpenseToServer(e, raw, before){
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
-      renderHomeBudgetStatus();
       mentorLine(); renderBudgets();
     }
     if(data.reward?.awarded){
@@ -7200,7 +7187,6 @@ async function syncExpenseDeleteToServer(sid){
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
-      renderHomeBudgetStatus();
       mentorLine(); renderBudgets();
     }
     return true;
@@ -7335,6 +7321,7 @@ async function refreshAppDataFromServer(){
         financial_month_budget:(data.sts.financial_month_budget!=null?data.sts.financial_month_budget:DATA.sts.financial_month_budget),
         category_remaining:(data.sts.category_remaining!=null?data.sts.category_remaining:DATA.sts.category_remaining),
         free_month_remaining:(data.sts.free_month_remaining!=null?data.sts.free_month_remaining:data.sts.available),
+        variableMonthExpenses:(data.sts.variableMonthExpenses!=null?data.sts.variableMonthExpenses:DATA.sts.variableMonthExpenses),
         category_budget_total:(data.sts.category_budget_total!=null?data.sts.category_budget_total:DATA.sts.category_budget_total),
         category_spent:(data.sts.category_spent!=null?data.sts.category_spent:DATA.sts.category_spent),
         monthExpenses:(data.sts.monthExpenses!=null?data.sts.monthExpenses:DATA.sts.monthExpenses)};
@@ -7342,7 +7329,7 @@ async function refreshAppDataFromServer(){
 
     BRIDGE_LIVE_STATE_READY=true;
     renderGoals();renderAssets();renderTx();renderBudgets();renderVertraege();renderActivity();renderAnalysisIfOpen();
-    recalcNetWorth();renderHomeBudgetStatus();mentorLine();applyHomeEmpty();applyProfileIdentity();
+    recalcNetWorth();mentorLine();applyHomeEmpty();applyProfileIdentity();
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
     if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1W");
@@ -9872,33 +9859,6 @@ function freeBudget(){
   if(DATA.sts && DATA.sts.available!=null) return Number(DATA.sts.available)||0;
   return monthlyIncome() - totalFixCost() - (DATA.sts.sparraten||0) - monthDiscretionarySpent();
 }
-function renderHomeBudgetStatus(){
-  const card=document.getElementById("homeBudgetStatus");
-  const label=document.getElementById("homeBudgetStatusLabel");
-  const amount=document.getElementById("homeBudgetStatusAmount");
-  if(!card || !label || !amount) return;
-  const budget=Number(DATA.sts?.financial_month_budget);
-  const remaining=Number(DATA.sts?.free_month_remaining);
-  if(!Number.isFinite(budget) || !Number.isFinite(remaining)){
-    card.hidden=true;
-    return;
-  }
-  let state="ok", text="Noch im Budget", value=remaining;
-  if(budget<0){
-    state="unviable";
-    text="Monatsplan nicht gedeckt";
-    value=Math.abs(budget);
-  }else if(remaining<0){
-    state="over";
-    text="Budget überschritten";
-    value=Math.abs(remaining);
-  }
-  card.hidden=false;
-  card.classList.toggle("is-over",state==="over");
-  card.classList.toggle("is-unviable",state==="unviable");
-  label.textContent=text;
-  amount.textContent=eur(value);
-}
 function monthlyPlanBudget(){
   // Grundlage fuer Budgetrahmen: der ganze Monat, nicht der Rest nach bereits getrackten Ausgaben.
   // Sonst werden Vorschlaege spaet im Monat absurd klein (z. B. 90 EUR Lebensmittel).
@@ -11113,6 +11073,7 @@ async function loadBridgeState(){
                           financial_month_budget:(b.sts.financial_month_budget!=null?b.sts.financial_month_budget:null),
                           category_remaining:(b.sts.category_remaining!=null?b.sts.category_remaining:null),
                           free_month_remaining:(b.sts.free_month_remaining!=null?b.sts.free_month_remaining:b.sts.available),
+                          variableMonthExpenses:(b.sts.variableMonthExpenses!=null?b.sts.variableMonthExpenses:null),
                           category_budget_total:(b.sts.category_budget_total!=null?b.sts.category_budget_total:null),
                           category_spent:(b.sts.category_spent!=null?b.sts.category_spent:null),
                           monthExpenses:(b.sts.monthExpenses!=null?b.sts.monthExpenses:null)};   // income: Basis für freeBudget() (Bot-Parität)
@@ -11121,7 +11082,7 @@ async function loadBridgeState(){
     DATA.tx.forEach(d=>d.items.forEach(i=>{ if(i.id==null) i.id=TXID++; }));
 
     renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
-    drawChart(CHART.range||"1W"); renderHomeBudgetStatus(); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
+    drawChart(CHART.range||"1W"); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
     updateChangeBadge(CHART.range||"1W");
     if(nw) delete nw.dataset.lock;
     recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
