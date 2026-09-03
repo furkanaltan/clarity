@@ -473,15 +473,17 @@ def _monthly_budget_truth(
             category_spent += amount
     category_spent = round(category_spent, 2)
     variable_expenses = round(variable_expenses, 2)
+    financial_month_budget = round(
+        float(income) - float(fixed_costs) - float(savings),
+        2,
+    )
     return {
         "category_limit_total": category_limit_total,
         "category_spent": category_spent,
         "category_remaining": round(category_limit_total - category_spent, 2),
         "variable_expenses": variable_expenses,
-        "free_month_remaining": round(
-            float(income) - float(fixed_costs) - float(savings) - variable_expenses,
-            2,
-        ),
+        "financial_month_budget": financial_month_budget,
+        "free_month_remaining": round(financial_month_budget - variable_expenses, 2),
     }
 
 
@@ -1826,6 +1828,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             # Der Bot ist die Quelle der Wahrheit fuer das freie Monatsbudget. Die App nutzt
             # diesen Wert statt Fixkosten und Ausgaben ein zweites Mal anders zu kombinieren.
             "available": round(available, 2),
+            "financial_month_budget": budget_truth["financial_month_budget"],
             "category_remaining": budget_truth["category_remaining"],
             "free_month_remaining": budget_truth["free_month_remaining"],
             "category_budget_total": budget_truth["category_limit_total"],

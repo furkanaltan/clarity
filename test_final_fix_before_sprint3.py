@@ -69,11 +69,27 @@ class FinalFixServerTests(unittest.TestCase):
         self.assertEqual(truth["category_spent"], 557)
         self.assertEqual(truth["category_remaining"], 392)
         self.assertEqual(truth["variable_expenses"], 1564)
+        self.assertEqual(truth["financial_month_budget"], 1330)
         self.assertEqual(truth["free_month_remaining"], -234)
         self.assertEqual(
             without_savings["free_month_remaining"] - truth["free_month_remaining"],
             1000,
         )
+
+    def test_budget_truth_exposes_pre_expense_budget_without_double_counting_savings(self):
+        month = date.today().strftime("%Y-%m")
+        with closing(self.budget_connection()) as conn:
+            conn.execute(
+                "INSERT INTO expenses (user_id, amount, category, created_at) VALUES (1, 20, 'LEBENSMITTEL', ?)",
+                (f"{month}-10 12:00:00",),
+            )
+            truth = _monthly_budget_truth(
+                conn, 1, income=4430, fixed_costs=2105.32, savings=1000
+            )
+
+        self.assertEqual(truth["financial_month_budget"], 1324.68)
+        self.assertEqual(truth["variable_expenses"], 20)
+        self.assertEqual(truth["free_month_remaining"], 1304.68)
 
     def test_opened_is_not_prominent_but_remains_in_archive(self):
         with closing(sqlite3.connect(":memory:")) as conn:
@@ -211,6 +227,46 @@ process.stdout.write(JSON.stringify({empty,due:el.innerHTML.includes("Monat absc
         self.assertEqual(
             self.frontend.count("DATA.sts.free_month_remaining=data.available;"), 3
         )
+
+    def test_home_budget_status_uses_only_canonical_month_truth(self):
+        status = self.function_source("renderHomeBudgetStatus")
+        self.assertIn("financial_month_budget", status)
+        self.assertIn("free_month_remaining", status)
+        self.assertNotIn("budgetFrameStatus", status)
+        self.assertNotIn("monthlyPlanBudget", status)
+        self.assertNotIn("daysLeftInMonth", status)
+
+    def test_home_budget_status_has_clear_positive_overrun_and_unviable_states(self):
+        if not shutil.which("node"):
+            self.skipTest("Node.js is not installed")
+        status = self.function_source("renderHomeBudgetStatus")
+        script = """
+const card={hidden:false,classList:{toggle(){}}};
+const label={textContent:""}; const amount={textContent:""};
+const document={getElementById:id=>({homeBudgetStatus:card,homeBudgetStatusLabel:label,homeBudgetStatusAmount:amount}[id])};
+const DATA={sts:{}};
+function eur(value){return `${Number(value).toFixed(2)} €`;}
+""" + status + """
+const states=[];
+DATA.sts={financial_month_budget:1324.68,free_month_remaining:1324.68};
+renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
+DATA.sts={financial_month_budget:1324.68,free_month_remaining:1304.68};
+renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
+DATA.sts={financial_month_budget:1324.68,free_month_remaining:-75.32};
+renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
+DATA.sts={financial_month_budget:-50,free_month_remaining:-70};
+renderHomeBudgetStatus(); states.push([label.textContent,amount.textContent]);
+process.stdout.write(JSON.stringify(states));
+"""
+        result = subprocess.run(
+            ["node", "-e", script], check=True, capture_output=True, text=True
+        )
+        self.assertEqual(json.loads(result.stdout), [
+            ["Noch im Budget", "1324.68 €"],
+            ["Noch im Budget", "1304.68 €"],
+            ["Budget überschritten", "75.32 €"],
+            ["Monatsplan nicht gedeckt", "50.00 €"],
+        ])
 
     def test_divergent_budget_truth_renders_without_contradiction(self):
         if not shutil.which("node"):
