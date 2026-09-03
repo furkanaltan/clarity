@@ -1818,9 +1818,10 @@
     border-radius:0;border-top:0;padding:calc(var(--safe-top) + 10px) 20px calc(12px + var(--safe-bot));
     overflow:hidden}
   .sheet.chat-full.on{box-shadow:none}
-  .sheet.chat-full .grab{display:none}
+  .sheet.chat-full .grab{display:block}
   .grab{width:40px;height:5px;border-radius:3px;background:var(--line2);margin:2px auto 16px}
-  .sheet[data-swipe-dismiss="true"]>.grab{touch-action:none;cursor:grab}
+  .sheet[data-swipe-dismiss="true"]>.grab{position:relative;z-index:3;touch-action:none;cursor:grab}
+  .sheet[data-swipe-dismiss="true"]>.grab::before{content:"";position:absolute;inset:-18px -28px}
   .sheet[data-swipe-dismiss="true"]:not(.tall){touch-action:none}
   .sheet.swipe-dragging{transition:none!important;will-change:transform}
   .sheet.swipe-settling{will-change:transform}
@@ -6868,7 +6869,7 @@ function initSheetSwipeDismiss(){
     const finish=event=>{
       if(!drag||event.pointerId!==drag.pointerId)return;
       const current=drag;
-      const dismiss=current.engaged&&(current.distance>=current.height*.3||(current.velocity>900&&current.distance>24));
+      const dismiss=current.engaged&&(current.distance>=current.height*.2||(current.velocity>700&&current.distance>18));
       if(!dismiss){snapBack();return;}
       if(current.frame)cancelAnimationFrame(current.frame);
       sheet.classList.remove("swipe-dragging");

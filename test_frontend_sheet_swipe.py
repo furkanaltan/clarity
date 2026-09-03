@@ -38,8 +38,13 @@ class FrontendSheetSwipeTests(unittest.TestCase):
 
     def test_coach_uses_swipe_without_redundant_close_button(self):
         self.assertIn('id="talksheet"', self.frontend)
+        self.assertIn('.sheet.chat-full .grab{display:block}', self.frontend)
         self.assertNotIn('id="talkClose"', self.frontend)
         self.assertNotIn(".chat-close", self.frontend)
+
+    def test_swipe_handle_has_a_larger_touch_target_and_gentler_threshold(self):
+        self.assertIn('.sheet[data-swipe-dismiss="true"]>.grab::before', self.frontend)
+        self.assertIn('current.distance>=current.height*.2', self.frontend)
 
     def test_sensitive_and_edit_forms_remain_blocked(self):
         blocked = self.frontend[self.frontend.index("const SWIPE_BLOCKED_SHEET_IDS"):]
@@ -51,7 +56,7 @@ class FrontendSheetSwipeTests(unittest.TestCase):
         self.assertIn('if(sheet.classList.contains("on"))closeSheet()', self.frontend)
         self.assertIn("sheetHasScrolledContent(event.target,sheet)", self.frontend)
         self.assertIn("dy<=0||Math.abs(dx)>Math.abs(dy)", self.frontend)
-        self.assertIn("current.distance>=current.height*.3", self.frontend)
+        self.assertIn("current.distance>=current.height*.2", self.frontend)
         self.assertNotIn('sheet.classList.contains("tall")&&!fromGrab', self.frontend)
 
     def test_small_and_cancelled_gestures_settle_back(self):
