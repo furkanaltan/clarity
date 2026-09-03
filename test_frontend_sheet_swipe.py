@@ -22,7 +22,7 @@ class FrontendSheetSwipeTests(unittest.TestCase):
         cls.swipe_config = cls.frontend[start:end]
 
     def test_shared_helper_covers_detail_sheets(self):
-        for sheet_id in ("sheet", "txsheet", "vdsheet", "dsheet", "repsheet", "scoresheet"):
+        for sheet_id in ("sheet", "actsheet", "txsheet", "vdsheet", "dsheet", "repsheet", "scoresheet", "talksheet"):
             with self.subTest(sheet_id=sheet_id):
                 self.assertIn(f'"{sheet_id}"', self.swipe_config)
         self.assertIn("function initSheetSwipeDismiss()", self.frontend)
@@ -39,6 +39,7 @@ class FrontendSheetSwipeTests(unittest.TestCase):
         self.assertIn("sheetHasScrolledContent(event.target,sheet)", self.frontend)
         self.assertIn("dy<=0||Math.abs(dx)>Math.abs(dy)", self.frontend)
         self.assertIn("current.distance>=current.height*.3", self.frontend)
+        self.assertNotIn('sheet.classList.contains("tall")&&!fromGrab', self.frontend)
 
     def test_small_and_cancelled_gestures_settle_back(self):
         self.assertIn('sheet.style.transform="translate3d(0,0,0)"', self.frontend)

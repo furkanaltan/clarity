@@ -747,6 +747,11 @@
     border:1px solid rgba(244,241,234,.5);
     box-shadow:inset 0 1px 0 rgba(255,255,255,.38),inset 0 -8px 14px -10px rgba(0,0,0,.34);
     display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700}
+  /* Profil-Menue: dieselbe ruhige Neutralitaet wie die Detail-Sheets; Farbe bleibt nur
+     fuer funktionale Status-Badges erhalten, nicht fuer Rov.E-eigene Icons. */
+  #psheet .profile-menu-icon{color:#edf2f5!important;border-color:rgba(222,230,236,.34)!important;
+    background:linear-gradient(145deg,rgba(67,77,88,.72),rgba(13,20,29,.97))!important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.3),inset 0 -10px 18px rgba(0,0,0,.25),0 6px 14px rgba(0,0,0,.16)!important}
   .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
 
   /* Vermögens-Header */
@@ -6805,11 +6810,11 @@ function closeSheet(){ sheetBg.classList.remove("on"); closeAllSheetsSoft(); lif
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
   "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet",
-  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet"
+  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","gsheet","bsheet","ngsheet","abosheet","immosheet",
-  "contractsheet","categorysheet","talksheet","accountaddsheet","paysheet",
+  "contractsheet","categorysheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","monthlyplansheet","etfplansheet",
   "markettrackingsheet","savingssheet"
 ]);
@@ -6887,7 +6892,6 @@ function initSheetSwipeDismiss(){
       if(!event.isPrimary||event.pointerType==="mouse"||!sheet.classList.contains("on"))return;
       if(sheet.getAttribute("aria-busy")==="true"||sheet.dataset.swipeLock==="true")return;
       const fromGrab=!!event.target.closest(".grab");
-      if(sheet.classList.contains("tall")&&!fromGrab)return;
       if(!fromGrab&&event.target.closest("button,a,input,textarea,select,[contenteditable='true'],[role='button']"))return;
       if(sheetHasScrolledContent(event.target,sheet))return;
       drag={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,lastY:event.clientY,
@@ -8132,7 +8136,7 @@ const PMENU = [
 function renderProfileMenu(){
   document.getElementById("pmenu").innerHTML = PMENU.filter(m=>!m.admin || DATA.identity?.isAdmin).map(m=>`
     <div class="prow ${m.premium?'premium':''}" data-p="${m.k}">
-      <div class="pic rov-icon rov-icon--regular ${m.tone === "white" ? "is-white" : ""}" style="background:${m.bg||`${m.tint}22`};color:${m.tint}">${PICONS[m.ic]}</div>
+      <div class="pic rov-icon rov-icon--regular profile-menu-icon">${PICONS[m.ic]}</div>
       <div class="pt"><div class="pl">${m.l}</div><div class="ps">${m.s}</div></div>
       ${m.badge ? `<span class="pbadge">${typeof m.badge==="function"?m.badge():m.badge}</span>`
                 : `<svg class="pchev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>`}

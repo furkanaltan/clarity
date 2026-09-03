@@ -35,6 +35,11 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn("if(merchantDomain(t?.n)) return transactionLogo(t);", self.frontend)
         self.assertIn("const detailLogo=transactionDetailLogo(item);", self.frontend)
 
+    def test_profile_menu_uses_neutral_icons(self):
+        self.assertIn("profile-menu-icon", self.frontend)
+        self.assertIn("#psheet .profile-menu-icon", self.frontend)
+        self.assertNotIn('class="pic rov-icon rov-icon--regular ${m.tone === "white" ? "is-white" : ""}"', self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()
