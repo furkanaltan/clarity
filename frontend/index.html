@@ -652,12 +652,6 @@
   .thead .face .eye{transform-origin:center;animation:blink 4.6s infinite}
   .thead .tt{font-size:17px;font-weight:800;letter-spacing:-.2px}
   .thead .tsub{font-size:12px;color:var(--muted);margin-top:1px}
-  .chat-close{width:38px;height:38px;margin-left:auto;border-radius:50%;border:1px solid var(--line2);
-    background:var(--card);color:var(--muted);display:flex;align-items:center;justify-content:center;
-    cursor:pointer;flex-shrink:0;transition:transform .15s ease,background .15s ease,color .15s ease}
-  .chat-close:active{transform:scale(.92)}
-  .chat-close svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;
-    stroke-linecap:round;stroke-linejoin:round}
   #chat{display:flex;flex-direction:column}
   .bub{max-width:84%;padding:11px 14px;border-radius:16px;font-size:14.5px;line-height:1.46;margin-bottom:10px;
     animation:bubIn .28s cubic-bezier(.22,1,.36,1) both}
@@ -2047,7 +2041,7 @@
 
   #talksheet{background:radial-gradient(120% 58% at 50% 0%,rgba(177,207,221,.075),transparent 52%),linear-gradient(155deg,rgba(18,27,37,.99),rgba(7,13,20,.995))}
   #talksheet .thead{padding:4px 2px 15px;border-bottom-color:rgba(211,221,229,.13)}
-  #talksheet .thead .face,#talksheet .chat-close{border-color:rgba(222,230,236,.34);background:linear-gradient(145deg,rgba(89,102,115,.58),rgba(17,25,34,.95));box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 5px 12px rgba(0,0,0,.14)}
+  #talksheet .thead .face{border-color:rgba(222,230,236,.34);background:linear-gradient(145deg,rgba(89,102,115,.58),rgba(17,25,34,.95));box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 5px 12px rgba(0,0,0,.14)}
   #talksheet .bub.rov{border-color:rgba(211,221,229,.16);background:linear-gradient(145deg,rgba(35,46,58,.88),rgba(14,21,30,.82));box-shadow:inset 0 1px 0 rgba(255,255,255,.065),0 6px 14px rgba(0,0,0,.08)}
   #talksheet .bub.me{background:linear-gradient(145deg,rgba(76,137,165,.86),rgba(34,92,119,.92));box-shadow:inset 0 1px 0 rgba(225,246,255,.16),0 6px 14px rgba(0,0,0,.11)}
   #talksheet .field{border-color:rgba(211,221,229,.2);background:linear-gradient(145deg,rgba(32,42,53,.94),rgba(11,18,27,.94));box-shadow:inset 0 1px 0 rgba(255,255,255,.075),0 9px 20px rgba(0,0,0,.16)}
@@ -2647,9 +2641,6 @@
         </svg>
       </div>
       <div><div class="tt">Rov.E</div><div class="tsub">Dein Finanzassistent · behält den Überblick für dich</div></div>
-      <button class="chat-close" id="talkClose" type="button" aria-label="Assistent schließen">
-        <svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></svg>
-      </button>
     </div>
     <div class="feed" id="chat"></div>
     <div class="qsug" id="qsug"></div>
@@ -6814,12 +6805,12 @@ function closeSheet(){ sheetBg.classList.remove("on"); closeAllSheetsSoft(); lif
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
   "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet",
-  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet"
+  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","gsheet","bsheet","ngsheet","abosheet","immosheet",
   "contractsheet","categorysheet","accountaddsheet","paysheet",
-  "assetordersheet","adminsheet","deletesheet","monthlyplansheet","etfplansheet",
+  "assetordersheet","adminsheet","deletesheet","etfplansheet",
   "markettrackingsheet","savingssheet"
 ]);
 const SHEET_SWIPE_RUNTIME=new WeakMap();
@@ -10321,7 +10312,6 @@ document.getElementById("qsug").addEventListener("click",e=>{
   const s=e.target.closest(".qs"); if(s) askRove(s.textContent);
 });
 const talkIn=document.getElementById("talkIn");
-document.getElementById("talkClose").addEventListener("click",closeSheet);
 document.getElementById("talkSend").addEventListener("click",()=>{ askRove(talkIn.value); talkIn.value=""; });
 talkIn.addEventListener("keydown",e=>{ if(e.key==="Enter"){ askRove(talkIn.value); talkIn.value=""; } });
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
