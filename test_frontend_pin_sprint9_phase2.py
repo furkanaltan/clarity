@@ -121,6 +121,15 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('new CustomEvent("rove:api-locked")', self.frontend)
         self.assertIn('action("pin-change","App-PIN ändern"', self.frontend)
 
+    def test_server_lockout_enters_existing_recovery_without_reload(self):
+        unlock = self.function_body("submitPinUnlock")
+        self.assertIn('res.status===423||data.reauth_required', unlock)
+        self.assertIn('await rejectPinUnlock(', unlock)
+        self.assertIn('"reauth_required"', unlock)
+        reject = self.function_body("rejectPinUnlock")
+        self.assertIn('if(nextMode)showPinScreen(nextMode)', reject)
+        self.assertNotIn('location.reload', unlock)
+
     def test_no_retired_bearer_or_state_link_bypass_returns(self):
         for forbidden in ("ROVE_API.token", "Authorization: Bearer", "app-state", "state_url", "?state="):
             with self.subTest(forbidden=forbidden):

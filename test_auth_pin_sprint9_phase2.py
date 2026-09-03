@@ -183,14 +183,14 @@ class AppPinAuthTests(unittest.TestCase):
             relocked = client.get("/v1/admin/overview")
             self.assertEqual(relocked.status_code, 423)
 
-    def test_fifth_wrong_attempt_requires_reauthentication_even_for_correct_pin(self):
+    def test_third_wrong_attempt_requires_reauthentication_even_for_correct_pin(self):
         self.issue_session("device-a")
         with self.client_for("device-a") as client:
             self.assertEqual(self.setup_pin(client).status_code, 200)
             self.assertEqual(client.post("/v1/auth/pin/lock", json={}).status_code, 200)
-            for attempt in range(1, 6):
+            for attempt in range(1, 4):
                 response = client.post("/v1/auth/pin/unlock", json={"pin": "9999"})
-                self.assertEqual(response.status_code, 423 if attempt == 5 else 400)
+                self.assertEqual(response.status_code, 423 if attempt == 3 else 400)
             correct = client.post("/v1/auth/pin/unlock", json={"pin": "1234"})
         self.assertEqual(correct.status_code, 423)
         self.assertTrue(correct.get_json()["reauth_required"])
@@ -203,7 +203,7 @@ class AppPinAuthTests(unittest.TestCase):
         self.assertEqual(self.setup_pin(device_a, "1234").status_code, 200)
         self.assertEqual(self.setup_pin(device_b, "9876").status_code, 200)
         device_a.post("/v1/auth/pin/lock", json={})
-        for _ in range(5):
+        for _ in range(3):
             device_a.post("/v1/auth/pin/unlock", json={"pin": "0000"})
         foreign_pin = device_b.post("/v1/auth/pin/lock", json={})
         self.assertEqual(foreign_pin.status_code, 200)
@@ -309,7 +309,7 @@ class AppPinAuthTests(unittest.TestCase):
         with self.client_for("device-a") as client:
             self.assertEqual(self.setup_pin(client, "1234").status_code, 200)
             client.post("/v1/auth/pin/lock", json={})
-            for _ in range(5):
+            for _ in range(3):
                 client.post("/v1/auth/pin/unlock", json={"pin": "9999"})
             denied = client.post("/v1/auth/pin/recover", json={
                 "email": "first@example.test",

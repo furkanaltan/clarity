@@ -137,7 +137,7 @@ AUTH_PASSWORD_MIN_LENGTH = 10
 AUTH_RESET_TTL_MINUTES = 10
 AUTH_BUCKETS: dict[str, dict[str, list[float]]] = {}
 PIN_LENGTH = 4
-PIN_MAX_ATTEMPTS = 5
+PIN_MAX_ATTEMPTS = 3
 # The server remains the authority: an unlocked PIN session expires after two
 # minutes without a protected request or an explicit activity touch.
 PIN_INACTIVITY_SECONDS = 2 * 60
