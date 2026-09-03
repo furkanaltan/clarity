@@ -121,12 +121,26 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('new CustomEvent("rove:api-locked")', self.frontend)
         self.assertIn('action("pin-change","App-PIN ändern"', self.frontend)
 
-    def test_server_lockout_enters_existing_recovery_without_reload(self):
+    def test_server_lockout_enters_login_then_normal_pin_setup(self):
         unlock = self.function_body("submitPinUnlock")
         self.assertIn('res.status===423||data.reauth_required', unlock)
-        self.assertIn('clearPinEntry("pinUnlock")', unlock)
-        self.assertIn('showPinScreen("reauth_required")', unlock)
+        self.assertIn('showPinReauthenticationLogin()', unlock)
+        self.assertNotIn('showPinScreen("reauth_required")', unlock)
         self.assertNotIn('location.reload', unlock)
+
+        transition = self.function_body("showPinReauthenticationLogin")
+        self.assertIn('clearPinEntry("pinUnlock")', transition)
+        self.assertIn('showAppConnect()', transition)
+        self.assertIn('PIN_SESSION_STATE="reauth_required"', transition)
+
+        login = self.function_body("showAppConnect")
+        self.assertIn('onboard.classList.remove("pin-mode")', login)
+        self.assertIn('body.classList.remove("pin-lock-layout","pin-setup-layout")', login)
+
+        password_login = self.function_body("passwordLogin")
+        self.assertIn('continueWithSession(!!data.onboarding_required)', password_login)
+        pin_status = self.function_body("fetchPinStatus")
+        self.assertIn('data.pin_status==="setup_required"?"setup":data.pin_status', pin_status)
 
     def test_pin_recovery_screen_has_defined_shared_header(self):
         screen = self.function_body("showPinScreen")

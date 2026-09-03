@@ -10771,6 +10771,16 @@ function resetPinUnlockAfterConnectionError(message){
   refocusPinEntry("pinUnlock");
 }
 
+function showPinReauthenticationLogin(){
+  PIN_SCREEN_ACTIVE=false;
+  PIN_SESSION_STATE="reauth_required";
+  clearPinEntry("pinUnlock");
+  document.getElementById("app")?.setAttribute("hidden","");
+  showAppConnect();
+  const hint=document.getElementById("authHint");
+  if(hint)hint.textContent="Zu viele falsche PIN-Eingaben. Melde dich erneut an, um eine neue PIN festzulegen.";
+}
+
 function pinPadPress(key){
   const input=document.getElementById(PIN_PAD_TARGET);
   if(!input)return;
@@ -10899,8 +10909,7 @@ async function submitPinUnlock(){
     const res=await pinRequest("/v1/auth/pin/unlock",{method:"POST",body:JSON.stringify({pin})});
     const data=await res.json().catch(()=>({}));
     if(res.status===423||data.reauth_required){
-      clearPinEntry("pinUnlock");
-      showPinScreen("reauth_required");
+      showPinReauthenticationLogin();
       return;
     }
     if(res.status===400&&data.error==="invalid_pin"){
@@ -11107,7 +11116,12 @@ async function loadBridgeState(){
 
 // Web-Login und installierte PWA nutzen denselben verifizierten E-Mail-Zugang.
 function showAppConnect(){
-  const body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
+  const onboard=document.getElementById("onboard"), body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
+  if(onboard){
+    onboard.hidden=false;
+    onboard.classList.remove("pin-mode");
+  }
+  body.classList.remove("pin-lock-layout","pin-setup-layout");
   body.classList.remove("ob-dense");
   body.classList.remove("ob-hero");
   body.classList.add("ob-login");
