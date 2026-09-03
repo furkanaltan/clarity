@@ -4744,6 +4744,7 @@ function openAssetDetail(i){
   }
   document.getElementById("dbody").innerHTML = body;
   sheetBg.classList.add("on"); document.getElementById("dsheet").classList.add("on");
+  rovePushState("dsheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("dsheet")));
 }
 function refreshOpenAssetDetail(i, preserveScroll=false){
@@ -4819,6 +4820,7 @@ function openImmoSheet(){
   document.getElementById("immoHausgeld").value=r.hausgeld||"";
   document.getElementById("immoVerwaltung").value=r.verwaltung||"";
   sheetBg.classList.add("on"); document.getElementById("immosheet").classList.add("on");
+  rovePushState("immosheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("immosheet")));
 }
 async function saveImmoSheet(){
@@ -4858,6 +4860,7 @@ function openContractCreateSheet(){
   closeAllSheetsSoft(); VC_CAT="Abos"; renderContractCats();
   document.getElementById("vcName").value=""; document.getElementById("vcAmt").value="";
   sheetBg.classList.add("on"); document.getElementById("contractsheet").classList.add("on");
+  rovePushState("contractsheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("contractsheet")));
 }
 function inferContractCat(name){
@@ -6065,6 +6068,7 @@ function openTxSheet(id){
       <span class="cdot" style="background:${col}"></span>${c}</span>`).join("");
   document.getElementById("txdDel").style.display=item.transfer&&item.targetAccountName?"none":"";
   sheetBg.classList.add("on"); document.getElementById("txsheet").classList.add("on");
+  rovePushState("txsheet");
 }
 document.getElementById("tx-list").addEventListener("click",e=>{
   const r=e.target.closest("[data-txid]"); if(!r) return;
@@ -6325,6 +6329,7 @@ function openNewGoal(){
     .filter(([n])=>!DATA.goals.some(g=>g.t.toLowerCase().includes(n.toLowerCase())))
     .map(([n,a])=>`<span class="chip-q" data-ng="${n}" data-nga="${a}">${n} · ${eur(a)}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("ngsheet").classList.add("on");
+  rovePushState("ngsheet");
   setTimeout(()=>document.getElementById("ngName").focus(),340);
 }
 async function syncGoal(action, payload={}){
@@ -6601,6 +6606,7 @@ function openBudgetSheet(i){
     .filter(v=>v>0).sort((a,z)=>a-z).slice(0,4);
   document.getElementById("bChips").innerHTML = opts.map(v=>`<span class="chip-q">${eur(v)}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("bsheet").classList.add("on");
+  rovePushState("bsheet");
   requestAnimationFrame(()=>liftTabbar());
   setTimeout(()=>{ bIn.focus(); bIn.select(); },340);
 }
@@ -6782,7 +6788,7 @@ function buzz(){ if(!PREFS.haptik) return; try{ navigator.vibrate && navigator.v
 const tabbar=document.querySelector(".tabbar");
 // Tab-Leiste bleibt fix — Sheets liegen darüber, der Dimm-Layer deckt sie zu (kein Hochschieben mehr)
 function liftTabbar(){ tabbar.style.transform=""; tabbar.classList.remove("lift"); }
-function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>quickIn.focus(),340); }
+function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>quickIn.focus(),340); }
 function setQuickError(message){
   if(!quickError) return;
   quickError.textContent=message||"";
@@ -6800,7 +6806,11 @@ function dismissKeyboard(){
   if(a && a!==document.body && typeof a.blur==="function") a.blur();
   if(window.scrollY!==0) window.scrollTo(0,0);
 }
-function closeSheet(){ sheetBg.classList.remove("on"); closeAllSheetsSoft(); liftTabbar(); dismissKeyboard(); setQuickError(""); }
+function closeSheet(options={}){
+  const shouldRestore=!options.fromHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
+  sheetBg.classList.remove("on"); closeAllSheetsSoft(); liftTabbar(); dismissKeyboard(); setQuickError("");
+  if(shouldRestore) history.back();
+}
 
 // Swipe-to-dismiss bleibt bewusst auf unkritische Sheets begrenzt. Formulare mit eigenen
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
@@ -7023,6 +7033,7 @@ function openActivity(){
   const visibleAnnouncements=renderActivity();
   sheetBg.classList.add("on");
   document.getElementById("actsheet").classList.add("on");
+  rovePushState("actsheet");
   markActivitySeen();
   markRenderedAnnouncementsSeen(visibleAnnouncements);
 }
@@ -7500,6 +7511,7 @@ function suggestNewAbo(e){
     `<b>${e.n}</b> · ${eur2(Math.abs(e.a))}/Monat sieht nach einem Abo aus. Als Vertrag speichern, damit du Kündigungsfrist und Jahreskosten im Blick behältst?`;
   document.getElementById("aboSave").dataset.n=e.n; document.getElementById("aboSave").dataset.a=e.a; document.getElementById("aboSave").dataset.c=e.c;
   sheetBg.classList.add("on"); document.getElementById("abosheet").classList.add("on");
+  rovePushState("abosheet");
 }
 document.getElementById("aboSave").addEventListener("click",e=>{
   const n=e.currentTarget.dataset.n, a=Math.abs(+e.currentTarget.dataset.a), tint=e.currentTarget.dataset.c;
@@ -7564,6 +7576,7 @@ function openGoalSheet(i){
   const del=document.getElementById("gDel");
   del.textContent="Ziel löschen"; delete del.dataset.arm;
   sheetBg.classList.add("on"); gsheet.classList.add("on");
+  rovePushState("gsheet");
   requestAnimationFrame(()=>liftTabbar(gsheet));
   setTimeout(()=>gIn.focus(),340);
 }
@@ -7995,6 +8008,7 @@ function openContract(name){
       <button class="txd-del" id="vdDelete" data-vn="${v.n}" style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
     :`<button class="txd-del" id="vdDelete" data-vn="${v.n}" style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
   sheetBg.classList.add("on"); document.getElementById("vdsheet").classList.add("on");
+  rovePushState("vdsheet");
 }
 document.getElementById("addContractBtn").addEventListener("click",()=>{ openContractCreateSheet(); buzz(); });
 document.getElementById("vcCats").addEventListener("click",e=>{
@@ -8423,6 +8437,7 @@ function openOnly(id, render){
   closeAllSheetsSoft(); if(render) render();
   sheetBg.classList.add("on");
   const el=document.getElementById(id); el.classList.add("on");
+  rovePushState(id);
   requestAnimationFrame(()=>liftTabbar(el));
 }
 function openProfile(){ openOnly("psheet", renderProfileMenu); }
@@ -8655,6 +8670,7 @@ function openEtfPlanSheet(position=null){
   document.querySelector("#etfplansheet h3").textContent=isPosition ? `Sparplan · ${ETF_PLAN_FORM.positionName}` : "ETF-Sparplan";
   renderEtfPlanSheet();
   sheetBg.classList.add("on"); document.getElementById("etfplansheet").classList.add("on");
+  rovePushState("etfplansheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("etfplansheet")));
 }
 function renderEtfPlanSheet(){
@@ -8746,6 +8762,7 @@ function openSavingsSheet(){
   closeAllSheetsSoft();
   renderSavingsSheet();
   sheetBg.classList.add("on"); document.getElementById("savingssheet").classList.add("on");
+  rovePushState("savingssheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("savingssheet")));
 }
 function renderSavingsSheet(){
@@ -10307,6 +10324,7 @@ function openTalk(){
   }
   document.getElementById("qsug").innerHTML = SUGGESTIONS.map(q=>`<span class="qs">${q}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("talksheet").classList.add("on");
+  rovePushState("talksheet");
   requestAnimationFrame(()=>liftTabbar());
 }
 document.getElementById("qsug").addEventListener("click",e=>{
@@ -10392,6 +10410,7 @@ function openNewBudget(){
   chips.style.display="";
   chips.innerHTML = opts.map(([c,col])=>`<span class="chip-q cat" data-newcat="${c}" data-col="${col}"><span class="cdot" style="background:${col}"></span>${c}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("bsheet").classList.add("on");
+  rovePushState("bsheet");
 }
 // Demo: Tag-1-/Leerzustand ansehen via #empty
 function enterEmptyDemo(){
@@ -10611,15 +10630,75 @@ document.getElementById("payLater").addEventListener("click", closeSheet);
 // (beim Speichern fiel es nicht auf, weil addEntry() danach go("tx") ruft — nur beim Abbrechen).
 // Seit die Tab-Leiste im Fluss liegt statt fixed, wäre sie in diesem Zustand ausserdem nach oben
 // gerutscht, weil kein Screen mehr Platz beansprucht.
-function go(tab){
+const ROVE_NAV_STATE="roveNav";
+let ROVE_NAV_RESTORING=false;
+let ROVE_NAV_SUPPRESSED=false;
+function roveActiveTab(){
+  const active=document.querySelector(".screen.active");
+  return active?.id?.replace(/^tab-/ ,"")||"home";
+}
+function roveIsState(state){ return !!(state&&state[ROVE_NAV_STATE]===true&&typeof state.tab==="string"&&(!state.sheet||typeof state.sheet==="string")); }
+function rovePushState(sheet=null){
+  if(ROVE_NAV_RESTORING||ROVE_NAV_SUPPRESSED||DEMO_HASHES.has(location.hash.slice(1)))return;
+  const next={roveNav:true,tab:roveActiveTab(),sheet:sheet||null};
+  if(roveIsState(history.state)&&history.state.tab===next.tab&&history.state.sheet===next.sheet)return;
+  history.pushState(next,"",location.href);
+}
+function roveSyncSheetClose(){ return roveIsState(history.state)&&!!history.state.sheet; }
+function roveWithNavigationSuppressed(action){
+  ROVE_NAV_SUPPRESSED=true;
+  try{return action();}finally{ROVE_NAV_SUPPRESSED=false;}
+}
+function roveRestoreSheet(sheetId){
+  const current=document.querySelector(".sheet.on")?.id||"";
+  if(current===sheetId)return;
+  const restore={
+    repsheet:()=>openReports(),
+    talksheet:()=>openTalk(),
+    actsheet:()=>openActivity(),
+    monthlyplansheet:()=>openMonthlyPlan()
+  }[sheetId];
+  roveWithNavigationSuppressed(()=>{
+    closeSheet({fromHistory:true});
+    if(restore) restore();
+    else {
+      sheetBg.classList.add("on");
+      document.getElementById(sheetId)?.classList.add("on");
+    }
+  });
+}
+function roveRestoreState(state){
+  if(!roveIsState(state))return;
+  ROVE_NAV_RESTORING=true;
+  try{
+    if(state.sheet){ roveRestoreSheet(state.sheet); return; }
+    closeSheet({fromHistory:true});
+    go(state.tab,{fromHistory:true});
+  }finally{ROVE_NAV_RESTORING=false;}
+}
+function roveEnsureRoot(){
+  if(roveIsState(history.state))return;
+  history.replaceState({roveNav:true,tab:roveActiveTab(),sheet:null},"",location.href);
+}
+function roveAuthFlowActive(){
+  const onboard=document.getElementById("onboard");
+  return PIN_SCREEN_ACTIVE || !!(onboard && !onboard.hidden);
+}
+window.addEventListener("popstate",event=>{
+  if(roveAuthFlowActive()) return;
+  if(roveIsState(event.state)) roveRestoreState(event.state);
+});
+function go(tab,options={}){
   const target=document.getElementById("tab-"+tab);
   if(!target) return;
   document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
   target.classList.add("active");
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===tab));
   target.scrollTop=0;
+  if(options.history) rovePushState();
 }
-document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click",()=>go(t.dataset.tab)));
+document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click",()=>go(t.dataset.tab,{history:true})));
+roveEnsureRoot();
 
 // Push-Ziele sind keine allgemeinen URLs. Sie werden nur fuer diese Sitzung behalten und erst
 // nach Login, PIN und erfolgreichem State-Laden mit den bestehenden View-Funktionen ausgefuehrt.
@@ -10652,7 +10731,8 @@ function clearNotificationTargetFromUrl(){
     const url=new URL(location.href);
     url.searchParams.delete("rove_target");
     url.searchParams.delete("month");
-    history.replaceState(null,"",url.pathname+url.search+url.hash);
+    const state=roveIsState(history.state)?history.state:{roveNav:true,tab:roveActiveTab(),sheet:null};
+    history.replaceState(state,"",url.pathname+url.search+url.hash);
   }catch(_){}
 }
 function applyNotificationTarget(target){

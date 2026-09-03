@@ -73,6 +73,8 @@ const DATA={{reports:[{{month:"2026-08"}},{{month:"2026-07"}}]}};
 const calls=[];
 const location={{href:"https://getrove.de/app/?rove_target=report&month=2026-08",origin:"https://getrove.de",pathname:"/app/"}};
 const history={{replaceState:(_,__,value)=>calls.push(["replace",value])}};
+function roveIsState(){{return false;}}
+function roveActiveTab(){{return "home";}}
 function openReports(){{calls.push(["reports"]);}}
 function openReportDetail(index){{calls.push(["detail",index]);}}
 function openMonthlyPlan(){{calls.push(["monthly"]);}}
