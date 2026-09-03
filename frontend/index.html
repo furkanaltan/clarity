@@ -6557,7 +6557,7 @@ function renderBudgets(){
       <span style="font-size:13px;color:var(--muted)">Budget <b style="color:var(--ink)">${eur(summaryBudget)}</b> · ausgegeben ${eur(actualSpent)}</span>
       <span style="font-size:13px;font-weight:700;color:${canonicalBudget<0?'var(--gold)':remaining<0?'var(--red)':'var(--green)'}">${rightSummary}</span>
     </div>`;
-  box.innerHTML = `<div class="budget-hint">Wähle eine Kategorie, um den Rahmen anzupassen.</div>`+summary+`<div class="card">`+DATA.budgets.map((b,i)=>{
+  box.innerHTML = summary+`<div class="card">`+DATA.budgets.map((b,i)=>{
     const sp=catSpent(b.cat), p=Math.round(sp/b.limit*100), over=sp>b.limit, near=p>=75 && !over;
     const col = over? "var(--red)" : near? "var(--gold)" : "var(--green)";
     const avg=threeMonthAvg(b.cat);
