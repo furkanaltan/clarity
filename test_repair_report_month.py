@@ -74,6 +74,12 @@ class RepairReportMonthTests(unittest.TestCase):
     def test_successful_web_build_atomically_replaces_same_user_month_link(self):
         template = Path(self.tmp.name) / "report.html"
         public_dir = Path(self.tmp.name) / "public"
+        old_dir = public_dir / "old-link"; old_dir.mkdir(parents=True)
+        old_path = old_dir / "index.html"; old_path.write_text("old", encoding="utf-8")
+        self.conn.execute(
+            "UPDATE report_links SET html_path = ? WHERE token = 'old-1'", (str(old_path),)
+        )
+        self.conn.commit()
         template.write_text("<html></html>", encoding="utf-8")
         with patch.object(web_renderer, "DB_PATH", self.db), \
              patch.object(web_renderer, "TEMPLATE_PATH", template), \
@@ -95,6 +101,7 @@ class RepairReportMonthTests(unittest.TestCase):
         self.assertEqual(old_status, "superseded")
         self.assertEqual(other_status, "active")
         self.assertEqual(new_status, "active")
+        self.assertTrue(old_dir.exists())
         self.assertEqual(stat.S_IMODE(Path(result["path"]).stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(Path(result["path"]).parent.stat().st_mode), 0o755)
 
@@ -112,6 +119,68 @@ class RepairReportMonthTests(unittest.TestCase):
             "SELECT status FROM report_links WHERE token = 'old-1'"
         ).fetchone()[0]
         self.assertEqual(status, "active")
+
+    def test_cleanup_keeps_valid_active_report_and_removes_expired_active_report(self):
+        public_dir = Path(self.tmp.name) / "public"
+        valid_dir = public_dir / "valid"; valid_dir.mkdir(parents=True)
+        expired_dir = public_dir / "expired"; expired_dir.mkdir()
+        (valid_dir / "index.html").write_text("valid", encoding="utf-8")
+        (expired_dir / "index.html").write_text("expired", encoding="utf-8")
+        self.conn.executemany(
+            "UPDATE report_links SET html_path = ?, expires_at = ? WHERE token = ?",
+            [
+                (str(valid_dir / "index.html"), "2026-10-02 00:00:00", "old-1"),
+                (str(expired_dir / "index.html"), "2026-09-01 00:00:00", "old-2"),
+            ],
+        )
+        self.conn.commit()
+
+        with patch.object(web_renderer, "DB_PATH", self.db), patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir):
+            removed = web_renderer.cleanup_expired_reports(web_renderer.datetime(2026, 9, 2))
+
+        self.assertEqual(removed, 1)
+        self.assertTrue(valid_dir.exists())
+        self.assertFalse(expired_dir.exists())
+        self.assertEqual(self.conn.execute("SELECT status FROM report_links WHERE token = 'old-1'").fetchone()[0], "active")
+        self.assertEqual(self.conn.execute("SELECT status FROM report_links WHERE token = 'old-2'").fetchone()[0], "expired")
+
+    def test_cleanup_removes_superseded_report_after_its_existing_expiry(self):
+        public_dir = Path(self.tmp.name) / "public"
+        report_dir = public_dir / "superseded"; report_dir.mkdir(parents=True)
+        html_path = report_dir / "index.html"; html_path.write_text("old", encoding="utf-8")
+        self.conn.execute(
+            "UPDATE report_links SET status = 'superseded', html_path = ?, expires_at = ? WHERE token = 'old-1'",
+            (str(html_path), "2026-09-01 00:00:00"),
+        )
+        self.conn.commit()
+
+        with patch.object(web_renderer, "DB_PATH", self.db), patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir):
+            removed = web_renderer.cleanup_expired_reports(web_renderer.datetime(2026, 9, 2))
+
+        self.assertEqual(removed, 1)
+        self.assertFalse(report_dir.exists())
+        self.assertEqual(self.conn.execute("SELECT status FROM report_links WHERE token = 'old-1'").fetchone()[0], "expired")
+
+    def test_cleanup_delete_failure_remains_retryable(self):
+        public_dir = Path(self.tmp.name) / "public"
+        report_dir = public_dir / "retry"; report_dir.mkdir(parents=True)
+        html_path = report_dir / "index.html"; html_path.write_text("old", encoding="utf-8")
+        self.conn.execute(
+            "UPDATE report_links SET status = 'superseded', html_path = ?, expires_at = ? WHERE token = 'old-1'",
+            (str(html_path), "2026-09-01 00:00:00"),
+        )
+        self.conn.commit()
+
+        with patch.object(web_renderer, "DB_PATH", self.db), patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir), \
+             patch.object(web_renderer.shutil, "rmtree", side_effect=PermissionError("denied")):
+            self.assertEqual(web_renderer.cleanup_expired_reports(web_renderer.datetime(2026, 9, 2)), 0)
+
+        self.assertTrue(report_dir.exists())
+        self.assertEqual(self.conn.execute("SELECT status FROM report_links WHERE token = 'old-1'").fetchone()[0], "superseded")
+        with patch.object(web_renderer, "DB_PATH", self.db), patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir):
+            self.assertEqual(web_renderer.cleanup_expired_reports(web_renderer.datetime(2026, 9, 2)), 1)
+        self.assertFalse(report_dir.exists())
+        self.assertEqual(self.conn.execute("SELECT status FROM report_links WHERE token = 'old-1'").fetchone()[0], "expired")
 
 
 if __name__ == "__main__":

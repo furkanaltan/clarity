@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import math
 import os
 import re
@@ -33,6 +34,7 @@ PUBLIC_REPORT_DIR = Path(
 )
 PUBLIC_REPORT_BASE_URL = os.getenv("ROVE_REPORT_PUBLIC_BASE_URL", "").rstrip("/")
 REPORT_LINK_TTL_DAYS = int(os.getenv("ROVE_REPORT_LINK_TTL_DAYS", "30"))
+logger = logging.getLogger(__name__)
 
 
 def ensure_report_links_table() -> None:
@@ -1818,25 +1820,31 @@ def cleanup_expired_reports(now: datetime | None = None) -> int:
     now = now or datetime.now()
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     removed = 0
+    public_dir = PUBLIC_REPORT_DIR.resolve(strict=False)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT token, html_path FROM report_links WHERE status = 'active' AND expires_at <= ?",
+            """SELECT token, html_path FROM report_links
+                 WHERE status IN ('active', 'superseded') AND expires_at <= ?""",
             (now_str,),
         ).fetchall()
         for row in rows:
-            html_path = Path(row["html_path"])
-            report_dir = html_path.parent
             try:
-                if report_dir.exists() and report_dir.parent == PUBLIC_REPORT_DIR:
+                report_dir = Path(row["html_path"]).resolve(strict=False).parent
+                if report_dir.parent != public_dir:
+                    logger.warning("Webreport cleanup deferred: unexpected generated-report path")
+                    continue
+                if report_dir.exists():
                     shutil.rmtree(report_dir)
-                    removed += 1
-            except Exception:
-                pass
+            except OSError as exc:
+                # Keep the link eligible for the next maintenance run until its files are gone.
+                logger.warning("Webreport cleanup deferred after %s", type(exc).__name__)
+                continue
             conn.execute(
                 "UPDATE report_links SET status = 'expired' WHERE token = ?",
                 (row["token"],),
             )
+            removed += 1
         conn.commit()
     return removed
 
