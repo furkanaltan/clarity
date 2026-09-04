@@ -48,6 +48,23 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn("function initSheetSwipeDismiss()", self.frontend)
         self.assertIn('if(sheet.classList.contains("on"))closeSheet()', self.frontend)
 
+    def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
+        self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
+        self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
+        self.assertIn('meta[name="rove-frontend-build"]', self.frontend)
+        self.assertIn('if(serverBuild===CURRENT_BUILD)', self.frontend)
+        self.assertIn('sessionStorage.removeItem(RELOAD_KEY)', self.frontend)
+        self.assertIn('sessionStorage.getItem(RELOAD_KEY)', self.frontend)
+        self.assertIn('sessionStorage.setItem(RELOAD_KEY,serverBuild)', self.frontend)
+        self.assertIn('if(attempted===serverBuild || mittendrin())', self.frontend)
+        self.assertIn('next.searchParams.set("rove_build",serverBuild)', self.frontend)
+
+    def test_service_worker_still_has_no_fetch_cache_handler(self):
+        service_worker = (FRONTEND_PATH.parent / "sw.js").read_text(encoding="utf-8")
+        self.assertNotIn('addEventListener("fetch"', service_worker)
+        self.assertIn("self.skipWaiting()", service_worker)
+        self.assertIn("self.clients.claim()", service_worker)
+
 
 if __name__ == "__main__":
     unittest.main()

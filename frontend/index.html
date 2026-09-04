@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
+<meta name="rove-frontend-build" content="2026-09-04-frontend-1">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -7394,18 +7395,16 @@ setInterval(()=>{
   if(!document.hidden) refreshAppDataFromServer();
 },45000);
 
-/* ── Auto-Update (25.07.) — damit NIE wieder "App löschen + neu anmelden" nötig ist ──
-   Problem: die PWA hing an einer alten index.html, weil der Server keinen Cache-Control-Header
-   schickt (geprüft per curl) — Safari behält die Datei dann nach eigenem Ermessen. Der einzige
-   Ausweg war bisher, die App zu löschen — und das riss localStorage und damit den LOGIN mit.
-   Lösung: beim Zurückkommen in die App per HEAD + cache:"no-store" (umgeht den HTTP-Cache)
-   prüfen, ob auf dem Server eine neuere Datei liegt (ETag bzw. Last-Modified). Wenn ja, EINMAL
-   mit Cache-Bust neu laden. Ein Reload löscht KEIN localStorage → der Login bleibt erhalten.
-   Bewusst nur beim Sichtbarwerden (nicht mitten im Tippen) und nicht, während ein Sheet oder
-   das Onboarding offen ist — sonst würde dem Nutzer die Eingabe unter den Fingern weggezogen. */
+/* ── Auto-Update — Build-ID gegen den frisch geladenen HTML-Stand prüfen ──
+   Ein HEAD-Header allein beweist nicht, dass das bereits geladene Dokument aktuell ist: Safari
+   kann ein altes HTML-Dokument liefern und danach den aktuellen ETag als neue Basis melden.
+   Der no-store-GET liest deshalb die Build-ID aus dem Serverdokument. Ein Reload löscht KEIN
+   localStorage → der Login bleibt erhalten. Bewusst nur beim Sichtbarwerden und nicht während
+   eines Sheets oder des Onboardings. */
 (function(){
-  var BUILD=null, busy=false;
-  function stamp(r){ return r.headers.get("ETag") || r.headers.get("Last-Modified") || null; }
+  var CURRENT_BUILD=(document.querySelector('meta[name="rove-frontend-build"]')||{}).content||"";
+  var RELOAD_KEY="rove-frontend-update-attempt";
+  var busy=false;
   function mittendrin(){
     var bg=document.getElementById("sheetBg");
     if(bg && bg.classList.contains("on")) return true;                 // irgendein Sheet offen
@@ -7416,16 +7415,28 @@ setInterval(()=>{
   function check(){
     if(busy || location.protocol.indexOf("http")!==0) return;          // file:// hat keine Header
     busy=true;
-    fetch(location.pathname, {cache:"no-store", method:"HEAD"})
+    fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})
       .then(function(r){
-        var s=stamp(r);
-        if(!s){ busy=false; return; }
-        if(BUILD===null){ BUILD=s; busy=false; return; }               // erster Lauf: Stand merken
-        if(s!==BUILD && !mittendrin()){
-          location.replace(location.pathname+"?b="+Date.now()+location.hash);
-          return;                                                       // Seite lädt neu, kein Reset nötig
+        if(!r.ok) throw new Error("frontend update check failed");
+        return r.text();
+      })
+      .then(function(html){
+        var doc=new DOMParser().parseFromString(html,"text/html");
+        var serverBuild=(doc.querySelector('meta[name="rove-frontend-build"]')||{}).content||"";
+        if(!serverBuild || !CURRENT_BUILD){ busy=false; return; }
+        if(serverBuild===CURRENT_BUILD){
+          try{ sessionStorage.removeItem(RELOAD_KEY); }catch(_){ }
+          busy=false;
+          return;
         }
-        busy=false;
+        var attempted="";
+        try{ attempted=sessionStorage.getItem(RELOAD_KEY)||""; }catch(_){ }
+        if(attempted===serverBuild || mittendrin()){ busy=false; return; }
+        try{ sessionStorage.setItem(RELOAD_KEY,serverBuild); }catch(_){ }
+        var next=new URL(location.href);
+        next.searchParams.set("rove_build",serverBuild);
+        next.searchParams.set("b",Date.now());
+        location.replace(next.toString());                     // ein Reload, localStorage bleibt erhalten
       })
       .catch(function(){ busy=false; });
   }

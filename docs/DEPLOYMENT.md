@@ -190,6 +190,28 @@ geprüft. Das aktuelle `frontend/index.html` hat den kanonischen SHA-256
 Die fünf Dateien werden als Satz gesichert und veröffentlicht. Danach werden
 Serverhashes und PWA-Verhalten geprüft. Kein Backend-Service wird neu gestartet.
 
+Die Nginx-Konfiguration ist derzeit nicht kanonisch im Repository versioniert.
+Für die Live-Installation müssen deshalb ausserhalb dieses Repositories
+Revalidierungs-Header für die Dokument- und Update-Dateien gesetzt werden:
+
+```nginx
+location = /app/ {
+    add_header Cache-Control "no-cache, must-revalidate" always;
+}
+location = /app/index.html {
+    add_header Cache-Control "no-cache, must-revalidate" always;
+}
+location = /app/sw.js {
+    add_header Cache-Control "no-cache, must-revalidate" always;
+}
+location = /app/manifest.webmanifest {
+    add_header Cache-Control "no-cache, must-revalidate" always;
+}
+```
+
+Diese Live-Anpassung ist kein Repository-Deploy und darf nur nach separater
+Nginx-Pruefung angewendet werden. Der Service Worker bleibt ohne `fetch`-Handler.
+
 ## Backend-Deploy-Modell
 
 - Local Source: kanonisches Repository
