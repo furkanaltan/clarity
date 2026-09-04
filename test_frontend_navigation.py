@@ -55,6 +55,16 @@ class FrontendNavigationTests(unittest.TestCase):
         )
         self.assertIn('.account-add{width:100%;min-height:50px;', self.frontend)
 
+    def test_home_chart_uses_white_drawn_line_without_changing_data(self):
+        self.assertIn('@keyframes chartLineDraw', self.frontend)
+        self.assertIn('.chart .chart-line-main{stroke-dasharray:1;', self.frontend)
+        self.assertIn('const glassLine=(d,animate)=>', self.frontend)
+        self.assertIn('glassLine(fullLine,true)', self.frontend)
+        self.assertIn('stroke="#F5F7F8"', self.frontend)
+        self.assertIn('stroke="#FFFFFF"', self.frontend)
+        self.assertIn('glassLine(blueLine,false)', self.frontend)
+        self.assertNotIn('id="chartStroke"', self.frontend)
+
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
