@@ -588,6 +588,16 @@ def screenshot_row_key(user_id: int, image_digest: str, index: int, row: dict) -
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
+def normalize_screenshot_direction(value: object) -> str | None:
+    """Map unambiguous bank labels to the two directions used by the app."""
+    direction = " ".join(str(value or "").strip().casefold().replace("_", " ").split())
+    if direction in {"expense", "debit", "out", "outflow", "ausgabe", "belastung", "lastschrift"}:
+        return "expense"
+    if direction in {"income", "credit", "in", "inflow", "einnahme", "gutschrift", "einzahlung"}:
+        return "income"
+    return None
+
+
 def request_screenshot_analysis(image_bytes: bytes, mime_type: str) -> dict:
     if not OPENAI_API_KEY:
         raise RuntimeError("screenshot_import_not_configured")
@@ -669,8 +679,8 @@ def normalize_screenshot_rows(raw: object) -> list[dict]:
         except (TypeError, ValueError):
             continue
         merchant = clean_text(row.get("merchant"))
-        direction = str(row.get("direction") or "").strip().lower()
-        if not merchant or amount <= 0 or amount > 1_000_000 or direction not in {"expense", "income"}:
+        direction = normalize_screenshot_direction(row.get("direction"))
+        if not merchant or amount <= 0 or amount > 1_000_000 or direction is None:
             continue
         category = clean_text(row.get("category"), "Sonstiges")
         if category not in APP_TO_BOT_CATEGORY:
@@ -6006,6 +6016,7 @@ def analyze_screenshot_import():
             result = request_screenshot_analysis(image_bytes, mime_type)
         except RuntimeError as exc:
             error = str(exc)
+            logger.warning("Screenshot-Import fehlgeschlagen: %s", error)
             status = 503
             if error == "screenshot_rate_limited":
                 status = 429
@@ -6013,7 +6024,14 @@ def analyze_screenshot_import():
                 status = 503
             return jsonify({"ok": False, "error": error}), status
 
-        rows = normalize_screenshot_rows(result.get("transactions"))
+        if not isinstance(result, dict):
+            logger.warning("Screenshot-Import lieferte kein Objekt")
+            return jsonify({"ok": False, "error": "screenshot_invalid_response"}), 503
+        raw_transactions = result.get("transactions")
+        if not isinstance(raw_transactions, list):
+            logger.warning("Screenshot-Import lieferte kein Transaktionsarray")
+            return jsonify({"ok": False, "error": "screenshot_invalid_response"}), 503
+        rows = normalize_screenshot_rows(raw_transactions)
         image_digest = hashlib.sha256(image_bytes).hexdigest()
         expenses = []
         ignored_income_count = 0
@@ -6025,11 +6043,17 @@ def analyze_screenshot_import():
             row["probableDuplicate"] = probable_expense_duplicate(conn, user_id, row)
             row["selected"] = row["confidence"] >= 0.6 and not row["probableDuplicate"]
             expenses.append(row)
+        analysis_status = "ok" if expenses else "no_transactions"
+        logger.info(
+            "Screenshot-Import analysiert: rows=%d normalized=%d expenses=%d ignored_income=%d",
+            len(raw_transactions), len(rows), len(expenses), ignored_income_count,
+        )
 
     return jsonify({
         "ok": True,
         "transactions": expenses,
         "ignoredIncomeCount": ignored_income_count,
+        "analysisStatus": analysis_status,
         "imageStored": False,
     })
 

@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from io import BytesIO
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -167,6 +168,17 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
                 headers={"Origin": "https://getrove.de", "Authorization": f"Bearer {token}"},
             )
 
+    def multipart_request(self, path: str, *, token: str = "pilot-token", response=None):
+        with patch.object(api, "request_screenshot_analysis", return_value=response):
+            with patch.object(api, "screenshot_attempt_allowed", return_value=True):
+                with api.app.test_client() as client:
+                    return client.post(
+                        path,
+                        data={"image": (BytesIO(b"\x89PNG\r\n\x1a\n"), "bank.png")},
+                        headers={"Origin": "https://getrove.de", "Authorization": f"Bearer {token}"},
+                        content_type="multipart/form-data",
+                    )
+
     def account(self, key: str, user_id: int = 1):
         with closing(self.connect()) as conn:
             return dict(get_legacy_financial_account(conn, user_id, key))
@@ -292,6 +304,25 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(len(rows), 2)
             self.assertTrue(all(row[0] and row[0] == row[1] for row in rows))
+
+    def test_bank_screenshot_normalizes_unambiguous_direction_variants(self) -> None:
+        rows = api.normalize_screenshot_rows([
+            {"merchant": "Debit shop", "amount": 10, "direction": "DEBIT"},
+            {"merchant": "Credit shop", "amount": 11, "direction": "Gutschrift"},
+            {"merchant": "Ausgabe shop", "amount": 12, "direction": "Ausgabe"},
+            {"merchant": "Einzahlung shop", "amount": 13, "direction": "in"},
+        ])
+        self.assertEqual([row["direction"] for row in rows], ["expense", "income", "expense", "income"])
+
+    def test_bank_screenshot_reports_invalid_and_empty_provider_results(self) -> None:
+        invalid = self.multipart_request("/v1/import/screenshot", response={"wrong": []})
+        self.assertEqual(invalid.status_code, 503)
+        self.assertEqual(invalid.get_json()["error"], "screenshot_invalid_response")
+
+        empty = self.multipart_request("/v1/import/screenshot", response={"transactions": []})
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.get_json()["analysisStatus"], "no_transactions")
+        self.assertEqual(empty.get_json()["transactions"], [])
 
     def test_monthly_income_and_fixed_costs_are_symmetric(self) -> None:
         income = self.request("POST", "/v1/monthly-plan", json={"action": "confirm_income"})

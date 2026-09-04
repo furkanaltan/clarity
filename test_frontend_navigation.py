@@ -99,6 +99,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('analyzeScreenshot(file).finally(()=>{ scanFile.value=""; });', self.frontend)
         self.assertIn('class="scan-launch" id="scanOpen"', self.frontend)
         self.assertIn('class="scan-launch" id="scanPick"', self.frontend)
+        self.assertIn('screenshot_invalid_response:', self.frontend)
+        self.assertIn('screenshot_no_transactions:', self.frontend)
+        self.assertIn('data.analysisStatus==="no_transactions"', self.frontend)
 
     def test_goal_detail_uses_shared_swipe_sheet_and_neutral_header(self):
         self.assertIn('class="sheet goal-detail-sheet" id="gsheet"', self.frontend)

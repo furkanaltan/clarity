@@ -7753,6 +7753,8 @@ function scanErrorText(error){
     screenshot_provider_auth_failed:"Die Screenshot-Erkennung ist gerade nicht richtig verbunden.",
     screenshot_provider_unavailable:"Die Screenshot-Erkennung antwortet gerade nicht. Versuch es später noch einmal.",
     screenshot_rate_limited:"Die Screenshot-Erkennung ist gerade ausgelastet. Versuch es gleich noch einmal.",
+    screenshot_invalid_response:"Die Screenshot-Erkennung hat keine vollständige Antwort geliefert. Versuch es bitte noch einmal.",
+    screenshot_no_transactions:"Ich konnte daraus keine sicheren Ausgaben erkennen. Achte darauf, dass Beträge, Händler und Datum gut lesbar sind.",
     screenshot_format_unsupported:"Dieses Bildformat kann ich nicht lesen. Bitte nutze einen normalen Screenshot.",
     screenshot_too_large:"Der Screenshot ist zu groß. Wähle bitte ein kleineres Bild.",
   })[error] || "Ich konnte den Screenshot nicht zuverlässig lesen. Bitte versuch es mit einem gut lesbaren Bild noch einmal.";
@@ -7779,7 +7781,7 @@ function resetScreenshotImport(){
   scanSetState("Noch kein Screenshot ausgewählt.");
 }
 function renderScanRows(){
-  if(!scanRows.length){ scanSetState("Ich konnte daraus noch keine sicheren Ausgaben erkennen. Achte darauf, dass Beträge, Händler und Datum gut lesbar sind."); return; }
+  if(!scanRows.length){ scanSetState(scanErrorText("screenshot_no_transactions")); return; }
   scanBody.innerHTML=`<div class="scan-list">${scanRows.map((row,index)=>`
     <label class="scan-row ${row.probableDuplicate?"is-duplicate":""}" data-scan-row="${index}">
       <input class="scan-check" type="checkbox" ${row.selected?"checked":""} aria-label="Buchung auswählen">
@@ -7826,6 +7828,7 @@ async function analyzeScreenshot(file){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
     scanRows=(data.transactions||[]).map(row=>({...row,selected:!!row.selected}));
+    if(data.analysisStatus==="no_transactions"){ renderScanRows(); return; }
     renderScanRows();
     if(data.ignoredIncomeCount) showToast("Eingänge werden nicht automatisch übernommen");
   }catch(error){
