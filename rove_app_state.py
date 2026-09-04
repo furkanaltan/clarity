@@ -34,6 +34,7 @@ from pathlib import Path
 
 from rove_score import calculate_score
 from rove_market_data import (
+    cached_market_metadata,
     canonical_market_instrument,
     ensure_market_tracking_schema,
     fetch_crypto_metadata,
@@ -2111,7 +2112,13 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         )
         metadata_keys[int(row["id"])] = candidates
         metadata_symbols.extend(candidates)
-    metadata = fetch_market_metadata(metadata_symbols)
+    # A response assembled before a write commits must never wait on a logo provider.
+    # A cold logo cache simply uses the existing neutral frontend fallback for that response.
+    metadata = (
+        cached_market_metadata(metadata_symbols)
+        if conn.in_transaction
+        else fetch_market_metadata(metadata_symbols)
+    )
     for r in rows:
         instrument_type = str(r["instrument_type"] or "etf").lower()
         is_live = bool(r["valuation_enabled"] and r["quantity"] and r["price_symbol"])

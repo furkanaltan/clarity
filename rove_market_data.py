@@ -399,16 +399,40 @@ def _valid_market_logo_url(value: object) -> str | None:
     return text
 
 
-def fetch_market_metadata(
-    symbols: list[str], api_key: str | None = None, *,
-    now: datetime | None = None,
-) -> dict[str, dict]:
-    """Return optional stock/ETF logo metadata with a bounded in-process cache."""
+def _market_metadata_symbols(symbols: list[str]) -> list[str]:
     clean_symbols: list[str] = []
     for value in symbols:
         symbol = normalize_symbol(value)
         if symbol and symbol not in clean_symbols:
             clean_symbols.append(symbol)
+    return clean_symbols
+
+
+def cached_market_metadata(
+    symbols: list[str], *, now: datetime | None = None,
+) -> dict[str, dict]:
+    """Return fresh logo metadata already held in memory without network access."""
+    clean_symbols = _market_metadata_symbols(symbols)
+    if not clean_symbols:
+        return {}
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    with _MARKET_METADATA_LOCK:
+        return {
+            symbol: dict(entry)
+            for symbol in clean_symbols
+            if (entry := _MARKET_METADATA_CACHE.get(symbol))
+            and entry["expires_at"] > checked_at
+        }
+
+
+def fetch_market_metadata(
+    symbols: list[str], api_key: str | None = None, *,
+    now: datetime | None = None,
+) -> dict[str, dict]:
+    """Return optional stock/ETF logo metadata with a bounded in-process cache."""
+    clean_symbols = _market_metadata_symbols(symbols)
     if not clean_symbols:
         return {}
     checked_at = now or datetime.now(timezone.utc)

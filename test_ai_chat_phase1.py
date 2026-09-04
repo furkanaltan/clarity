@@ -202,6 +202,34 @@ class AiChatPhaseOneTests(unittest.TestCase):
         self.assertEqual(failed.status_code, 503)
         self.assertNotIn("provider", failed.get_json()["answer"].casefold())
 
+    def test_provider_runs_without_a_sqlite_write_lock_and_persists_afterward(self):
+        def provider(_messages):
+            with closing(sqlite3.connect(self.db_path, timeout=0.1)) as other:
+                other.execute("BEGIN IMMEDIATE")
+                other.execute("UPDATE users SET income = income WHERE user_id = 2")
+                other.commit()
+            return "Antwort ohne blockierte Datenbank.", 9, 4
+
+        with patch.object(api, "ai_chat_provider", provider):
+            response = self.post(self.client_for(), "Was ist TER?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        conversation_id = response.get_json()["conversation_id"]
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            messages = conn.execute(
+                "SELECT role FROM app_ai_conversation_messages WHERE conversation_id = ? ORDER BY id",
+                (conversation_id,),
+            ).fetchall()
+            self.assertEqual([row[0] for row in messages], ["user", "assistant"])
+
+    def test_provider_failure_does_not_create_a_partial_conversation(self):
+        with patch.object(api, "ai_chat_provider", side_effect=RuntimeError("ai_provider_unavailable")):
+            response = self.post(self.client_for(), "Was ist KGV?")
+        self.assertEqual(response.status_code, 503)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversations").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversation_messages").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_usage").fetchone()[0], 1)
+
     def test_rate_limit_and_revoked_session_are_blocked(self):
         with patch.object(api, "AI_CHAT_RATE_LIMIT", 1), patch.object(api, "ai_chat_provider", self.provider()):
             client = self.client_for()

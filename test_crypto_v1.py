@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import rove_app_api as api
+import rove_app_state as app_state
 import rove_market_data as market
 from rove_app_state import _crypto_header_logo_url, _crypto_holdings_value, _crypto_positions, _etf_positions
 
@@ -502,6 +503,39 @@ class CryptoProviderTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(requests.call_count, 4)
         self.assertIsNone(market._valid_market_logo_url("https://example.com/logo.png"))
+
+    def test_cached_market_metadata_never_refreshes_through_the_provider(self):
+        symbol = "ROVE_CACHED_STOCK"
+        now = datetime(2026, 9, 5, tzinfo=timezone.utc)
+        market._MARKET_METADATA_CACHE.clear()
+        market._MARKET_METADATA_CACHE[symbol] = {
+            "symbol": symbol,
+            "logo_url": "https://api.twelvedata.com/logo/stock.png",
+            "expires_at": now + timedelta(days=1),
+        }
+        with patch.object(market, "_request_json", side_effect=AssertionError("network must not run")):
+            metadata = market.cached_market_metadata([symbol, "MISSING"], now=now)
+        self.assertEqual(metadata[symbol]["logo_url"], "https://api.twelvedata.com/logo/stock.png")
+        self.assertNotIn("MISSING", metadata)
+
+    def test_stock_state_uses_cache_only_while_a_write_is_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db_path = Path(temp) / "clarity.db"
+            create_crypto_db(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute(
+                    """INSERT INTO portfolio_holdings
+                       (user_id, instrument_key, instrument_label, instrument_type, total_invested,
+                        market_value, valuation_enabled, price_symbol, quote_currency, quantity)
+                       VALUES (1, 'stock:ROVE_LOCK_TEST', 'Rov.E Lock Test', 'stock', 100, 100, 1, 'ROVE_LOCK_TEST', 'EUR', 1)"""
+                )
+                with patch.object(app_state, "fetch_market_metadata", side_effect=AssertionError("network must not run")), \
+                     patch.object(app_state, "cached_market_metadata", return_value={}) as cached:
+                    positions = _etf_positions(conn, 1)
+                self.assertTrue(conn.in_transaction)
+                self.assertTrue(cached.called)
+                self.assertTrue(any(row["holdingId"] for row in positions))
 
     def test_metadata_failure_keeps_portfolio_available_and_rejects_foreign_logo_host(self):
         temp = tempfile.TemporaryDirectory()
