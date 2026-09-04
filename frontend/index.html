@@ -769,7 +769,7 @@
     transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 0 0 5px rgba(245,247,248,.16)}
   .scrub.on .scrub-dot{opacity:1}
   .chart-wrap.scrubbing .endcap{opacity:0}   /* fester Endpunkt weicht dem wandernden Knopf */
-  .net .val.scrubbing{color:var(--blue)}
+  .net .val.scrubbing{color:var(--ink)}
   .delta.scrub-date{color:var(--ink);font-weight:700}
   @keyframes chartLineDraw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
   @keyframes chartEndcapIn{from{opacity:0;transform:scale(.72)}to{opacity:1;transform:scale(1)}}
@@ -3769,10 +3769,13 @@ function drawChart(range, scrubIdx){
   const glassLine=(d,animate)=>`<path d="${d}" fill="none" stroke="#94A3AF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path class="${animate?"chart-line-main":"chart-line-static"}" pathLength="1" d="${d}" fill="none" stroke="#F5F7F8" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="#FFFFFF" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round" opacity=".62"/>`;
   let body;
   if(scrubIdx!=null){
-    // Trade-Republic-Look: blau bis zum Finger, der Rest rechts verblasst grau
-    const blueLine=catmullPath(xy, 0, scrubIdx);
-    body = `<g>${grid}</g>`
-      + (scrubIdx>0 ? glassLine(blueLine,false) : "");
+    // Die volle Kurve bleibt im DOM. Beim Abfahren wird nur die helle Ebene
+    // per Clip-Maske bewegt, statt das komplette SVG in jedem Frame neu aufzubauen.
+    const initialX=xy[scrubIdx][0].toFixed(1);
+    body = `<defs><clipPath id="chartScrubClip"><rect id="chartScrubClipRect" x="0" y="0" width="${initialX}" height="${H}"/></clipPath></defs>`
+      + `<g>${grid}</g>`
+      + `<path d="${fullLine}" fill="none" stroke="#94A3AF" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round" opacity=".3"/>`
+      + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"/><path d="${fullLine}" fill="none" stroke="#FFFFFF" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round" opacity=".62"/></g>`;
   } else {
     body = `<g>${grid}</g>`
       + glassLine(fullLine,true)
@@ -3781,6 +3784,8 @@ function drawChart(range, scrubIdx){
   }
   document.getElementById("chart").innerHTML = body;
   CHART.xy=xy; CHART.pts=pts; CHART.range=range;
+  CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
+  CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
   if(scrubIdx==null){                            // Datums-Labels + Delta nur im Normalzustand neu setzen
     CHART.dates=seriesDates(range);
     const dEl=document.getElementById("chartDelta");
@@ -3806,8 +3811,19 @@ drawChart("1W");
     const plotL=rect.left+(padX/W)*rect.width, plotR=rect.left+((W-padX)/W)*rect.width;
     let frac=(clientX-plotL)/(plotR-plotL); frac=Math.max(0,Math.min(1,frac));
     const idx=Math.round(frac*(n-1));
-    drawChart(CHART.range, idx);                      // weiss bis zum Finger, Rest grau
-    const px=(CHART.xy[idx][0]/W)*rect.width, py=(CHART.xy[idx][1]/150)*rect.height;
+    if(!CHART.scrubClip || !CHART.scrubPath) drawChart(CHART.range, idx);
+    // Die Maske und der Punkt folgen der echten Kurven-Geometrie kontinuierlich.
+    // Der angezeigte Wert bleibt auf dem naechsten vorhandenen Datenpunkt stabil.
+    const targetX=padX+frac*(W-2*padX);
+    const length=CHART.scrubPath.getTotalLength();
+    let lo=0, hi=length;
+    for(let step=0;step<11;step++){
+      const mid=(lo+hi)/2;
+      if(CHART.scrubPath.getPointAtLength(mid).x<targetX) lo=mid; else hi=mid;
+    }
+    const point=CHART.scrubPath.getPointAtLength((lo+hi)/2);
+    CHART.scrubClip.setAttribute("width",Math.max(0,point.x).toFixed(2));
+    const px=(point.x/W)*rect.width, py=(point.y/150)*rect.height;
     dot.style.left=px+"px"; dot.style.top=py+"px";   // runder Knopf sitzt am Übergang
     nwEl.dataset.lock="1";                       // Zahlen-Ticker nicht dazwischenfunken
     nwEl.textContent=eur2(CHART.pts[idx]*1000);

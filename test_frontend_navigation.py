@@ -62,7 +62,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('glassLine(fullLine,true)', self.frontend)
         self.assertIn('stroke="#F5F7F8"', self.frontend)
         self.assertIn('stroke="#FFFFFF"', self.frontend)
-        self.assertIn('glassLine(blueLine,false)', self.frontend)
+        self.assertIn('id="chartScrubClipRect"', self.frontend)
+        self.assertIn('id="chartScrubPath"', self.frontend)
+        self.assertIn('clip-path="url(#chartScrubClip)"', self.frontend)
         self.assertNotIn('id="chartStroke"', self.frontend)
 
     def test_chart_scrubbing_coalesces_pointer_updates_per_frame(self):
@@ -70,6 +72,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('scrubRaf=requestAnimationFrame(()=>{', self.frontend)
         self.assertIn('if(scrubRaf) return;', self.frontend)
         self.assertIn('cancelAnimationFrame(scrubRaf)', self.frontend)
+        self.assertIn('CHART.scrubClip.setAttribute("width"', self.frontend)
+        self.assertIn('CHART.scrubPath.getPointAtLength', self.frontend)
+        self.assertNotIn('.net .val.scrubbing{color:var(--blue)}', self.frontend)
 
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
