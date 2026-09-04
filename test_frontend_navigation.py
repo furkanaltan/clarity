@@ -48,6 +48,13 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn("function initSheetSwipeDismiss()", self.frontend)
         self.assertIn('if(sheet.classList.contains("on"))closeSheet()', self.frontend)
 
+    def test_home_asset_add_field_has_local_bottom_spacing(self):
+        self.assertIn(
+            '<div class="card home-assets-card" style="padding:2px 16px 18px" id="assets"></div>',
+            self.frontend,
+        )
+        self.assertIn('.account-add{width:100%;min-height:50px;', self.frontend)
+
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
