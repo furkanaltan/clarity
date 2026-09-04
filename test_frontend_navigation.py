@@ -113,6 +113,19 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertNotIn('id="gClose"', self.frontend)
         self.assertIn('#gsheet.goal-detail-sheet', self.frontend)
 
+    def test_goal_and_screenshot_actions_use_scoped_neutral_styles(self):
+        self.assertIn('#gsheet.goal-detail-sheet #gInfo', self.frontend)
+        self.assertIn('#gsheet.goal-detail-sheet .send', self.frontend)
+        self.assertIn('#gsheet.goal-detail-sheet #gDel', self.frontend)
+        self.assertIn('#sheet #scanOpen,#importsheet #scanPick', self.frontend)
+
+    def test_tabbar_waits_for_stable_initial_measurement_before_reveal(self):
+        self.assertIn('class="tabbar tabbar-layout-pending"', self.frontend)
+        self.assertIn('.tabbar.tabbar-layout-pending{visibility:hidden!important}', self.frontend)
+        self.assertIn('function queueInitialReveal(height)', self.frontend)
+        self.assertIn('bar.classList.remove("tabbar-layout-pending")', self.frontend)
+        self.assertIn('initialStableFrames>=2', self.frontend)
+
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)

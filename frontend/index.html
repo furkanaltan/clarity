@@ -1183,6 +1183,7 @@
     display:flex;background:transparent;border-top:0;padding:8px 8px calc(8px + var(--safe-bot));isolation:isolate;
     transform:translate3d(0,0,0);-webkit-transform:translate3d(0,0,0);
     backface-visibility:hidden;-webkit-backface-visibility:hidden;contain:layout paint}
+  .tabbar.tabbar-layout-pending{visibility:hidden!important}
   /* Die schwebende Kapsel ist nur eine Innenhaut. Aussenhoehe, Padding, Safe Area und der
      LEISTEN-ANKER bleiben exakt unveraendert, damit der behobene iOS-Sprung nicht zurueckkommt. */
   .tabbar:before{content:"";position:absolute;z-index:-1;left:8px;right:8px;top:5px;bottom:calc(5px + var(--safe-bot));
@@ -1823,6 +1824,17 @@
   #gsheet.goal-detail-sheet{background:radial-gradient(120% 86% at 0% 0%,rgba(218,231,239,.08),transparent 48%),linear-gradient(155deg,var(--bg2),var(--bg));border-top-color:rgba(213,224,232,.28);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 -18px 42px rgba(0,0,0,.3)}
   #gsheet.goal-detail-sheet h3{font-size:24px;letter-spacing:-.45px;margin:4px 0 8px}
   #gsheet.goal-detail-sheet .bar{background:rgba(255,255,255,.07);border:1px solid rgba(211,221,229,.14);box-shadow:inset 0 1px 3px rgba(0,0,0,.18)}
+  #gsheet.goal-detail-sheet #gInfo{display:grid;gap:8px;margin:2px 0 14px;padding:4px 0}
+  #gsheet.goal-detail-sheet #gInfo .drow{min-height:42px;padding:10px 12px;border:1px solid rgba(211,221,229,.12);border-radius:14px;background:rgba(255,255,255,.035)}
+  #gsheet.goal-detail-sheet #gInfo .drow b{font-variant-numeric:tabular-nums}
+  #gsheet.goal-detail-sheet .field{border-color:rgba(211,221,229,.18);background:rgba(255,255,255,.045);box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+  #gsheet.goal-detail-sheet .send{width:44px;height:44px;border:1px solid rgba(211,221,229,.2);border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.13),rgba(255,255,255,.045));box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 6px 16px rgba(0,0,0,.12)}
+  #gsheet.goal-detail-sheet .send svg{stroke:var(--ink)}
+  #gsheet.goal-detail-sheet .vd-btn{margin-top:12px;border-color:rgba(211,221,229,.18);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.085),rgba(255,255,255,.03));color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)}
+  #gsheet.goal-detail-sheet #gRateRemove{margin-top:8px;border-color:rgba(211,221,229,.14);background:transparent;color:var(--muted)}
+  #gsheet.goal-detail-sheet #gDel{margin-top:12px;border-color:rgba(244,94,94,.28);border-radius:15px;background:linear-gradient(145deg,rgba(244,94,94,.13),rgba(244,94,94,.035));color:#FF8D8D;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+  #gsheet.goal-detail-sheet .chip-q{border-color:rgba(211,221,229,.14)}
+  #sheet #scanOpen,#importsheet #scanPick{border-color:rgba(211,221,229,.18);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.085),rgba(255,255,255,.03));color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 6px 16px rgba(0,0,0,.08)}
   /* Der Coach ist eine vollwertige Unterhaltung, kein kurzes Eingabe-Sheet. Nur dieses Sheet
      fuellt den Bildschirm; Quick-Add, Ziele und Vertraege behalten ihre kompakte Hoehe. */
   .sheet.chat-full{top:0;bottom:auto;height:100vh;height:100dvh;max-height:100dvh;box-sizing:border-box;
@@ -2332,7 +2344,7 @@
   </section>
 
   <!-- ========== TAB BAR ========== -->
-  <nav class="tabbar">
+  <nav class="tabbar tabbar-layout-pending">
     <button class="tab on" data-tab="home">
       <svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/></svg>Übersicht</button>
     <button class="tab" data-tab="ziele">
@@ -11695,6 +11707,9 @@ function loadProfileState(){
   const KEY="rove-vh";
   const lage=()=> window.innerWidth>window.innerHeight ? "quer" : "hoch";
   let H=0;
+  let initialBarHeight=0;
+  let initialStableFrames=0;
+  let initialRevealQueued=false;
   function lies(){
     try{ const v=JSON.parse(localStorage.getItem(KEY)||"null"); const x=v&&v[lage()];
       if(typeof x==="number" && x>200 && x<4000) H=x; }catch(e){}
@@ -11712,6 +11727,20 @@ function loadProfileState(){
     if(!h) return;
     bar.style.top=(H-h)+"px";
     bar.style.bottom="auto";     // ab hier haengt nichts mehr an der wackligen Unterkante
+    if(bar.classList.contains("tabbar-layout-pending")) queueInitialReveal(h);
+  }
+  function queueInitialReveal(height){
+    if(!height || initialRevealQueued) return;
+    initialRevealQueued=true;
+    requestAnimationFrame(()=>{
+      initialRevealQueued=false;
+      const measured=bar.offsetHeight;
+      if(measured!==height){ initialBarHeight=measured; initialStableFrames=0; }
+      else if(initialBarHeight===measured){ initialStableFrames++; }
+      else { initialBarHeight=measured; initialStableFrames=1; }
+      if(initialStableFrames>=2){ bar.classList.remove("tabbar-layout-pending"); return; }
+      queueInitialReveal(measured);
+    });
   }
   function pruefe(){
     // Die Tastatur macht innerHeight nur KLEINER, nie grösser. Das Maximum ist damit die echte
@@ -11722,7 +11751,7 @@ function loadProfileState(){
     // ein bisschen runter aus dem Bildschirm"). Sichtbarkeit darf nachlaufen, Position nicht.
     bar.style.visibility = (H && window.innerHeight < H-120) ? "hidden" : "";
   }
-  lies(); setzePosition(); pruefe();
+  lies(); setzePosition(); pruefe(); queueInitialReveal(bar.offsetHeight);
   // Die Leistenhöhe ändert sich einmal beim Start, wenn die Safe-Area aufgelöst wird (71→105).
   if(window.ResizeObserver) new ResizeObserver(setzePosition).observe(bar);
   window.addEventListener("resize", pruefe);
