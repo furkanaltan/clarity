@@ -11903,7 +11903,10 @@ async function toggleTrackingReminder(){
   if(APP_MODE==="bridge"){
     const datenDa = Promise.race([
       bootstrapAuthenticatedApp().then(state => {
-        if(state==="ready") return refreshAppDataFromServer();
+        // bootstrapAuthenticatedApp() hat den vollständigen Live-State bereits geladen und
+        // gerendert. Ein zweiter Refresh vor dem ersten stabilen Paint lässt Karten und Tabbar
+        // kurz neu messen und verursacht beim ersten PIN-Unlock den sichtbaren Höhensprung.
+        if(state==="ready") return true;
         if(state==="login"){
           showAppConnect();
           const onboard=document.getElementById("onboard");

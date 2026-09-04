@@ -54,6 +54,12 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('document.getElementById("app")?.removeAttribute("hidden");', resume)
         self.assertNotIn("await refreshAppDataFromServer();", resume)
 
+    def test_initial_boot_does_not_refresh_after_bootstrap_render(self):
+        boot = self.frontend.split("// Splash nach der Animation", 1)[1].split("// Autosave:", 1)[0]
+        self.assertIn('bootstrapAuthenticatedApp().then(state => {', boot)
+        self.assertIn('if(state==="ready") return true;', boot)
+        self.assertNotIn('if(state==="ready") return refreshAppDataFromServer();', boot)
+
     def test_home_asset_add_field_has_local_bottom_spacing(self):
         self.assertIn(
             '<div class="card home-assets-card" style="padding:2px 16px 18px" id="assets"></div>',
