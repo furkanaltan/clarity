@@ -762,7 +762,7 @@
   .delta{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px;font-variant-numeric:tabular-nums}
 
   /* Chart */
-  .chart-wrap{margin:20px 0 6px;position:relative}
+  .chart-wrap{margin:20px 0 6px;position:relative;touch-action:none}
   .chart{width:100%;height:150px;display:block;touch-action:none;cursor:crosshair}
   /* Scrubbing — Kurve mit dem Finger abfahren (Trade-Republic-Stil) */
   .scrub-dot{position:absolute;width:13px;height:13px;border-radius:50%;background:#F5F7F8;border:2px solid var(--bg);
@@ -1820,7 +1820,9 @@
   /* The goal sheet contains several optional actions. Keep it below the iOS status area and
      scroll its contents instead of letting its header disappear above the viewport. */
   #gsheet{max-height:calc(100dvh - var(--safe-top) - 8px);overflow-y:auto;overscroll-behavior:contain}
-  #gsheet .sheet-dismiss{position:sticky;top:0;float:right;z-index:1;background:var(--bg2)}
+  #gsheet.goal-detail-sheet{background:radial-gradient(120% 86% at 0% 0%,rgba(218,231,239,.08),transparent 48%),linear-gradient(155deg,var(--bg2),var(--bg));border-top-color:rgba(213,224,232,.28);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 -18px 42px rgba(0,0,0,.3)}
+  #gsheet.goal-detail-sheet h3{font-size:24px;letter-spacing:-.45px;margin:4px 0 8px}
+  #gsheet.goal-detail-sheet .bar{background:rgba(255,255,255,.07);border:1px solid rgba(211,221,229,.14);box-shadow:inset 0 1px 3px rgba(0,0,0,.18)}
   /* Der Coach ist eine vollwertige Unterhaltung, kein kurzes Eingabe-Sheet. Nur dieses Sheet
      fuellt den Bildschirm; Quick-Add, Ziele und Vertraege behalten ihre kompakte Hoehe. */
   .sheet.chat-full{top:0;bottom:auto;height:100vh;height:100dvh;max-height:100dvh;box-sizing:border-box;
@@ -1919,7 +1921,7 @@
   .quick-error{display:none;color:var(--red);font-size:13px;font-weight:700;line-height:1.35;margin:10px 4px 0}
   .quick-error.on{display:block}
   .scan-launch{width:100%;margin-top:13px;min-height:46px;display:flex;align-items:center;justify-content:center;gap:9px;
-    border:1px solid rgba(42,171,238,.28);border-radius:15px;background:var(--blue-soft);color:var(--blue);
+    border:1px solid var(--line2);border-radius:15px;background:var(--card);color:var(--ink);
     font:inherit;font-size:14px;font-weight:750;cursor:pointer}
   .scan-launch svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
   .scan-state{padding:18px 4px;color:var(--muted);font-size:14px;line-height:1.5;text-align:center}
@@ -2373,9 +2375,8 @@
     </div>
   </div>
   <!-- Ziel-Sheet: Geld zuweisen -->
-  <div class="sheet" id="gsheet">
+  <div class="sheet goal-detail-sheet" id="gsheet">
     <div class="grab"></div>
-    <button class="sheet-dismiss" id="gClose" type="button" aria-label="Ziel schließen">×</button>
     <h3 id="gTitle">Ziel</h3>
     <div class="hint" id="gHint"></div>
     <div class="bar" style="margin-bottom:16px"><span id="gBar" style="width:0%"></span></div>
@@ -3120,7 +3121,7 @@ function saveProfile(){
     if(document.getElementById("tab-home")?.classList.contains("active")
        && !document.querySelector(".chart-wrap.scrubbing")
        && !document.getElementById("networth")?.dataset.lock){
-      drawChart(CHART.range||"1W");
+      drawChart(CHART.range||"1W",null,false);
     }
     try{
       localStorage.setItem(PROFILE_KEY, JSON.stringify({
@@ -3749,7 +3750,7 @@ function catmullPath(xy, a, b){
   }
   return d;
 }
-function drawChart(range, scrubIdx){
+function drawChart(range, scrubIdx, animate=true){
   const pts = DATA.series[range]||DATA.series["1J"];
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
@@ -3778,7 +3779,7 @@ function drawChart(range, scrubIdx){
       + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"/><path d="${fullLine}" fill="none" stroke="#FFFFFF" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round" opacity=".62"/></g>`;
   } else {
     body = `<g>${grid}</g>`
-      + glassLine(fullLine,true)
+      + glassLine(fullLine,animate)
       + `<circle class="endcap chart-endcap" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6.5" fill="none" stroke="#F5F7F8" stroke-width="1" opacity=".24"/>`
       + `<circle class="endcap chart-endcap" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.2" fill="#F5F7F8" stroke="#07131D" stroke-width="1.35"/>`;
   }
@@ -3842,8 +3843,15 @@ drawChart("1W");
       if(scrubbing && x!=null) renderScrub(x);
     });
   }
-  function start(e){ scrubbing=true; scrubEl.classList.add("on"); wrap.classList.add("scrubbing"); try{chartEl.setPointerCapture(e.pointerId);}catch(_){} scrubAt(e.clientX); }
-  function move(e){ if(scrubbing) scrubAt(e.clientX); }
+  function start(e){
+    const chartRect=wrap.getBoundingClientRect();
+    if(e.clientY<chartRect.top || e.clientY>chartRect.bottom) return;
+    e.preventDefault();
+    scrubbing=true; scrubEl.classList.add("on"); wrap.classList.add("scrubbing");
+    try{wrap.setPointerCapture(e.pointerId);}catch(_){}
+    scrubAt(e.clientX);
+  }
+  function move(e){ if(scrubbing){ e.preventDefault(); scrubAt(e.clientX); } }
   function end(){
     if(!scrubbing) return; scrubbing=false;
     if(scrubRaf){ cancelAnimationFrame(scrubRaf); scrubRaf=0; }
@@ -3853,12 +3861,12 @@ drawChart("1W");
     nwEl.textContent=eur2(DATA.netWorth);
     deltaEl.classList.remove("scrub-date");
     if(chip) chip.style.opacity="";
-    drawChart(CHART.range);                       // Delta-Zeile wiederherstellen
+    drawChart(CHART.range,null,false);             // Delta-Zeile wiederherstellen, ohne Repaint-Zucken
   }
-  chartEl.addEventListener("pointerdown",start);
-  chartEl.addEventListener("pointermove",move);
-  chartEl.addEventListener("pointerup",end);
-  chartEl.addEventListener("pointercancel",end);
+  wrap.addEventListener("pointerdown",start);
+  wrap.addEventListener("pointermove",move);
+  wrap.addEventListener("pointerup",end);
+  wrap.addEventListener("pointercancel",end);
 })();
 document.getElementById("ranges").addEventListener("click",e=>{
   const b=e.target.closest(".range"); if(!b)return;
@@ -6850,11 +6858,11 @@ function closeSheet(options={}){
 // Swipe-to-dismiss bleibt bewusst auf unkritische Sheets begrenzt. Formulare mit eigenen
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
-  "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet",
+  "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet","gsheet",
   "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
-  "importsheet","gsheet","bsheet","ngsheet","abosheet","immosheet",
+  "importsheet","bsheet","ngsheet","abosheet","immosheet",
   "contractsheet","categorysheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","etfplansheet",
   "markettrackingsheet","savingssheet"
@@ -7377,7 +7385,7 @@ async function refreshAppDataFromServer(){
     recalcNetWorth();mentorLine();applyHomeEmpty();applyProfileIdentity();
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
-    if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1W");
+    if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1W",null,false);
     updateChangeBadge(CHART.range||"1W");
     maybeOpenMonthlyPlanOnMonthStart();
     return true;
@@ -7695,7 +7703,6 @@ document.getElementById("goals-all").addEventListener("click",e=>{
   const c=e.target.closest("[data-goal]"); if(c) openGoalSheet(+c.dataset.goal);
 });
 document.getElementById("gSend").addEventListener("click",assignMoney);
-document.getElementById("gClose").addEventListener("click",closeSheet);
 document.getElementById("gRateSave").addEventListener("click",async()=>{
   const raw=document.getElementById("gRate").value.trim();
   const rate=parseFloat(raw.replace(/\.(\d{3})\b/g,"$1").replace(",","."));
@@ -7830,8 +7837,7 @@ document.getElementById("scanOpen").addEventListener("click",openScreenshotImpor
 document.getElementById("scanPick").addEventListener("click",()=>scanFile.click());
 scanFile.addEventListener("change",()=>{
   const file=scanFile.files?.[0];
-  if(file) analyzeScreenshot(file);
-  scanFile.value="";
+  if(file) analyzeScreenshot(file).finally(()=>{ scanFile.value=""; });
 });
 scanBody.addEventListener("input",event=>{
   const card=event.target.closest("[data-scan-row]"); if(!card) return;
@@ -11216,7 +11222,7 @@ async function loadBridgeState(){
     DATA.tx.forEach(d=>d.items.forEach(i=>{ if(i.id==null) i.id=TXID++; }));
 
     renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
-    drawChart(CHART.range||"1W"); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
+    drawChart(CHART.range||"1W",null,false); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
     updateChangeBadge(CHART.range||"1W");
     if(nw) delete nw.dataset.lock;
     recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
@@ -11658,7 +11664,7 @@ function loadProfileState(){
   DATA.netWorth = DATA.assets.reduce((s,a)=>s+(a.value||0),0);
   seedNetHistoryIfEmpty(); syncNetHistory(); rebuildSeriesFromHistory();
   renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
-  drawChart(CHART.range||"1W"); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
+  drawChart(CHART.range||"1W",null,false); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
   updateChangeBadge(CHART.range||"1W");
   if(nw) delete nw.dataset.lock;
   recalcNetWorth();

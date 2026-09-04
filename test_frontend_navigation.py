@@ -65,7 +65,8 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('@keyframes chartLineDraw', self.frontend)
         self.assertIn('.chart .chart-line-main{stroke-dasharray:1;', self.frontend)
         self.assertIn('const glassLine=(d,animate)=>', self.frontend)
-        self.assertIn('glassLine(fullLine,true)', self.frontend)
+        self.assertIn('glassLine(fullLine,animate)', self.frontend)
+        self.assertIn('drawChart(CHART.range||"1W",null,false)', self.frontend)
         self.assertIn('stroke="#F5F7F8"', self.frontend)
         self.assertIn('stroke="#FFFFFF"', self.frontend)
         self.assertIn('id="chartScrubClipRect"', self.frontend)
@@ -80,7 +81,24 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('cancelAnimationFrame(scrubRaf)', self.frontend)
         self.assertIn('CHART.scrubClip.setAttribute("width"', self.frontend)
         self.assertIn('CHART.scrubPath.getPointAtLength', self.frontend)
+        self.assertIn('wrap.addEventListener("pointerdown",start)', self.frontend)
+        self.assertIn('const chartRect=wrap.getBoundingClientRect();', self.frontend)
+        self.assertIn('if(e.clientY<chartRect.top || e.clientY>chartRect.bottom) return;', self.frontend)
+        self.assertIn('try{wrap.setPointerCapture(e.pointerId);}catch(_){}', self.frontend)
+        self.assertIn('e.preventDefault();', self.frontend)
         self.assertNotIn('.net .val.scrubbing{color:var(--blue)}', self.frontend)
+
+    def test_bank_screenshot_import_keeps_file_until_analysis_finishes(self):
+        self.assertIn('apiFetch("/v1/import/screenshot"', self.frontend)
+        self.assertIn('analyzeScreenshot(file).finally(()=>{ scanFile.value=""; });', self.frontend)
+        self.assertIn('class="scan-launch" id="scanOpen"', self.frontend)
+        self.assertIn('class="scan-launch" id="scanPick"', self.frontend)
+
+    def test_goal_detail_uses_shared_swipe_sheet_and_neutral_header(self):
+        self.assertIn('class="sheet goal-detail-sheet" id="gsheet"', self.frontend)
+        self.assertIn('"gsheet"', self.frontend.split('const SWIPE_DISMISS_SHEET_IDS=', 1)[1].split(']);', 1)[0])
+        self.assertNotIn('id="gClose"', self.frontend)
+        self.assertIn('#gsheet.goal-detail-sheet', self.frontend)
 
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
