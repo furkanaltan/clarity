@@ -3799,14 +3799,14 @@ drawChart("1W");
   const dot=scrubEl.querySelector(".scrub-dot"), wrap=document.querySelector(".chart-wrap");
   const nwEl=document.getElementById("networth"), deltaEl=document.getElementById("chartDelta");
   const chip=document.querySelector("#tab-home .net .chip");
-  let scrubbing=false;
-  function scrubAt(clientX){
+  let scrubbing=false, scrubRaf=0, pendingClientX=null;
+  function renderScrub(clientX){
     if(!CHART.pts||!CHART.pts.length) return;
     const rect=chartEl.getBoundingClientRect(), W=360, padX=14, n=CHART.pts.length;
     const plotL=rect.left+(padX/W)*rect.width, plotR=rect.left+((W-padX)/W)*rect.width;
     let frac=(clientX-plotL)/(plotR-plotL); frac=Math.max(0,Math.min(1,frac));
     const idx=Math.round(frac*(n-1));
-    drawChart(CHART.range, idx);                      // blau bis zum Finger, Rest grau
+    drawChart(CHART.range, idx);                      // weiss bis zum Finger, Rest grau
     const px=(CHART.xy[idx][0]/W)*rect.width, py=(CHART.xy[idx][1]/150)*rect.height;
     dot.style.left=px+"px"; dot.style.top=py+"px";   // runder Knopf sitzt am Übergang
     nwEl.dataset.lock="1";                       // Zahlen-Ticker nicht dazwischenfunken
@@ -3815,10 +3815,23 @@ drawChart("1W");
     deltaEl.textContent=CHART.dates[idx]; deltaEl.classList.add("scrub-date");
     if(chip) chip.style.opacity="0";             // Monats-Delta passt nicht zum historischen Wert
   }
+  // Finger-Events koennen schneller eintreffen als der SVG-Neuaufbau. Ein Frame-Puffer verhindert,
+  // dass bei jedem Event der komplette Chart neu gezeichnet wird und der Scrub dadurch stockt.
+  function scrubAt(clientX){
+    pendingClientX=clientX;
+    if(scrubRaf) return;
+    scrubRaf=requestAnimationFrame(()=>{
+      scrubRaf=0;
+      const x=pendingClientX; pendingClientX=null;
+      if(scrubbing && x!=null) renderScrub(x);
+    });
+  }
   function start(e){ scrubbing=true; scrubEl.classList.add("on"); wrap.classList.add("scrubbing"); try{chartEl.setPointerCapture(e.pointerId);}catch(_){} scrubAt(e.clientX); }
   function move(e){ if(scrubbing) scrubAt(e.clientX); }
   function end(){
     if(!scrubbing) return; scrubbing=false;
+    if(scrubRaf){ cancelAnimationFrame(scrubRaf); scrubRaf=0; }
+    pendingClientX=null;
     scrubEl.classList.remove("on"); wrap.classList.remove("scrubbing");
     delete nwEl.dataset.lock; nwEl.classList.remove("scrubbing");
     nwEl.textContent=eur2(DATA.netWorth);

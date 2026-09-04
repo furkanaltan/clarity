@@ -65,6 +65,12 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('glassLine(blueLine,false)', self.frontend)
         self.assertNotIn('id="chartStroke"', self.frontend)
 
+    def test_chart_scrubbing_coalesces_pointer_updates_per_frame(self):
+        self.assertIn('let scrubbing=false, scrubRaf=0, pendingClientX=null;', self.frontend)
+        self.assertIn('scrubRaf=requestAnimationFrame(()=>{', self.frontend)
+        self.assertIn('if(scrubRaf) return;', self.frontend)
+        self.assertIn('cancelAnimationFrame(scrubRaf)', self.frontend)
+
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
