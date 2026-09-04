@@ -48,6 +48,12 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn("function initSheetSwipeDismiss()", self.frontend)
         self.assertIn('if(sheet.classList.contains("on"))closeSheet()', self.frontend)
 
+    def test_pin_unlock_reveals_after_single_live_state_render(self):
+        resume = self.frontend.split("async function resumeAfterPin(){", 1)[1].split("async function submitPinSetup", 1)[0]
+        self.assertIn("const ok=await loadBridgeState();", resume)
+        self.assertIn('document.getElementById("app")?.removeAttribute("hidden");', resume)
+        self.assertNotIn("await refreshAppDataFromServer();", resume)
+
     def test_home_asset_add_field_has_local_bottom_spacing(self):
         self.assertIn(
             '<div class="card home-assets-card" style="padding:2px 16px 18px" id="assets"></div>',

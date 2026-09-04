@@ -11005,7 +11005,8 @@ async function resumeAfterPin(){
   const ok=await loadBridgeState();
   if(ok){
     document.getElementById("app")?.removeAttribute("hidden");
-    await refreshAppDataFromServer();
+    // loadBridgeState() hat den vollstaendigen Live-State bereits gerendert. Ein zweiter
+    // Refresh nach dem Reveal wuerde die Home-Hoehen nach dem ersten Paint nochmals aendern.
     return true;
   }
   showAppConnect();
