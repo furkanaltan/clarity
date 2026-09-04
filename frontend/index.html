@@ -7764,7 +7764,11 @@ function openScreenshotImport(){
     showToast("Screenshot-Import ist nur im verbundenen App-Konto verfügbar");
     return;
   }
-  closeSheet();
+  // Beim Wechsel aus dem Quick-Add-Sheet darf kein history.back() laufen: Der
+  // spaetere popstate wuerde das direkt danach geoeffnete Import-Sheet schliessen.
+  closeAllSheetsSoft();
+  dismissKeyboard();
+  setQuickError("");
   resetScreenshotImport();
   openOnly("importsheet");
 }

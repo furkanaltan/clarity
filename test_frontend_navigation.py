@@ -102,6 +102,10 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('screenshot_invalid_response:', self.frontend)
         self.assertIn('screenshot_no_transactions:', self.frontend)
         self.assertIn('data.analysisStatus==="no_transactions"', self.frontend)
+        opener = self.frontend.split("function openScreenshotImport(){", 1)[1].split("function scanSetState", 1)[0]
+        self.assertIn('closeAllSheetsSoft();', opener)
+        self.assertIn('openOnly("importsheet");', opener)
+        self.assertNotIn('closeSheet();', opener)
 
     def test_goal_detail_uses_shared_swipe_sheet_and_neutral_header(self):
         self.assertIn('class="sheet goal-detail-sheet" id="gsheet"', self.frontend)
