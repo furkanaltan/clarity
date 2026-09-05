@@ -1,6 +1,8 @@
 import sqlite3
+import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -119,6 +121,80 @@ class RepairReportMonthTests(unittest.TestCase):
             "SELECT status FROM report_links WHERE token = 'old-1'"
         ).fetchone()[0]
         self.assertEqual(status, "active")
+
+    def test_failed_web_registration_removes_new_public_directory(self):
+        template = Path(self.tmp.name) / "report.html"
+        public_dir = Path(self.tmp.name) / "public"
+        template.write_text("<html></html>", encoding="utf-8")
+
+        class FailingConnection:
+            def __init__(self, connection, mode):
+                self.connection = connection
+                self.mode = mode
+
+            def __enter__(self):
+                self.connection.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.connection.__exit__(*args)
+
+            def execute(self, sql, params=()):
+                if self.mode == "insert" and "INSERT INTO report_links" in sql:
+                    raise sqlite3.IntegrityError("test_insert_failure")
+                return self.connection.execute(sql, params)
+
+            def commit(self):
+                if self.mode == "commit":
+                    raise sqlite3.OperationalError("test_commit_failure")
+                return self.connection.commit()
+
+        real_connect = sqlite3.connect
+
+        def connect(path, *args, **kwargs):
+            connection = real_connect(path, *args, **kwargs)
+            return FailingConnection(connection, connect.mode)
+
+        for mode in ("insert", "commit"):
+            connect.mode = mode
+            with patch.object(web_renderer, "DB_PATH", self.db), \
+                 patch.object(web_renderer, "TEMPLATE_PATH", template), \
+                 patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir), \
+                 patch.object(web_renderer, "ensure_report_links_table"), \
+                 patch.object(web_renderer.sqlite3, "connect", side_effect=connect), \
+                 patch.object(web_renderer, "render_template", return_value="<html>new</html>"):
+                with self.assertRaises((sqlite3.IntegrityError, sqlite3.OperationalError)):
+                    web_renderer.build_web_report(1, "2026-08", {"meta": {}})
+            self.assertEqual(list(public_dir.iterdir()) if public_dir.exists() else [], [])
+
+    def test_orphan_scan_keeps_fresh_and_referenced_directories(self):
+        public_dir = Path(self.tmp.name) / "public"
+        fresh_dir = public_dir / "fresh"; fresh_dir.mkdir(parents=True)
+        old_dir = public_dir / "old"; old_dir.mkdir()
+        referenced_dir = public_dir / "referenced"; referenced_dir.mkdir()
+        for report_dir in (fresh_dir, old_dir, referenced_dir):
+            (report_dir / "index.html").write_text("report", encoding="utf-8")
+        old_timestamp = time.time() - (web_renderer.REPORT_ORPHAN_GRACE_DAYS + 1) * 86400
+        os.utime(old_dir, (old_timestamp, old_timestamp))
+        self.conn.execute(
+            "UPDATE report_links SET html_path = ? WHERE token = 'old-1'",
+            (str(referenced_dir / "index.html"),),
+        )
+        self.conn.commit()
+        with patch.object(web_renderer, "DB_PATH", self.db), patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir):
+            self.assertEqual(web_renderer.cleanup_orphan_reports(), 1)
+        self.assertTrue(fresh_dir.exists())
+        self.assertFalse(old_dir.exists())
+        self.assertTrue(referenced_dir.exists())
+
+    def test_new_report_cleanup_never_removes_directory_outside_root(self):
+        public_dir = Path(self.tmp.name) / "public"
+        outside_dir = Path(self.tmp.name) / "outside"
+        outside_dir.mkdir(parents=True)
+        (outside_dir / "index.html").write_text("keep", encoding="utf-8")
+        with patch.object(web_renderer, "PUBLIC_REPORT_DIR", public_dir):
+            web_renderer.remove_unregistered_report_dir(outside_dir)
+        self.assertTrue(outside_dir.exists())
 
     def test_cleanup_keeps_valid_active_report_and_removes_expired_active_report(self):
         public_dir = Path(self.tmp.name) / "public"

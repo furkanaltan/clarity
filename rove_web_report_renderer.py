@@ -34,6 +34,7 @@ PUBLIC_REPORT_DIR = Path(
 )
 PUBLIC_REPORT_BASE_URL = os.getenv("ROVE_REPORT_PUBLIC_BASE_URL", "").rstrip("/")
 REPORT_LINK_TTL_DAYS = int(os.getenv("ROVE_REPORT_LINK_TTL_DAYS", "30"))
+REPORT_ORPHAN_GRACE_DAYS = max(REPORT_LINK_TTL_DAYS, 30)
 logger = logging.getLogger(__name__)
 
 
@@ -1737,6 +1738,20 @@ def render_template(template: str, data: dict) -> str:
     return jinja2.Template(html_doc).render(**context)
 
 
+def remove_unregistered_report_dir(output_dir: Path) -> None:
+    """Remove only the newly created direct child of the configured report root."""
+    public_dir = PUBLIC_REPORT_DIR.resolve(strict=False)
+    report_dir = output_dir.resolve(strict=False)
+    if report_dir.parent != public_dir:
+        logger.warning("Webreport rollback deferred: unexpected generated-report path")
+        return
+    try:
+        if report_dir.exists():
+            shutil.rmtree(report_dir)
+    except OSError as exc:
+        logger.warning("Webreport rollback deferred after %s", type(exc).__name__)
+
+
 def build_web_report(user_id: int, report_month: str, report_data: dict | None = None) -> dict:
     ensure_report_links_table()
     if not TEMPLATE_PATH.exists():
@@ -1746,46 +1761,53 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
     token = secrets.token_urlsafe(18)
     expires_at = datetime.now() + timedelta(days=REPORT_LINK_TTL_DAYS)
     output_dir = PUBLIC_REPORT_DIR / token
-    output_dir.mkdir(parents=True, exist_ok=True)
-    # Nginx needs traverse permission for the opaque, public report URL.
-    output_dir.chmod(0o755)
-    output_path = output_dir / "index.html"
+    output_created = False
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_created = True
+        # Nginx needs traverse permission for the opaque, public report URL.
+        output_dir.chmod(0o755)
+        output_path = output_dir / "index.html"
 
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
-    doc = render_template(template, report_data)
-    doc = inject_expiry_meta(doc, expires_at)
-    output_path.write_text(doc, encoding="utf-8")
-    output_path.chmod(0o644)
+        template = TEMPLATE_PATH.read_text(encoding="utf-8")
+        doc = render_template(template, report_data)
+        doc = inject_expiry_meta(doc, expires_at)
+        output_path.write_text(doc, encoding="utf-8")
+        output_path.chmod(0o644)
 
-    public_url = f"{PUBLIC_REPORT_BASE_URL}/{token}/" if PUBLIC_REPORT_BASE_URL else ""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """UPDATE report_links
-                  SET status = 'superseded'
-                WHERE user_id = ? AND report_month = ? AND status = 'active'""",
-            (user_id, report_month),
-        )
-        conn.execute(
-            """INSERT INTO report_links
-               (token, user_id, report_month, html_path, public_url, expires_at, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'active')""",
-            (
-                token,
-                user_id,
-                report_month,
-                str(output_path),
-                public_url,
-                expires_at.strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
-        conn.commit()
+        public_url = f"{PUBLIC_REPORT_BASE_URL}/{token}/" if PUBLIC_REPORT_BASE_URL else ""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                """UPDATE report_links
+                      SET status = 'superseded'
+                    WHERE user_id = ? AND report_month = ? AND status = 'active'""",
+                (user_id, report_month),
+            )
+            conn.execute(
+                """INSERT INTO report_links
+                   (token, user_id, report_month, html_path, public_url, expires_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                (
+                    token,
+                    user_id,
+                    report_month,
+                    str(output_path),
+                    public_url,
+                    expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            conn.commit()
 
-    return {
-        "token": token,
-        "path": output_path,
-        "url": public_url,
-        "expires_at": expires_at,
-    }
+        return {
+            "token": token,
+            "path": output_path,
+            "url": public_url,
+            "expires_at": expires_at,
+        }
+    except Exception:
+        if output_created:
+            remove_unregistered_report_dir(output_dir)
+        raise
 
 
 def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_data: dict | None = None) -> Path:
@@ -1846,6 +1868,41 @@ def cleanup_expired_reports(now: datetime | None = None) -> int:
             )
             removed += 1
         conn.commit()
+    return removed + cleanup_orphan_reports(now)
+
+
+def cleanup_orphan_reports(now: datetime | None = None) -> int:
+    """Remove only old, direct-child report directories with no DB registration."""
+    ensure_report_links_table()
+    now = now or datetime.now()
+    cutoff = (now - timedelta(days=REPORT_ORPHAN_GRACE_DAYS)).timestamp()
+    public_dir = PUBLIC_REPORT_DIR.resolve(strict=False)
+    with sqlite3.connect(DB_PATH) as conn:
+        referenced_dirs = {
+            Path(row[0]).resolve(strict=False).parent
+            for row in conn.execute("SELECT html_path FROM report_links").fetchall()
+        }
+    removed = 0
+    try:
+        candidates = list(public_dir.iterdir())
+    except OSError as exc:
+        logger.warning("Webreport orphan scan deferred after %s", type(exc).__name__)
+        return 0
+    for report_dir in candidates:
+        if (
+            not report_dir.is_dir()
+            or report_dir.parent != public_dir
+            or report_dir in referenced_dirs
+            or not (report_dir / "index.html").is_file()
+        ):
+            continue
+        try:
+            if report_dir.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(report_dir)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Webreport orphan cleanup deferred after %s", type(exc).__name__)
     return removed
 
 
