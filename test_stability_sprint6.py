@@ -102,6 +102,32 @@ class StabilitySprint6ContractTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id=1 AND contract_id=?", (contract_id,)).fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT fixed_costs FROM users WHERE user_id=1").fetchone()[0], 900)
 
+    def test_contract_creation_normalizes_an_unsafe_tint_without_changing_the_name(self):
+        name = '<script>alert("x")</script>'
+        created = self.request("user-one-session", {
+            "action": "create", "name": name, "category": "Abos", "amount": 12,
+            "tint": 'url("https://attacker.invalid/color")',
+        })
+        self.assertEqual(created.status_code, 200, created.get_json())
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                "SELECT name, tint FROM app_contracts WHERE user_id=1 AND name=?", (name,)
+            ).fetchone()
+            self.assertEqual(row["name"], name)
+            self.assertEqual(row["tint"], "#8FA8BC")
+
+    def test_contract_creation_keeps_a_supported_hex_tint(self):
+        created = self.request("user-one-session", {
+            "action": "create", "name": "Sicheres Abo", "category": "Abos", "amount": 12,
+            "tint": "#d8b66a",
+        })
+        self.assertEqual(created.status_code, 200, created.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(
+                conn.execute("SELECT tint FROM app_contracts WHERE user_id=1 AND name='Sicheres Abo'").fetchone()[0],
+                "#D8B66A",
+            )
+
     def test_exact_native_duplicate_is_not_copied_a_second_time(self):
         with closing(self.connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")

@@ -29,6 +29,14 @@ class FrontendDetailIconTests(unittest.TestCase):
             self.frontend,
         )
 
+    def test_contract_views_escape_names_and_restrict_tints(self):
+        self.assertIn("function safeContractTint(value)", self.frontend)
+        self.assertIn("const name=escapeAccountHtml(v.n), date=escapeAccountHtml(v.date);", self.frontend)
+        self.assertIn('data-vn="${name}"', self.frontend)
+        self.assertIn("const contractName=escapeAccountHtml(v.n), category=escapeAccountHtml(group.cat);", self.frontend)
+        self.assertIn('data-vn="${contractName}"', self.frontend)
+        self.assertIn("const tint = safeContractTint(g.items[0].tint);", self.frontend)
+
     def test_expense_detail_neutralizes_only_generic_icons(self):
         self.assertIn("function transactionDetailLogo(t)", self.frontend)
         self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)

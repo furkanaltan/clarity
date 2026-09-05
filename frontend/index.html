@@ -3399,14 +3399,14 @@ function renderActivity(){
     const rest = cov ? cov.rest : null;
     const tone = cov && cov.sure ? coverageTone(cov.rest) : "ok";
     const near = g.days<=2;   // ab hier ist die Zeit die Aussage, nicht das Datum (Furkans T-2-Erinnerung)
-    const tint = g.items[0].tint||'#8FA8BC';
+    const tint = safeContractTint(g.items[0].tint);
     const sumTint = "#2AABEE";   // Sammelzeile spricht für Rov.E, nicht für den ersten Vertrag der Liste
     // Ein einzelner Posten braucht keine Sammelzeile ("1 Abbuchung" wäre albern) — alte Zeile behalten.
     if(g.items.length===1){
-      const v=g.items[0];
-      return `<div class="act" data-vn="${v.n}" style="cursor:pointer">
+      const v=g.items[0], name=escapeAccountHtml(v.n);
+      return `<div class="act" data-vn="${name}" style="cursor:pointer">
         <div class="ai" style="background:${tint}22;color:${tint}">${ic(v.icon)}</div>
-        <div class="atx"><b>${v.n}</b> wird ${untilLabel(g.days)} abgebucht${
+        <div class="atx"><b>${name}</b> wird ${untilLabel(g.days)} abgebucht${
           rest!==null && near ? `<span class="asub ${tone}">${restNote(rest,tone)}</span>` : ""}</div>
         <div class="atime">${eur2(v.a)}</div>
       </div>`;
@@ -3416,11 +3416,13 @@ function renderActivity(){
       : `<b>Fixkosten</b> am ${g.date.toLocaleDateString("de-DE",{day:"numeric",month:"long"})}`;
     const sub = `${g.items.length} Abbuchungen${
       rest!==null ? ` · ${restNote(rest,tone)}` : (near ? "" : ` · ${untilLabel(g.days)}`)}`;
-    const kids = g.items.map(v=>`
-      <div class="act act-kid" data-vn="${v.n}" style="cursor:pointer" hidden>
-        <div class="atx">${v.n}</div>
+    const kids = g.items.map(v=>{
+      const name=escapeAccountHtml(v.n);
+      return `
+      <div class="act act-kid" data-vn="${name}" style="cursor:pointer" hidden>
+        <div class="atx">${name}</div>
         <div class="atime">${eur2(v.a)}</div>
-      </div>`).join("");
+      </div>`;}).join("");
     return `<div class="act act-sum" data-fixday="${g.days}">
         <div class="ai" style="background:${sumTint}22;color:${sumTint}">${ic("doc")}</div>
         <div class="atx">${title}<span class="asub ${tone}">${sub}</span></div>
@@ -7922,10 +7924,15 @@ scanConfirm.addEventListener("click",async()=>{
 // wirken graue Kacheln wie ausgeschaltet. Bestehende Profile/Bot-Stände haben das Grau bereits
 // gespeichert, deshalb wird hier beim Rendern nachgefärbt statt nur im Katalog.
 const CONTRACT_TINT_FIX = {house:"#F4F1EA", shield:"#2AABEE"};
+function safeContractTint(value){
+  const tint=String(value??"").trim();
+  return /^#[0-9a-f]{6}$/i.test(tint) ? tint.toUpperCase() : "#8FA8BC";
+}
 function fixContractTints(){
   (DATA.vertraege||[]).forEach(g=>(g.items||[]).forEach(v=>{
     if(!v.tint || v.tint==="#5B6675" || v.tint==="#8FA8BC")
       v.tint = CONTRACT_TINT_FIX[v.icon] || "#BD77B7";
+    else v.tint=safeContractTint(v.tint);
   }));
 }
 function renderVertraege(){
@@ -7942,24 +7949,28 @@ function renderVertraege(){
     });
     return;
   }
-  document.getElementById("vertraege-list").innerHTML = DATA.vertraege.map(c=>`
-    <div class="cat-lbl">${c.cat}</div>
+  document.getElementById("vertraege-list").innerHTML = DATA.vertraege.map(c=>{
+    const category=escapeAccountHtml(c.cat);
+    return `
+    <div class="cat-lbl">${category}</div>
     <div class="card" style="padding:4px 16px">
       ${c.items.map(v=>{
         // Schere nicht mehr als eigener Button rechts (verschob die Betrags-Spalte) — kündbar
         // zeigt jetzt ein Mini-Scheren-Symbol IM Badge, die Aktion liegt im Detail-Sheet.
         const scis=`<svg class="tsvg" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.8 20 20M8.2 16.2 20 4"/></svg>`;
-        const badge = v.warn ? `<span class="tag warn">${scis}${v.warn}</span>`
-                    : v.cancel ? `<span class="tag cancel">${scis}Abbuchung ${v.date}</span>`
-                    : `<span class="tag base">Basis-Vertrag · ${v.date}</span>`;
-        return `<div class="tx" data-vn="${v.n}">
-          <div class="logo rov-icon rov-icon--medium" style="background:${v.tint||'#8FA8BC'}22;color:${v.tint||'#8FA8BC'}">${ic(v.icon)}</div>
-          <div class="mid"><div class="nm">${v.n}</div>${badge}</div>
+        const name=escapeAccountHtml(v.n), date=escapeAccountHtml(v.date);
+        const warning=escapeAccountHtml(v.warn), tint=safeContractTint(v.tint);
+        const badge = v.warn ? `<span class="tag warn">${scis}${warning}</span>`
+                    : v.cancel ? `<span class="tag cancel">${scis}Abbuchung ${date}</span>`
+                    : `<span class="tag base">Basis-Vertrag · ${date}</span>`;
+        return `<div class="tx" data-vn="${name}">
+          <div class="logo rov-icon rov-icon--medium" style="background:${tint}22;color:${tint}">${ic(v.icon)}</div>
+          <div class="mid"><div class="nm">${name}</div>${badge}</div>
           <div class="amt neg">${eur2(v.a)}</div>
         </div>`;
       }).join("")}
     </div>
-  `).join("");
+  `;}).join("");
 }
 renderVertraege();
 // Nächster Abbuchungstermin live aus dem Vertrags-Tag (heute schon abgebucht → nächster Monat,
@@ -8062,36 +8073,38 @@ function openContract(name){
   const group=DATA.vertraege.find(c=>c.items.some(i=>i.n===name)); if(!group) return;
   const v=group.items.find(i=>i.n===name);
   closeAllSheetsSoft();
-  const status = v.warn ? v.warn : v.cancel ? "Kündbar" : "Basis-Vertrag";
+  const contractName=escapeAccountHtml(v.n), category=escapeAccountHtml(group.cat);
+  const status=escapeAccountHtml(v.warn ? v.warn : v.cancel ? "Kündbar" : "Basis-Vertrag");
+  const debitDate=escapeAccountHtml(nextDebit(v.date));
   document.getElementById("vdbody").innerHTML=`
     <div class="txd-head">
       <div class="logo rov-icon rov-icon--regular detail-contract-icon" aria-hidden="true">${ic(v.icon)}</div>
       <div class="txd-mid">
-        <div class="txd-name">${v.n}</div>
-        <div class="txd-date">${group.cat}</div>
+        <div class="txd-name">${contractName}</div>
+        <div class="txd-date">${category}</div>
       </div>
       <div class="txd-amt neg">${eur2(v.a)}<small style="font-size:11px;color:var(--muted)"> /Monat</small></div>
     </div>
-    <div class="drow"><span class="k">Nächste Abbuchung</span><span class="v">${nextDebit(v.date)}</span></div>
+    <div class="drow"><span class="k">Nächste Abbuchung</span><span class="v">${debitDate}</span></div>
     <div class="drow"><span class="k">Kosten pro Jahr</span><span class="v">${eur2(v.a*12)}</span></div>
     <div class="drow"><span class="k">Status</span><span class="v">${status}</span></div>
     <div class="field" style="margin-top:14px;margin-bottom:10px">
       <input id="vdAmtEdit" type="text" inputmode="decimal" autocomplete="off" value="${eur2(v.a).replace(/\s*€/,'')}" aria-label="Monatsbetrag ändern">
-      <button class="send" id="vdAmtSave" data-vn="${v.n}" aria-label="Betrag speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
+      <button class="send" id="vdAmtSave" data-vn="${contractName}" aria-label="Betrag speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
     </div>
     ${LOAN_NAME_RE.test(v.n)?`
     <div style="margin-top:14px">
       <div class="hint" style="margin-bottom:8px">Finanzierungsart — du kannst das jederzeit ändern</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${[["kredit","Kredit"],["leasing","Leasing"],["gekauft","Gekauft/abbezahlt"]].map(([k,l])=>
-          `<button class="ob-chip${v.finType===k?' on':''}" data-fintype="${k}" data-vn="${v.n}">${l}</button>`).join("")}
+          `<button class="ob-chip${v.finType===k?' on':''}" data-fintype="${k}" data-vn="${contractName}">${l}</button>`).join("")}
       </div>
     </div>`:""}
     ${v.cancel?`
       <div class="hint" style="margin-top:14px">Die Glocke zeigt dir anstehende Abbuchungen. Automatische Kündigungserinnerungen und der Kündigungsservice kommen mit dem Vertragsservice.</div>
-      <button class="txd-del" id="vdCancel" data-vn="${v.n}" style="margin-top:10px">Kündigungsservice vormerken</button>
-      <button class="txd-del" id="vdDelete" data-vn="${v.n}" style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
-    :`<button class="txd-del" id="vdDelete" data-vn="${v.n}" style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
+      <button class="txd-del" id="vdCancel" data-vn="${contractName}" style="margin-top:10px">Kündigungsservice vormerken</button>
+      <button class="txd-del" id="vdDelete" data-vn="${contractName}" style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
+    :`<button class="txd-del" id="vdDelete" data-vn="${contractName}" style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
   sheetBg.classList.add("on"); document.getElementById("vdsheet").classList.add("on");
   rovePushState("vdsheet");
 }

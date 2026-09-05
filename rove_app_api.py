@@ -543,6 +543,16 @@ def clean_text(value: object, fallback: str = "") -> str:
     return text[:80] if text else fallback
 
 
+CONTRACT_TINT_FALLBACK = "#8FA8BC"
+CONTRACT_TINT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def normalize_contract_tint(value: object) -> str:
+    """Restricts contract colors to the hex format used by the app UI."""
+    tint = clean_text(value, CONTRACT_TINT_FALLBACK)
+    return tint.upper() if CONTRACT_TINT_RE.fullmatch(tint) else CONTRACT_TINT_FALLBACK
+
+
 def ensure_expense_request_id_schema(conn: sqlite3.Connection) -> None:
     """Adds an optional user-scoped idempotency key to existing expense rows."""
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(expenses)")}
@@ -3893,7 +3903,7 @@ def complete_app_onboarding():
             "category": category,
             "amount": amount,
             "icon": clean_text(contract.get("icon"), "doc")[:24],
-            "tint": clean_text(contract.get("tint"), "#8FA8BC")[:16],
+            "tint": normalize_contract_tint(contract.get("tint")),
             "cancelable": 1 if bool(contract.get("cancelable", True)) else 0,
         })
 
@@ -4504,7 +4514,7 @@ def update_contracts():
                 return jsonify({"ok": False, "error": "contract_name_already_exists"}), 409
             contract_id = secrets.token_urlsafe(9)
             icon = clean_text(payload.get("icon"), "doc")
-            tint = clean_text(payload.get("tint"), "#8FA8BC")
+            tint = normalize_contract_tint(payload.get("tint"))
             cancelable = 0 if category in {"Wohnen", "Kredite"} else 1
             conn.execute(
                 """INSERT INTO app_contracts
