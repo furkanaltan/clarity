@@ -1,0 +1,15 @@
+[Unit]
+Description=Create Rov.E monthly App report jobs
+After=rove-app-api.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.env
+ExecStart=/usr/bin/python3 /root/clarity/rove_report_worker.py enqueue
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=5min

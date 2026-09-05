@@ -1,25 +1,383 @@
 import os
 import sqlite3
 import calendar
-from datetime import datetime
+import json
+import gzip
+import shutil
+import hashlib
+import math
+import re
+import logging
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.colors import HexColor
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+from rove_score import calculate_score as calculate_live_score
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
-REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", "reports"))
+APP_DIR = Path(__file__).resolve().parent
+REPORTS_DIR = Path(os.getenv("CLARITY_REPORTS_DIR", str(APP_DIR / "reports")))
 MIN_TRACKING_DAYS = int(os.getenv("MIN_TRACKING_DAYS", "14"))
+APP_PUSH_INTERNAL_URL = os.getenv("ROVE_APP_INTERNAL_PUSH_URL", "http://127.0.0.1:5057/v1/internal/push")
+APP_PUSH_INTERNAL_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
+
+REPORT_CONTRIBUTION_SOURCES = (
+    "investiert_command",
+    "app_monthly_plan",
+    "app_etf_plan",
+)
+REPORT_CONTRIBUTION_SOURCE_SQL = ", ".join("?" for _ in REPORT_CONTRIBUTION_SOURCES)
 
 
+class ReportSkipped(Exception):
+    pass
+
+GERMAN_MONTHS = {
+    1: "Januar",
+    2: "Februar",
+    3: "März",
+    4: "April",
+    5: "Mai",
+    6: "Juni",
+    7: "Juli",
+    8: "August",
+    9: "September",
+    10: "Oktober",
+    11: "November",
+    12: "Dezember",
+}
+
+RANKS = [
+    (0, "Rookie", "🥚"),
+    (50, "Stratege", "🔍"),
+    (200, "Controller", "📊"),
+    (500, "Investor", "🧱"),
+    (1000, "Manager", "🏗️"),
+    (2500, "Kapitalist", "🏛️"),
+    (5000, "Rov.E Elite", "💎"),
+]
+
+SCORE_RANKS = [
+    (0, 44, "Rookie", "🥚"),
+    (45, 54, "Stratege", "🔍"),
+    (55, 64, "Controller", "📊"),
+    (65, 74, "Investor", "🧱"),
+    (75, 84, "Manager", "🏗️"),
+    (85, 92, "Kapitalist", "🏛️"),
+    (93, 100, "Rov.E Elite", "💎"),
+]
+
+BADGE_LABELS = {
+    "streak_7": "Erste Woche",
+    "streak_30": "Eiserner Monat",
+    "first_investment": "Erstes Investment",
+    "thousand_club": "Tausender-Club",
+    "emergency_fund": "Notgroschen",
+    "savings_master": "Spar-Meister",
+    "ten_k_club": "Fünfstellige Freiheit",
+    "month_win": "Monats-Sieg",
+    "fastfood_free": "Fast-Food-Pause",
+    "no_fastfood_30": "30 Tage ohne Fast Food",
+}
+
+PAGE_W, PAGE_H = landscape(A4)
+MARGIN_X = 50
+INK = HexColor("#111111")
+MUTED = HexColor("#6B6B6B")
+SOFT = HexColor("#F5F5F5")
+LINE = HexColor("#E8E8E8")
+GOOD = HexColor("#1F7A4D")
+ALERT = HexColor("#A33A32")
+
+
+def register_font(name: str, candidates: list[str], fallback: str) -> str:
+    for candidate in candidates:
+        if Path(candidate).exists():
+            try:
+                pdfmetrics.registerFont(TTFont(name, candidate))
+                return name
+            except Exception:
+                continue
+    return fallback
+
+
+FONT_DISPLAY = register_font(
+    "ClarityDisplay",
+    [
+        "/System/Library/Fonts/Supplemental/BigCaslon.ttf",
+        "/System/Library/Fonts/NewYork.ttf",
+        "/System/Library/Fonts/Supplemental/Georgia.ttf",
+    ],
+    "Times-Roman",
+)
+FONT_TEXT = "Helvetica"
+
+
+def fmt_eur(value) -> str:
+    try:
+        return f"{float(value or 0):,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0,00 EUR"
+
+
+def fmt_delta(value) -> str:
+    if value is None:
+        return "ab Monat 2"
+    prefix = "+" if value >= 0 else ""
+    return f"{prefix}{fmt_eur(value)}"
+
+
+def fmt_eur_cover(value) -> str:
+    try:
+        amount = round(float(value or 0))
+    except Exception:
+        amount = 0
+    sign = "+" if amount >= 0 else "-"
+    return f"{sign}{abs(amount):,.0f} €".replace(",", ".")
+
+
+def fmt_percent_cover(value) -> str:
+    if value is None:
+        return "ab Monat 2"
+    sign = "+" if value >= 0 else ""
+    return f"{sign}{float(value):.1f} %".replace(".", ",")
+
+
+def clamp_text(text, max_chars: int) -> str:
+    text = str(text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def draw_spaced_text(c, x, y, text, spacing=8, font=FONT_TEXT, size=11):
+    c.setFont(font, size)
+    cursor = x
+    for char in text:
+        c.drawString(cursor, y, char)
+        cursor += c.stringWidth(char, font, size) + spacing
+
+
+def draw_clarity_mark(c, x, y, scale=1.0, color=MUTED):
+    c.setStrokeColor(color)
+    c.setLineWidth(1.25 * scale)
+    try:
+        c.setLineCap(1)
+    except Exception:
+        pass
+    r = 9.6 * scale
+    c.arc(x - r, y - r, x + r, y + r, 38, 322)
+    c.arc(x - r * 0.62, y - r * 0.62, x + r * 0.62, y + r * 0.62, 38, 322)
+
+
+def draw_clarity_logo(c, x, y, scale=1.0):
+    c.setFillColor(MUTED)
+    draw_clarity_mark(c, x, y, scale, MUTED)
+    draw_spaced_text(c, x + 29 * scale, y - 4.2 * scale, "ROV.E", spacing=6.8 * scale, size=10.5 * scale)
+
+
+def draw_footer(c, page_number=1):
+    y = 58
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.8)
+    c.line(MARGIN_X, y + 36, PAGE_W - MARGIN_X, y + 36)
+    draw_clarity_logo(c, MARGIN_X + 10, y + 10, 0.78)
+    c.setStrokeColor(LINE)
+    c.line(MARGIN_X + 118, y - 2, MARGIN_X + 118, y + 22)
+    c.setFont(FONT_TEXT, 9)
+    c.setFillColor(MUTED)
+    c.drawString(MARGIN_X + 138, y + 6, "Rov.E Report")
+    c.drawRightString(PAGE_W - MARGIN_X, y + 6, f"{page_number} / 10")
+
+
+def draw_cover_icon(c, icon, x, y):
+    c.setFillColor(HexColor("#F3F3F3"))
+    c.circle(x, y, 19, fill=1, stroke=0)
+    c.setStrokeColor(MUTED)
+    c.setLineWidth(1.25)
+    if icon == "calendar":
+        c.roundRect(x - 8, y - 9, 16, 16, 2, fill=0, stroke=1)
+        c.line(x - 8, y + 3, x + 8, y + 3)
+        c.line(x - 4, y + 10, x - 4, y + 6)
+        c.line(x + 4, y + 10, x + 4, y + 6)
+        c.line(x - 4, y - 1, x + 4, y - 1)
+        c.line(x - 4, y - 5, x + 3, y - 5)
+    elif icon == "mountain":
+        c.line(x - 12, y - 10, x - 1, y + 8)
+        c.line(x - 1, y + 8, x + 12, y - 10)
+        c.line(x - 12, y - 10, x + 12, y - 10)
+        c.line(x - 4, y - 10, x + 4, y + 1)
+        c.line(x + 1, y + 9, x + 1, y + 17)
+        c.line(x + 1, y + 15, x + 7, y + 13)
+        c.line(x + 7, y + 13, x + 1, y + 11)
+    elif icon == "trend":
+        c.line(x - 12, y - 6, x - 4, y + 2)
+        c.line(x - 4, y + 2, x + 2, y - 2)
+        c.line(x + 2, y - 2, x + 12, y + 10)
+        c.line(x + 12, y + 10, x + 12, y + 2)
+        c.line(x + 12, y + 10, x + 4, y + 10)
+
+
+def begin_page(c, title: str = None):
+    c.setFillColor(HexColor("#FFFFFF"))
+    c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+    if title:
+        c.setFont("Helvetica-Bold", 17)
+        c.setFillColor(INK)
+        c.drawString(MARGIN_X, PAGE_H - 70, title)
+
+
+def end_page(c):
+    c.showPage()
+
+
+def draw_label(c, x, y, text, size=9):
+    c.setFont("Helvetica", size)
+    c.setFillColor(MUTED)
+    c.drawString(x, y, str(text).upper())
+
+
+def draw_value(c, x, y, text, size=24):
+    c.setFont("Helvetica-Bold", size)
+    c.setFillColor(INK)
+    c.drawString(x, y, str(text))
+
+
+def draw_body(c, x, y, text, width_chars=72, size=11, leading=16, max_lines=4):
+    c.setFont("Helvetica", size)
+    c.setFillColor(INK)
+    words = str(text or "").split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > width_chars and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    for line in lines[:max_lines]:
+        c.drawString(x, y, line)
+        y -= leading
+    return y
+
+
+def draw_card(c, x, y, w, h, label, value, sub=None, value_size=18):
+    c.setFillColor(SOFT)
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.8)
+    c.roundRect(x, y - h, w, h, 8, fill=1, stroke=1)
+    draw_label(c, x + 16, y - 25, label)
+    draw_value(c, x + 16, y - 55, clamp_text(value, 34), value_size)
+    if sub:
+        c.setFont("Helvetica", 9.5)
+        c.setFillColor(MUTED)
+        c.drawString(x + 16, y - h + 18, clamp_text(sub, 48))
+
+
+def draw_cover_card(c, x, y, w, h, icon, label, main, sub=None, main_size=48, sub_size=22):
+    c.setFillColor(HexColor("#FFFFFF"))
+    c.setStrokeColor(HexColor("#D2D2D2"))
+    c.setLineWidth(0.85)
+    c.roundRect(x, y - h, w, h, 13, fill=1, stroke=1)
+    draw_cover_icon(c, icon, x + 37, y - 38)
+    c.setFont(FONT_DISPLAY, 15)
+    c.setFillColor(HexColor("#555555"))
+    c.drawString(x + 76, y - 43, label)
+    c.setStrokeColor(HexColor("#D8D8D8"))
+    c.setLineWidth(0.7)
+    c.line(x + 26, y - 72, x + w - 26, y - 72)
+    c.setFont(FONT_DISPLAY, main_size)
+    c.setFillColor(INK)
+    c.drawCentredString(x + w / 2, y - 143, main)
+    if sub:
+        c.setFont(FONT_DISPLAY, sub_size)
+        c.setFillColor(HexColor("#666666"))
+        c.drawCentredString(x + w / 2, y - 178, sub)
+
+
+def draw_progress_bar(c, x, y, w, h, percent):
+    percent = max(0, min(100, float(percent or 0)))
+    c.setFillColor(HexColor("#EFEFEF"))
+    c.roundRect(x, y, w, h, h / 2, fill=1, stroke=0)
+    c.setFillColor(INK)
+    c.roundRect(x, y, w * percent / 100.0, h, h / 2, fill=1, stroke=0)
+
+
+def draw_line_chart(c, x, y, w, h, points):
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.8)
+    c.rect(x, y, w, h, fill=0, stroke=1)
+    if len(points) < 2:
+        c.setFont("Helvetica", 11)
+        c.setFillColor(MUTED)
+        c.drawCentredString(x + w / 2, y + h / 2, "Kurve ab Monat 2 sichtbar")
+        return
+    values = [p["net_worth"] for p in points]
+    low, high = min(values), max(values)
+    span = high - low if high != low else 1
+    step = w / max(1, len(points) - 1)
+    coords = []
+    for idx, point in enumerate(points):
+        px = x + idx * step
+        py = y + 18 + ((point["net_worth"] - low) / span) * (h - 36)
+        coords.append((px, py))
+    c.setStrokeColor(INK)
+    c.setLineWidth(2)
+    for idx in range(len(coords) - 1):
+        c.line(coords[idx][0], coords[idx][1], coords[idx + 1][0], coords[idx + 1][1])
+
+
+def draw_score_circle(c, x, y, radius, score):
+    c.setStrokeColor(LINE)
+    c.setLineWidth(9)
+    c.circle(x, y, radius, fill=0, stroke=1)
+    c.setStrokeColor(INK)
+    c.setLineWidth(9)
+    extent = max(0, min(100, score)) * 3.6
+    c.arc(x - radius, y - radius, x + radius, y + radius, 90, 90 - extent)
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 32)
+    c.drawCentredString(x, y - 10, str(int(score or 0)))
+
+
+def draw_section_rows(c, x, y, rows, row_gap=26):
+    c.setFont("Helvetica", 11)
+    for label, value in rows:
+        c.setFillColor(MUTED)
+        c.drawString(x, y, str(label))
+        c.setFillColor(INK)
+        c.drawRightString(PAGE_W - MARGIN_X, y, str(value))
+        y -= row_gap
+    return y
+
+
+@contextmanager
 def get_db():
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def ensure_net_worth_column():
@@ -30,13 +388,76 @@ def ensure_net_worth_column():
             conn.commit()
 
 
+REPORT_SNAPSHOT_SCHEMA_VERSION = 3
+
+
+def ensure_report_snapshots_v2_table(conn: sqlite3.Connection | None = None) -> None:
+    """Create the additive, immutable report truth table when needed."""
+    owns_connection = conn is None
+    if owns_connection:
+        conn = sqlite3.connect(DB_NAME, timeout=30)
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS report_snapshots_v2 (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL,
+                report_month    TEXT NOT NULL,
+                schema_version  INTEGER NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'finalized',
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                finalized_at    TEXT,
+                report_data_json TEXT NOT NULL,
+                ai_text_json    TEXT NOT NULL DEFAULT '{}',
+                validation_json TEXT NOT NULL DEFAULT '{}',
+                data_hash       TEXT NOT NULL,
+                UNIQUE(user_id, report_month, schema_version)
+            )"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_report_snapshots_v2_user_month
+               ON report_snapshots_v2(user_id, report_month, schema_version)"""
+        )
+        if owns_connection:
+            conn.commit()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
 def month_bounds(report_month: str):
     year, month = map(int, report_month.split("-"))
     last_day = calendar.monthrange(year, month)[1]
     start = f"{year:04d}-{month:02d}-01"
     end = f"{year:04d}-{month:02d}-{last_day:02d}"
-    label = datetime(year, month, 1).strftime("%B %Y")
+    label = f"{GERMAN_MONTHS.get(month, datetime(year, month, 1).strftime('%B'))} {year}"
     return start, end, label
+
+
+def report_period_window(report_month: str, as_of: date | None = None) -> dict:
+    """Return the frozen reporting window for a closed or still-open month."""
+    start, month_end, label = month_bounds(report_month)
+    start_date = date.fromisoformat(start)
+    month_end_date = date.fromisoformat(month_end)
+    today = as_of or date.today()
+    is_partial = start_date <= today <= month_end_date
+    period_end = today if is_partial else month_end_date
+    return {
+        "start": start,
+        "end": period_end.isoformat(),
+        "month_end": month_end,
+        "month_label": label,
+        "comparison_mode": "partial" if is_partial else "full",
+        "cutoff_day": period_end.day,
+    }
+
+
+def previous_period_end(report_month: str, cutoff_day: int | None = None) -> str:
+    """Use the same calendar day in the prior month, without crossing its end."""
+    previous = _report_previous_month(report_month)
+    _start, previous_end, _label = month_bounds(previous)
+    if cutoff_day is None:
+        return previous_end
+    return previous_end[:-2] + f"{min(max(1, cutoff_day), int(previous_end[-2:])):02d}"
 
 
 def get_user(user_id: int):
@@ -56,40 +477,597 @@ def row_float(row, key: str, default: float = 0.0) -> float:
         return default
 
 
-def get_expense_stats(user_id: int, report_month: str):
-    start, end, _ = month_bounds(report_month)
+def row_int(row, key: str, default: int = 0) -> int:
+    if row is None:
+        return default
+    try:
+        if key not in row.keys():
+            return default
+        return int(row[key] or default)
+    except Exception:
+        return default
+
+
+def table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def parse_details(user) -> dict:
+    if user is None:
+        return {}
+    try:
+        return json.loads(user["fixed_costs_details"] or "{}")
+    except Exception:
+        return {}
+
+
+def get_rank(points: int) -> dict:
+    current_name, current_icon = RANKS[0][1], RANKS[0][2]
+    next_threshold = None
+    for threshold, name, icon in RANKS:
+        if points >= threshold:
+            current_name, current_icon = name, icon
+        elif next_threshold is None:
+            next_threshold = threshold
+    return {
+        "name": current_name,
+        "icon": current_icon,
+        "points_to_next": max(0, next_threshold - points) if next_threshold else 0,
+    }
+
+
+def get_score_rank(score: int) -> tuple:
+    for low, high, name, icon in SCORE_RANKS:
+        if low <= score <= high:
+            return name, icon
+    return SCORE_RANKS[-1][2], SCORE_RANKS[-1][3]
+
+
+def get_platform_days(user_id: int) -> int:
     with get_db() as conn:
-        total = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount), 0) AS total
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            """,
-            (user_id, start, end),
-        ).fetchone()["total"]
+        row = conn.execute(
+            "SELECT MIN(DATE(created_at)) AS first_day FROM expenses WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    first_day = row["first_day"] if row else None
+    if not first_day:
+        return 0
+    try:
+        first_date = date.fromisoformat(first_day)
+    except ValueError:
+        return 0
+    return max(1, (date.today() - first_date).days + 1)
 
-        tracked_days = conn.execute(
-            """
-            SELECT COUNT(DISTINCT DATE(created_at)) AS days
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            """,
-            (user_id, start, end),
-        ).fetchone()["days"]
 
-        cats = conn.execute(
-            """
-            SELECT category, COALESCE(SUM(amount), 0) AS total
-            FROM expenses
-            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
-            GROUP BY category
-            ORDER BY total DESC
-            LIMIT 6
-            """,
+def get_tracking_days_90(user_id: int) -> int:
+    since = (date.today() - timedelta(days=89)).isoformat()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COUNT(DISTINCT DATE(created_at)) AS days
+               FROM expenses
+               WHERE user_id = ? AND DATE(created_at) >= DATE(?)""",
+            (user_id, since),
+        ).fetchone()
+    return int(row["days"] or 0) if row else 0
+
+
+def has_confirmed_investment_for_month(user_id: int, month_key: str) -> bool:
+    badge_key = f"inv_{month_key.replace('-', '_')}"
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?",
+            (user_id, badge_key),
+        ).fetchone()
+        if row:
+            return True
+        if not table_exists(conn, "investment_events"):
+            return False
+        row = conn.execute(
+            """SELECT 1 FROM investment_events
+               WHERE user_id = ?
+               AND source = 'investiert_command'
+               AND strftime('%Y-%m', created_at) = ?
+               LIMIT 1""",
+            (user_id, month_key),
+        ).fetchone()
+    return row is not None
+
+
+def get_score_cap(platform_days: int) -> tuple:
+    if platform_days < 30:
+        return 59, max(0, 30 - platform_days), 60
+    if platform_days < 60:
+        return 69, 60 - platform_days, 70
+    if platform_days < 90:
+        return 79, 90 - platform_days, 80
+    if platform_days < 180:
+        return 85, 180 - platform_days, 86
+    if platform_days < 365:
+        return 92, 365 - platform_days, 93
+    return 100, 0, 100
+
+
+def calculate_start_score(user) -> int:
+    income = row_float(user, "income") + row_float(user, "other_income")
+    fixed = row_float(user, "fixed_costs")
+    savings = row_float(user, "etf_savings") + row_float(user, "cash_savings")
+    investments = row_float(user, "current_investments")
+    cash = row_float(user, "current_cash")
+    savings_ratio = savings / income if income > 0 else 0
+
+    score = 30
+    if savings > 0:
+        score += 5
+    if savings_ratio >= 0.10:
+        score += 5
+    if savings_ratio >= 0.20:
+        score += 5
+    if investments > 0:
+        score += 5
+    if fixed > 0 and cash >= fixed * 3:
+        score += 7
+    elif fixed > 0 and cash >= fixed:
+        score += 3
+    if (
+        row_int(user, "onboarding_step") == 10
+        and income > 0
+        and fixed >= 0
+        and bool(user["goal_description"] if "goal_description" in user.keys() else "")
+        and row_float(user, "goal_amount") > 0
+    ):
+        score += 5
+    return min(score, 65)
+
+
+def calculate_savings_execution_points(savings_ratio: float, confirmed: bool) -> int:
+    if confirmed and savings_ratio >= 0.20:
+        return 25
+    if confirmed and savings_ratio >= 0.15:
+        return 18
+    if confirmed and savings_ratio >= 0.10:
+        return 12
+    if savings_ratio >= 0.20:
+        return 10
+    if savings_ratio >= 0.15:
+        return 6
+    if savings_ratio >= 0.10:
+        return 3
+    return 0
+
+
+def calculate_clarity_score_v2(user_id: int, user, total_expenses: float, report_month: str) -> dict:
+    with get_db() as conn:
+        return calculate_live_score(conn, user_id, user, total_expenses, report_month)
+
+
+def calculate_goal_projection(goal_amount: float, current_value: float, monthly_savings: float):
+    remaining = max(float(goal_amount or 0) - float(current_value or 0), 0.0)
+    rate = float(monthly_savings or 0)
+    if remaining <= 0 or rate <= 0:
+        return None
+    return int(math.ceil(remaining / rate))
+
+
+def format_month_duration(months) -> str:
+    months = int(months or 0)
+    if months <= 0:
+        return "0 Monate"
+    if months < 12:
+        return f"{months} Monat" if months == 1 else f"{months} Monate"
+    years, rest = divmod(months, 12)
+    year_text = f"{years} Jahr" if years == 1 else f"{years} Jahre"
+    if rest == 0:
+        return year_text
+    month_text = f"{rest} Monat" if rest == 1 else f"{rest} Monate"
+    return f"{year_text} und {month_text}"
+
+
+NON_CONSUMPTION_MOVEMENTS = {
+    "transfer", "withdrawal", "income", "fixed", "investment", "savings", "contribution"
+}
+
+
+def normalize_report_merchant(value: object) -> str:
+    """Conservative report grouping: normalize whitespace/case, never invent aliases."""
+    text = re.sub(r"\s+", " ", str(value or "Unbekannt").strip())
+    return text or "Unbekannt"
+
+
+def get_report_expense_rows(user_id: int, report_month: str, cutoff_date: str | None = None) -> list[dict]:
+    """Return expense rows with one central report classification.
+
+    The app movement reference is the reliable discriminator for internal money
+    movements. Rows without such a reference remain normal consumption rows,
+    preserving legacy users and historical imports.
+    """
+    start, end, _ = month_bounds(report_month)
+    if cutoff_date:
+        end = min(end, cutoff_date)
+    with get_db() as conn:
+        has_movements = table_exists(conn, "app_cash_movements")
+        movement_join = (
+            "LEFT JOIN app_cash_movements cm "
+            "ON cm.expense_id = e.id AND cm.user_id = e.user_id"
+            if has_movements else ""
+        )
+        movement_select = "cm.kind AS movement_kind" if has_movements else "'' AS movement_kind"
+        rows = conn.execute(
+            f"""SELECT e.id, e.amount, e.category, e.merchant, e.description,
+                       e.created_at, {movement_select}
+                  FROM expenses e
+                  {movement_join}
+                 WHERE e.user_id = ?
+                   AND DATE(e.created_at) BETWEEN DATE(?) AND DATE(?)
+                 ORDER BY DATE(e.created_at), e.id""",
             (user_id, start, end),
         ).fetchall()
 
-    return float(total or 0), int(tracked_days or 0), cats
+    result = []
+    for row in rows:
+        movement_kind = str(row["movement_kind"] or "").strip().lower()
+        if movement_kind in NON_CONSUMPTION_MOVEMENTS:
+            classification = "fixed_cost" if movement_kind == "fixed" else movement_kind
+        else:
+            classification = "consumption"
+        merchant = normalize_report_merchant(row["merchant"] or row["description"])
+        result.append({
+            "id": int(row["id"]),
+            "amount": round(float(row["amount"] or 0), 2),
+            "category": str(row["category"] or "SONSTIGES"),
+            "merchant": merchant,
+            "merchant_key": merchant.casefold(),
+            "description": str(row["description"] or ""),
+            "created_at": row["created_at"],
+            "movement_kind": movement_kind,
+            "classification": classification,
+        })
+    return result
+
+
+def get_expense_stats(user_id: int, report_month: str, cutoff_date: str | None = None):
+    rows = get_report_expense_rows(user_id, report_month, cutoff_date)
+    consumption = [row for row in rows if row["classification"] == "consumption"]
+    total = sum(row["amount"] for row in consumption)
+    tracked_days = len({str(row["created_at"]).split(" ", 1)[0] for row in rows})
+    category_totals: dict[str, float] = {}
+    for row in consumption:
+        category_totals[row["category"]] = category_totals.get(row["category"], 0.0) + row["amount"]
+    cats = [
+        {"category": category, "total": round(amount, 2)}
+        for category, amount in sorted(category_totals.items(), key=lambda item: item[1], reverse=True)[:6]
+    ]
+    return round(total, 2), tracked_days, cats
+
+
+def get_app_property_equity(user_id: int) -> float:
+    """Return central App property equity without requiring App tables for bot-only users."""
+    with get_db() as conn:
+        try:
+            row = conn.execute(
+                """SELECT market_value, remaining_debt
+                     FROM app_properties
+                    WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0.0
+
+    if not row:
+        return 0.0
+    return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
+
+
+def get_report_goal(user_id: int, user) -> tuple[str, float, float, float | None]:
+    """Return the report goal and its explicitly assigned goal-pot balance.
+
+    Older Telegram users store their primary goal on ``users``. New App users
+    store goals in ``app_goals`` instead. Reports must understand both paths.
+    """
+    description = str(user["goal_description"] or "").strip() if "goal_description" in user.keys() else ""
+    target_amount = row_float(user, "goal_amount")
+    if description and target_amount > 0:
+        with get_db() as conn:
+            progress = 0.0
+            if table_exists(conn, "app_primary_goal_progress"):
+                progress_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(app_primary_goal_progress)")
+                }
+                rate_column = ", goal_monthly_rate" if "goal_monthly_rate" in progress_columns else ""
+                row = conn.execute(
+                    f"SELECT current_amount{rate_column} FROM app_primary_goal_progress WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                progress = float(row["current_amount"] or 0) if row else 0.0
+                rate = (float(row["goal_monthly_rate"] or 0)
+                        if row and "goal_monthly_rate" in progress_columns
+                        and row["goal_monthly_rate"] else None)
+        return description, target_amount, min(max(0.0, progress), target_amount), rate if rate and rate > 0 else None
+
+    with get_db() as conn:
+        if not table_exists(conn, "app_goals"):
+            return "", 0.0, 0.0, None
+        goal_columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)")}
+        rate_column = ", goal_monthly_rate" if "goal_monthly_rate" in goal_columns else ""
+        row = conn.execute(
+            f"""SELECT name, target_amount, current_amount{rate_column}
+                 FROM app_goals
+                WHERE user_id = ? AND target_amount > 0
+                ORDER BY datetime(created_at), goal_id
+                LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return "", 0.0, 0.0, None
+    target_amount = float(row["target_amount"] or 0)
+    progress = float(row["current_amount"] or 0)
+    rate = (float(row["goal_monthly_rate"] or 0)
+            if "goal_monthly_rate" in goal_columns and row["goal_monthly_rate"] else None)
+    return str(row["name"] or "").strip(), target_amount, min(max(0.0, progress), target_amount), rate if rate and rate > 0 else None
+
+
+def get_biggest_expense(user_id: int, report_month: str, cutoff_date: str | None = None):
+    rows = [row for row in get_report_expense_rows(user_id, report_month, cutoff_date)
+            if row["classification"] == "consumption"]
+    if not rows:
+        return None
+    row = max(rows, key=lambda item: (item["amount"], str(item["created_at"])))
+    return {
+        "amount": row["amount"],
+        "category": row["category"] or "SONSTIGES",
+        "merchant": row["merchant"] or "Unbekannt",
+        "created_at": row["created_at"],
+    }
+
+
+def get_investment_summary(user_id: int, report_month: str, cutoff_date: str | None = None) -> dict:
+    start, end, _ = month_bounds(report_month)
+    if cutoff_date:
+        end = min(end, cutoff_date)
+    empty = {
+        "one_time_in": 0.0,
+        "recurring_in": 0.0,
+        "out": 0.0,
+        "net_contributions": 0.0,
+        "by_asset": [],
+        "largest_event": None,
+        "events_count": 0,
+    }
+    with get_db() as conn:
+        if not table_exists(conn, "investment_events"):
+            return empty
+
+        rows = conn.execute(
+            f"""
+            SELECT amount, direction, asset_type, asset_name, event_type, source, created_at
+            FROM investment_events
+            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, start, end, *REPORT_CONTRIBUTION_SOURCES),
+        ).fetchall()
+
+        by_asset_rows = conn.execute(
+            f"""
+            SELECT asset_type, COALESCE(SUM(
+                CASE WHEN direction = 'out' THEN -amount ELSE amount END
+            ), 0) AS total
+            FROM investment_events
+            WHERE user_id = ? AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
+            GROUP BY asset_type
+            ORDER BY total DESC
+            """,
+            (user_id, start, end, *REPORT_CONTRIBUTION_SOURCES),
+        ).fetchall()
+
+    summary = dict(empty)
+    largest = None
+    for row in rows:
+        amount = float(row["amount"] or 0)
+        direction = row["direction"] or "in"
+        event_type = row["event_type"] or "one_time"
+        signed = -amount if direction == "out" else amount
+        summary["net_contributions"] += signed
+        if direction == "out":
+            summary["out"] += amount
+        elif event_type == "recurring_plan":
+            summary["recurring_in"] += amount
+        else:
+            summary["one_time_in"] += amount
+        if largest is None or amount > largest["amount"]:
+            largest = {
+                "amount": amount,
+                "direction": direction,
+                "asset_type": row["asset_type"] or "investment",
+                "asset_name": row["asset_name"] or row["asset_type"] or "Investment",
+                "event_type": event_type,
+                "source": row["source"] or "chat",
+                "created_at": row["created_at"],
+            }
+
+    summary["largest_event"] = largest
+    summary["events_count"] = len(rows)
+    summary["by_asset"] = [
+        {"asset_type": row["asset_type"] or "investment", "total": float(row["total"] or 0)}
+        for row in by_asset_rows
+    ]
+    return summary
+
+
+def get_monthly_execution(user_id: int, report_month: str) -> dict:
+    """Liest nur die explizit bestaetigten Monatsbewegungen der App.
+
+    Profilwerte bleiben eine Planung. Im Report darf daraus keine ausgefuehrte
+    Buchung werden, solange der Nutzer sie fuer den jeweiligen Monat nicht
+    bestaetigt hat.
+    """
+    execution = {
+        "income_confirmed": False,
+        "fixed_costs_confirmed": False,
+        "savings_confirmed": False,
+    }
+    with get_db() as conn:
+        row = None
+        if table_exists(conn, "app_monthly_plan_status"):
+            row = conn.execute(
+                """SELECT income_status, fixed_costs_status, savings_status
+                     FROM app_monthly_plan_status
+                    WHERE user_id = ? AND month_key = ?""",
+                (user_id, report_month),
+            ).fetchone()
+        if row:
+            execution["income_confirmed"] = row["income_status"] == "confirmed"
+            execution["fixed_costs_confirmed"] = row["fixed_costs_status"] == "confirmed"
+            execution["savings_confirmed"] = row["savings_status"] == "confirmed"
+
+        if table_exists(conn, "app_month_closures"):
+            month_close = conn.execute(
+                """SELECT 1 FROM app_month_closures
+                    WHERE user_id = ? AND month_key = ? LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone()
+            if month_close:
+                execution["savings_confirmed"] = True
+
+        # Ein ETF-Sparplan kann automatisch laufen, waehrend die flexible
+        # Cash-Sparrate noch offen ist. Deshalb gilt ausschliesslich die
+        # explizite Monatsplan-Bestaetigung als bestaetigte Gesamtsparrate.
+        # Die ETF-Bewegung erscheint separat als tatsaechliches Investment.
+    return execution
+
+
+def get_report_savings_progress(user_id: int, report_month: str, execution: dict) -> dict:
+    """Return only savings-plan progress that the App can substantiate.
+
+    A month-close value is the confirmed total savings amount. ETF events remain
+    available as a breakdown, but must never be added to that total a second time.
+    """
+    progress = {
+        "full_plan_confirmed": bool(execution.get("savings_confirmed")),
+        "full_plan_amount": 0.0,
+        "automatic_etf_amount": 0.0,
+        "confirmation_source": "",
+    }
+    with get_db() as conn:
+        close_row = None
+        if table_exists(conn, "app_month_closures"):
+            close_row = conn.execute(
+                """SELECT actual_savings FROM app_month_closures
+                    WHERE user_id = ? AND month_key = ? LIMIT 1""",
+                (user_id, report_month),
+            ).fetchone()
+        rows = []
+        if table_exists(conn, "investment_events"):
+            rows = conn.execute(
+                """SELECT source, COALESCE(SUM(amount), 0) AS amount
+                     FROM investment_events
+                    WHERE user_id = ?
+                      AND direction != 'out'
+                      AND strftime('%Y-%m', created_at) = ?
+                      AND source IN ('app_monthly_plan', 'app_etf_plan')
+                    GROUP BY source""",
+                (user_id, report_month),
+            ).fetchall()
+
+    amounts = {str(row["source"]): float(row["amount"] or 0) for row in rows}
+    progress["automatic_etf_amount"] = max(0.0, amounts.get("app_etf_plan", 0.0))
+    if close_row is not None:
+        progress["full_plan_confirmed"] = True
+        progress["full_plan_amount"] = max(0.0, float(close_row["actual_savings"] or 0))
+        progress["confirmation_source"] = "month_close"
+    elif progress["full_plan_confirmed"]:
+        # A confirmed plan can contain cash-only bookings, or cash plus the
+        # separately scheduled ETF plan. Both belong to the confirmed plan.
+        progress["full_plan_amount"] = max(
+            0.0,
+            amounts.get("app_monthly_plan", 0.0) + progress["automatic_etf_amount"],
+        )
+        progress["confirmation_source"] = "legacy_monthly_plan"
+    elif progress["automatic_etf_amount"] > 0:
+        progress["confirmation_source"] = "app_etf_plan"
+    return progress
+
+
+def get_latest_portfolio_snapshots(user_id: int) -> list:
+    with get_db() as conn:
+        if not table_exists(conn, "portfolio_snapshots"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT amount, scope, source, note, created_at
+            FROM portfolio_snapshots
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 6
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "amount": float(row["amount"] or 0),
+            "scope": row["scope"] or "investments",
+            "source": row["source"] or "",
+            "note": row["note"] or "",
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_wealth_history(user_id: int, report_month: str, limit: int = 12) -> list:
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT month, net_worth, clarity_score
+            FROM monthly_snapshots
+            WHERE user_id = ? AND month <= ?
+            ORDER BY month DESC
+            LIMIT ?
+            """,
+            (user_id, report_month, limit),
+        ).fetchall()
+    points = [
+        {
+            "month": row["month"],
+            "net_worth": float(row["net_worth"] or 0),
+            "clarity_score": int(row["clarity_score"] or 0),
+        }
+        for row in rows
+    ]
+    return list(reversed(points))
+
+
+def get_user_badges(user_id: int, limit: int = 8) -> list:
+    """Nur echte Errungenschaften (BADGE_LABELS-Keys) — user_badges enthaelt daneben auch
+    interne Dedup-Marker (moment_*, budget_invite_sent_*, budget_resolved_*, inv_YYYY_MM),
+    die bot.py's eigener /badges-Befehl ebenfalls ausblendet."""
+    with get_db() as conn:
+        if not table_exists(conn, "user_badges"):
+            return []
+        placeholders = ",".join("?" for _ in BADGE_LABELS)
+        rows = conn.execute(
+            f"""
+            SELECT badge_key, earned_at
+            FROM user_badges
+            WHERE user_id = ? AND badge_key IN ({placeholders})
+            ORDER BY earned_at DESC, id DESC
+            LIMIT ?
+            """,
+            (user_id, *BADGE_LABELS.keys(), limit),
+        ).fetchall()
+    return [
+        {
+            "key": row["badge_key"],
+            "label": BADGE_LABELS[row["badge_key"]],
+            "earned_at": row["earned_at"],
+        }
+        for row in rows
+    ]
 
 
 def get_snapshot(user_id: int, report_month: str):
@@ -124,179 +1102,1227 @@ def get_prev_snapshot(user_id: int, report_month: str):
     return row
 
 
-def build_pdf(user_id: int, report_month: str):
+def get_budget_frame(user_id: int, report_month: str) -> dict:
+    """
+    Liest die fuer report_month gemeinsam gesetzten Kategorie-Budgets (Tabelle
+    category_budgets, gepflegt vom Bot) und stellt sie den tatsaechlichen Ausgaben
+    des Monats gegenueber. Kein Import aus bot.py (Kreis-Import) - direkte Query.
+
+    Rueckgabe immer sicher: fehlt die Tabelle oder gibt es keine Budgets fuer den
+    Monat, kommt {"has_budgets": False, ...} zurueck.
+    """
+    empty = {"has_budgets": False, "items": [], "total_limit": 0.0,
+             "total_used": 0.0, "adherence_pct": None, "on_track": None}
+    try:
+        with get_db() as conn:
+            budgets = conn.execute(
+                "SELECT category, monthly_limit FROM category_budgets "
+                "WHERE user_id = ? AND active_month = ?",
+                (user_id, report_month),
+            ).fetchall()
+            if not budgets:
+                return empty
+            eligible_rows = [
+                row for row in get_report_expense_rows(user_id, report_month)
+                if row["classification"] == "consumption"
+            ]
+            items = []
+            total_limit = 0.0
+            total_used = 0.0
+            for b in budgets:
+                category = b["category"]
+                limit = float(b["monthly_limit"] or 0)
+                used = sum(
+                    row["amount"] for row in eligible_rows
+                    if str(row["category"]).casefold() == str(category).casefold()
+                )
+                used = round(float(used), 2)
+                total_limit += limit
+                total_used += used
+                items.append({
+                    "category": category,
+                    "limit": limit,
+                    "used": used,
+                    "left": limit - used,
+                    "pct_used": round(used / limit * 100, 1) if limit > 0 else None,
+                    "over": used > limit,
+                })
+    except Exception as e:
+        logger.warning("Budget-Frame konnte nicht geladen werden: %s", e)
+        return empty
+
+    return {
+        "has_budgets": True,
+        "items": items,
+        "total_limit": total_limit,
+        "total_used": total_used,
+        "adherence_pct": round(total_used / total_limit * 100, 1) if total_limit > 0 else None,
+        "on_track": total_used <= total_limit,
+    }
+
+
+def build_report_data(user_id: int, report_month: str) -> dict:
     ensure_net_worth_column()
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     user = get_user(user_id)
     if not user:
         raise ValueError("User nicht gefunden")
 
-    total_expenses, tracked_days, categories = get_expense_stats(user_id, report_month)
+    period = report_period_window(report_month)
+    start, end, month_label = period["start"], period["end"], period["month_label"]
+    total_expenses, tracked_days, category_rows = get_expense_stats(user_id, report_month, end)
+    biggest_expense = get_biggest_expense(user_id, report_month, end)
     snapshot = get_snapshot(user_id, report_month)
     prev_snapshot = get_prev_snapshot(user_id, report_month)
 
-    income = row_float(user, "income") + row_float(user, "other_income")
+    income = row_float(user, "income")
+    other_income = row_float(user, "other_income")
+    income_total = income + other_income
     fixed_costs = row_float(user, "fixed_costs")
     etf_rate = row_float(user, "etf_savings")
     cash_rate = row_float(user, "cash_savings")
-    target_amount = row_float(user, "goal_amount")
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
+    property_equity = get_app_property_equity(user_id)
+    goal_description, target_amount, goal_current_amount, goal_monthly_rate = get_report_goal(user_id, user)
+    clarity_points = row_int(user, "clarity_points")
 
-    free_budget = income - fixed_costs
-    remaining = free_budget - total_expenses
+    free_budget = income_total - fixed_costs
+    remaining_budget = free_budget - total_expenses
     savings_plan = etf_rate + cash_rate
-    savings_quote = (savings_plan / income * 100.0) if income > 0 else 0.0
+    savings_rate = (savings_plan / income_total * 100.0) if income_total > 0 else 0.0
 
-    net_worth = float(snapshot["net_worth"]) if snapshot and snapshot["net_worth"] is not None else (current_investments + cash_reserve)
-    prev_net_worth = float(prev_snapshot["net_worth"]) if prev_snapshot and prev_snapshot["net_worth"] is not None else None
+    # A test report for the open month must show the current App and bot state.
+    # Closed months remain anchored to their saved monthly snapshot.
+    is_current_month = report_month == datetime.now().strftime("%Y-%m")
+    net_worth = (
+        current_investments + cash_reserve + property_equity
+        if is_current_month
+        else (
+            float(snapshot["net_worth"])
+            if snapshot and snapshot["net_worth"] is not None
+            else current_investments + cash_reserve + property_equity
+        )
+    )
+    prev_net_worth = (
+        float(prev_snapshot["net_worth"])
+        if prev_snapshot and prev_snapshot["net_worth"] is not None
+        else None
+    )
     net_worth_delta = net_worth - prev_net_worth if prev_net_worth is not None else None
+    net_worth_delta_percent = (
+        (net_worth_delta / prev_net_worth * 100.0)
+        if prev_net_worth not in (None, 0) and net_worth_delta is not None
+        else None
+    )
 
-    clarity_score = int(snapshot["clarity_score"]) if snapshot and snapshot["clarity_score"] is not None else 0
-    budget_ok = bool(snapshot["budget_ok"]) if snapshot and snapshot["budget_ok"] is not None else (remaining >= 0)
+    score_parts = calculate_clarity_score_v2(user_id, user, total_expenses, report_month)
+    clarity_score = score_parts["total"]
+    budget_ok = bool(snapshot["budget_ok"]) if snapshot and snapshot["budget_ok"] is not None else (remaining_budget >= 0)
 
-    _, _, month_label = month_bounds(report_month)
-    file_path = REPORTS_DIR / f"clarity_report_{user_id}_{report_month}.pdf"
+    top_categories = [
+        {"category": row["category"], "total": float(row["total"] or 0)}
+        for row in category_rows
+    ]
+    strongest_category = top_categories[0] if top_categories else None
+    goal_progress = (goal_current_amount / target_amount * 100.0) if target_amount > 0 else 0.0
+    # General savings are not assigned to an individual earmark.
+    # A goal-specific rate does not exist yet, so no forecast is published.
+    months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, goal_monthly_rate)
+    investment_summary = get_investment_summary(user_id, report_month, end)
+    monthly_execution = get_monthly_execution(user_id, report_month)
+    savings_progress = get_report_savings_progress(user_id, report_month, monthly_execution)
+    wealth_history = get_wealth_history(user_id, report_month)
+    portfolio_snapshots = get_latest_portfolio_snapshots(user_id)
+    badges = get_user_badges(user_id)
+    rank = get_rank(clarity_points)
+    details = parse_details(user)
+    budget_frame = get_budget_frame(user_id, report_month)
 
-    c = canvas.Canvas(str(file_path), pagesize=A4)
-    width, height = A4
+    if net_worth_delta is None:
+        development_text = "Der erste Referenzmonat ist aufgebaut. Ab Monat 2 wird die Entwicklung sichtbar."
+    elif net_worth_delta >= 0:
+        development_text = f"Dein Nettovermögen ist im Vergleich zum Vormonat um {net_worth_delta:.2f} EUR gestiegen."
+    else:
+        development_text = f"Dein Nettovermögen liegt {abs(net_worth_delta):.2f} EUR unter dem Vormonat."
 
-    dark = HexColor("#111111")
-    muted = HexColor("#666666")
-    line = HexColor("#E7E7E7")
-    green = HexColor("#1F8A4D")
-    red = HexColor("#C0392B")
+    confirmed_savings_amount = float(savings_progress.get("full_plan_amount") or 0)
+    if (
+        monthly_execution["income_confirmed"]
+        and monthly_execution["fixed_costs_confirmed"]
+        and savings_progress["full_plan_confirmed"]
+    ):
+        best_decision = (
+            "Dein Monatsplan wurde bestätigt: Gehalt, Fixkosten und "
+            f"{confirmed_savings_amount:.2f} EUR tatsächliche Sparleistung sind erfasst."
+        )
+    elif savings_progress["full_plan_confirmed"]:
+        best_decision = (
+            f"Deine tatsächliche Sparleistung von {confirmed_savings_amount:.2f} EUR "
+            "wurde für diesen Monat bestätigt."
+        )
+    elif investment_summary["net_contributions"] > 0:
+        best_decision = f"Du hast {investment_summary['net_contributions']:.2f} EUR investiert oder zurückgelegt."
+    elif savings_plan > 0:
+        best_decision = f"Deine geplante Sparrate liegt bei {savings_plan:.2f} EUR pro Monat."
+    elif tracked_days > 0:
+        best_decision = f"Du hast an {tracked_days} Tag(en) deine Finanzen sichtbar gemacht."
+    else:
+        best_decision = "Der erste Schritt ist gemacht: dein Profil steht."
 
-    def hr(y):
-        c.setStrokeColor(line)
-        c.setLineWidth(1)
-        c.line(50, y, width - 50, y)
+    if remaining_budget < 0:
+        focus = "Budgetdruck früh erkennen und variable Ausgaben senken."
+    elif strongest_category:
+        focus = f"{strongest_category['category']} bewusst beobachten."
+    else:
+        focus = "Konsequent weiter tracken, damit dein erster Vergleich entsteht."
 
-    y = height - 70
-    c.setFont("Helvetica-Bold", 26)
-    c.setFillColor(dark)
-    c.drawString(50, y, "Clarity Monatsreport")
+    money_map_insights = []
+    if biggest_expense:
+        money_map_insights.append(
+            f"Größte Einzelbuchung: {biggest_expense['merchant']} mit {biggest_expense['amount']:.2f} EUR."
+        )
+    if strongest_category:
+        money_map_insights.append(
+            f"Stärkste Kategorie: {strongest_category['category']} mit {strongest_category['total']:.2f} EUR."
+        )
+    if remaining_budget < 0:
+        money_map_insights.append("Dein freies Budget ist überzogen - hier liegt dein dringendster Hebel.")
+    elif strongest_category:
+        money_map_insights.append(
+            f"{strongest_category['category']} dominiert deinen Monat - hier liegt dein größter Hebel."
+        )
+    elif free_budget > 0:
+        money_map_insights.append("Dein freies Budget bleibt stabil - diesen Vorsprung solltest du halten.")
 
-    y -= 28
-    c.setFont("Helvetica", 13)
-    c.setFillColor(muted)
-    c.drawString(50, y, month_label)
+    recap_good = "Deine Struktur steht: Einnahmen, Fixkosten, Sparziel und Vermögenswerte sind erfasst."
+    if tracked_days >= 7:
+        recap_good = f"Du hast {tracked_days} Tracking-Tage aufgebaut. Das ist eine starke Datenbasis."
+    if investment_summary["recurring_in"] > 0:
+        recap_good = f"Deine Sparplan-Konstanz ist sichtbar: {investment_summary['recurring_in']:.2f} EUR wurden planmäßig erfasst."
 
-    y -= 38
-    hr(y)
+    needs_attention = "Noch fehlen Vergleichsmonate. Der Report wird mit jedem Monatsabschluss präziser."
+    if tracked_days < 3:
+        needs_attention = "Der Monat ist noch frisch. Tracke weiter, bevor du aus einzelnen Tagen Schlüsse ziehst."
+    elif remaining_budget < 0:
+        needs_attention = "Dein Restbudget war negativ. Hier liegt der wichtigste Hebel."
+    elif strongest_category:
+        needs_attention = f"Behalte {strongest_category['category']} im Blick, weil diese Kategorie den Monat dominiert."
 
-    y -= 38
-    c.setFont("Helvetica", 11)
-    c.setFillColor(muted)
-    c.drawString(50, y, "Nettovermoegen")
-    c.setFont("Helvetica-Bold", 24)
-    c.setFillColor(dark)
-    c.drawString(50, y - 24, f"{net_worth:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
+    next_lever = "Diesen Monat weiter sauber tracken."
+    if target_amount > 0 and goal_current_amount < target_amount:
+        next_lever = "Ordne deinem Ziel nur dann Geld zu, wenn du es bewusst dafür reservieren möchtest."
 
-    if net_worth_delta is not None:
-        c.setFont("Helvetica", 11)
-        c.setFillColor(green if net_worth_delta >= 0 else red)
-        prefix = "+" if net_worth_delta >= 0 else ""
-        c.drawString(50, y - 46, f"vs. Vormonat: {prefix}{net_worth_delta:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
+    data = {
+        "meta": {
+            "user_id": user_id,
+            "report_month": report_month,
+            "period_start": start,
+            "period_end": end,
+            "month_end": period["month_end"],
+            "comparison_mode": period["comparison_mode"],
+            "comparison_cutoff_day": period["cutoff_day"],
+            "month_label": month_label,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "tracked_days": tracked_days,
+            "has_minimum_tracking": tracked_days >= MIN_TRACKING_DAYS,
+        },
+        "profile": {
+            "income": income,
+            "other_income": other_income,
+            "income_total": income_total,
+            "fixed_costs": fixed_costs,
+            "details": details,
+            "etf_rate": etf_rate,
+            "cash_rate": cash_rate,
+            "savings_plan": savings_plan,
+            "savings_rate": savings_rate,
+            "current_investments": current_investments,
+            "cash_reserve": cash_reserve,
+            "property_equity": property_equity,
+            "net_worth": net_worth,
+        },
+        "pages": {
+            "cover": {
+                "period": month_label,
+                # A planned savings rate is not a completed step toward a goal.
+                "freedom_step": (
+                    confirmed_savings_amount
+                    if savings_progress["full_plan_confirmed"]
+                    else savings_progress["automatic_etf_amount"]
+                ),
+                "development": net_worth_delta,
+                "development_percent": net_worth_delta_percent,
+                "development_text": development_text,
+            },
+            "financial_story": {
+                "net_worth": net_worth,
+                "cash": cash_reserve,
+                "investments": current_investments,
+                "previous_net_worth": prev_net_worth,
+                "delta": net_worth_delta,
+                "text": development_text,
+            },
+            "month": {
+                "best_decision": best_decision,
+                "biggest_expense": biggest_expense,
+                "strongest_category": strongest_category,
+                "focus": focus,
+                "total_expenses": total_expenses,
+                "remaining_budget": remaining_budget,
+                "tracked_days": tracked_days,
+            },
+            "score": {
+                "clarity_score": clarity_score,
+                "parts": score_parts,
+                "rank_name": score_parts["rank_name"],
+                "rank_icon": score_parts["rank_icon"],
+                "phase": score_parts["phase"],
+                "proof_days": score_parts["proof_days"],
+                "tracking_label": score_parts["tracking_label"],
+                "days_to_unlock": score_parts["days_to_unlock"],
+                "next_unlock_level": score_parts["next_unlock_level"],
+                "share_cta": "Share Score",
+            },
+            "wealth_journey": {
+                "points": wealth_history,
+                "is_visible": len(wealth_history) >= 2,
+                "note": "Die Vermögenskurve wird ab dem zweiten Monatsabschluss sichtbar.",
+                "investment_summary": investment_summary,
+                "monthly_execution": monthly_execution,
+                "savings_progress": savings_progress,
+                "portfolio_snapshots": portfolio_snapshots,
+            },
+            "goal": {
+                "description": goal_description or "Dein Ziel",
+                "target_amount": target_amount,
+                "current_amount": goal_current_amount,
+                "goal_monthly_rate": goal_monthly_rate,
+                "progress_percent": min(100.0, goal_progress),
+                "months_to_goal": months_to_goal,
+                "forecast_text": next_lever,
+            },
+            "money_map": {
+                "categories": top_categories,
+                "insights": money_map_insights,
+            },
+            "budget": budget_frame,
+            "milestones": {
+                "clarity_points": clarity_points,
+                "rank": rank,
+                "badges": badges,
+            },
+            "recap": {
+                "what_went_well": recap_good,
+                "needs_attention": needs_attention,
+                "next_lever": next_lever,
+                "benchmark": None,
+            },
+            "closing": {
+                "headline": "Jeder Euro hat eine Aufgabe.",
+                "message": "Der nächste Monat baut auf genau diesen Entscheidungen auf.",
+            },
+        },
+    }
 
-    c.setFont("Helvetica", 11)
-    c.setFillColor(muted)
-    c.drawString(320, y, "Clarity Score")
-    c.setFont("Helvetica-Bold", 24)
-    c.setFillColor(dark)
-    c.drawString(320, y - 24, f"{clarity_score}/100")
+    # --- KI-personalisierte Texte (mit Fallback auf die Formel-Texte oben) ---
+    # generate_ai_narratives liefert bei fehlendem Key/Fehler/deaktivierter KI ein
+    # leeres Dict; dann bleibt jedes Feld auf seinem Formel-Text -> altes Verhalten.
+    try:
+        from report_ai_text import generate_ai_narratives
+        ai = generate_ai_narratives(data)
+    except Exception as e:
+        logger.warning("KI-Report-Texte konnten nicht erzeugt werden: %s", e)
+        ai = {}
 
-    y -= 90
-    hr(y)
+    data["ai_narratives"] = ai
+    p = data["pages"]
+    if ai.get("development"):
+        p["cover"]["development_text"] = ai["development"]
+        p["financial_story"]["text"] = ai["development"]
+    if ai.get("best_decision") and not all(monthly_execution.values()):
+        p["month"]["best_decision"] = ai["best_decision"]
+    if ai.get("focus"):
+        p["month"]["focus"] = ai["focus"]
+    if ai.get("recap_good"):
+        p["recap"]["what_went_well"] = ai["recap_good"]
+    if ai.get("recap_attention"):
+        p["recap"]["needs_attention"] = ai["recap_attention"]
+    if ai.get("recap_lever"):
+        p["recap"]["next_lever"] = ai["recap_lever"]
 
-    y -= 34
-    c.setFont("Helvetica-Bold", 16)
-    c.setFillColor(dark)
-    c.drawString(50, y, "Monatsueberblick")
+    return data
 
-    y -= 28
+
+def _report_json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _report_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_report_json_safe(item) for item in value]
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        raise ValueError("report_snapshot_non_finite_number")
+    return value
+
+
+def _report_previous_month(report_month: str) -> str:
+    year, month = map(int, report_month.split("-"))
+    return f"{year - 1:04d}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"
+
+
+def _report_cash_truth(user_id: int) -> dict:
+    with get_db() as conn:
+        current = conn.execute(
+            "SELECT current_cash FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        current_cash = round(float(current["current_cash"] or 0), 2) if current else 0.0
+        feature_enabled = bool(conn.execute(
+            """SELECT 1 FROM app_user_features
+                WHERE user_id = ? AND feature_key = 'multi_cash_accounts_v1' AND enabled = 1
+                LIMIT 1""", (user_id,)
+        ).fetchone()) if table_exists(conn, "app_user_features") else False
+        accounts = []
+        account_total = None
+        if feature_enabled and table_exists(conn, "app_financial_accounts"):
+            rows = conn.execute(
+                """SELECT id, name, account_type, balance, currency
+                     FROM app_financial_accounts
+                    WHERE user_id = ? AND status = 'active'
+                    ORDER BY id""",
+                (user_id,),
+            ).fetchall()
+            accounts = [
+                {
+                    "id": int(row["id"]),
+                    "name": str(row["name"] or ""),
+                    "account_type": str(row["account_type"] or ""),
+                    "balance": round(float(row["balance"] or 0), 2),
+                    "currency": str(row["currency"] or "EUR"),
+                }
+                for row in rows
+            ]
+            account_total = round(sum(row["balance"] for row in accounts), 2)
+
+    if feature_enabled and account_total is not None and abs(account_total - current_cash) > 0.01:
+        raise ValueError(
+            f"report_cash_invariant_failed:user={user_id}:accounts={account_total}:current_cash={current_cash}"
+        )
+    return {
+        "source": "financial_accounts" if feature_enabled else "legacy_current_cash",
+        "current_cash": current_cash,
+        "account_total": account_total,
+        "accounts": accounts,
+        "invariant_ok": account_total is None or abs(account_total - current_cash) <= 0.01,
+    }
+
+
+def _report_goal_truth(user_id: int, primary_description: str, primary_target: float,
+                       primary_current: float, primary_rate: float | None = None) -> dict:
+    goals = []
+    primary = None
+    if primary_target > 0:
+        primary = {
+            "id": "primary",
+            "name": primary_description or "Dein Ziel",
+            "target_amount": round(primary_target, 2),
+            "current_amount": round(primary_current, 2),
+            "goal_monthly_rate": primary_rate,
+            "is_primary": True,
+        }
+        goals.append(primary)
+    with get_db() as conn:
+        if table_exists(conn, "app_goals"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)").fetchall()}
+            rows = conn.execute("SELECT * FROM app_goals WHERE user_id = ?", (user_id,)).fetchall()
+            for row in rows:
+                goal_id = row["goal_id"] if "goal_id" in columns else row["id"]
+                item = {
+                    "id": str(goal_id),
+                    "name": str(row["name"] or ""),
+                    "target_amount": round(float(row["target_amount"] or 0), 2),
+                    "current_amount": round(float(row["current_amount"] or 0), 2),
+                    "goal_monthly_rate": (round(float(row["goal_monthly_rate"]), 2)
+                                           if "goal_monthly_rate" in columns
+                                           and row["goal_monthly_rate"] is not None
+                                           and float(row["goal_monthly_rate"] or 0) > 0 else None),
+                    "is_primary": bool(row["is_primary"]) if "is_primary" in columns else False,
+                }
+                goals.append(item)
+                if primary is None and item["is_primary"]:
+                    primary = item
+    return {"primary": primary, "goals": goals}
+
+
+def _report_investment_truth(user_id: int, report_month: str, cutoff_date: str | None = None) -> dict:
+    summary = get_investment_summary(user_id, report_month, cutoff_date)
+    holdings = []
+    with get_db() as conn:
+        if table_exists(conn, "portfolio_holdings"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_holdings)").fetchall()}
+            selected = [name for name in (
+                "id", "instrument_label", "instrument_type", "isin", "price_symbol",
+                "monthly_contribution", "total_invested", "market_value", "quantity",
+                "quote_currency", "valuation_enabled", "last_price", "last_checked_at"
+            ) if name in columns]
+            if selected:
+                rows = conn.execute(
+                    f"SELECT {', '.join(selected)} FROM portfolio_holdings WHERE user_id = ? ORDER BY id",
+                    (user_id,),
+                ).fetchall()
+                holding_ids = {int(row["id"]) for row in rows}
+                contribution_rows = {}
+                if "holding_id" in {item[1] for item in conn.execute("PRAGMA table_info(investment_events)").fetchall()}:
+                    events = conn.execute(
+                        f"""SELECT holding_id, COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS amount
+                             FROM investment_events
+                            WHERE user_id = ? AND strftime('%Y-%m', created_at) = ? AND holding_id IS NOT NULL
+                              AND DATE(created_at) <= DATE(?)
+                              AND source IN ({REPORT_CONTRIBUTION_SOURCE_SQL})
+                            GROUP BY holding_id""",
+                        (
+                            user_id,
+                            report_month,
+                            cutoff_date or month_bounds(report_month)[1],
+                            *REPORT_CONTRIBUTION_SOURCES,
+                        ),
+                    ).fetchall()
+                    contribution_rows = {int(row["holding_id"]): round(float(row["amount"] or 0), 2) for row in events}
+                for row in rows:
+                    item = {key: row[key] for key in selected}
+                    item["id"] = int(item["id"])
+                    item["contribution"] = contribution_rows.get(item["id"], 0.0)
+                    item["contribution_data_available"] = item["id"] in contribution_rows
+                    holdings.append(_report_json_safe(item))
+    return {
+        "contributions": summary,
+        "market_value": {
+            "amount": round(float(summary.get("market_value") or 0), 2) if summary.get("market_value") is not None else None,
+            "available": False,
+        },
+        "market_movement": {"amount": None, "available": False},
+        "holdings": holdings,
+    }
+
+
+def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
+    """Build one allocation that reconciles exactly to the frozen wealth total."""
+    cash_total = round(float(cash.get("current_cash") or 0), 2)
+    investment_total = round(float(profile.get("current_investments") or 0), 2)
+    property_equity = round(float(profile.get("property_equity") or 0), 2)
+    allocation = []
+
+    accounts = cash.get("accounts") or []
+    if accounts:
+        for account in accounts:
+            amount = round(float(account.get("balance") or 0), 2)
+            if amount > 0:
+                allocation.append({
+                    "key": f"cash:{account.get('id')}",
+                    "label": str(account.get("name") or "Cash"),
+                    "asset_class": str(account.get("account_type") or "cash"),
+                    "amount": amount,
+                    "source": "financial_account",
+                })
+    elif cash_total > 0:
+        allocation.append({
+            "key": "cash",
+            "label": "Cash",
+            "asset_class": "cash",
+            "amount": cash_total,
+            "source": "legacy_cash",
+        })
+
+    holding_groups = {}
+    for holding in investments.get("holdings") or []:
+        live_value = holding.get("market_value")
+        use_live = bool(holding.get("valuation_enabled")) and live_value is not None
+        amount = live_value if use_live else holding.get("total_invested")
+        amount = round(max(0.0, float(amount or 0)), 2)
+        if amount <= 0:
+            continue
+        asset_class = str(holding.get("instrument_type") or "investment").lower()
+        label = {"etf": "ETFs", "stock": "Aktien", "crypto": "Krypto"}.get(asset_class, "Investments")
+        holding_groups[label] = round(holding_groups.get(label, 0.0) + amount, 2)
+
+    grouped_total = round(sum(holding_groups.values()), 2)
+    if grouped_total <= investment_total + 0.01:
+        for label, amount in sorted(holding_groups.items(), key=lambda item: item[1], reverse=True):
+            allocation.append({
+                "key": f"investment:{label.casefold()}",
+                "label": label,
+                "asset_class": "investment",
+                "amount": amount,
+                "source": "portfolio_holdings",
+            })
+        residual = round(investment_total - grouped_total, 2)
+        if residual > 0.01:
+            allocation.append({
+                "key": "investment:unassigned",
+                "label": "Weitere Investments",
+                "asset_class": "investment",
+                "amount": residual,
+                "source": "current_investments_residual",
+            })
+    elif investment_total > 0:
+        allocation.append({
+            "key": "investments",
+            "label": "Investments",
+            "asset_class": "investment",
+            "amount": investment_total,
+            "source": "current_investments",
+        })
+
+    if property_equity > 0:
+        allocation.append({
+            "key": "property",
+            "label": "Immobilien-Eigenkapital",
+            "asset_class": "property",
+            "amount": property_equity,
+            "source": "app_properties",
+        })
+
+    total = round(cash_total + investment_total + property_equity, 2)
+    for item in allocation:
+        item["share"] = round(item["amount"] / total * 100, 2) if total > 0 else 0.0
+    return {
+        "total": total,
+        "cash": cash_total,
+        "investments": investment_total,
+        "property_equity": property_equity,
+        "allocation": allocation,
+        "reconciles": abs(round(sum(item["amount"] for item in allocation), 2) - total) <= 0.01,
+        "goals_included": False,
+    }
+
+
+def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
+    meta = data.get("meta", {})
+    current_end = str(meta.get("period_end") or month_bounds(report_month)[1])
+    comparison_mode = str(meta.get("comparison_mode") or "full")
+    cutoff_day = int(meta.get("comparison_cutoff_day") or int(current_end[-2:]))
+    previous_month = _report_previous_month(report_month)
+    previous_end = previous_period_end(report_month, cutoff_day) if comparison_mode == "partial" else month_bounds(previous_month)[1]
+    rows = get_report_expense_rows(user_id, report_month, current_end)
+    previous_rows = get_report_expense_rows(user_id, previous_month, previous_end)
+    eligible = [row for row in rows if row["classification"] == "consumption"]
+    largest_expense = None
+    if eligible:
+        largest = max(eligible, key=lambda row: row["amount"])
+        largest_expense = {
+            "merchant": largest["merchant"],
+            "category": largest["category"],
+            "amount": round(float(largest["amount"]), 2),
+            "transaction_id": largest["id"],
+        }
+
+    def aggregate(items, key_name):
+        grouped = {}
+        for row in items:
+            key = row[key_name]
+            entry = grouped.setdefault(key, {"amount": 0.0, "transaction_count": 0, "categories": {}})
+            entry["amount"] += row["amount"]
+            entry["transaction_count"] += 1
+            category = str(row.get("category") or "SONSTIGES")
+            entry["categories"][category] = entry["categories"].get(category, 0.0) + row["amount"]
+        return grouped
+
+    categories = aggregate(eligible, "category")
+    previous_categories = aggregate(
+        [row for row in previous_rows if row["classification"] == "consumption"], "category"
+    )
+    category_aggregate = []
+    for category, item in sorted(categories.items(), key=lambda pair: pair[1]["amount"], reverse=True):
+        amount = round(item["amount"], 2)
+        previous = round(previous_categories.get(category, {}).get("amount", 0.0), 2)
+        category_aggregate.append({
+            "category": category,
+            "amount": amount,
+            "transaction_count": item["transaction_count"],
+            "avg_transaction": round(amount / item["transaction_count"], 2),
+            "share": round(amount / sum(row["amount"] for row in eligible) * 100, 2) if eligible else 0.0,
+            "previous_amount": previous,
+            "delta": round(amount - previous, 2),
+            "previous_transaction_count": previous_categories.get(category, {}).get("transaction_count", 0),
+            "transaction_count_delta": item["transaction_count"] - previous_categories.get(category, {}).get("transaction_count", 0),
+        })
+
+    merchants = aggregate(eligible, "merchant_key")
+    previous_merchants = aggregate(
+        [row for row in previous_rows if row["classification"] == "consumption"], "merchant_key"
+    )
+    merchant_labels = {row["merchant_key"]: row["merchant"] for row in eligible}
+    merchant_aggregate = []
+    for merchant_key, item in sorted(merchants.items(), key=lambda pair: pair[1]["amount"], reverse=True):
+        amount = round(item["amount"], 2)
+        previous = round(previous_merchants.get(merchant_key, {}).get("amount", 0.0), 2)
+        merchant_aggregate.append({
+            "merchant": merchant_labels.get(merchant_key, merchant_key),
+            "category": max(item["categories"], key=item["categories"].get) if item["categories"] else "SONSTIGES",
+            "amount": amount,
+            "transaction_count": item["transaction_count"],
+            "avg_transaction": round(amount / item["transaction_count"], 2),
+            "previous_amount": previous,
+            "delta": round(amount - previous, 2),
+            "previous_transaction_count": previous_merchants.get(merchant_key, {}).get("transaction_count", 0),
+            "transaction_count_delta": item["transaction_count"] - previous_merchants.get(merchant_key, {}).get("transaction_count", 0),
+        })
+
+    class_totals = {}
+    for row in rows:
+        class_totals[row["classification"]] = round(
+            class_totals.get(row["classification"], 0.0) + row["amount"], 2
+        )
+
+    profile = data.get("profile", {})
+    execution = data.get("pages", {}).get("wealth_journey", {}).get("monthly_execution", {})
+    goal = data.get("pages", {}).get("goal", {})
+    budget = data.get("pages", {}).get("budget", {})
+    cash = _report_cash_truth(user_id)
+    investments = _report_investment_truth(user_id, report_month, current_end)
+    savings_progress = data.get("pages", {}).get("wealth_journey", {}).get("savings_progress", {})
+    previous_eligible = [row for row in previous_rows if row["classification"] == "consumption"]
+    previous_investments = get_investment_summary(user_id, previous_month, previous_end)
+    previous_savings = get_report_savings_progress(
+        user_id, previous_month, get_monthly_execution(user_id, previous_month)
+    )
+    previous_savings_amount = (
+        previous_savings.get("full_plan_amount")
+        if previous_savings.get("full_plan_confirmed")
+        else previous_savings.get("automatic_etf_amount")
+    )
+    savings_amount = (
+        float(savings_progress.get("full_plan_amount") or 0)
+        if savings_progress.get("full_plan_confirmed")
+        else float(savings_progress.get("automatic_etf_amount") or 0)
+    )
+    return {
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "period": data.get("meta", {}),
+        "income": {
+            "amount": profile.get("income_total", 0),
+            "other_income": profile.get("other_income", 0),
+            "confirmed": bool(execution.get("income_confirmed")),
+            "source": "confirmed_month" if execution.get("income_confirmed") else "profile_fallback",
+        },
+        "expenses": {
+            "classification_totals": class_totals,
+            "total_consumption": round(sum(row["amount"] for row in eligible), 2),
+            "transaction_count": len(eligible),
+            "tracked_days": data.get("meta", {}).get("tracked_days", 0),
+            "previous_total_consumption": round(sum(row["amount"] for row in previous_eligible), 2),
+            "previous_transaction_count": len(previous_eligible),
+            "categories": category_aggregate,
+            "merchants": merchant_aggregate,
+            "largest_expense": largest_expense,
+        },
+        "fixed_costs": {
+            "amount": profile.get("fixed_costs", 0),
+            "confirmed": bool(execution.get("fixed_costs_confirmed")),
+            "source": "confirmed_month" if execution.get("fixed_costs_confirmed") else "profile_fallback",
+        },
+        "budget": budget,
+        "cash": cash,
+        "savings": {
+            "actual_amount": round(max(0.0, savings_amount), 2),
+            "confirmed": bool(savings_progress.get("full_plan_confirmed")),
+            "automatic_etf_amount": round(
+                max(0.0, float(savings_progress.get("automatic_etf_amount") or 0)), 2
+            ),
+            "source": str(savings_progress.get("confirmation_source") or "unconfirmed"),
+        },
+        "investments": investments,
+        "property": {
+            "equity": profile.get("property_equity", 0),
+            "source": "app_properties",
+        },
+        "goals": _report_goal_truth(
+            user_id, goal.get("description", ""), goal.get("target_amount", 0),
+            goal.get("current_amount", 0), goal.get("goal_monthly_rate")
+        ),
+        "score": data.get("pages", {}).get("score", {}),
+        "wealth": _report_wealth_truth(profile, cash, investments),
+        "previous_month": {
+            "report_month": previous_month,
+            "comparison_mode": comparison_mode,
+            "period_end": previous_end,
+            "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
+            "investment_contributions": previous_investments,
+            "savings": {
+                "actual_amount": round(max(0.0, float(previous_savings_amount or 0)), 2),
+                "confirmed": bool(previous_savings.get("full_plan_confirmed")),
+                "source": str(previous_savings.get("confirmation_source") or "unconfirmed"),
+            },
+        },
+    }
+
+
+def validate_report_snapshot(data: dict) -> dict:
+    payload = _report_json_safe(data)
+    truth = payload.get("report_truth", {})
+    cash = truth.get("cash", {})
+    story = payload.get("report_story_v2")
+    checks = {
+        "cash_invariant": bool(cash.get("invariant_ok")),
+        "no_non_finite_numbers": True,
+        "goal_not_added_to_net_worth": True,
+        "investment_market_movement_not_invented": not truth.get("investments", {}).get("market_movement", {}).get("available", False),
+        "story_v2_valid": (
+            story is None
+            or (
+                story.get("story_version") == 2
+                and story.get("page_count") == 10
+                and len(story.get("pages") or {}) == 10
+                and (story.get("quality") or {}).get("unique_primary_metrics") is True
+            )
+        ),
+    }
+    if not all(checks.values()):
+        raise ValueError("report_snapshot_validation_failed:" + ",".join(key for key, value in checks.items() if not value))
+    return checks
+
+
+def get_or_create_report_snapshot(user_id: int, report_month: str) -> dict:
+    """Return one immutable V2 snapshot and never rebuild a finalized report."""
+    ensure_report_snapshots_v2_table()
+    with get_db() as conn:
+        existing = conn.execute(
+            """SELECT id, status, report_data_json, data_hash, schema_version
+                 FROM report_snapshots_v2
+                WHERE user_id = ? AND report_month = ? AND schema_version = ?""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()
+    if existing and existing["status"] == "finalized":
+        return {
+            "id": int(existing["id"]),
+            "status": existing["status"],
+            "schema_version": int(existing["schema_version"]),
+            "data_hash": existing["data_hash"],
+            "data": json.loads(existing["report_data_json"]),
+        }
+
+    data = build_report_data(user_id, report_month)
+    if MIN_TRACKING_DAYS > 0 and int(data.get("meta", {}).get("tracked_days", 0)) < MIN_TRACKING_DAYS:
+        raise ReportSkipped(
+            f"Zu wenig Tracking-Tage: {data.get('meta', {}).get('tracked_days', 0)}/{MIN_TRACKING_DAYS}"
+        )
+    data["report_truth"] = _build_report_truth_layer(user_id, report_month, data)
+    from report_story_v2 import build_report_story_v2
+    data["report_story_v2"] = build_report_story_v2(data)
+    validation = validate_report_snapshot(data)
+    data["meta"]["snapshot_schema_version"] = REPORT_SNAPSHOT_SCHEMA_VERSION
+    serialized = json.dumps(_report_json_safe(data), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    data_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    data["meta"]["snapshot_ref"] = {
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "data_hash": data_hash,
+    }
+    serialized = json.dumps(_report_json_safe(data), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    ai_json = json.dumps(data.get("ai_narratives") or {}, ensure_ascii=False, sort_keys=True)
+
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """SELECT id, status, report_data_json, data_hash, schema_version
+                 FROM report_snapshots_v2
+                WHERE user_id = ? AND report_month = ? AND schema_version = ?""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()
+        if existing and existing["status"] == "finalized":
+            conn.commit()
+            return {
+                "id": int(existing["id"]), "status": existing["status"],
+                "schema_version": int(existing["schema_version"]), "data_hash": existing["data_hash"],
+                "data": json.loads(existing["report_data_json"]),
+            }
+        cursor = conn.execute(
+            """INSERT INTO report_snapshots_v2
+                (user_id, report_month, schema_version, status, finalized_at,
+                 report_data_json, ai_text_json, validation_json, data_hash)
+               VALUES (?, ?, ?, 'finalized', CURRENT_TIMESTAMP, ?, ?, ?, ?)
+               ON CONFLICT(user_id, report_month, schema_version) DO UPDATE SET
+                 status = 'finalized', finalized_at = CURRENT_TIMESTAMP,
+                 report_data_json = excluded.report_data_json,
+                 ai_text_json = excluded.ai_text_json,
+                 validation_json = excluded.validation_json,
+                 data_hash = excluded.data_hash""",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION, serialized, ai_json,
+             json.dumps(validation, sort_keys=True), data_hash),
+        )
+        conn.commit()
+        snapshot_id = int(cursor.lastrowid or conn.execute(
+            "SELECT id FROM report_snapshots_v2 WHERE user_id = ? AND report_month = ? AND schema_version = ?",
+            (user_id, report_month, REPORT_SNAPSHOT_SCHEMA_VERSION),
+        ).fetchone()[0])
+    return {
+        "id": snapshot_id,
+        "status": "finalized",
+        "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
+        "data_hash": data_hash,
+        "data": json.loads(serialized),
+    }
+
+
+def draw_cover_page(c, data):
+    cover = data["pages"]["cover"]
+    month_name, year = cover["period"].split(" ", 1) if " " in cover["period"] else (cover["period"], "")
+    has_development = cover.get("development_percent") is not None
+    development = fmt_percent_cover(cover.get("development_percent")) if has_development else "-"
+    development_sub = "zum Vormonat" if has_development else "ab Monat 2 sichtbar"
+    development_size = 41 if has_development else 54
+
+    begin_page(c)
+    draw_clarity_logo(c, MARGIN_X + 8, PAGE_H - 66, 1.0)
+
+    c.setFont(FONT_DISPLAY, 72)
+    c.setFillColor(INK)
+    c.drawString(MARGIN_X, PAGE_H - 165, "Rov.E Report")
+
+    y = PAGE_H - 225
+    card_w = 236
+    card_h = 215
+    gap = 14
+    draw_cover_card(
+        c, MARGIN_X, y, card_w, card_h,
+        "calendar", "Zeitraum", month_name.upper(), year, main_size=59, sub_size=29
+    )
+    draw_cover_card(
+        c, MARGIN_X + card_w + gap, y, card_w, card_h,
+        "mountain", "Fortschritt", fmt_eur_cover(cover["freedom_step"]),
+        "näher an deinem Ziel", main_size=61, sub_size=22
+    )
+    draw_cover_card(
+        c, MARGIN_X + (card_w + gap) * 2, y, card_w, card_h,
+        "trend", "Entwicklung", development, development_sub, main_size=max(development_size, 61), sub_size=22
+    )
+    draw_footer(c, 1)
+    end_page(c)
+
+
+def draw_financial_story_page(c, data):
+    story = data["pages"]["financial_story"]
+    begin_page(c, "Financial Story")
+    draw_label(c, MARGIN_X, PAGE_H - 145, "Nettovermögen")
+    draw_value(c, MARGIN_X, PAGE_H - 185, fmt_eur(story["net_worth"]), 30)
     c.setFont("Helvetica", 12)
-    c.setFillColor(dark)
-    c.drawString(50, y, f"Einkommen gesamt: {income:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"Fixkosten: {fixed_costs:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"Ausgaben im Monat: {total_expenses:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"Restbudget: {remaining:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"ETF-Sparrate: {etf_rate:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"Cash-Sparrate: {cash_rate:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-    y -= 22
-    c.drawString(50, y, f"Geplante Sparquote: {savings_quote:.1f}%")
-    y -= 22
-    c.drawString(50, y, f"Tracking-Tage: {tracked_days}")
+    c.setFillColor(GOOD if (story["delta"] or 0) >= 0 else ALERT)
+    c.drawString(MARGIN_X, PAGE_H - 210, f"Veränderung: {fmt_delta(story['delta'])}")
 
-    y -= 40
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, y, "Top Kategorien")
+    y = PAGE_H - 285
+    draw_card(c, MARGIN_X, y, 220, 90, "Cash", fmt_eur(story["cash"]), value_size=18)
+    draw_card(c, MARGIN_X + 250, y, 220, 90, "Investments", fmt_eur(story["investments"]), value_size=18)
+    draw_body(c, MARGIN_X, y - 130, story["text"], width_chars=78, size=12, leading=18, max_lines=5)
+    end_page(c)
 
-    y -= 26
+
+def draw_month_page(c, data):
+    month = data["pages"]["month"]
+    biggest = month["biggest_expense"]
+    strongest = month["strongest_category"]
+    biggest_value = "Keine Ausgabe" if not biggest else f"{biggest['merchant']} · {fmt_eur(biggest['amount'])}"
+    strongest_value = "Noch keine Kategorie" if not strongest else f"{strongest['category']} · {fmt_eur(strongest['total'])}"
+
+    begin_page(c, "Dein Monat")
+    y = PAGE_H - 135
+    draw_card(c, MARGIN_X, y, 230, 105, "Beste Entscheidung", month["best_decision"], value_size=13)
+    draw_card(c, MARGIN_X + 260, y, 230, 105, "Größte Ausgabe", biggest_value, value_size=13)
+    y -= 135
+    draw_card(c, MARGIN_X, y, 230, 105, "Stärkste Kategorie", strongest_value, value_size=13)
+    draw_card(c, MARGIN_X + 260, y, 230, 105, "Fokus", month["focus"], value_size=13)
+    end_page(c)
+
+
+def draw_score_page(c, data):
+    score = data["pages"]["score"]
+    parts = score["parts"]
+    begin_page(c, "Rov.E Score")
+    draw_score_circle(c, PAGE_W / 2, PAGE_H - 220, 70, score["clarity_score"])
+    c.setFont("Helvetica-Bold", 18)
+    c.setFillColor(INK)
+    c.drawCentredString(PAGE_W / 2, PAGE_H - 320, score["rank_name"])
     c.setFont("Helvetica", 11)
-    if categories:
-        for row in categories:
-            c.drawString(50, y, f"{row['category']}: {float(row['total'] or 0):,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
-            y -= 20
-            if y < 100:
-                c.showPage()
-                y = height - 70
-                c.setFont("Helvetica", 11)
-    else:
-        c.drawString(50, y, "Keine Ausgaben in diesem Monat gefunden.")
-        y -= 20
+    c.setFillColor(MUTED)
+    tracking_line = score.get("tracking_label") or f"{score['proof_days']}d verified"
+    proof_line = f"{score['phase']} · {tracking_line}"
+    c.drawCentredString(PAGE_W / 2, PAGE_H - 342, proof_line)
+    if score["days_to_unlock"] > 0:
+        unlock = f"Noch {score['days_to_unlock']} Tage bis {score['next_unlock_level']}+ freigeschaltet wird."
+        c.drawCentredString(PAGE_W / 2, PAGE_H - 360, unlock)
 
-    if y < 170:
-        c.showPage()
-        y = height - 70
+    rows = [
+        ("Budget Control", f"{parts.get('budget', 0)}/25"),
+        ("Savings Execution", f"{parts.get('savings', 0)}/25"),
+        ("Tracking Consistency", f"{parts.get('consistency', 0)}/25"),
+        ("Financial Structure", f"{parts.get('structure', 0)}/25"),
+    ]
+    draw_section_rows(c, MARGIN_X, PAGE_H - 410, rows)
+    c.setFont("Helvetica", 10)
+    c.setFillColor(MUTED)
+    c.drawRightString(PAGE_W - MARGIN_X, 75, score.get("share_cta", "Share Score"))
+    end_page(c)
 
-    hr(y - 10)
-    y -= 40
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, y, "Clarity Insight")
 
+def draw_wealth_journey_page(c, data):
+    journey = data["pages"]["wealth_journey"]
+    summary = journey["investment_summary"]
+    begin_page(c, "Wealth Journey")
+    draw_line_chart(c, MARGIN_X, PAGE_H - 355, PAGE_W - 2 * MARGIN_X, 190, journey["points"])
+    if not journey["is_visible"]:
+        draw_body(c, MARGIN_X, PAGE_H - 390, journey["note"], width_chars=78, size=11, max_lines=2)
+
+    y = PAGE_H - 455
+    draw_card(c, MARGIN_X, y, 150, 85, "Sparplan", fmt_eur(summary["recurring_in"]), value_size=15)
+    draw_card(c, MARGIN_X + 170, y, 150, 85, "Einmalig", fmt_eur(summary["one_time_in"]), value_size=15)
+    draw_card(c, MARGIN_X + 340, y, 150, 85, "Gesamt", fmt_eur(summary["net_contributions"]), value_size=15)
+    end_page(c)
+
+
+def draw_goal_page(c, data):
+    goal = data["pages"]["goal"]
+    begin_page(c, "Your Goal")
+    draw_label(c, MARGIN_X, PAGE_H - 140, "Ziel")
+    draw_value(c, MARGIN_X, PAGE_H - 180, goal["description"], 28)
+    draw_label(c, MARGIN_X, PAGE_H - 240, "Fortschritt")
+    draw_value(c, MARGIN_X, PAGE_H - 275, f"{goal['progress_percent']:.1f}%", 30)
+    draw_progress_bar(c, MARGIN_X, PAGE_H - 315, PAGE_W - 2 * MARGIN_X, 14, goal["progress_percent"])
+    c.setFont("Helvetica", 12)
+    c.setFillColor(INK)
+    c.drawString(MARGIN_X, PAGE_H - 370, goal["forecast_text"])
+    end_page(c)
+
+
+def draw_money_map_page(c, data):
+    money = data["pages"]["money_map"]
+    begin_page(c, "Dein Geld im Überblick")
+    categories = money["categories"][:6]
+    total = sum(row["total"] for row in categories) or 1
+    y = PAGE_H - 145
+    for row in categories:
+        pct = row["total"] / total * 100
+        c.setFont("Helvetica", 11)
+        c.setFillColor(INK)
+        c.drawString(MARGIN_X, y, row["category"])
+        c.drawRightString(PAGE_W - MARGIN_X, y, fmt_eur(row["total"]))
+        draw_progress_bar(c, MARGIN_X, y - 18, PAGE_W - 2 * MARGIN_X, 8, pct)
+        y -= 48
+    if not categories:
+        draw_body(c, MARGIN_X, y, "Noch keine Kategorien für diesen Monat.", size=12)
+
+    y = 230
+    draw_label(c, MARGIN_X, y, "Erkenntnisse")
     y -= 28
-    c.setFont("Helvetica", 11)
-    insight = []
-    if budget_ok:
-        insight.append("Du hast den Monat innerhalb deines Budgets abgeschlossen.")
+    for insight in money["insights"][:3]:
+        y = draw_body(c, MARGIN_X, y, f"- {insight}", width_chars=82, size=11, leading=17, max_lines=2) - 6
+    end_page(c)
+
+
+def draw_milestones_page(c, data):
+    milestones = data["pages"]["milestones"]
+    rank = milestones["rank"]
+    begin_page(c, "Meilensteine")
+    draw_label(c, MARGIN_X, PAGE_H - 140, "Level")
+    draw_value(c, MARGIN_X, PAGE_H - 180, rank["name"], 30)
+    draw_card(c, MARGIN_X, PAGE_H - 245, 230, 95, "Rov.E Points", str(milestones["clarity_points"]), value_size=24)
+    draw_card(c, MARGIN_X + 260, PAGE_H - 245, 230, 95, "Bis naechstes Level", str(rank["points_to_next"]), value_size=24)
+
+    y = PAGE_H - 395
+    draw_label(c, MARGIN_X, y, "Errungenschaften")
+    y -= 32
+    badges = milestones["badges"][:5]
+    if badges:
+        for badge in badges:
+            c.setFont("Helvetica", 12)
+            c.setFillColor(INK)
+            c.drawString(MARGIN_X, y, badge["label"])
+            y -= 24
     else:
-        insight.append("Dein Budget war in diesem Monat unter Druck und verdient im naechsten Monat frueh Aufmerksamkeit.")
-
-    if savings_plan > 0:
-        insight.append(f"Dein geplanter Vermoegensaufbau liegt bei {savings_plan:,.2f} EUR pro Monat.".replace(",", "X").replace(".", ",").replace("X", "."))
-    else:
-        insight.append("Es ist noch keine aktive Sparrate hinterlegt.")
-
-    if target_amount > 0:
-        progress = ((current_investments + cash_reserve) / target_amount) * 100.0
-        insight.append(f"Dein Ziel ist aktuell zu {progress:.1f}% erreicht.")
-
-    for line_text in insight:
-        c.drawString(50, y, line_text)
-        y -= 20
-
-    c.save()
-    return file_path, tracked_days
+        draw_body(c, MARGIN_X, y, "Die ersten Meilensteine entstehen mit deiner Nutzung.", size=12)
+    end_page(c)
 
 
-def send_report_to_user(user_id: int, report_month: str, bot):
-    file_path, tracked_days = build_pdf(user_id, report_month)
+def draw_recap_page(c, data):
+    recap = data["pages"]["recap"]
+    begin_page(c, "Rov.E Recap")
+    y = PAGE_H - 145
+    draw_card(c, MARGIN_X, y, PAGE_W - 2 * MARGIN_X, 95, "Was gut lief", recap["what_went_well"], value_size=13)
+    y -= 125
+    draw_card(c, MARGIN_X, y, PAGE_W - 2 * MARGIN_X, 95, "Was Aufmerksamkeit braucht", recap["needs_attention"], value_size=13)
+    y -= 125
+    draw_card(c, MARGIN_X, y, PAGE_W - 2 * MARGIN_X, 95, "Nächster Hebel", recap["next_lever"], value_size=13)
+    end_page(c)
 
-    if MIN_TRACKING_DAYS > 0 and tracked_days < MIN_TRACKING_DAYS:
+
+def draw_closing_page(c, data):
+    closing = data["pages"]["closing"]
+    begin_page(c)
+    c.setFont("Helvetica-Bold", 32)
+    c.setFillColor(INK)
+    c.drawCentredString(PAGE_W / 2, PAGE_H / 2 + 20, closing["headline"])
+    c.setFont("Helvetica", 12)
+    c.setFillColor(MUTED)
+    c.drawCentredString(PAGE_W / 2, PAGE_H / 2 - 18, closing["message"])
+
+
+def build_pdf(user_id: int, report_month: str, report_data: dict = None):
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    report_data = report_data or build_report_data(user_id, report_month)
+    file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
+
+    # Bestehendes helles PDF-Design aus report_html/report-main verwenden.
+    # Der PDF-Sprint darf den etablierten Rov.E-Report nicht durch eine neue
+    # Designsprache ersetzen. Bei einem Renderer-Fehler bleibt der alte
+    # ReportLab-Fallback fuer die Service-Stabilitaet erhalten.
+    try:
+        from report_html_renderer import build_pdf_report
+        build_pdf_report(user_id, report_month, file_path, report_data=report_data)
+    except Exception:
+        logger.exception("Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer")
+        from rove_pdf_report_renderer import build_pdf_report as build_pdf_legacy
+        build_pdf_legacy(user_id, report_month, file_path, report_data=report_data)
+    return file_path, report_data["meta"]["tracked_days"]
+
+
+REPORTS_ARCHIVE_DIR = REPORTS_DIR / "archive"
+REPORT_ARCHIVE_AFTER_DAYS = int(os.getenv("CLARITY_REPORT_ARCHIVE_DAYS", "60"))
+
+
+def archive_old_reports(days: int = REPORT_ARCHIVE_AFTER_DAYS) -> int:
+    """Komprimiert PDFs, die aelter als `days` Tage sind, nach reports/archive/ (gzip).
+
+    Loescht dabei nichts inhaltlich - jede Datei bleibt vollstaendig als .pdf.gz erhalten
+    (wichtig fuer den geplanten Jahresreport, der alle Monate zurueckreichen braucht).
+    Nur die unkomprimierte Kopie im Hauptordner verschwindet, um Plattenplatz zu sparen.
+    """
+    if not REPORTS_DIR.exists():
+        return 0
+    cutoff = datetime.now().timestamp() - days * 86400
+    archived = 0
+    for pdf_path in REPORTS_DIR.glob("*.pdf"):
+        if not pdf_path.is_file() or pdf_path.stat().st_mtime > cutoff:
+            continue
+        REPORTS_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        target = REPORTS_ARCHIVE_DIR / f"{pdf_path.name}.gz"
+        if target.exists():
+            pdf_path.unlink()
+            continue
+        with open(pdf_path, "rb") as f_in, gzip.open(target, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        pdf_path.unlink()
+        archived += 1
+    return archived
+
+
+def send_report_push(user_id: int, report_month: str) -> None:
+    """Gibt nach erfolgreichem Report-Versand einen App-Push in Auftrag.
+
+    Der Bot besitzt absichtlich keine Web-Push-Bibliothek. Der laufende Rov.E-App-Server besitzt
+    sie und erhaelt deshalb ausschliesslich ueber localhost einen signierten Auftrag. Fehler bleiben
+    folgenlos: Ein Report darf niemals wegen einer Benachrichtigung erneut versendet werden.
+    """
+    if not APP_PUSH_INTERNAL_SECRET:
+        logger.info("Report-Push uebersprungen: interner Push-Zugang ist nicht konfiguriert.")
+        return
+
+    month_label = report_month
+    try:
+        year, month = map(int, report_month.split("-"))
+        month_label = f"{GERMAN_MONTHS.get(month, report_month)} {year}"
+    except (TypeError, ValueError):
+        pass
+
+    payload = json.dumps({
+        "user_id": user_id,
+        "title": "Dein Rov.E Report ist bereit",
+        "body": f"Dein Monatsreport fuer {month_label} wartet in deiner App.",
+        "tag": f"rove-report-{report_month}",
+        "url": "./",
+        "target": {"type": "report", "month": report_month},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        APP_PUSH_INTERNAL_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-RovE-Internal": APP_PUSH_INTERNAL_SECRET,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if result.get("ok"):
+            logger.info("Report-Push fuer User %s an %s Geraet(e) uebergeben.", user_id, result.get("sent", 0))
+        else:
+            logger.warning("Report-Push fuer User %s abgelehnt: %s", user_id, result)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
+        logger.warning("Report-Push fuer User %s fehlgeschlagen: %s", user_id, exc)
+
+
+def has_verified_app_account(user_id: int) -> bool:
+    """Migrated Telegram users become App users once their App login is verified."""
+    try:
+        with get_db() as conn:
+            account = conn.execute(
+                """SELECT 1 FROM app_accounts
+                    WHERE user_id = ? AND TRIM(COALESCE(verified_at, '')) != ''
+                    LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+        return bool(account)
+    except sqlite3.OperationalError:
         return False
 
-    with open(file_path, "rb") as f:
-        bot.send_document(
+
+def send_report_to_user(user_id: int, report_month: str, bot=None):
+    snapshot = get_or_create_report_snapshot(user_id, report_month)
+    report_data = snapshot["data"]
+    tracked_days = report_data["meta"]["tracked_days"]
+
+    web_report = None
+    try:
+        import rove_web_report_renderer
+        web_report = rove_web_report_renderer.build_web_report(
             user_id,
-            f,
-            visible_file_name=file_path.name,
-            caption=f"Dein Clarity Report fuer {report_month} ist da."
+            report_month,
+            report_data=report_data,
         )
+    except Exception as e:
+        logger.warning("Rov.E Web-Report konnte nicht erzeugt werden: %s", e)
+
+    app_only = has_verified_app_account(user_id)
+
+    if not app_only and bot is None:
+        raise ReportSkipped("Kein verifiziertes App-Konto fuer die Report-Zustellung")
+
+    if not app_only and web_report and web_report.get("url"):
+        expires_label = web_report["expires_at"].strftime("%d.%m.%Y")
+        bot.send_message(
+            user_id,
+            (
+                "Dein Rov.E Web-Report ist bereit.\n\n"
+                f"{web_report['url']}\n\n"
+                f"Der Link ist bis zum {expires_label} aktiv. "
+                "Das PDF bekommst du zusätzlich für deine Unterlagen."
+            )
+        )
+
+    file_path, tracked_days = build_pdf(user_id, report_month, report_data=report_data)
+    if not app_only:
+        with open(file_path, "rb") as f:
+            bot.send_document(
+                user_id,
+                f,
+                visible_file_name=file_path.name,
+                caption=(
+                    "Dein Rov.E Report ist fertig.\n\n"
+                    "Er zeigt dir, was in diesem Monat wirklich passiert ist - "
+                    "klar, ruhig und ohne unnötige Zahlen.\n\n"
+                    "Nimm dir kurz Zeit dafür. Du wirst Dinge sehen, die dir sonst entgehen."
+                )
+            )
+
+    send_report_push(user_id, report_month)
+
+    # Das PDF bleibt nach dem Telegram-Versand im Report-Archiv liegen. Die App kann
+    # es dadurch dauerhaft unter "Reports" öffnen; archive_old_reports() komprimiert
+    # die Datei später automatisch statt sie zu verlieren.
     return True
