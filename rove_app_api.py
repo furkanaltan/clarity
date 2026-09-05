@@ -4729,6 +4729,11 @@ def update_financial_account_endpoint(account_id: int):
 def transfer_financial_accounts_endpoint():
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
+    request_id = clean_text(
+        payload.get("request_id") or payload.get("requestId") or payload.get("idempotency_key")
+    )[:128] or None
+    if not request_id:
+        return jsonify({"ok": False, "error": "transfer_request_id_required"}), 400
     try:
         source_id = int(payload.get("sourceAccountId") or 0)
         target_id = int(payload.get("targetAccountId") or 0)
@@ -4742,6 +4747,25 @@ def transfer_financial_accounts_endpoint():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         if error := require_multi_cash_pilot(conn, user_id):
             return error
+        existing = conn.execute(
+            """SELECT kind, amount, source_account_id, target_account_id
+               FROM app_cash_movements
+               WHERE user_id = ? AND request_id = ?
+               LIMIT 1""",
+            (user_id, request_id),
+        ).fetchone()
+        if existing:
+            same_transfer = (
+                str(existing["kind"]) == "transfer"
+                and int(existing["source_account_id"] or 0) == source_id
+                and int(existing["target_account_id"] or 0) == target_id
+                and abs(float(existing["amount"] or 0) - amount) < 0.005
+            )
+            if not same_transfer:
+                return jsonify({"ok": False, "error": "transfer_request_conflict"}), 409
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+            return jsonify({"ok": True, "idempotent_replay": True, **live_data})
         try:
             # Girokonten duerfen wie im bestehenden Rov.E-Modell ins Minus gehen.
             # Tagesgeld und Wallet bleiben durch die typabhaengige Primitive geschuetzt.
@@ -4753,13 +4777,13 @@ def transfer_financial_accounts_endpoint():
         ensure_app_cash_movements_table(conn)
         conn.execute(
             """INSERT INTO app_cash_movements
-                   (user_id, kind, amount, label, source_account_id, target_account_id)
-               VALUES (?, 'transfer', ?, 'Umbuchung', ?, ?)""",
-            (user_id, amount, source_id, target_id),
+                   (user_id, kind, amount, label, source_account_id, target_account_id, request_id)
+               VALUES (?, 'transfer', ?, 'Umbuchung', ?, ?, ?)""",
+            (user_id, amount, source_id, target_id, request_id),
         )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
-    return jsonify({"ok": True, **live_data})
+    return jsonify({"ok": True, "idempotent_replay": False, **live_data})
 
 
 @app.route("/v1/financial-account-roles", methods=["POST"])

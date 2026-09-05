@@ -38,6 +38,11 @@ class FrontendTransferVisibilityTests(unittest.TestCase):
         self.assertIn('"targetAccountId"', self.state)
         self.assertIn('"sid": r["id"]', self.state)
 
+    def test_dynamic_transfer_has_stable_request_id_for_retries(self):
+        self.assertIn("PENDING_TRANSFER_REQUEST", self.frontend)
+        self.assertIn("request_id:transferId", self.frontend)
+        self.assertIn("PENDING_TRANSFER_REQUEST=null", self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

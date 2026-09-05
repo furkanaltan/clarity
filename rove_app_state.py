@@ -737,6 +737,7 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
             label      TEXT,
             source_account_id INTEGER,
             target_account_id INTEGER,
+            request_id TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
@@ -750,6 +751,8 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE app_cash_movements ADD COLUMN source_account_id INTEGER")
     if "target_account_id" not in columns:
         conn.execute("ALTER TABLE app_cash_movements ADD COLUMN target_account_id INTEGER")
+    if "request_id" not in columns:
+        conn.execute("ALTER TABLE app_cash_movements ADD COLUMN request_id TEXT")
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_app_cash_movements_user
              ON app_cash_movements (user_id, created_at)"""

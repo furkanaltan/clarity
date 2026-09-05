@@ -16,6 +16,12 @@ nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
 | `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
 | `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
 
+`app_cash_movements.request_id` wird durch die bestehende additive
+Schema-Vorbereitung in `rove_app_state.py` und
+`rove_financial_accounts.py` nachgeruestet. Der user-scoped Unique-Index ist
+idempotent; historische Bewegungen behalten einen leeren Wert und werden nicht
+nachtraeglich dedupliziert.
+
 ## Ausfuehrungsregeln
 
 1. Produktionsstatus und betroffene Nutzer read-only pruefen.

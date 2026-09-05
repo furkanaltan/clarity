@@ -4170,7 +4170,7 @@ const ASSET_ADD_OPTIONS=[
   {kind:"property",label:"Immobilie",icon:"assetProperty"},
   {kind:"valuables",label:"Sachwert",icon:"assetGem"},
 ];
-let NEW_FINANCIAL_ACCOUNT_TYPE=null, FINANCIAL_ACCOUNT_BUSY=false;
+let NEW_FINANCIAL_ACCOUNT_TYPE=null, FINANCIAL_ACCOUNT_BUSY=false, PENDING_TRANSFER_REQUEST=null;
 function escapeAccountHtml(value){ return String(value??"").replace(/[&<>'"]/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char])); }
 function renderFinancialAccountAdd(){
   const body=document.getElementById("accountaddbody");
@@ -5190,11 +5190,26 @@ document.getElementById("dbody").addEventListener("click",e=>{
     const a=DATA.assets[dIdx], meta=cashAccountMeta(a), amount=appMoney(document.getElementById("cashMoveAmt").value);
     if(!meta || !amount){ document.getElementById("cashMoveAmt").focus(); return; }
     const selection=document.getElementById("cashMoveDirection").value;
+    const targetId=Number(selection);
+    const samePending=PENDING_TRANSFER_REQUEST
+      && PENDING_TRANSFER_REQUEST.sourceId===meta.id
+      && PENDING_TRANSFER_REQUEST.targetId===targetId
+      && PENDING_TRANSFER_REQUEST.amount===amount;
+    const transferId=meta.dynamic
+      ? (samePending ? PENDING_TRANSFER_REQUEST.requestId
+        : ((globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function")
+          ? globalThis.crypto.randomUUID()
+          : `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`))
+      : null;
+    if(meta.dynamic && !samePending){
+      PENDING_TRANSFER_REQUEST={sourceId:meta.id,targetId,amount,requestId:transferId};
+    }
     const request=meta.dynamic
-      ? financialAccountRequest("/v1/financial-accounts/transfer","POST",{sourceAccountId:meta.id,targetAccountId:Number(selection),amount})
+      ? financialAccountRequest("/v1/financial-accounts/transfer","POST",{sourceAccountId:meta.id,targetAccountId,amount,request_id:transferId})
       : (()=>{const [source,target]=selection.split(":");return syncCashAccount("transfer",{from:source,to:target,amount});})();
     request.then(ok=>{
       if(!ok) return;
+      if(meta.dynamic) PENDING_TRANSFER_REQUEST=null;
       const idx=meta.dynamic?assetIndexByKey(`cash-account:${meta.id}`):assetIndexByName(a.name); if(idx>=0) openAssetDetail(idx);
       showToast(`${eur(amount)} umgebucht`); buzz();
     });

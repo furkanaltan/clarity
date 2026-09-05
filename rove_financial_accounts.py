@@ -47,6 +47,7 @@ def ensure_financial_account_reference_schema(conn: sqlite3.Connection) -> None:
         "app_cash_movements": (
             ("source_account_id", "INTEGER"),
             ("target_account_id", "INTEGER"),
+            ("request_id", "TEXT"),
         ),
         "app_etf_savings_plan": (("source_account_id", "INTEGER"),),
         "app_etf_position_plans": (("source_account_id", "INTEGER"),),
@@ -72,6 +73,11 @@ def ensure_financial_account_reference_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_cash_movements_user_target "
             "ON app_cash_movements(user_id, target_account_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_movements_user_request "
+            "ON app_cash_movements(user_id, request_id) "
+            "WHERE request_id IS NOT NULL AND TRIM(request_id) <> ''"
         )
 
 

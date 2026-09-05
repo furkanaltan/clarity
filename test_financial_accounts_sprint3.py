@@ -49,8 +49,8 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def create(self, account_type="checking", name="Testkonto", balance=0):
-        response = self.request("POST", "/v1/financial-accounts", json={
+    def create(self, account_type="checking", name="Testkonto", balance=0, token="pilot-token"):
+        response = self.request("POST", "/v1/financial-accounts", token=token, json={
             "type": account_type, "name": name, "balance": balance,
         })
         self.assertEqual(response.status_code, 200, response.get_json())
@@ -117,6 +117,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             before = float(conn.execute("SELECT current_cash FROM users WHERE user_id=1").fetchone()[0])
         response = self.request("POST", "/v1/financial-accounts/transfer", json={
             "sourceAccountId": source, "targetAccountId": target, "amount": 125,
+            "request_id": "transfer-once-125",
         })
         self.assertEqual(response.status_code, 200, response.get_json())
         with closing(self.connect()) as conn:
@@ -137,6 +138,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         def transfer() -> None:
             response = self.request("POST", "/v1/financial-accounts/transfer", json={
                 "sourceAccountId": source, "targetAccountId": target, "amount": 75,
+                "request_id": f"parallel-transfer-{threading.get_ident()}",
             })
             statuses.append(response.status_code)
 
@@ -167,10 +169,12 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         target = self.create("checking", "Ziel", 0)
         denied = self.request("POST", "/v1/financial-accounts/transfer", json={
             "sourceAccountId": source, "targetAccountId": target, "amount": 11,
+            "request_id": "transfer-denied",
         })
         self.assertEqual(denied.status_code, 400)
         foreign = self.request("POST", "/v1/financial-accounts/transfer", token="other-token", json={
             "sourceAccountId": source, "targetAccountId": target, "amount": 1,
+            "request_id": "transfer-foreign",
         })
         self.assertEqual(foreign.status_code, 404)
 
@@ -179,6 +183,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         target = self.create("savings", "Reserve", 0)
         response = self.request("POST", "/v1/financial-accounts/transfer", json={
             "sourceAccountId": source, "targetAccountId": target, "amount": 25,
+            "request_id": "transfer-overdraft",
         })
         self.assertEqual(response.status_code, 200, response.get_json())
         with closing(self.connect()) as conn:
@@ -192,6 +197,107 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         self.assertEqual(rows[source], -15)
         self.assertEqual(rows[target], 25)
         self.assert_invariants()
+
+    def test_transfer_retry_replays_without_second_balance_or_history_change(self):
+        source = self.create("checking", "Quelle", 300)
+        target = self.create("savings", "Ziel", 20)
+        payload = {
+            "sourceAccountId": source, "targetAccountId": target, "amount": 125,
+            "request_id": "transfer-replay-1",
+        }
+        first = self.request("POST", "/v1/financial-accounts/transfer", json=payload)
+        second = self.request("POST", "/v1/financial-accounts/transfer", json=payload)
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(second.status_code, 200, second.get_json())
+        self.assertFalse(first.get_json()["idempotent_replay"])
+        self.assertTrue(second.get_json()["idempotent_replay"])
+        with closing(self.connect()) as conn:
+            balances = {
+                int(row["id"]): float(row["balance"])
+                for row in conn.execute(
+                    "SELECT id,balance FROM app_financial_accounts WHERE id IN (?,?)",
+                    (source, target),
+                )
+            }
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'"
+            ).fetchone()[0], 1)
+        self.assertEqual(balances[source], 175)
+        self.assertEqual(balances[target], 145)
+        self.assert_invariants()
+
+    def test_transfer_retry_with_changed_payload_is_conflict(self):
+        source = self.create("checking", "Quelle", 300)
+        target = self.create("savings", "Ziel", 20)
+        request_id = "transfer-conflict-1"
+        first = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 100,
+            "request_id": request_id,
+        })
+        conflict = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 101,
+            "request_id": request_id,
+        })
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["error"], "transfer_request_conflict")
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'"
+            ).fetchone()[0], 1)
+        self.assert_invariants()
+
+    def test_transfer_request_id_is_user_scoped(self):
+        source = self.create("checking", "Quelle", 300)
+        target = self.create("savings", "Ziel", 20)
+        with closing(self.connect()) as conn:
+            set_feature_enabled(conn, 2, FEATURE_MULTI_CASH_ACCOUNTS_V1, True)
+            conn.commit()
+        other_source = self.create("checking", "Andere Quelle", 100, token="other-token")
+        other_target = self.create("savings", "Andere Ziel", 0, token="other-token")
+        first = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 50,
+            "request_id": "same-id-different-user",
+        })
+        second = self.request("POST", "/v1/financial-accounts/transfer", token="other-token", json={
+            "sourceAccountId": other_source, "targetAccountId": other_target, "amount": 50,
+            "request_id": "same-id-different-user",
+        })
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(second.status_code, 200, second.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'"
+            ).fetchone()[0], 2)
+
+    def test_transfer_rolls_back_before_commit_and_same_id_can_retry(self):
+        source = self.create("checking", "Quelle", 300)
+        target = self.create("savings", "Ziel", 20)
+        payload = {
+            "sourceAccountId": source, "targetAccountId": target, "amount": 80,
+            "request_id": "transfer-rollback-1",
+        }
+        with patch.object(api, "build_live_app_data", side_effect=RuntimeError("test precommit failure")):
+            with self.assertRaises(RuntimeError):
+                self.request("POST", "/v1/financial-accounts/transfer", json=payload)
+        with closing(self.connect()) as conn:
+            self.assertEqual(float(conn.execute(
+                "SELECT balance FROM app_financial_accounts WHERE id=?", (source,)
+            ).fetchone()[0]), 300)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'"
+            ).fetchone()[0], 0)
+        retry = self.request("POST", "/v1/financial-accounts/transfer", json=payload)
+        self.assertEqual(retry.status_code, 200, retry.get_json())
+
+    def test_transfer_requires_request_id(self):
+        source = self.create("checking", "Quelle", 300)
+        target = self.create("savings", "Ziel", 20)
+        response = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 10,
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "transfer_request_id_required")
 
     def test_legacy_withdrawal_path_keeps_checking_overdraft_for_pilot(self):
         response = self.request("POST", "/v1/accounts", json={
