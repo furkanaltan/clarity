@@ -8,6 +8,7 @@ app_state_links. v1 schreibt bewusst nur Ausgaben in die bestehende Bot-Datenban
 
 import base64
 import csv
+import ipaddress
 import json
 import gzip
 import hashlib
@@ -26,6 +27,7 @@ import zipfile
 from contextlib import contextmanager, closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, make_response, request, send_file
@@ -3542,15 +3544,82 @@ VAPID_SUBJECT = os.getenv("ROVE_VAPID_SUBJECT", "mailto:info@getrove.de").strip(
 
 try:
     from pywebpush import webpush, WebPushException   # type: ignore
+    import requests
     PUSH_LIB_OK = True
 except Exception:                                     # Bibliothek nicht installiert
     webpush = None
     WebPushException = Exception
+    requests = None
     PUSH_LIB_OK = False
 
 
 def push_available() -> bool:
     return bool(PUSH_LIB_OK and VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
+
+
+def valid_push_endpoint(value: object) -> str | None:
+    """Accept only HTTPS endpoints issued by the browser Web Push services we support."""
+    endpoint = str(value or "").strip()
+    if not endpoint or len(endpoint) > 4096:
+        return None
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+        or parsed.fragment
+        or (parsed.path in {"", "/"} and not parsed.query)
+    ):
+        return None
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+
+    # Browser-managed endpoint hosts. The suffix rules intentionally cover
+    # provider-controlled rotating subdomains, not arbitrary HTTPS services.
+    if host == "fcm.googleapis.com":
+        return endpoint
+    if host in {"push.services.mozilla.com", "updates.push.services.mozilla.com"}:
+        return endpoint
+    if host.endswith(".push.apple.com"):
+        return endpoint
+    if host == "notify.windows.com" or host.endswith(".notify.windows.com"):
+        return endpoint
+    return None
+
+
+def push_endpoint_log_host(value: object) -> str:
+    """Keep endpoint tokens out of logs while leaving operators useful context."""
+    try:
+        return (urlsplit(str(value or "")).hostname or "invalid").lower()
+    except ValueError:
+        return "invalid"
+
+
+if PUSH_LIB_OK:
+    class _NoRedirectPushSession(requests.Session):
+        """pywebpush uses requests, whose POSTs follow redirects by default."""
+
+        def request(self, method, url, **kwargs):
+            kwargs["allow_redirects"] = False
+            return super().request(method, url, **kwargs)
+
+
+def push_no_redirect_session():
+    if not PUSH_LIB_OK:
+        return None
+    return _NoRedirectPushSession()
 
 
 def ensure_push_table(conn: sqlite3.Connection) -> None:
@@ -3645,16 +3714,27 @@ def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: 
     })
     zugestellt = 0
     for row in rows:
+        endpoint = valid_push_endpoint(row["endpoint"])
+        if not endpoint:
+            # Treat a manipulated or obsolete stored endpoint like the existing
+            # dead-subscription cleanup: never contact it again.
+            app.logger.warning(
+                "Ungueltiges Push-Abo entfernt (host=%s)",
+                push_endpoint_log_host(row["endpoint"]),
+            )
+            conn.execute("DELETE FROM app_push_subscriptions WHERE id = ?", (row["id"],))
+            continue
         try:
             webpush(
                 subscription_info={
-                    "endpoint": row["endpoint"],
+                    "endpoint": endpoint,
                     "keys": {"p256dh": row["p256dh"], "auth": row["auth"]},
                 },
                 data=nutzlast,
                 vapid_private_key=VAPID_PRIVATE_KEY,
                 vapid_claims={"sub": VAPID_SUBJECT},
                 timeout=10,
+                requests_session=push_no_redirect_session(),
             )
             zugestellt += 1
         except WebPushException as exc:
@@ -3701,6 +3781,9 @@ def push_subscribe():
     tracking_reminder = payload.get("trackingReminder")
     if not endpoint or not p256dh or not auth:
         return jsonify({"ok": False, "error": "subscription_incomplete"}), 400
+    endpoint = valid_push_endpoint(endpoint)
+    if not endpoint:
+        return jsonify({"ok": False, "error": "invalid_push_endpoint"}), 400
 
     token = token_from_request()
     with db() as conn:

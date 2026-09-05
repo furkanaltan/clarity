@@ -1,12 +1,15 @@
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import report_engine
+import rove_app_api as api
 from rove_app_api import normalize_notification_target, safe_legacy_push_url
 
 
@@ -195,6 +198,96 @@ class NotificationDeepLinkServerTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], 8)
         self.assertEqual(captured["payload"]["target"], {"type": "report", "month": "2026-08"})
         self.assertNotIn("report_data", captured["payload"])
+
+
+class PushEndpointSecurityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp.name) / "clarity.db"
+        with sqlite3.connect(self.db_path) as conn:
+            api.ensure_push_table(conn)
+        self.patchers = [
+            patch.object(api, "DB_PATH", self.db_path),
+            patch.object(api, "PUSH_LIB_OK", True),
+            patch.object(api, "VAPID_PUBLIC_KEY", "public-key"),
+            patch.object(api, "VAPID_PRIVATE_KEY", "private-key"),
+            patch.object(api, "user_from_token", lambda _conn, token: 1 if token == "test-token" else None),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        api.app.config.update(TESTING=True)
+
+    def tearDown(self):
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    @staticmethod
+    def subscription(endpoint):
+        return {"endpoint": endpoint, "keys": {"p256dh": "test-p256dh", "auth": "test-auth"}}
+
+    def subscribe(self, endpoint):
+        with api.app.test_client() as client:
+            return client.post(
+                "/v1/push/subscribe",
+                json=self.subscription(endpoint),
+                headers={"Authorization": "Bearer test-token", "Origin": "https://getrove.de"},
+            )
+
+    def test_registration_accepts_supported_browser_push_hosts(self):
+        for host in (
+            "https://fcm.googleapis.com/fcm/send/token",
+            "https://updates.push.services.mozilla.com/wpush/v2/token",
+            "https://web.push.apple.com/QH/token",
+            "https://db3.notify.windows.com/?token=opaque",
+        ):
+            response = self.subscribe(host)
+            self.assertEqual(response.status_code, 200, response.get_json())
+
+    def test_registration_rejects_non_push_and_private_endpoints(self):
+        invalid = (
+            "http://fcm.googleapis.com/fcm/send/token",
+            "https://localhost/push",
+            "https://127.0.0.1/push",
+            "https://10.0.0.8/push",
+            "https://[::1]/push",
+            "https://[fe80::1]/push",
+            "https://[fd00::1]/push",
+            "https://example.test/push",
+            "https://fcm.googleapis.com:8443/fcm/send/token",
+            "https://fcm.googleapis.com/",
+        )
+        for endpoint in invalid:
+            response = self.subscribe(endpoint)
+            self.assertEqual(response.status_code, 400, endpoint)
+            self.assertEqual(response.get_json()["error"], "invalid_push_endpoint")
+
+    def test_invalid_legacy_subscription_is_removed_without_network_request(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO app_push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (1, ?, 'p', 'a')",
+                ("https://127.0.0.1/private",),
+            )
+        with api.db() as conn, patch.object(api, "webpush") as send:
+            self.assertEqual(api.send_push_to_user(conn, 1, "Titel", "Text"), 0)
+            send.assert_not_called()
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_push_subscriptions").fetchone()[0], 0)
+
+    def test_valid_send_uses_a_no_redirect_session(self):
+        endpoint = "https://fcm.googleapis.com/fcm/send/token"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO app_push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (1, ?, 'p', 'a')",
+                (endpoint,),
+            )
+        with api.db() as conn, patch.object(api, "webpush") as send:
+            self.assertEqual(api.send_push_to_user(conn, 1, "Titel", "Text"), 1)
+        self.assertEqual(send.call_args.kwargs["subscription_info"]["endpoint"], endpoint)
+        session = send.call_args.kwargs["requests_session"]
+        with patch.object(api.requests.Session, "request", return_value="ok") as request:
+            self.assertEqual(session.request("POST", endpoint), "ok")
+        self.assertFalse(request.call_args.kwargs["allow_redirects"])
 
 
 if __name__ == "__main__":
