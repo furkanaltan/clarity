@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import unittest
 from pathlib import Path
 
@@ -127,7 +128,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('initialStableFrames>=2', self.frontend)
 
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
-        self.assertIn('<meta name="rove-frontend-build" content="2026-09-04-frontend-1">', self.frontend)
+        build = re.search(r'<meta name="rove-frontend-build" content="([^"]+)">', self.frontend)
+        self.assertIsNotNone(build)
+        self.assertRegex(build.group(1), r"^\d{8}-[0-9a-f]{7,40}$")
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
         self.assertIn('meta[name="rove-frontend-build"]', self.frontend)
         self.assertIn('if(serverBuild===CURRENT_BUILD)', self.frontend)

@@ -185,10 +185,19 @@ SOURCE:
 TARGET: `/var/www/getrove/app/`
 
 Vor einer Veröffentlichung werden JavaScript, Full Suite, Diff und Hashes
-geprüft. Das aktuelle `frontend/index.html` hat den kanonischen SHA-256
-`222d034182001586ca1079d661c5d2919208a57fccbd9f483bd17dfd6df02d32`.
-Die fünf Dateien werden als Satz gesichert und veröffentlicht. Danach werden
-Serverhashes und PWA-Verhalten geprüft. Kein Backend-Service wird neu gestartet.
+geprüft. Vor dem Commit eines Frontend-Releases wird die Meta-ID einmalig aus
+dem Release-Datum und dem aktuellen Quellstand gestempelt, zum Beispiel:
+
+```bash
+BUILD_ID="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
+sed -E -i '' "s/(name=\"rove-frontend-build\" content=\")[^\"]+(\")/\\1${BUILD_ID}\\2/" frontend/index.html
+```
+
+Danach wird geprüft, dass die ID im Diff neu und eindeutig ist, und sie wird
+mit dem Frontend-Release committed. Eine unveränderte ID darf nicht erneut
+veröffentlicht werden. Die fünf Dateien werden als Satz gesichert und
+veröffentlicht. Danach werden Serverhashes, die gleiche Meta-ID und
+PWA-Verhalten geprüft. Kein Backend-Service wird neu gestartet.
 
 Die Nginx-Konfiguration ist derzeit nicht kanonisch im Repository versioniert.
 Für die Live-Installation müssen deshalb ausserhalb dieses Repositories
