@@ -6,7 +6,7 @@ from datetime import date
 from unittest.mock import patch
 
 import rove_app_state as state
-from rove_score import savings_confirmed
+from rove_score import calculate_score, savings_confirmed
 
 
 class MonthlyCheckinTests(unittest.TestCase):
@@ -26,6 +26,13 @@ class MonthlyCheckinTests(unittest.TestCase):
             CREATE TABLE portfolio_holdings (
                 id INTEGER PRIMARY KEY, user_id INTEGER, instrument_label TEXT,
                 instrument_type TEXT
+            );
+            CREATE TABLE expenses (
+                id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL,
+                created_at TEXT
+            );
+            CREATE TABLE app_user_features (
+                user_id INTEGER, feature_key TEXT, enabled INTEGER
             );
             INSERT INTO users (user_id) VALUES (1);
             INSERT INTO portfolio_holdings VALUES (10, 1, 'ETF Eins', 'etf');
@@ -149,6 +156,59 @@ class MonthlyCheckinTests(unittest.TestCase):
         self.conn.execute("INSERT OR IGNORE INTO app_month_closures (user_id, month_key, actual_savings) VALUES (1, '2026-02', 200)")
         row = self.conn.execute("SELECT actual_savings FROM app_month_closures WHERE user_id=1 AND month_key='2026-02'").fetchone()
         self.assertEqual(row["actual_savings"], 100)
+
+    def score(self, actual_savings=None, report_month="2026-08"):
+        if actual_savings is not None:
+            self.conn.execute(
+                "INSERT INTO app_month_closures (user_id, month_key, actual_savings) VALUES (1, ?, ?)",
+                (report_month, actual_savings),
+            )
+        user = {
+            "income": 4430,
+            "other_income": 0,
+            "fixed_costs": 2105.32,
+            "etf_savings": 300,
+            "cash_savings": 700,
+            "current_cash": 0,
+            "onboarding_step": 0,
+            "clarity_points": 0,
+        }
+        return calculate_score(
+            self.conn,
+            1,
+            user,
+            total_expenses=0,
+            report_month=report_month,
+            today=date(2026, 9, 1),
+        )
+
+    def test_closed_month_uses_zero_actual_savings_for_score(self):
+        score = self.score(0)
+        self.assertEqual(score["actual_savings"], 0.0)
+        self.assertEqual(score["savings_ratio"], 0.0)
+        self.assertEqual(score["savings"], 0)
+
+    def test_closed_month_uses_actual_savings_not_plan(self):
+        score = self.score(500)
+        self.assertAlmostEqual(score["savings_ratio"], 500 / 4430, places=6)
+        self.assertEqual(score["savings"], 12)
+
+    def test_actual_savings_can_exceed_plan_without_exceeding_score_cap(self):
+        score = self.score(1500)
+        self.assertAlmostEqual(score["savings_ratio"], 1500 / 4430, places=6)
+        self.assertEqual(score["savings"], 25)
+
+    def test_negative_actual_savings_cannot_earn_savings_points(self):
+        score = self.score(-100)
+        self.assertEqual(score["actual_savings"], -100.0)
+        self.assertAlmostEqual(score["savings_ratio"], -100 / 4430, places=6)
+        self.assertEqual(score["savings"], 0)
+
+    def test_open_month_keeps_planned_savings_score_behavior(self):
+        score = self.score(actual_savings=None, report_month="2026-09")
+        self.assertIsNone(score["actual_savings"])
+        self.assertAlmostEqual(score["savings_ratio"], 1000 / 4430, places=6)
+        self.assertEqual(score["savings"], 10)
 
 
 if __name__ == "__main__":

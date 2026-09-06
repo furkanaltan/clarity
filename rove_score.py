@@ -136,19 +136,36 @@ def tracking_days_90(conn: sqlite3.Connection, user_id: int, today: date | None 
 
 
 def savings_confirmed(conn: sqlite3.Connection, user_id: int, report_month: str) -> bool:
-    """Only an explicit month close confirms the planned savings rate.
+    """Return whether an explicit month close exists for the requested month.
 
     Investments and historical badges describe financial activity, not whether
     the user confirmed their actual savings for that completed month.
     """
+    return actual_savings_for_month(conn, user_id, report_month) is not None
+
+
+def actual_savings_for_month(
+    conn: sqlite3.Connection, user_id: int, report_month: str
+) -> float | None:
+    """Read the single recorded actual savings value for a closed month."""
     if not _table_exists(conn, "app_month_closures"):
-        return False
-    return conn.execute(
-        """SELECT 1 FROM app_month_closures
+        return None
+    row = conn.execute(
+        """SELECT actual_savings FROM app_month_closures
              WHERE user_id = ? AND month_key = ?
              LIMIT 1""",
         (user_id, report_month),
-    ).fetchone() is not None
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        value = row["actual_savings"]
+    except (TypeError, KeyError, IndexError):
+        value = row[0]
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def score_cap(days: int) -> tuple[int, int, int]:
@@ -271,9 +288,14 @@ def calculate_score(
 
     income = _number(user, "income") + _number(user, "other_income")
     fixed = _number(user, "fixed_costs")
-    savings_amount = _number(user, "etf_savings") + _number(user, "cash_savings")
+    planned_savings = _number(user, "etf_savings") + _number(user, "cash_savings")
+    actual_savings = actual_savings_for_month(conn, user_id, report_month)
+    confirmed = actual_savings is not None
+    savings_amount = actual_savings if confirmed else planned_savings
     savings_ratio = savings_amount / income if income > 0 else 0.0
-    spendable_budget = income - fixed - savings_amount
+    # The budget remains a plan; only the savings score switches to realized
+    # savings after an explicit month close.
+    spendable_budget = income - fixed - planned_savings
     remaining = spendable_budget - total_expenses
     cash = _score_cash(conn, user_id, user)
     tracked_days = tracking_days_90(conn, user_id, today)
@@ -299,7 +321,6 @@ def calculate_score(
         elif pace_ratio <= 1.50:
             budget = 6
 
-    confirmed = savings_confirmed(conn, user_id, report_month)
     savings = savings_points(savings_ratio, confirmed)
     consistency_target = 30
     consistency_age_cap = 8 if days < 30 else 16 if days < 60 else 22 if days < 90 else 25
@@ -350,8 +371,9 @@ def calculate_score(
         budget_why = f"Von deinem Ausgabenrahmen nach Fixkosten und Sparrate sind noch {remaining:.0f} € frei."
         budget_lever = "Halte dieses Tempo bis Monatsende stabil."
 
+    savings_label = "tatsächliche Sparleistung" if confirmed else "geplante Sparrate"
     savings_why = (
-        f"{savings_amount:.0f} € monatliche Sparrate entsprechen {savings_ratio * 100:.0f} % deines Einkommens."
+        f"{savings_amount:.0f} € {savings_label} entsprechen {savings_ratio * 100:.0f} % deines Einkommens."
         if income > 0 else
         "Für eine faire Bewertung fehlen Einkommen oder Sparrate."
     )
@@ -409,6 +431,8 @@ def calculate_score(
         "tracking_days_90": tracked_days,
         "savings_confirmed": confirmed,
         "savings_ratio": savings_ratio,
+        "planned_savings": planned_savings,
+        "actual_savings": actual_savings,
         "budget": budget,
         "savings": savings,
         "consistency": consistency,
