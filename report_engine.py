@@ -721,8 +721,8 @@ def get_expense_stats(user_id: int, report_month: str, cutoff_date: str | None =
     return round(total, 2), tracked_days, cats
 
 
-def get_app_property_equity(user_id: int) -> float:
-    """Return central App property equity without requiring App tables for bot-only users."""
+def get_app_property(user_id: int) -> dict | None:
+    """Return central property values and signed equity for a user."""
     with get_db() as conn:
         try:
             row = conn.execute(
@@ -732,11 +732,23 @@ def get_app_property_equity(user_id: int) -> float:
                 (user_id,),
             ).fetchone()
         except sqlite3.OperationalError:
-            return 0.0
+            return None
 
-    if not row:
-        return 0.0
-    return max(0.0, float(row["market_value"] or 0) - float(row["remaining_debt"] or 0))
+    if not row or float(row["market_value"] or 0) <= 0:
+        return None
+    market_value = round(max(0.0, float(row["market_value"] or 0)), 2)
+    remaining_debt = round(max(0.0, float(row["remaining_debt"] or 0)), 2)
+    return {
+        "market_value": market_value,
+        "remaining_debt": remaining_debt,
+        "equity": round(market_value - remaining_debt, 2),
+    }
+
+
+def get_app_property_equity(user_id: int) -> float:
+    """Return signed property equity without requiring App tables for bot-only users."""
+    property_data = get_app_property(user_id)
+    return float(property_data["equity"]) if property_data else 0.0
 
 
 def get_report_goal(user_id: int, user) -> tuple[str, float, float, float | None]:
@@ -1161,7 +1173,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     cash_rate = row_float(user, "cash_savings")
     current_investments = row_float(user, "current_investments")
     cash_reserve = row_float(user, "current_cash")
-    property_equity = get_app_property_equity(user_id)
+    property_data = get_app_property(user_id)
+    property_equity = float(property_data["equity"]) if property_data else 0.0
     goal_description, target_amount, goal_current_amount, goal_monthly_rate = get_report_goal(user_id, user)
     clarity_points = row_int(user, "clarity_points")
 
@@ -1317,6 +1330,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "savings_rate": savings_rate,
             "current_investments": current_investments,
             "cash_reserve": cash_reserve,
+            "property_market_value": property_data["market_value"] if property_data else 0.0,
+            "property_remaining_debt": property_data["remaining_debt"] if property_data else 0.0,
             "property_equity": property_equity,
             "net_worth": net_worth,
         },
@@ -1667,6 +1682,7 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
         "investments": investment_total,
         "property_equity": property_equity,
         "allocation": allocation,
+        "allocation_excludes_negative_property_equity": property_equity < 0,
         "reconciles": abs(round(sum(item["amount"] for item in allocation), 2) - total) <= 0.01,
         "goals_included": False,
     }
@@ -1809,6 +1825,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         },
         "investments": investments,
         "property": {
+            "market_value": profile.get("property_market_value", 0),
+            "remaining_debt": profile.get("property_remaining_debt", 0),
             "equity": profile.get("property_equity", 0),
             "source": "app_properties",
         },

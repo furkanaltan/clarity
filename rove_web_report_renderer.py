@@ -957,6 +957,7 @@ def build_story_render_context(data: dict) -> dict:
 def _v2_legacy_visual_context(data: dict) -> dict:
     """Map immutable Story V2 data onto the original web report visual language."""
     report = build_story_render_context(data)
+    profile = data.get("profile") or {}
     truth = data.get("report_truth") or {}
     wealth = get_report_wealth(data)
     expenses = truth.get("expenses") or {}
@@ -1278,10 +1279,13 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "cash_pct_raw": round(cash_share, 1),
         "property_pct_raw": round(property_share, 1),
         "property_pct_text": fmt_percent(property_share, 1),
-        "has_property_equity": property_raw > 0,
+        "has_property_equity": property_raw != 0,
+        "has_property_allocation": property_raw > 0,
         "investments_amount": _story_money(investments_raw),
         "cash_amount": _story_money(cash_raw),
         "property_equity_amount": _story_money(property_raw),
+        "property_market_value_amount": _story_money(profile.get("property_market_value") or 0),
+        "property_remaining_debt_amount": _story_money(profile.get("property_remaining_debt") or 0),
         "invest_story_headline": h(report["pages"]["page_6"].get("question") or "Wo steckt dein Vermoegen heute?"),
         "invest_story_sub": h(report["pages"]["page_6"].get("text") or ""),
         "money_map_categories": money_map_categories,
@@ -1649,10 +1653,13 @@ def build_render_context(data: dict) -> dict:
         "cash_pct_raw": cash_pct,
         "property_pct_raw": property_pct,
         "property_pct_text": fmt_percent(property_pct, 1),
-        "has_property_equity": property_equity > 0,
+        "has_property_equity": property_equity != 0,
+        "has_property_allocation": property_equity > 0,
         "investments_amount": money_text(investments),
         "cash_amount": money_text(cash),
         "property_equity_amount": money_text(property_equity),
+        "property_market_value_amount": money_text(profile.get("property_market_value") or 0),
+        "property_remaining_debt_amount": money_text(profile.get("property_remaining_debt") or 0),
         "invest_story_headline": invest_story_headline,
         "invest_story_sub": invest_story_sub,
         "money_map_categories": money_map_categories,

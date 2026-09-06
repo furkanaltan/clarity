@@ -1,13 +1,16 @@
 import copy
+import sqlite3
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
 from report_html_renderer import _render_hell_pages, build_html_document
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
+import report_engine
 from test_report_story_v2 import standard_payload
 
 
@@ -101,6 +104,26 @@ def july_truth_payload() -> dict:
 
 
 class ReportRenderV2Tests(unittest.TestCase):
+    def test_property_equity_keeps_signed_value_and_net_worth(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE app_properties (user_id INTEGER, market_value REAL, remaining_debt REAL)")
+
+        with patch.object(report_engine, "get_db", return_value=conn):
+            conn.execute("INSERT INTO app_properties VALUES (1, 180000, 170000)")
+            self.assertEqual(report_engine.get_app_property_equity(1), 10000.0)
+            conn.execute("UPDATE app_properties SET market_value=250000, remaining_debt=280000 WHERE user_id=1")
+            self.assertEqual(report_engine.get_app_property_equity(1), -30000.0)
+
+        wealth = report_engine._report_wealth_truth(
+            {"current_investments": 0.0, "property_equity": -30000.0},
+            {"current_cash": 10000.0},
+            {"holdings": []},
+        )
+        self.assertEqual(wealth["total"], -20000.0)
+        self.assertTrue(wealth["allocation_excludes_negative_property_equity"])
+        self.assertEqual([item["label"] for item in wealth["allocation"]], ["Cash"])
+
     def test_top_merchants_keep_unbroken_names_inside_mobile_card(self):
         template = WEB_TEMPLATE.read_text(encoding="utf-8")
         styles = re.search(r"<style>(.*?)</style>", template, re.DOTALL).group(1)
