@@ -666,11 +666,6 @@ def format_month_duration(months) -> str:
     return f"{year_text} und {month_text}"
 
 
-NON_CONSUMPTION_MOVEMENTS = {
-    "transfer", "withdrawal", "income", "fixed", "investment", "savings", "contribution"
-}
-
-
 def normalize_report_merchant(value: object) -> str:
     """Conservative report grouping: normalize whitespace/case, never invent aliases."""
     text = re.sub(r"\s+", " ", str(value or "Unbekannt").strip())
@@ -687,32 +682,15 @@ def get_report_expense_rows(user_id: int, report_month: str, cutoff_date: str | 
     start, end, _ = month_bounds(report_month)
     if cutoff_date:
         end = min(end, cutoff_date)
+    from rove_expense_domain import classified_expenses
     with get_db() as conn:
-        has_movements = table_exists(conn, "app_cash_movements")
-        movement_join = (
-            "LEFT JOIN app_cash_movements cm "
-            "ON cm.expense_id = e.id AND cm.user_id = e.user_id"
-            if has_movements else ""
-        )
-        movement_select = "cm.kind AS movement_kind" if has_movements else "'' AS movement_kind"
-        rows = conn.execute(
-            f"""SELECT e.id, e.amount, e.category, e.merchant, e.description,
-                       e.created_at, {movement_select}
-                  FROM expenses e
-                  {movement_join}
-                 WHERE e.user_id = ?
-                   AND DATE(e.created_at) BETWEEN DATE(?) AND DATE(?)
-                 ORDER BY DATE(e.created_at), e.id""",
-            (user_id, start, end),
-        ).fetchall()
+        rows = classified_expenses(conn, user_id, report_month, end)
+        rows.sort(key=lambda row: (str(row["created_at"])[:10], row["id"]))
 
     result = []
     for row in rows:
         movement_kind = str(row["movement_kind"] or "").strip().lower()
-        if movement_kind in NON_CONSUMPTION_MOVEMENTS:
-            classification = "fixed_cost" if movement_kind == "fixed" else movement_kind
-        else:
-            classification = "consumption"
+        classification = row["classification"]
         merchant = normalize_report_merchant(row["merchant"] or row["description"])
         result.append({
             "id": int(row["id"]),

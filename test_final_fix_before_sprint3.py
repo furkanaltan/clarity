@@ -7,6 +7,10 @@ import unittest
 from contextlib import closing
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
+import report_engine
+from rove_score import calculate_score
+from rove_expense_domain import classified_expenses
 
 from rove_app_state import _monthly_budget_truth
 from rove_feature_announcements import (
@@ -35,6 +39,7 @@ class FinalFixServerTests(unittest.TestCase):
                 user_id INTEGER, category TEXT, monthly_limit REAL,
                 source TEXT, active_month TEXT
             );
+            CREATE TABLE app_cash_movements (id INTEGER PRIMARY KEY, user_id INTEGER, expense_id INTEGER, kind TEXT);
         """)
         return conn
 
@@ -57,6 +62,10 @@ class FinalFixServerTests(unittest.TestCase):
                     (1, 999, "SHOPPING", f"{previous}-10 12:00:00"),
                     (2, 900, "LEBENSMITTEL", f"{month}-10 12:00:00"),
                 ],
+            )
+            conn.executemany(
+                "INSERT INTO app_cash_movements (user_id, expense_id, kind) VALUES (1, ?, ?)",
+                [(3, "fixed"), (4, "investment"), (5, "transfer")],
             )
             truth = _monthly_budget_truth(
                 conn, 1, income=4430, fixed_costs=2100, savings=1000
@@ -90,6 +99,37 @@ class FinalFixServerTests(unittest.TestCase):
         self.assertEqual(truth["financial_month_budget"], 1324.68)
         self.assertEqual(truth["variable_expenses"], 20)
         self.assertEqual(truth["free_month_remaining"], 1304.68)
+
+    def test_same_payment_classification_in_budget_score_and_report(self):
+        month = date.today().strftime("%Y-%m")
+        with closing(self.budget_connection()) as conn:
+            conn.executescript("""
+                ALTER TABLE expenses ADD COLUMN merchant TEXT DEFAULT 'Example';
+                ALTER TABLE expenses ADD COLUMN description TEXT DEFAULT '';
+                CREATE TABLE app_user_features(user_id INTEGER, feature_key TEXT, enabled INTEGER);
+            """)
+            user = dict(income=4430, fixed_costs=2105.32, etf_savings=300, cash_savings=700)
+            def budget():
+                return _monthly_budget_truth(conn, 1, income=4430, fixed_costs=2105.32, savings=1000)
+            self.assertEqual(budget()["free_month_remaining"], 1324.68)
+            conn.execute("INSERT INTO expenses (id,user_id,amount,category,created_at) VALUES (1,1,20,'ABOS',?)", (month+"-01",))
+            # A different user's movement must not classify this user's payment.
+            conn.execute("INSERT INTO app_cash_movements VALUES (1,2,1,'fixed')")
+            for kind, expected in ((None, 20), ("fixed", 0), ("transfer", 0), ("savings", 0), ("payment", 20)):
+                with self.subTest(kind=kind):
+                    conn.execute("DELETE FROM app_cash_movements WHERE user_id=1")
+                    if kind:
+                        conn.execute("INSERT INTO app_cash_movements VALUES (2,1,1,?)", (kind,))
+                    truth = budget()
+                    self.assertEqual(truth["variable_expenses"], expected)
+                    self.assertEqual(truth["free_month_remaining"], round(1324.68-expected,2))
+                    with patch.object(report_engine, "get_db", return_value=conn):
+                        total, _, _ = report_engine.get_expense_stats(1, month)
+                    self.assertEqual(total, expected)
+                    score = calculate_score(conn, 1, user)
+                    expected_score = calculate_score(conn, 1, user, total_expenses=expected)
+                    self.assertEqual(score, expected_score)
+                    self.assertEqual(len(classified_expenses(conn,1,month)), 1)
 
     def test_opened_is_not_prominent_but_remains_in_archive(self):
         with closing(sqlite3.connect(":memory:")) as conn:
@@ -165,6 +205,24 @@ class FinalFixFrontendTests(unittest.TestCase):
         self.assertIn('else openAssetKind("crypto")', router)
         self.assertNotIn("if(index<0) return false", router)
         self.assertIn("Aktuell ist nichts fällig.", monthly)
+
+    def test_consumption_uses_payment_classification_not_category_or_merchant(self):
+        if not shutil.which("node"):
+            self.skipTest("Node.js is not installed")
+        script = self.function_source("isConsumptionExpense") + self.function_source("catSpentFrom") + """
+const groups=[{items:[
+ {a:-20,cat:'Abos',n:'Netflix',classification:'consumption'},
+ {a:-20,cat:'Abos',n:'Netflix',classification:'fixed_cost'},
+ {a:-20,cat:'Abos',classification:'transfer'},
+ {a:-20,cat:'Abos',classification:'savings'},
+ {a:-20,cat:'Abos',transfer:true},
+ {a:20,cat:'Abos',classification:'income'}
+]}];
+process.stdout.write(JSON.stringify([catSpentFrom('Abos',groups),
+ isConsumptionExpense({a:-20,cat:'Abos',n:'Netflix'})]));
+"""
+        result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(result.stdout), [20, True])
 
     def test_crypto_route_selects_management_or_add_without_dead_end(self):
         if not shutil.which("node"):

@@ -263,12 +263,10 @@ def calculate_score(
     today = today or date.today()
     report_month = report_month or today.strftime("%Y-%m")
     if total_expenses is None:
-        row = conn.execute(
-            """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
-                 WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?""",
-            (user_id, report_month),
-        ).fetchone()
-        total_expenses = _number(row, "total") if row else 0.0
+        from rove_expense_domain import classified_expenses
+        total_expenses = sum(float(row["amount"] or 0) for row in
+                             classified_expenses(conn, user_id, report_month)
+                             if row["classification"] == "consumption")
     total_expenses = max(0.0, float(total_expenses or 0))
 
     income = _number(user, "income") + _number(user, "other_income")

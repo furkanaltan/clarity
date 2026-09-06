@@ -21,6 +21,40 @@ from rove_financial_accounts import (
 from rove_score import award_tracking_points
 
 
+NON_CONSUMPTION_MOVEMENTS = {
+    "transfer", "withdrawal", "income", "fixed", "investment", "savings", "contribution"
+}
+
+
+def classified_expenses(conn: sqlite3.Connection, user_id: int, month_key: str,
+                        cutoff_date: str | None = None) -> list[dict]:
+    """Classify concrete payments by their user-scoped movement, never by category."""
+    rows = conn.execute(
+        """SELECT * FROM expenses WHERE user_id = ?
+           AND strftime('%Y-%m', created_at) = ?
+           AND (? IS NULL OR DATE(created_at) <= DATE(?)) ORDER BY created_at DESC""",
+        (user_id, month_key, cutoff_date, cutoff_date),
+    ).fetchall()
+    movements = {}
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_cash_movements'").fetchone():
+        for movement in conn.execute(
+            "SELECT expense_id, kind FROM app_cash_movements WHERE user_id = ? AND expense_id IS NOT NULL ORDER BY id",
+            (user_id,),
+        ):
+            kind = str(movement["kind"] or "").strip().lower()
+            # Payment/card references must not override an explicit non-consumption reference.
+            if movement["expense_id"] not in movements or kind in NON_CONSUMPTION_MOVEMENTS:
+                movements[movement["expense_id"]] = kind
+    result = []
+    for row in rows:
+        item = dict(row)
+        kind = movements.get(item["id"], "")
+        item["movement_kind"] = kind
+        item["classification"] = ("fixed_cost" if kind == "fixed" else kind) if kind in NON_CONSUMPTION_MOVEMENTS else "consumption"
+        result.append(item)
+    return result
+
+
 def begin_expense_write(conn: sqlite3.Connection) -> None:
     """Serialize the read-modify-write sequence before reading any balance."""
     conn.execute("BEGIN IMMEDIATE")

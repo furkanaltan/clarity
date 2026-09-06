@@ -104,16 +104,6 @@ INCOME_TINT = "#155681"
 # planmaessige Belastung, die im Budget laengst beruecksichtigt ist.
 FIXED_TINT = "#5B6675"
 
-# These rows are already represented by users.fixed_costs or are account/investment
-# movements rather than variable consumption. Keeping them out of the monthly truth
-# prevents fixed costs and savings from being subtracted twice.
-NON_VARIABLE_EXPENSE_CATEGORIES = {
-    "abos", "miete", "wohnen", "strom", "gas", "wasser", "internet", "handy",
-    "versicherung", "versicherungen", "kredit", "kredite", "kreditrate",
-    "hausgeld", "hausverwaltung", "immobilie", "fixkosten",
-    "bargeld", "umbuchung", "transfer", "einnahme",
-    "investment", "investments", "etf", "krypto", "crypto", "sparrate",
-}
 
 # details-Struktur aus bot.py (fixed_costs_details, siehe /verfeinern) — flache Zahlen pro
 # Unterschlüssel, kein Abbuchungstag, keine Kündbarkeit. Labels hier nur fürs Anzeigen.
@@ -264,12 +254,8 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     Fehlt month_key, bleibt das bisherige Verhalten erhalten und liefert den laufenden Monat.
     """
     month_key = month_key or date.today().strftime("%Y-%m")
-    rows = conn.execute(
-        """SELECT id, amount, category, merchant, description, created_at, account_id FROM expenses
-           WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?
-           ORDER BY created_at DESC""",
-        (user_id, month_key),
-    ).fetchall()
+    from rove_expense_domain import classified_expenses
+    rows = classified_expenses(conn, user_id, month_key)
     account_names = {
         int(row["id"]): str(row["name"])
         for row in list_financial_accounts(conn, user_id, include_archived=True)
@@ -294,6 +280,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # Ohne sid kann die App eine Buchung nur im Browser-RAM loeschen — der 45s-Refresh
             # holt sie danach aus der DB zurueck (Bug 25.07.).
             "sid": r["id"],
+            "classification": r["classification"],
             "n": name,
             "merchant": (r["merchant"] or "").strip(),
             # Unsichtbares Suchfeld fuer den Cashflow. Die Darstellung bleibt bewusst beim
@@ -346,6 +333,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
                 "csid": m["id"],
                 "n": _movement_label(m, "Fixkosten"),
                 "cat": "Fixkosten",
+                "classification": "fixed_cost",
                 "a": -abs(float(m["amount"] or 0)),
                 "c": FIXED_TINT,
                 "i": "F",
@@ -458,15 +446,11 @@ def _monthly_budget_truth(
     category_limit_total = round(sum(limits.values()), 2)
     category_spent = 0.0
     variable_expenses = 0.0
-    rows = conn.execute(
-        """SELECT amount, category
-             FROM expenses
-            WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?""",
-        (user_id, month_key),
-    ).fetchall()
+    from rove_expense_domain import classified_expenses
+    rows = classified_expenses(conn, user_id, month_key)
     for row in rows:
         category = _category_label(row["category"]).strip().casefold()
-        if category in NON_VARIABLE_EXPENSE_CATEGORIES:
+        if row["classification"] != "consumption":
             continue
         amount = max(0.0, float(row["amount"] or 0))
         variable_expenses += amount
@@ -1673,12 +1657,6 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     etf_plan = get_app_etf_savings_plan(conn, user_id, etf_savings)
     scheduled_savings = get_app_scheduled_savings(conn, user_id)
     fixed_costs = float(u.get("fixed_costs") or 0)
-    monthly_expenses = float(conn.execute(
-        """SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
-             WHERE user_id = ?
-               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')""",
-        (user_id,),
-    ).fetchone()["total"] or 0)
     income = float(u.get("income") or 0) + float(u.get("other_income") or 0)
     budget_truth = _monthly_budget_truth(
         conn,
@@ -1688,6 +1666,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         savings=sparraten,
     )
     available = budget_truth["free_month_remaining"]
+    monthly_expenses = budget_truth["variable_expenses"]
     monthly_plan = get_app_monthly_plan(conn, user_id, income, fixed_costs, sparraten)
     monthly_checkin_actions = get_monthly_checkin_actions(conn, user_id, u)
     score = calculate_score(conn, user_id, u, monthly_expenses)

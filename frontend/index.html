@@ -5626,7 +5626,7 @@ function analysisDateFromGroup(label,offset){
 function analysisOutflows(source=analysisMonthSource(),offset=analysisMonthOffset){
   return source.flatMap(day=>(day.items||[]).map(item=>({
     ...item,_analysisDate:String(item.date||analysisDateFromGroup(day.d,offset)||"")
-  }))).filter(item=>Number(item.a)<0&&!item.transfer);
+  }))).filter(isConsumptionExpense);
 }
 function analysisAccountKey(item){
   return item.account || (item.bar?"bargeld":"giro");
@@ -6461,7 +6461,7 @@ document.getElementById("ngChips").addEventListener("click",e=>{
 // der Wahrheit für "zählt das als Budget-Ausgabe".
 function catSpentFrom(cat, groups){
   return (groups||[]).flatMap(d=>d.items)
-    .filter(t=>t.a<0 && t.cat===cat && !isFixedExpense(t))
+    .filter(t=>t.cat===cat && isConsumptionExpense(t))
     .reduce((s,t)=>s+Math.abs(t.a),0);
 }
 function catSpent(cat){ return catSpentFrom(cat,DATA.tx); }
@@ -6482,8 +6482,7 @@ function budgetFrameStatus(){
 // irreführend (z. B. 1× Friseur in 3 Monaten würde sonst eine absurde "+220 %"-Zahl ergeben).
 function catSpentHist(cat, key){
   const month=DATA.txHistory[key]; if(!month) return null;
-  const items=month.flatMap(d=>d.items).filter(t=>t.a<0 && t.cat===cat
-    && !isFixedExpense(t));
+  const items=month.flatMap(d=>d.items).filter(t=>t.cat===cat && isConsumptionExpense(t));
   return items.length ? items.reduce((s,t)=>s+Math.abs(t.a),0) : 0;
 }
 function threeMonthAvg(cat){
@@ -6501,36 +6500,13 @@ function catColor(cat){
   const t=DATA.tx.flatMap(d=>d.items).find(x=>x.cat===cat);
   return t? t.c : "#3A3A41";
 }
-// Merchants, die schon als Vertrag/Fixkosten laufen (z.B. "Strom · Vattenfall" → Strom, Vattenfall).
-// Die will Rov.E NICHT auch noch als Budget lernen — man "gibt" bei Fixkosten nicht bewusst mehr
-// oder weniger aus, das läuft vertraglich fix und steht schon unter Verträge.
-function fixedMerchantSet(){
-  // "Abos" ist im echten Rov.E-Bot (bot.py CATEGORY_LABELS) eine eigene Fixkosten-Kategorie —
-  // ein Abo ist ein Vertrag, kein Tag-zu-Tag-Ausgabeverhalten. Gilt unabhängig vom Anbieter.
-  // "Bargeld" ist ein interner Transfer (Girokonto→Portemonnaie), keine Ausgabe — genau wie Abos.
-  const set=new Set(["abos","bargeld"]);
-  (DATA.vertraege||[]).forEach(v=>v.items.forEach(it=>
-    it.n.split("·").forEach(part=>set.add(part.trim().toLowerCase()))));
-  return set;
-}
-// Fixkosten bleiben im Cashflow als nachvollziehbare Abbuchungen sichtbar. Fuer Budget,
-// Coach und Konsum-Insights sind sie aber keine frei gewaehlten Ausgaben. Neben den
-// Vertragsnamen decken wir deshalb auch die festen Kategorien ab, die aus Bot und App kommen.
-function fixedExpenseCategorySet(){
-  return new Set([
-    "abos", "miete", "wohnen", "strom", "gas", "wasser", "internet", "handy",
-    "versicherung", "versicherungen", "kredit", "kredite", "kreditrate",
-    "hausgeld", "hausverwaltung", "immobilie", "fixkosten", "bargeld"
-  ]);
-}
+// The server classifies concrete payments; names and categories cannot prove plan coverage.
 function isFixedExpense(item){
-  const name=String(item?.n||"").trim().toLocaleLowerCase("de-DE");
-  const category=String(item?.cat||"").trim().toLocaleLowerCase("de-DE");
-  const fixedNames=fixedMerchantSet(), fixedCategories=fixedExpenseCategorySet();
-  if(fixedNames.has(name) || fixedNames.has(category) || fixedCategories.has(category)) return true;
-  // Manche Abbuchungen enthalten einen Zusatz wie "Hausgeld August". Der Vertragsname
-  // bleibt darin erhalten und kann deshalb trotzdem eindeutig als Fixkosten erkannt werden.
-  return [...fixedNames].some(fixed=>fixed.length>=4 && name.includes(fixed));
+  return item?.classification === "fixed_cost";
+}
+function isConsumptionExpense(item){
+  return Number(item?.a)<0 && !item.transfer &&
+    (!item.classification || item.classification==="consumption");
 }
 // Beobachtete Ausgaben sind kein vom Nutzer gesetztes Budget. Sie dürfen deshalb
 // nicht in DATA.budgets landen, weil Mentor und Budgetanzeige sie sonst als Sollgrenze
@@ -6545,8 +6521,7 @@ function syncBudgets(){
   // Leerzustand den letzten Monatsrahmen zur ausdruecklichen Uebernahme an.
   if(APP_MODE==="bridge") return;
   const cats=[...new Set(DATA.tx.flatMap(d=>d.items)
-    .filter(t=>t.a<0 && t.cat)
-    .filter(t=>!isFixedExpense(t))
+    .filter(t=>t.cat && isConsumptionExpense(t))
     .map(t=>t.cat))];
   DATA.budgetSuggestions=cats
     .filter(cat=>!(DATA.budgets||[]).some(b=>b.cat===cat))
@@ -10053,8 +10028,7 @@ function ans_abos(){
 // Nur getrackte (diskretionäre) Ausgaben — Fixkosten laufen im Bot gar nicht durch die expenses-Tabelle,
 // „größte Ausgabe = Miete" wäre eine nutzlose Antwort. Gleiche Ausnahme wie beim Budget-Lernen.
 function trackedOuts(){
-  return DATA.tx.flatMap(d=>d.items).filter(i=> i.a<0
-    && !i.transfer && !isFixedExpense(i));
+  return DATA.tx.flatMap(d=>d.items).filter(isConsumptionExpense);
 }
 // „Was war meine größte Ausgabe?" (Bot: asks_largest_expense)
 function ans_largest(){
