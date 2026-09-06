@@ -194,6 +194,48 @@ def list_financial_accounts(
     ).fetchall()
 
 
+def ensure_initial_financial_accounts(
+    conn: sqlite3.Connection, user_id: int, balances: Mapping[str, float]
+) -> list[sqlite3.Row]:
+    """Create the canonical onboarding cash accounts once, without legacy rows."""
+    if not conn.in_transaction:
+        raise RuntimeError("financial_account_write_requires_transaction")
+    ensure_financial_accounts_schema(conn)
+    existing = conn.execute(
+        "SELECT 1 FROM app_financial_accounts WHERE user_id = ? LIMIT 1", (user_id,)
+    ).fetchone()
+    if existing:
+        active = list_financial_accounts(conn, user_id)
+        if active:
+            conn.execute(
+                "UPDATE users SET current_cash = ? WHERE user_id = ?",
+                (round(sum(float(row["balance"] or 0) for row in active), 2), user_id),
+            )
+        return active
+
+    initial: list[tuple[str, str, str, float]] = []
+    for legacy_key, (account_type, name) in LEGACY_ACCOUNT_META.items():
+        value = round(float(balances.get(legacy_key, 0) or 0), 2)
+        if abs(value) < 0.005:
+            continue
+        if account_type in {"savings", "wallet"} and value < -0.0049:
+            raise ValueError("financial_account_balance_insufficient")
+        initial.append((legacy_key, account_type, name, value))
+
+    for legacy_key, account_type, name, value in initial:
+        conn.execute(
+            """INSERT INTO app_financial_accounts
+                   (user_id, account_type, name, currency, balance, legacy_key, source, status)
+                   VALUES (?, ?, ?, 'EUR', ?, ?, 'manual', 'active')""",
+            (user_id, account_type, name, value, legacy_key),
+        )
+    conn.execute(
+        "UPDATE users SET current_cash = ? WHERE user_id = ?",
+        (round(sum(item[3] for item in initial), 2), user_id),
+    )
+    return list_financial_accounts(conn, user_id)
+
+
 def get_financial_account(
     conn: sqlite3.Connection, user_id: int, account_id: int
 ) -> sqlite3.Row | None:

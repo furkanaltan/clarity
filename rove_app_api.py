@@ -97,6 +97,7 @@ from rove_financial_accounts import (
     create_financial_account,
     delete_financial_account_data,
     ensure_financial_account_reference_schema,
+    ensure_initial_financial_accounts,
     get_legacy_financial_account,
     is_feature_enabled,
     list_financial_accounts,
@@ -4235,7 +4236,13 @@ def complete_app_onboarding():
         )
 
         ensure_app_account_balances_table(conn)
-        if not has_cash_accounts and not multi_cash_accounts_enabled(conn, user_id):
+        if multi_cash_accounts_enabled(conn, user_id):
+            ensure_initial_financial_accounts(conn, user_id, {
+                "giro": amounts["giro"],
+                "tagesgeld": amounts["tagesgeld"],
+                "bargeld": amounts["bargeld"],
+            })
+        elif not has_cash_accounts:
             save_app_cash_accounts(conn, user_id, {
                 "giro": amounts["giro"],
                 "tagesgeld": amounts["tagesgeld"],

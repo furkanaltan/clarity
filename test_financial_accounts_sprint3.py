@@ -12,6 +12,7 @@ import rove_app_api as api
 from rove_app_state import build_live_app_data
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    ensure_initial_financial_accounts,
     get_legacy_financial_account,
     set_feature_enabled,
 )
@@ -71,6 +72,46 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
                     (legacy_key,),
                 ).fetchone()[0])
                 self.assertAlmostEqual(typed, legacy, places=2)
+
+    def test_multi_cash_onboarding_creates_canonical_accounts_once(self):
+        with closing(self.connect()) as conn:
+            conn.execute("DELETE FROM app_account_balances WHERE user_id=1")
+            conn.execute("DELETE FROM app_financial_accounts WHERE user_id=1")
+            conn.execute("UPDATE users SET current_cash=0 WHERE user_id=1")
+            accounts = ensure_initial_financial_accounts(conn, 1, {
+                "giro": 2000, "tagesgeld": 5000, "bargeld": 0,
+            })
+            conn.commit()
+            self.assertEqual(len(accounts), 2)
+            self.assertEqual(
+                {(row["legacy_key"], row["account_type"], float(row["balance"])) for row in accounts},
+                {("giro", "checking", 2000.0), ("tagesgeld", "savings", 5000.0)},
+            )
+            self.assertEqual(float(conn.execute(
+                "SELECT current_cash FROM users WHERE user_id=1"
+            ).fetchone()[0]), 7000.0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_account_balances WHERE user_id=1"
+            ).fetchone()[0], 0)
+
+            conn.execute("BEGIN")
+            again = ensure_initial_financial_accounts(conn, 1, {
+                "giro": 1, "tagesgeld": 1, "bargeld": 1,
+            })
+            self.assertEqual(len(again), 2)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_financial_accounts WHERE user_id=1"
+            ).fetchone()[0], 2)
+
+    def test_multi_cash_onboarding_does_not_create_empty_accounts(self):
+        with closing(self.connect()) as conn:
+            conn.execute("DELETE FROM app_account_balances WHERE user_id=1")
+            conn.execute("DELETE FROM app_financial_accounts WHERE user_id=1")
+            conn.execute("UPDATE users SET current_cash=0 WHERE user_id=1")
+            self.assertEqual(ensure_initial_financial_accounts(conn, 1, {}), [])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_financial_accounts WHERE user_id=1"
+            ).fetchone()[0], 0)
 
     def test_create_all_types_duplicate_names_and_balances(self):
         self.create("checking", "C24", -50)
