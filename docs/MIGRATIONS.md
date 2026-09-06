@@ -22,6 +22,12 @@ Schema-Vorbereitung in `rove_app_state.py` und
 idempotent; historische Bewegungen behalten einen leeren Wert und werden nicht
 nachtraeglich dedupliziert.
 
+`app_auth_login_limits` wird additiv und idempotent durch `ensure_auth_tables()`
+in `rove_app_api.py` angelegt. Die Tabelle speichert ausschliesslich gehashte
+Login-Subjekte sowie temporaere Fehlerzaehler und Backoff-Zeitpunkte; keine
+E-Mail-Adressen oder Passwoerter. Ein separater Produktions-Migrationslauf ist
+nicht erforderlich.
+
 ## Ausfuehrungsregeln
 
 1. Produktionsstatus und betroffene Nutzer read-only pruefen.

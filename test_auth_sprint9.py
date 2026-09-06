@@ -40,6 +40,7 @@ class PasswordAuthTests(unittest.TestCase):
         for patcher in self.patchers:
             patcher.start()
         api.AUTH_BUCKETS.clear()
+        api.LOGIN_FAILURE_BUCKETS.clear()
         api.app.config.update(TESTING=True)
 
     def tearDown(self):
@@ -129,6 +130,102 @@ class PasswordAuthTests(unittest.TestCase):
             self.assertFalse(api.auth_attempt_allowed("password_login", "first@example.test"))
             self.assertTrue(api.auth_attempt_allowed("password_reset_request", "first@example.test"))
 
+    def test_password_login_allows_typo_then_success_and_clears_account_failures(self):
+        self.issue_session()
+        self.assertEqual(self.setup_password().status_code, 200)
+        with patch.object(api, "PASSWORD_HASHER") as password_hasher:
+            password_hasher.verify.side_effect = [False, False, False, False, True]
+            password_hasher.check_needs_rehash.return_value = False
+            with api.app.test_client() as client:
+                for _ in range(4):
+                    response = client.post(
+                        "/v1/auth/password/login",
+                        json={"email": "first@example.test", "password": "wrong-password"},
+                    )
+                    self.assertEqual(response.status_code, 401)
+                success = client.post(
+                    "/v1/auth/password/login",
+                    json={"email": "first@example.test", "password": "very-safe-password"},
+                )
+        self.assertEqual(success.status_code, 200, success.get_json())
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_auth_login_limits").fetchone()[0], 0)
+
+    def test_password_spraying_many_accounts_exhausts_independent_ip_budget(self):
+        self.issue_session()
+        self.assertEqual(self.setup_password().status_code, 200)
+        with api.app.test_client() as client:
+            for index in range(api.LOGIN_IP_FAILURE_LIMIT):
+                response = client.post(
+                    "/v1/auth/password/login",
+                    headers={"X-Real-IP": "198.51.100.20"},
+                    json={"email": f"spray-{index}@example.test", "password": "wrong-password"},
+                )
+                self.assertEqual(response.status_code, 401)
+            blocked = client.post(
+                "/v1/auth/password/login",
+                headers={"X-Real-IP": "198.51.100.20"},
+                json={"email": "first@example.test", "password": "very-safe-password"},
+            )
+        self.assertEqual(blocked.status_code, 401)
+        with api.app.test_request_context(
+            "/v1/auth/password/login",
+            headers={"X-Real-IP": "198.51.100.20"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        ):
+            self.assertFalse(api.password_login_attempt_allowed("another@example.test", api.auth_client_ip()))
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_auth_login_limits").fetchone()[0], 0)
+
+    def test_distributed_account_attack_survives_memory_reset(self):
+        self.issue_session()
+        self.assertEqual(self.setup_password().status_code, 200)
+        with patch.object(api, "PASSWORD_HASHER") as password_hasher:
+            password_hasher.verify.return_value = False
+            with api.app.test_client() as client:
+                for index in range(api.LOGIN_ACCOUNT_FAILURE_LIMIT):
+                    response = client.post(
+                        "/v1/auth/password/login",
+                        headers={"X-Real-IP": f"198.51.100.{index + 1}"},
+                        json={"email": "first@example.test", "password": "wrong-password"},
+                    )
+                    self.assertEqual(response.status_code, 401)
+        api.LOGIN_FAILURE_BUCKETS.clear()
+        with api.app.test_request_context(
+            "/v1/auth/password/login",
+            headers={"X-Real-IP": "203.0.113.99"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        ):
+            self.assertFalse(api.password_login_attempt_allowed("first@example.test", api.auth_client_ip()))
+
+    def test_login_backoff_is_temporary_and_capped(self):
+        self.assertEqual(
+            api.login_backoff_seconds(api.LOGIN_ACCOUNT_FAILURE_LIMIT - 1, api.LOGIN_ACCOUNT_FAILURE_LIMIT),
+            0,
+        )
+        self.assertEqual(
+            api.login_backoff_seconds(api.LOGIN_ACCOUNT_FAILURE_LIMIT, api.LOGIN_ACCOUNT_FAILURE_LIMIT),
+            api.LOGIN_BACKOFF_BASE_SECONDS,
+        )
+        self.assertEqual(
+            api.login_backoff_seconds(100, api.LOGIN_ACCOUNT_FAILURE_LIMIT),
+            api.LOGIN_BACKOFF_MAX_SECONDS,
+        )
+
+    def test_client_ip_trusts_header_only_from_local_proxy(self):
+        with api.app.test_request_context(
+            "/v1/auth/password/login",
+            headers={"X-Real-IP": "203.0.113.15", "X-Forwarded-For": "192.168.1.5"},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        ):
+            self.assertEqual(api.auth_client_ip(), "203.0.113.15")
+        with api.app.test_request_context(
+            "/v1/auth/password/login",
+            headers={"X-Real-IP": "127.0.0.1", "X-Forwarded-For": "127.0.0.1"},
+            environ_base={"REMOTE_ADDR": "198.51.100.7"},
+        ):
+            self.assertEqual(api.auth_client_ip(), "198.51.100.7")
+
     def test_invalid_password_policy_and_missing_auth_secret_fail_closed(self):
         self.issue_session()
         with api.app.test_client() as client:
@@ -141,7 +238,10 @@ class PasswordAuthTests(unittest.TestCase):
 
     def test_export_allowlist_excludes_authentication_tables(self):
         exported = {table for _label, table in api.DATA_EXPORT_TABLES}
-        self.assertFalse({"app_credentials", "app_password_reset_codes", "app_sessions", "app_login_codes"} & exported)
+        self.assertFalse({
+            "app_credentials", "app_password_reset_codes", "app_sessions",
+            "app_login_codes", "app_auth_login_limits",
+        } & exported)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,13 @@ AUTH_PASSWORD_MAX_LENGTH = 1024
 AUTH_PASSWORD_MIN_LENGTH = 10
 AUTH_RESET_TTL_MINUTES = 10
 AUTH_BUCKETS: dict[str, dict[str, list[float]]] = {}
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
+LOGIN_IP_FAILURE_LIMIT = 20
+LOGIN_ACCOUNT_FAILURE_LIMIT = 5
+LOGIN_COMBINATION_FAILURE_LIMIT = 5
+LOGIN_BACKOFF_BASE_SECONDS = 30
+LOGIN_BACKOFF_MAX_SECONDS = 10 * 60
+LOGIN_FAILURE_BUCKETS: dict[str, dict[str, float | int]] = {}
 PIN_LENGTH = 4
 PIN_MAX_ATTEMPTS = 3
 # The server remains the authority: an unlocked PIN session expires after two
@@ -928,7 +935,7 @@ def keyed_hash(value: str) -> str:
 
 
 def auth_attempt_allowed(bucket: str, email: str, limit: int = AUTH_ATTEMPT_LIMIT) -> bool:
-    ip = request.headers.get("X-Real-IP", request.remote_addr or "unknown")
+    ip = auth_client_ip()
     key = f"{ip}:{email.casefold()}"
     now = time.monotonic()
     attempts = [stamp for stamp in AUTH_BUCKETS.get(bucket, {}).get(key, []) if now - stamp < AUTH_ATTEMPT_WINDOW_SECONDS]
@@ -938,6 +945,148 @@ def auth_attempt_allowed(bucket: str, email: str, limit: int = AUTH_ATTEMPT_LIMI
     attempts.append(now)
     AUTH_BUCKETS.setdefault(bucket, {})[key] = attempts
     return True
+
+
+def auth_client_ip() -> str:
+    """Trust the Nginx client-IP header only on the local proxy hop."""
+    remote_raw = str(request.remote_addr or "").strip()
+    try:
+        remote = ipaddress.ip_address(remote_raw)
+    except ValueError:
+        return "unknown"
+    if remote.is_loopback:
+        forwarded_raw = str(request.headers.get("X-Real-IP") or "").strip()
+        try:
+            return ipaddress.ip_address(forwarded_raw).compressed
+        except ValueError:
+            pass
+    return remote.compressed
+
+
+def login_backoff_seconds(failure_count: int, threshold: int) -> int:
+    if failure_count < threshold:
+        return 0
+    exponent = min(failure_count - threshold, 20)
+    return min(LOGIN_BACKOFF_MAX_SECONDS, LOGIN_BACKOFF_BASE_SECONDS * (2 ** exponent))
+
+
+def _active_login_memory_state(key: str, now: float) -> dict[str, float | int] | None:
+    state = LOGIN_FAILURE_BUCKETS.get(key)
+    if not state:
+        return None
+    if now - float(state["window_started_at"]) >= LOGIN_FAILURE_WINDOW_SECONDS:
+        LOGIN_FAILURE_BUCKETS.pop(key, None)
+        return None
+    return state
+
+
+def _login_memory_allowed(key: str, now: float) -> bool:
+    state = _active_login_memory_state(key, now)
+    return not state or now >= float(state.get("blocked_until", 0))
+
+
+def _record_login_memory_failure(key: str, threshold: int, now: float) -> int:
+    state = _active_login_memory_state(key, now)
+    failure_count = int(state["failure_count"]) + 1 if state else 1
+    cooldown = login_backoff_seconds(failure_count, threshold)
+    LOGIN_FAILURE_BUCKETS[key] = {
+        "failure_count": failure_count,
+        "window_started_at": float(state["window_started_at"]) if state else now,
+        "blocked_until": now + cooldown if cooldown else 0,
+    }
+    return cooldown
+
+
+def login_account_subject(email: str) -> str:
+    return keyed_hash(f"password-login-account:{email.casefold()}")
+
+
+def password_login_attempt_allowed(email: str, client_ip: str) -> bool:
+    now = time.monotonic()
+    account_subject = login_account_subject(email)
+    ip_key = f"ip:{client_ip}"
+    combination_key = f"combination:{client_ip}:{account_subject}"
+    if not _login_memory_allowed(ip_key, now) or not _login_memory_allowed(combination_key, now):
+        logger.warning("Password login temporarily limited (scope=network)")
+        return False
+    with db() as conn:
+        ensure_auth_tables(conn)
+        blocked = conn.execute(
+            """SELECT 1 FROM app_auth_login_limits
+                WHERE subject_hash = ?
+                  AND datetime(blocked_until) > datetime('now', 'localtime')""",
+            (account_subject,),
+        ).fetchone()
+    if blocked:
+        logger.warning("Password login temporarily limited (scope=account id=%s)", account_subject[:12])
+        return False
+    return True
+
+
+def record_password_login_failure(
+    conn: sqlite3.Connection,
+    email: str,
+    client_ip: str,
+    persist_account: bool,
+) -> None:
+    now_monotonic = time.monotonic()
+    account_subject = login_account_subject(email)
+    ip_cooldown = _record_login_memory_failure(
+        f"ip:{client_ip}", LOGIN_IP_FAILURE_LIMIT, now_monotonic
+    )
+    combination_cooldown = _record_login_memory_failure(
+        f"combination:{client_ip}:{account_subject}",
+        LOGIN_COMBINATION_FAILURE_LIMIT,
+        now_monotonic,
+    )
+    account_cooldown = 0
+    if persist_account:
+        row = conn.execute(
+            """SELECT failure_count,
+                      datetime(window_started_at) <= datetime('now', 'localtime', ?)
+                 FROM app_auth_login_limits WHERE subject_hash = ?""",
+            (f"-{LOGIN_FAILURE_WINDOW_SECONDS} seconds", account_subject),
+        ).fetchone()
+        failure_count = 1
+        if row and not bool(row[1]):
+            failure_count = int(row[0] or 0) + 1
+        account_cooldown = login_backoff_seconds(failure_count, LOGIN_ACCOUNT_FAILURE_LIMIT)
+        blocked_until = (
+            datetime.now() + timedelta(seconds=account_cooldown)
+            if account_cooldown else datetime.now()
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """INSERT INTO app_auth_login_limits
+                   (subject_hash, failure_count, window_started_at, blocked_until, updated_at)
+               VALUES (?, ?, datetime('now', 'localtime'), ?, datetime('now', 'localtime'))
+               ON CONFLICT(subject_hash) DO UPDATE SET
+                   failure_count = excluded.failure_count,
+                   window_started_at = CASE
+                       WHEN datetime(app_auth_login_limits.window_started_at)
+                            <= datetime('now', 'localtime', ?)
+                       THEN datetime('now', 'localtime') ELSE app_auth_login_limits.window_started_at END,
+                   blocked_until = excluded.blocked_until,
+                   updated_at = datetime('now', 'localtime')""",
+            (
+                account_subject,
+                failure_count,
+                blocked_until,
+                f"-{LOGIN_FAILURE_WINDOW_SECONDS} seconds",
+            ),
+        )
+    if ip_cooldown or combination_cooldown or account_cooldown:
+        logger.warning(
+            "Password login failure backoff applied (account=%s account_s=%s network_s=%s)",
+            account_subject[:12],
+            account_cooldown,
+            max(ip_cooldown, combination_cooldown),
+        )
+
+
+def record_password_login_success(conn: sqlite3.Connection, email: str, client_ip: str) -> None:
+    account_subject = login_account_subject(email)
+    conn.execute("DELETE FROM app_auth_login_limits WHERE subject_hash = ?", (account_subject,))
+    LOGIN_FAILURE_BUCKETS.pop(f"combination:{client_ip}:{account_subject}", None)
 
 
 def validate_password(value: object) -> str | None:
@@ -1099,6 +1248,15 @@ def ensure_auth_tables(conn: sqlite3.Connection) -> None:
         created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
         consumed_at TEXT, FOREIGN KEY(account_id) REFERENCES app_accounts(id) ON DELETE CASCADE)""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_app_password_reset_codes_account ON app_password_reset_codes(account_id, consumed_at, expires_at)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_auth_login_limits (
+            subject_hash      TEXT PRIMARY KEY,
+            failure_count     INTEGER NOT NULL DEFAULT 0,
+            window_started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            blocked_until     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
     ensure_session_pin_table(conn)
 
 
@@ -1918,10 +2076,12 @@ def password_login():
     payload = request.get_json(silent=True) or {}
     email = normalize_email(payload.get("email"))
     password = payload.get("password") if isinstance(payload.get("password"), str) else ""
+    rate_email = email or "invalid"
+    client_ip = auth_client_ip()
     # Keep the public error identical for unknown emails, invalid passwords and malformed input.
-    if not auth_attempt_allowed("password_login", email or "invalid"):
-        return jsonify({"ok": False, "error": "invalid_credentials"}), 401
     try:
+        if not password_login_attempt_allowed(rate_email, client_ip):
+            return jsonify({"ok": False, "error": "invalid_credentials"}), 401
         with db() as conn:
             begin_write(conn)
             ensure_auth_tables(conn)
@@ -1939,15 +2099,20 @@ def password_login():
                 except (InvalidHashError, VerificationError):
                     verified = False
             if not account or not verified:
+                record_password_login_failure(conn, rate_email, client_ip, bool(account))
+                conn.commit()
                 return jsonify({"ok": False, "error": "invalid_credentials"}), 401
             access = conn.execute("SELECT status FROM user_access WHERE user_id = ?", (account["user_id"],)).fetchone()
             if access and str(access["status"] or "") not in {"approved", "app_only"}:
+                record_password_login_failure(conn, rate_email, client_ip, True)
+                conn.commit()
                 return jsonify({"ok": False, "error": "invalid_credentials"}), 401
             if PASSWORD_HASHER.check_needs_rehash(str(account["password_hash"])):
                 conn.execute(
                     "UPDATE app_credentials SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE account_id = ?",
                     (PASSWORD_HASHER.hash(password), account["id"]),
                 )
+            record_password_login_success(conn, rate_email, client_ip)
             raw_session, expires_at = issue_session(conn, int(account["id"]))
             conn.commit()
     except RuntimeError as exc:
