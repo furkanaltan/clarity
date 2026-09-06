@@ -1912,48 +1912,50 @@ def request_login_code():
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
 
+    # Acknowledge every valid request identically; only eligible addresses receive a code.
+    send_code = False
     with db() as conn:
         ensure_auth_tables(conn)
         account = conn.execute("SELECT id FROM app_accounts WHERE email = ?", (email,)).fetchone()
         invitation_id = None
         flow = "login"
         if registration:
-            if account:
-                return jsonify({"ok": False, "error": "account_already_exists"}), 409
-            invitation = conn.execute(
-                """SELECT id FROM app_invitations
-                    WHERE email = ? AND consumed_at IS NULL
-                      AND datetime(expires_at) >= datetime('now', 'localtime')""",
-                (email,),
-            ).fetchone()
-            if not invitation:
-                return jsonify({"ok": False, "error": "invitation_required"}), 403
-            invitation_id = int(invitation["id"])
-            flow = APP_REGISTRATION_FLOW
-        elif not account:
-            return jsonify({"ok": False, "error": "account_required"}), 409
-        conn.execute(
-            """INSERT INTO app_login_codes
-               (email, code_hash, pairing_code, expires_at, flow, invitation_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                email,
-                code_hash,
-                pairing_code or None,
-                (datetime.now() + timedelta(minutes=AUTH_CODE_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S"),
-                flow,
-                invitation_id,
-            ),
-        )
+            if not account:
+                invitation = conn.execute(
+                    """SELECT id FROM app_invitations
+                        WHERE email = ? AND consumed_at IS NULL
+                          AND datetime(expires_at) >= datetime('now', 'localtime')""",
+                    (email,),
+                ).fetchone()
+                if invitation:
+                    invitation_id = int(invitation["id"])
+                    flow = APP_REGISTRATION_FLOW
+                    send_code = True
+        elif account:
+            send_code = True
+        if send_code:
+            conn.execute(
+                """INSERT INTO app_login_codes
+                   (email, code_hash, pairing_code, expires_at, flow, invitation_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    email,
+                    code_hash,
+                    pairing_code or None,
+                    (datetime.now() + timedelta(minutes=AUTH_CODE_TTL_MINUTES)).strftime("%Y-%m-%d %H:%M:%S"),
+                    flow,
+                    invitation_id,
+                ),
+            )
         conn.commit()
 
-    try:
-        send_login_email(email, code)
-    except RuntimeError as exc:
-        app.logger.warning("Login-Code an %s konnte nicht gesendet werden: %s", email, exc)
-        return jsonify({"ok": False, "error": str(exc)}), 502
+    if send_code:
+        try:
+            send_login_email(email, code)
+        except RuntimeError as exc:
+            app.logger.warning("Login-Code delivery failed: %s", type(exc).__name__)
 
-    return jsonify({"ok": True, "sent": True, "needsPairing": not bool(account) and not registration})
+    return jsonify({"ok": True, "sent": True})
 
 
 @app.route("/v1/auth/verify-code", methods=["POST"])

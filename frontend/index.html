@@ -11406,9 +11406,7 @@ async function requestNewAccountCode(){
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok){
-      const message=data.error==="invitation_required" ? "Für diese E-Mail liegt noch keine Einladung vor." :
-        data.error==="account_already_exists" ? "Für diese E-Mail gibt es bereits ein Konto. Melde dich auf der Startseite an." :
-        data.error==="too_many_login_attempts" ? "Zu viele Versuche. Warte kurz und probier es später nochmal." :
+      const message=data.error==="too_many_login_attempts" ? "Zu viele Versuche. Warte kurz und probier es später nochmal." :
         "Der Login-Code konnte gerade nicht gesendet werden.";
       throw new Error(message);
     }
@@ -11416,7 +11414,7 @@ async function requestNewAccountCode(){
     document.getElementById("registerCodeWrap").style.display="block";
     document.querySelector('[data-auth="register-verify"]').style.display="block";
     if(button) button.style.display="none";
-    if(hint) hint.textContent=`Code gesendet an ${email}.`;
+    if(hint) hint.textContent="Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet.";
     setTimeout(()=>document.getElementById("registerCode")?.focus(),80);
   }catch(error){
     if(hint) hint.textContent=error.message||"Registrierung fehlgeschlagen.";
@@ -11452,28 +11450,16 @@ async function requestEmailLoginCode(){
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok){
-      const message=data.error==="pairing_code_required"
-        ? "Für diese E-Mail ist kein aktives Rov.E Web-Konto hinterlegt."
-        : data.error==="invalid_or_expired_code"
-          ? "Dieser Zugang konnte nicht bestätigt werden."
-          : data.error==="too_many_login_attempts"
-            ? "Zu viele Versuche. Warte kurz und probier es später nochmal."
-            : data.error==="brevo_not_configured"
-              ? "Mailversand ist am Server noch nicht aktiviert."
-              : data.error==="app_auth_not_configured"
-                ? "Login-Secret fehlt am Server noch."
-                : String(data.error||"").startsWith("brevo_status_401") || String(data.error||"").startsWith("brevo_status_403")
-                  ? "Brevo hat den Mailversand abgelehnt. Prüfe API-Key, IP-Freigabe und Absender."
-                  : String(data.error||"").startsWith("brevo_status_400")
-                    ? "Brevo nimmt die Maildaten nicht an. Prüfe Absender info@getrove.de."
-                    : "Der Login-Code konnte gerade nicht gesendet werden.";
+      const message=data.error==="too_many_login_attempts"
+        ? "Zu viele Versuche. Warte kurz und probier es später nochmal."
+        : "Der Login-Code konnte gerade nicht gesendet werden.";
       throw new Error(message);
     }
     EMAIL_AUTH_PENDING={email,mode:"login"};
     document.getElementById("loginCodeWrap").style.display="block";
     document.querySelector('[data-auth="verify-code"]').style.display="block";
     if(button) button.style.display="none";
-    if(hint) hint.textContent=`Code gesendet an ${email}.`;
+    if(hint) hint.textContent="Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet.";
     setTimeout(()=>document.getElementById("loginCode")?.focus(),80);
   }catch(error){
     if(hint) hint.textContent=error.message || "Login fehlgeschlagen.";

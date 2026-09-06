@@ -98,6 +98,18 @@ class FrontendCookieAuthTests(unittest.TestCase):
         self.assertIn("BRIDGE_USER_ID=null;", body)
         self.assertIn("location.replace(location.pathname);", body)
 
+    def test_public_code_requests_use_a_neutral_acknowledgement(self):
+        neutral = "Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet."
+        for name in ("requestNewAccountCode", "requestEmailLoginCode"):
+            with self.subTest(name=name):
+                match = re.search(rf"async function {name}\(\)\{{(?P<body>.*?)\n\}}", self.frontend, re.DOTALL)
+                self.assertIsNotNone(match)
+                body = match.group("body")
+                self.assertIn(neutral, body)
+                self.assertNotIn("account_required", body)
+                self.assertNotIn("account_already_exists", body)
+                self.assertNotIn("Code gesendet an ${email}.", body)
+
 
 if __name__ == "__main__":
     unittest.main()
