@@ -155,6 +155,11 @@ class FrontendPinTests(unittest.TestCase):
         for field in ("pinChangeCurrent", "pinChangeNew", "pinChangeConfirm"):
             with self.subTest(field=field):
                 self.assertIn(f'pinField("{field}"', screen)
+        self.assertIn('${pinPad("pinChangeCurrent")}', screen)
+        self.assertIn('readonly aria-readonly="true" tabindex="-1"', self.frontend)
+        self.assertIn('const pinEntry=e.target.closest("[data-pin-target]");', self.frontend)
+        self.assertIn('PIN_PAD_TARGET=pinEntry.dataset.pinTarget;', self.frontend)
+        self.assertIn('else if(id==="pinChangeConfirm")', self.frontend)
         self.assertIn(".pin-change-card .pin-entry-compact", self.frontend)
         for label in ("Aktuelle PIN", "Neue PIN", "PIN wiederholen"):
             with self.subTest(label=label):

@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260907-0a6b11f">
+<meta name="rove-frontend-build" content="20260907-a4f90ae">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -10886,7 +10886,7 @@ let PIN_REJECT_TIMER=0;
 
 function pinField(id,placeholder="••••",withPad=false){
   const input=`<input class="pin-input${withPad?" pin-pad-input":""}" id="${id}" name="app_pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="${placeholder}" placeholder="${placeholder}"${withPad?' readonly aria-readonly="true" tabindex="-1"':""}>`;
-  return `<div class="pin-entry${withPad?"":" pin-entry-compact"}"><div class="pin-dots" id="${id}Dots"><i class="pin-dot"></i><i class="pin-dot"></i><i class="pin-dot"></i><i class="pin-dot"></i></div>${input}</div>`;
+  return `<div class="pin-entry${withPad?"":" pin-entry-compact"}" data-pin-target="${id}"><div class="pin-dots" id="${id}Dots"><i class="pin-dot"></i><i class="pin-dot"></i><i class="pin-dot"></i><i class="pin-dot"></i></div>${input}</div>`;
 }
 
 function pinPad(targetId){
@@ -10974,6 +10974,14 @@ function pinEntryComplete(id){
     setTimeout(submitPinSetup,80);
   }else if(id==="pinUnlock"){
     setTimeout(submitPinUnlock,80);
+  }else if(id==="pinChangeCurrent"){
+    PIN_PAD_TARGET="pinChangeNew";
+    setPinMessage("Gib jetzt deine neue PIN ein.");
+  }else if(id==="pinChangeNew"){
+    PIN_PAD_TARGET="pinChangeConfirm";
+    setPinMessage("Wiederhole deine neue PIN.");
+  }else if(id==="pinChangeConfirm"){
+    setTimeout(submitPinChange,80);
   }
 }
 
@@ -11013,7 +11021,7 @@ function showPinScreen(mode="locked"){
   }else if(mode==="change"){
     body.innerHTML=`${common}<div class="ob-title">App-PIN ändern</div>
       <div class="ob-sub">Bestätige deine aktuelle PIN und lege danach vier neue Ziffern fest.</div>
-      <div class="pin-card pin-change-card"><div class="pin-change-field"><div class="pin-change-label">Aktuelle PIN</div>${pinField("pinChangeCurrent","Aktuelle PIN")}</div><div class="pin-change-field"><div class="pin-change-label">Neue PIN</div>${pinField("pinChangeNew","Neue PIN")}</div><div class="pin-change-field"><div class="pin-change-label">PIN wiederholen</div>${pinField("pinChangeConfirm","PIN wiederholen")}</div>
+      <div class="pin-card pin-change-card"><div class="pin-change-field"><div class="pin-change-label">Aktuelle PIN</div>${pinField("pinChangeCurrent","Aktuelle PIN",true)}</div><div class="pin-change-field"><div class="pin-change-label">Neue PIN</div>${pinField("pinChangeNew","Neue PIN",true)}</div><div class="pin-change-field"><div class="pin-change-label">PIN wiederholen</div>${pinField("pinChangeConfirm","PIN wiederholen",true)}</div>${pinPad("pinChangeCurrent")}
       <div class="pin-message" id="pinMessage"></div></div>`;
     foot.innerHTML=`<button class="ob-cta" data-pin="change">PIN ändern</button><button class="ob-ghost" data-pin="cancel-change">Abbrechen</button>`;
   }else{
@@ -12524,6 +12532,8 @@ function obAdvance(){
 document.getElementById("onboard").addEventListener("click", e=>{
   const pinKey=e.target.closest("[data-pin-key]");
   if(pinKey){ pinPadPress(pinKey.dataset.pinKey); return; }
+  const pinEntry=e.target.closest("[data-pin-target]");
+  if(pinEntry){ PIN_PAD_TARGET=pinEntry.dataset.pinTarget; return; }
   const pinAction=e.target.closest("[data-pin]");
   if(pinAction){
     const action=pinAction.dataset.pin;
