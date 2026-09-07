@@ -4099,6 +4099,15 @@ def onboarding_amount(value: object, maximum: float = 10_000_000.0) -> float | N
     return amount if 0 <= amount <= maximum else None
 
 
+class OnboardingValidationError(Exception):
+    """Abort an onboarding transaction without committing partial profile data."""
+
+    def __init__(self, error: str, status: int = 400) -> None:
+        super().__init__(error)
+        self.error = error
+        self.status = status
+
+
 def optional_profile_amount(value: object, maximum: float = 1_000_000.0) -> float | None:
     try:
         amount = round(float(value or 0), 2)
@@ -4141,6 +4150,23 @@ def complete_app_onboarding():
     if not isinstance(goals, list) or len(goals) > 10:
         return jsonify({"ok": False, "error": "invalid_onboarding_goals"}), 400
 
+    etf_plan = None
+    if etf_savings > 0:
+        plan = payload.get("etf_plan") if isinstance(payload.get("etf_plan"), dict) else {}
+        try:
+            execution_day = int(plan.get("execution_day") or 1)
+        except (TypeError, ValueError):
+            execution_day = 1
+        source_account = clean_text(plan.get("source_account"), "giro").lower()
+        mode = clean_text(plan.get("mode"), "auto").lower()
+        if not 1 <= execution_day <= 31 or source_account not in {"giro", "tagesgeld"} or mode not in {"auto", "confirm"}:
+            return jsonify({"ok": False, "error": "invalid_onboarding_etf_plan"}), 400
+        etf_plan = {
+            "execution_day": execution_day,
+            "source_account": source_account,
+            "mode": mode,
+        }
+
     cleaned_contracts = []
     for index, contract in enumerate(contracts):
         if not isinstance(contract, dict):
@@ -4178,188 +4204,203 @@ def complete_app_onboarding():
             "tint": clean_text(goal.get("tint"), "#2AABEE")[:16],
         })
 
-    with db() as conn:
-        begin_write(conn)
-        user_id = user_from_token(conn, token)
-        if not user_id:
-            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-        ensure_auth_tables(conn)
-        account = conn.execute(
-            "SELECT source FROM app_accounts WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        user = conn.execute(
-            "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        if not account or str(account["source"] or "") != "app":
-            return jsonify({"ok": False, "error": "app_registration_required"}), 403
-        if user and int(user["onboarding_step"] or 0) >= 10:
-            return jsonify({"ok": False, "error": "onboarding_already_completed"}), 409
-
-        # A resumed onboarding initializes missing data; it must never reset values that
-        # were already recorded through a canonical App path.
-        has_cash_accounts = bool(conn.execute(
-            "SELECT 1 FROM app_account_balances WHERE user_id = ? LIMIT 1", (user_id,)
-        ).fetchone()) if table_exists(conn, "app_account_balances") else False
-        has_holdings = bool(conn.execute(
-            "SELECT 1 FROM portfolio_holdings WHERE user_id = ? LIMIT 1", (user_id,)
-        ).fetchone())
-        has_investment_events = bool(conn.execute(
-            "SELECT 1 FROM investment_events WHERE user_id = ? LIMIT 1", (user_id,)
-        ).fetchone())
-        has_contracts = bool(conn.execute(
-            "SELECT 1 FROM app_contracts WHERE user_id = ? LIMIT 1", (user_id,)
-        ).fetchone()) if table_exists(conn, "app_contracts") else False
-
-        ensure_payday_column(conn)
-        conn.execute(
-            """UPDATE users SET income = ?, other_income = ?, etf_savings = ?, cash_savings = ?,
-                      current_investments = CASE WHEN ? THEN current_investments ELSE ? END,
-                      current_cash = CASE WHEN ? THEN current_cash ELSE ? END, onboarding_step = 10,
-                      current_month = ?
-                WHERE user_id = ?""",
-            (
-                income, other_income, etf_savings, cash_savings,
-                has_holdings or has_investment_events,
-                round(amounts["etf"] + amounts["krypto"], 2),
-                has_cash_accounts or multi_cash_accounts_enabled(conn, user_id),
-                round(amounts["giro"] + amounts["tagesgeld"] + amounts["bargeld"], 2),
-                datetime.now().strftime("%Y-%m"), user_id,
-            ),
-        )
-        conn.execute("UPDATE users SET payday = ? WHERE user_id = ?", (payday or None, user_id))
-        conn.execute(
-            """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
-                 WHERE user_id = ?""",
-            (name or None, user_id),
-        )
-        conn.execute(
-            "UPDATE user_access SET display_name = ?, note = 'App-only Beta' WHERE user_id = ?",
-            (name, user_id),
-        )
-
-        ensure_app_account_balances_table(conn)
-        if multi_cash_accounts_enabled(conn, user_id):
-            ensure_initial_financial_accounts(conn, user_id, {
-                "giro": amounts["giro"],
-                "tagesgeld": amounts["tagesgeld"],
-                "bargeld": amounts["bargeld"],
-            })
-        elif not has_cash_accounts:
-            save_app_cash_accounts(conn, user_id, {
-                "giro": amounts["giro"],
-                "tagesgeld": amounts["tagesgeld"],
-                "bargeld": amounts["bargeld"],
-            })
-
-        ensure_app_contracts_table(conn)
-        for contract in cleaned_contracts:
-            duplicate = conn.execute(
-                """SELECT 1 FROM app_contracts
-                     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
-                (user_id, contract["name"]),
+    try:
+        with db() as conn:
+            begin_write(conn)
+            ensure_auth_tables(conn)
+            user_id = user_from_token(conn, token)
+            if not user_id:
+                raise OnboardingValidationError("invalid_or_expired_token", 401)
+            account = conn.execute(
+                "SELECT source FROM app_accounts WHERE user_id = ?", (user_id,)
             ).fetchone()
-            if duplicate:
-                continue
+            user = conn.execute(
+                "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if not account or str(account["source"] or "") != "app":
+                raise OnboardingValidationError("app_registration_required", 403)
+            if user and int(user["onboarding_step"] or 0) >= 10:
+                raise OnboardingValidationError("onboarding_already_completed", 409)
+
+            multi_cash_enabled = multi_cash_accounts_enabled(conn, user_id)
+            if etf_plan and multi_cash_enabled:
+                accounts = list_financial_accounts(conn, user_id, include_archived=True)
+                source_exists = any(
+                    str(row["legacy_key"] or "") == etf_plan["source_account"]
+                    and str(row["status"] or "") == "active"
+                    for row in accounts
+                )
+                source_will_be_created = not accounts and amounts[etf_plan["source_account"]] > 0
+                if not source_exists and not source_will_be_created:
+                    raise OnboardingValidationError("onboarding_etf_source_account_unavailable")
+
+            # A resumed onboarding initializes missing data; it must never reset values that
+            # were already recorded through a canonical App path.
+            has_cash_accounts = bool(conn.execute(
+                "SELECT 1 FROM app_account_balances WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone()) if table_exists(conn, "app_account_balances") else False
+            has_holdings = bool(conn.execute(
+                "SELECT 1 FROM portfolio_holdings WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone())
+            has_investment_events = bool(conn.execute(
+                "SELECT 1 FROM investment_events WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone())
+            has_contracts = bool(conn.execute(
+                "SELECT 1 FROM app_contracts WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone()) if table_exists(conn, "app_contracts") else False
+
+            ensure_payday_column(conn)
             conn.execute(
-                """INSERT INTO app_contracts
-                   (user_id, contract_id, detail_key, name, category, amount, icon, tint, cancelable)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """UPDATE users SET income = ?, other_income = ?, etf_savings = ?, cash_savings = ?,
+                          current_investments = CASE WHEN ? THEN current_investments ELSE ? END,
+                          current_cash = CASE WHEN ? THEN current_cash ELSE ? END
+                    WHERE user_id = ?""",
                 (
-                    user_id, contract["id"], f"app_{contract['id']}", contract["name"],
-                    contract["category"], contract["amount"], contract["icon"],
-                    contract["tint"], contract["cancelable"],
+                    income, other_income, etf_savings, cash_savings,
+                    has_holdings or has_investment_events,
+                    round(amounts["etf"] + amounts["krypto"], 2),
+                    has_cash_accounts or multi_cash_enabled,
+                    round(amounts["giro"] + amounts["tagesgeld"] + amounts["bargeld"], 2),
+                    user_id,
                 ),
             )
-        if cleaned_contracts or has_contracts:
-            sync_app_contract_details(conn, user_id)
-
-        ensure_app_goals_table(conn)
-        for goal in cleaned_goals:
-            duplicate = conn.execute(
-                """SELECT 1 FROM app_goals
-                     WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
-                (user_id, goal["name"]),
-            ).fetchone()
-            if duplicate:
-                continue
+            conn.execute("UPDATE users SET payday = ? WHERE user_id = ?", (payday or None, user_id))
             conn.execute(
-                """INSERT INTO app_goals
-                   (user_id, goal_id, name, target_amount, current_amount, icon, tint)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    user_id, goal["id"], goal["name"], goal["target"], goal["current"],
-                    goal["icon"], goal["tint"],
-                ),
+                """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE user_id = ?""",
+                (name or None, user_id),
+            )
+            conn.execute(
+                "UPDATE user_access SET display_name = ?, note = 'App-only Beta' WHERE user_id = ?",
+                (name, user_id),
             )
 
-        ensure_app_properties_table(conn)
-        if amounts["property_value"] > 0:
-            conn.execute(
-                """INSERT INTO app_properties (user_id, market_value, remaining_debt, updated_at)
-                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                     market_value = excluded.market_value,
-                     remaining_debt = excluded.remaining_debt,
-                     updated_at = CURRENT_TIMESTAMP""",
-                (user_id, amounts["property_value"], amounts["property_debt"]),
-            )
+            ensure_app_account_balances_table(conn)
+            if multi_cash_enabled:
+                ensure_initial_financial_accounts(conn, user_id, {
+                    "giro": amounts["giro"],
+                    "tagesgeld": amounts["tagesgeld"],
+                    "bargeld": amounts["bargeld"],
+                })
+            elif not has_cash_accounts:
+                save_app_cash_accounts(conn, user_id, {
+                    "giro": amounts["giro"],
+                    "tagesgeld": amounts["tagesgeld"],
+                    "bargeld": amounts["bargeld"],
+                })
 
-        for asset_type, amount, label in (
-            ("etf", amounts["etf"], "ETF & Investments"),
-            ("crypto", amounts["krypto"], "Krypto"),
-        ):
-            if amount > 0:
+            ensure_app_contracts_table(conn)
+            for contract in cleaned_contracts:
+                duplicate = conn.execute(
+                    """SELECT 1 FROM app_contracts
+                         WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
+                    (user_id, contract["name"]),
+                ).fetchone()
+                if duplicate:
+                    continue
+                conn.execute(
+                    """INSERT INTO app_contracts
+                       (user_id, contract_id, detail_key, name, category, amount, icon, tint, cancelable)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        user_id, contract["id"], f"app_{contract['id']}", contract["name"],
+                        contract["category"], contract["amount"], contract["icon"],
+                        contract["tint"], contract["cancelable"],
+                    ),
+                )
+            if cleaned_contracts or has_contracts:
+                sync_app_contract_details(conn, user_id)
+
+            ensure_app_goals_table(conn)
+            for goal in cleaned_goals:
+                duplicate = conn.execute(
+                    """SELECT 1 FROM app_goals
+                         WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1""",
+                    (user_id, goal["name"]),
+                ).fetchone()
+                if duplicate:
+                    continue
+                conn.execute(
+                    """INSERT INTO app_goals
+                       (user_id, goal_id, name, target_amount, current_amount, icon, tint)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        user_id, goal["id"], goal["name"], goal["target"], goal["current"],
+                        goal["icon"], goal["tint"],
+                    ),
+                )
+
+            ensure_app_properties_table(conn)
+            if amounts["property_value"] > 0:
+                conn.execute(
+                    """INSERT INTO app_properties (user_id, market_value, remaining_debt, updated_at)
+                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         market_value = excluded.market_value,
+                         remaining_debt = excluded.remaining_debt,
+                         updated_at = CURRENT_TIMESTAMP""",
+                    (user_id, amounts["property_value"], amounts["property_debt"]),
+                )
+
+            for asset_type, amount, label in (
+                ("etf", amounts["etf"], "ETF & Investments"),
+                ("crypto", amounts["krypto"], "Krypto"),
+            ):
+                if amount <= 0:
+                    continue
                 existing = conn.execute(
                     """SELECT 1 FROM investment_events
                          WHERE user_id = ? AND source = 'app_onboarding'
                            AND asset_type = ? LIMIT 1""",
                     (user_id, asset_type),
                 ).fetchone()
-                if existing:
-                    continue
+                if not existing:
+                    conn.execute(
+                        """INSERT INTO investment_events
+                           (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
+                           VALUES (?, ?, 'in', ?, ?, 'initial_balance', 'app_onboarding', 'Startwert aus App-Onboarding')""",
+                        (user_id, amount, asset_type, label),
+                    )
+
+            ensure_app_etf_savings_plan_table(conn)
+            if etf_plan:
+                now = datetime.now()
+                start_month = now.strftime("%Y-%m")
+                if now.day > etf_plan["execution_day"]:
+                    next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+                    start_month = next_month.strftime("%Y-%m")
+                source_account_id = None
+                if multi_cash_enabled:
+                    prepare_multi_cash_write(conn)
+                    source_account_id = legacy_financial_account_id(
+                        conn, user_id, etf_plan["source_account"]
+                    )
                 conn.execute(
-                    """INSERT INTO investment_events
-                       (user_id, amount, direction, asset_type, asset_name, event_type, source, note)
-                       VALUES (?, ?, 'in', ?, ?, 'initial_balance', 'app_onboarding', 'Startwert aus App-Onboarding')""",
-                    (user_id, amount, asset_type, label),
+                    """INSERT INTO app_etf_savings_plan
+                       (user_id, execution_day, source_account, source_account_id, mode, active, start_month, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         execution_day = excluded.execution_day,
+                         source_account = excluded.source_account,
+                         source_account_id = excluded.source_account_id,
+                         mode = excluded.mode,
+                         active = excluded.active,
+                         start_month = excluded.start_month,
+                         updated_at = CURRENT_TIMESTAMP""",
+                    (
+                        user_id, etf_plan["execution_day"], etf_plan["source_account"],
+                        source_account_id, etf_plan["mode"], start_month,
+                    ),
                 )
 
-        ensure_app_etf_savings_plan_table(conn)
-        if etf_savings > 0:
-            plan = payload.get("etf_plan") if isinstance(payload.get("etf_plan"), dict) else {}
-            try:
-                execution_day = int(plan.get("execution_day") or 1)
-            except (TypeError, ValueError):
-                execution_day = 1
-            source_account = clean_text(plan.get("source_account"), "giro").lower()
-            mode = clean_text(plan.get("mode"), "auto").lower()
-            if not 1 <= execution_day <= 31 or source_account not in {"giro", "tagesgeld"} or mode not in {"auto", "confirm"}:
-                return jsonify({"ok": False, "error": "invalid_onboarding_etf_plan"}), 400
-            now = datetime.now()
-            start_month = now.strftime("%Y-%m")
-            if now.day > execution_day:
-                next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
-                start_month = next_month.strftime("%Y-%m")
-            source_account_id = None
-            if multi_cash_accounts_enabled(conn, user_id):
-                prepare_multi_cash_write(conn)
-                source_account_id = legacy_financial_account_id(conn, user_id, source_account)
+            # Only a fully persisted profile becomes an onboarded profile.
             conn.execute(
-                """INSERT INTO app_etf_savings_plan
-                   (user_id, execution_day, source_account, source_account_id, mode, active, start_month, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                     execution_day = excluded.execution_day,
-                     source_account = excluded.source_account,
-                     source_account_id = excluded.source_account_id,
-                     mode = excluded.mode,
-                     active = excluded.active,
-                     start_month = excluded.start_month,
-                     updated_at = CURRENT_TIMESTAMP""",
-                (user_id, execution_day, source_account, source_account_id, mode, start_month),
+                "UPDATE users SET onboarding_step = 10, current_month = ? WHERE user_id = ?",
+                (datetime.now().strftime("%Y-%m"), user_id),
             )
-
-        conn.commit()
+            conn.commit()
+    except OnboardingValidationError as exc:
+        return jsonify({"ok": False, "error": exc.error}), exc.status
 
     # Financial state stays behind the mandatory PIN boundary. The client proceeds
     # directly to PIN setup and loads /v1/state only after that session is unlocked.

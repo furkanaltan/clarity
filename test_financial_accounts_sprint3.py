@@ -639,5 +639,160 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             ).fetchone()[0], 0)
 
 
+class OnboardingAtomicityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp.name) / "clarity.db"
+        create_db(self.db_path)
+        self.patchers = [
+            patch.object(api, "DB_PATH", self.db_path),
+            patch.object(api, "user_from_token", lambda _conn, token: {"pilot-token": 1}.get(token)),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        api.app.config.update(TESTING=True)
+        with closing(self.connect()) as conn:
+            conn.execute("ALTER TABLE users ADD COLUMN onboarding_step INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE users ADD COLUMN current_month TEXT")
+            conn.execute("ALTER TABLE user_access ADD COLUMN display_name TEXT")
+            conn.execute("ALTER TABLE user_access ADD COLUMN note TEXT")
+            conn.execute("CREATE TABLE portfolio_holdings (id INTEGER PRIMARY KEY, user_id INTEGER)")
+            api.ensure_auth_tables(conn)
+            api.ensure_app_contracts_table(conn)
+            api.ensure_app_goals_table(conn)
+            conn.execute(
+                "INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES (?, 1, CURRENT_TIMESTAMP, 'app')",
+                ("onboarding@example.test",),
+            )
+            conn.execute("DELETE FROM app_account_balances WHERE user_id = 1")
+            conn.execute("DELETE FROM app_financial_accounts WHERE user_id = 1")
+            conn.execute(
+                "UPDATE users SET income = 0, other_income = 0, fixed_costs = 0, "
+                "etf_savings = 0, cash_savings = 0, current_cash = 0, onboarding_step = 0 WHERE user_id = 1"
+            )
+            set_feature_enabled(conn, 1, FEATURE_MULTI_CASH_ACCOUNTS_V1, True)
+            conn.commit()
+
+    def tearDown(self) -> None:
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.temp.cleanup()
+
+    def connect(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def payload(self, *, giro=2000, tagesgeld=5000, etf_savings=300, execution_day=1, source="giro"):
+        return {
+            "name": "Onboarding Test",
+            "income": 4430,
+            "other_income": 0,
+            "cash_savings": 700,
+            "etf_savings": etf_savings,
+            "payday": 1,
+            "wealth": {
+                "giro": giro,
+                "tagesgeld": tagesgeld,
+                "bargeld": 0,
+                "etf": 0,
+                "krypto": 0,
+                "property_value": 0,
+                "property_debt": 0,
+            },
+            "contracts": [{"name": "Miete", "category": "Wohnen", "amount": 900}],
+            "goals": [],
+            "etf_plan": {
+                "execution_day": execution_day,
+                "source_account": source,
+                "mode": "auto",
+            },
+        }
+
+    def submit(self, payload):
+        with api.app.test_client() as client:
+            return client.post(
+                "/v1/onboarding",
+                json=payload,
+                headers={"Authorization": "Bearer pilot-token", "Origin": "https://getrove.de"},
+            )
+
+    def assert_not_onboarded(self):
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT onboarding_step FROM users WHERE user_id = 1").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_financial_accounts WHERE user_id = 1").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_account_balances WHERE user_id = 1").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id = 1").fetchone()[0], 0)
+
+    def test_invalid_etf_day_leaves_no_partial_onboarding_then_retry_succeeds(self):
+        invalid = self.submit(self.payload(execution_day=32))
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["error"], "invalid_onboarding_etf_plan")
+        self.assert_not_onboarded()
+
+        valid = self.submit(self.payload(execution_day=15))
+        self.assertEqual(valid.status_code, 200, valid.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT onboarding_step FROM users WHERE user_id = 1").fetchone()[0], 10)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_financial_accounts WHERE user_id = 1").fetchone()[0], 2)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id = 1").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT execution_day FROM app_etf_savings_plan WHERE user_id = 1").fetchone()[0], 15)
+
+    def test_missing_multi_cash_source_is_rejected_without_partial_state_then_resolves_existing_source(self):
+        invalid = self.submit(self.payload(giro=0, tagesgeld=5000, source="giro"))
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["error"], "onboarding_etf_source_account_unavailable")
+        self.assert_not_onboarded()
+
+        valid = self.submit(self.payload(giro=0, tagesgeld=5000, source="tagesgeld"))
+        self.assertEqual(valid.status_code, 200, valid.get_json())
+        with closing(self.connect()) as conn:
+            plan = conn.execute(
+                "SELECT source_account, source_account_id FROM app_etf_savings_plan WHERE user_id = 1"
+            ).fetchone()
+            source = get_legacy_financial_account(conn, 1, "tagesgeld")
+            self.assertEqual(plan["source_account"], "tagesgeld")
+            self.assertEqual(int(plan["source_account_id"]), int(source["id"]))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_financial_accounts WHERE user_id = 1").fetchone()[0], 1)
+
+    def test_available_multi_cash_source_completes_normally(self):
+        with_source = self.submit(self.payload(giro=2000, tagesgeld=5000, source="giro"))
+        self.assertEqual(with_source.status_code, 200, with_source.get_json())
+        with closing(self.connect()) as conn:
+            plan = conn.execute("SELECT source_account_id FROM app_etf_savings_plan WHERE user_id = 1").fetchone()
+            giro = get_legacy_financial_account(conn, 1, "giro")
+            self.assertEqual(int(plan["source_account_id"]), int(giro["id"]))
+
+    def test_no_etf_plan_completes_without_creating_one(self):
+        payload = self.payload(etf_savings=0)
+        payload.pop("etf_plan")
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT onboarding_step FROM users WHERE user_id = 1").fetchone()[0], 10)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_etf_savings_plan WHERE user_id = 1").fetchone()[0], 0)
+
+    def test_existing_financial_accounts_are_not_overwritten_or_duplicated(self):
+        with closing(self.connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_initial_financial_accounts(conn, 1, {"giro": 333, "tagesgeld": 0, "bargeld": 0})
+            conn.commit()
+        response = self.submit(self.payload(giro=2000, tagesgeld=5000, source="giro"))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            accounts = list(conn.execute(
+                "SELECT legacy_key, balance FROM app_financial_accounts WHERE user_id = 1"
+            ))
+            self.assertEqual(len(accounts), 1)
+            self.assertEqual(accounts[0]["legacy_key"], "giro")
+            self.assertEqual(float(accounts[0]["balance"]), 333.0)
+
+    def test_unexpected_write_phase_failure_rolls_back_everything(self):
+        with patch.object(api, "ensure_app_goals_table", side_effect=RuntimeError("forced_after_write")):
+            with self.assertRaisesRegex(RuntimeError, "forced_after_write"):
+                self.submit(self.payload())
+        self.assert_not_onboarded()
+
+
 if __name__ == "__main__":
     unittest.main()
