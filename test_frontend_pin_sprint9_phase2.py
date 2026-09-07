@@ -161,6 +161,7 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('PIN_PAD_TARGET=pinEntry.dataset.pinTarget;', self.frontend)
         self.assertIn('.pin-change-card .pin-pad{margin-top:22px;row-gap:10px}', self.frontend)
         self.assertIn('.pin-change-card .pin-key{height:44px;font-size:28px}', self.frontend)
+        self.assertIn('.pin-change-card .pin-entry{margin-top:0;height:42px}', self.frontend)
         self.assertIn('else if(id==="pinChangeConfirm")', self.frontend)
         self.assertIn(".pin-change-card .pin-entry-compact", self.frontend)
         for label in ("Aktuelle PIN", "Neue PIN", "PIN wiederholen"):
