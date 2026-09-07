@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260907-0bf3b0c">
+<meta name="rove-frontend-build" content="20260907-5e0c502">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -11052,11 +11052,15 @@ async function fetchPinStatus(){
     ROVE_API={baseUrl:PAIR_API_BASE_URL,authenticated:true};
     API_SESSION_FAILURE_HANDLED=false;
     SERVER_ONBOARDING_REQUIRED=!!data.onboarding_required;
-    if(SERVER_ONBOARDING_REQUIRED)return {state:"onboarding"};
+    if(data.password_setup_required){
+      showPasswordSetup(true);
+      return {state:"password_setup"};
+    }
     if(data.pin_status!=="unlocked"){
       showPinScreen(data.pin_status==="setup_required"?"setup":data.pin_status);
       return {state:"locked"};
     }
+    if(SERVER_ONBOARDING_REQUIRED)return {state:"onboarding"};
     PIN_SESSION_STATE="unlocked";
     PIN_LAST_LOCAL_ACTIVITY=Date.now();
     PIN_LAST_SERVER_TOUCH=Date.now();
@@ -11073,6 +11077,10 @@ async function resumeAfterPin(){
   if(onboard)onboard.hidden=true;
   const ok=await loadBridgeState();
   if(ok){
+    if(SERVER_ONBOARDING_REQUIRED){
+      showServerOnboarding();
+      return true;
+    }
     document.getElementById("app")?.removeAttribute("hidden");
     // loadBridgeState() hat den vollstaendigen Live-State bereits gerendert. Ein zweiter
     // Refresh nach dem Reveal wuerde die Home-Hoehen nach dem ersten Paint nochmals aendern.
@@ -11181,6 +11189,16 @@ async function bootstrapAuthenticatedApp(){
   const pin=await fetchPinStatus();
   if(pin.state==="unlocked")return (await loadBridgeState())?"ready":"login";
   return pin.state;
+}
+
+function showServerOnboarding(){
+  const onboard=document.getElementById("onboard");
+  if(!onboard)return;
+  onboard.classList.remove("pin-mode");
+  document.getElementById("obBody")?.classList.remove("pin-lock-layout","pin-setup-layout","ob-login");
+  OB.step=0;
+  obRender();
+  onboard.hidden=false;
 }
 
 window.addEventListener("rove:api-locked",()=>{
@@ -11487,10 +11505,24 @@ async function requestEmailLoginCode(){
   }
 }
 
-function continueWithSession(onboarding=false){
-  const nextHash=onboarding?'#onboarding':'';
-  if(location.hash===nextHash){ location.reload(); return; }
-  location.href=`${location.pathname}${nextHash}`;
+let AUTH_BOOTSTRAP_IN_FLIGHT=false;
+async function continueWithSession(){
+  if(AUTH_BOOTSTRAP_IN_FLIGHT)return;
+  AUTH_BOOTSTRAP_IN_FLIGHT=true;
+  try{
+    const state=await bootstrapAuthenticatedApp();
+    if(state==="ready")return;
+    if(state==="onboarding"){
+      showServerOnboarding();
+      return;
+    }
+    if(state==="login"){
+      showAppConnect();
+      document.getElementById("onboard").hidden=false;
+    }
+  }finally{
+    AUTH_BOOTSTRAP_IN_FLIGHT=false;
+  }
 }
 
 async function passwordLogin(){
@@ -11505,7 +11537,7 @@ async function passwordLogin(){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut."));
     endAuthAction(action,'[data-auth="password-login"]');
-    continueWithSession(!!data.onboarding_required);
+    continueWithSession();
   }catch(error){
     if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut.");
     endAuthAction(action,'[data-auth="password-login"]',"Einloggen");
@@ -11524,7 +11556,7 @@ async function completePasswordSetup(){
     if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Das Passwort muss mindestens 10 Zeichen lang sein und zweimal gleich eingegeben werden."));
     if(hint) hint.textContent="Passwort gespeichert. Wir bringen dich weiter ...";
     endAuthAction(action,'[data-auth="password-setup"]');
-    continueWithSession(EMAIL_AUTH_PENDING.mandatory);
+    continueWithSession();
   }catch(error){
     if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht gespeichert werden.");
     endAuthAction(action,'[data-auth="password-setup"]',"Passwort speichern");
@@ -11559,7 +11591,7 @@ async function confirmPasswordReset(){
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/reset/confirm`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:EMAIL_AUTH_PENDING.email,code,password,password_confirmation})});
     const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Code oder Passwort sind nicht gültig."));
     endAuthAction(action,'[data-auth="reset-confirm"]');
-    continueWithSession(false);
+    continueWithSession();
   }catch(error){
     if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht zurückgesetzt werden.");
     endAuthAction(action,'[data-auth="reset-confirm"]',"Passwort speichern");
@@ -11593,9 +11625,8 @@ async function verifyEmailLoginCode(){
         "Der Login hat gerade nicht funktioniert.";
       throw new Error(message);
     }
-    if(data.password_setup_required){ endAuthAction(action,selector); showPasswordSetup(registration); return; }
     endAuthAction(action,selector);
-    continueWithSession(!!data.onboarding_required);
+    continueWithSession();
   }catch(error){
     if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message || "Login fehlgeschlagen.");
     endAuthAction(action,selector,"Code bestätigen");
@@ -12570,7 +12601,7 @@ document.getElementById("onboard").addEventListener("click", e=>{
     else if(auth.dataset.auth==="register-verify") verifyEmailLoginCode();
     else if(auth.dataset.auth==="password-login") passwordLogin();
     else if(auth.dataset.auth==="password-setup") completePasswordSetup();
-    else if(auth.dataset.auth==="password-continue") continueWithSession(false);
+    else if(auth.dataset.auth==="password-continue") continueWithSession();
     else if(auth.dataset.auth==="show-reset") showPasswordReset();
     else if(auth.dataset.auth==="reset-request") requestPasswordReset();
     else if(auth.dataset.auth==="reset-confirm") confirmPasswordReset();

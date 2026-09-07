@@ -138,7 +138,7 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('body.classList.remove("pin-lock-layout","pin-setup-layout")', login)
 
         password_login = self.function_body("passwordLogin")
-        self.assertIn('continueWithSession(!!data.onboarding_required)', password_login)
+        self.assertIn('continueWithSession();', password_login)
         pin_status = self.function_body("fetchPinStatus")
         self.assertIn('data.pin_status==="setup_required"?"setup":data.pin_status', pin_status)
 

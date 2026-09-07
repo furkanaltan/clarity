@@ -80,6 +80,20 @@ class PasswordAuthTests(unittest.TestCase):
         self.assertTrue(api.PASSWORD_HASHER.verify(credential[0], "very-safe-password"))
         self.assertEqual(user_id, 1)
 
+    def test_pin_status_exposes_missing_password_for_authenticated_session(self):
+        raw_token = self.issue_session()
+        with api.app.test_client() as client:
+            client.set_cookie(api.SESSION_COOKIE_NAME, raw_token, domain="localhost", path="/")
+            status = client.get("/v1/auth/pin/status")
+        self.assertEqual(status.status_code, 200, status.get_json())
+        self.assertTrue(status.get_json()["password_setup_required"])
+
+        self.assertEqual(self.setup_password(raw_token).status_code, 200)
+        with api.app.test_client() as client:
+            client.set_cookie(api.SESSION_COOKIE_NAME, raw_token, domain="localhost", path="/")
+            status = client.get("/v1/auth/pin/status")
+        self.assertFalse(status.get_json()["password_setup_required"])
+
     def test_password_login_and_neutral_failures(self):
         self.issue_session()
         self.assertEqual(self.setup_password().status_code, 200)

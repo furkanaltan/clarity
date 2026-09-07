@@ -1501,6 +1501,16 @@ def pin_state(conn: sqlite3.Connection, session_id: int, *, touch: bool = False)
     return "unlocked"
 
 
+def session_password_setup_required(conn: sqlite3.Connection, session_id: int) -> bool:
+    return not bool(conn.execute(
+        """SELECT 1
+             FROM app_sessions s
+             JOIN app_credentials c ON c.account_id = s.account_id
+            WHERE s.id = ? LIMIT 1""",
+        (session_id,),
+    ).fetchone())
+
+
 def pin_locked_response(status: str):
     return jsonify({
         "ok": False,
@@ -2250,6 +2260,7 @@ def auth_me():
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
             user_id, session_id = session
             status = pin_state(conn, session_id)
+            password_setup_required = session_password_setup_required(conn, session_id)
             user = conn.execute(
                 "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
@@ -2259,6 +2270,7 @@ def auth_me():
     return jsonify({
         "ok": True,
         "pin_status": status,
+        "password_setup_required": password_setup_required,
         "onboarding_required": bool(user and int(user["onboarding_step"] or 0) < 10),
     })
 
@@ -2316,6 +2328,7 @@ def app_pin_status():
             return jsonify({"ok": False, "error": "not_logged_in"}), 401
         user_id, session_id = session
         status = pin_state(conn, session_id)
+        password_setup_required = session_password_setup_required(conn, session_id)
         user = conn.execute(
             "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
         ).fetchone()
@@ -2323,6 +2336,7 @@ def app_pin_status():
     return jsonify({
         "ok": True,
         "pin_status": status,
+        "password_setup_required": password_setup_required,
         "pin_required": True,
         "onboarding_required": bool(user and int(user["onboarding_step"] or 0) < 10),
     })
@@ -2339,12 +2353,9 @@ def setup_app_pin():
         session = session_user_from_cookie(conn)
         if not session:
             return jsonify({"ok": False, "error": "not_logged_in"}), 401
-        user_id, session_id = session
-        user = conn.execute(
-            "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        if not user or int(user["onboarding_step"] or 0) < 10:
-            return jsonify({"ok": False, "error": "onboarding_required"}), 409
+        _user_id, session_id = session
+        if session_password_setup_required(conn, session_id):
+            return jsonify({"ok": False, "error": "password_setup_required"}), 409
         if pin_row(conn, session_id):
             return jsonify({"ok": False, "error": "pin_already_set"}), 409
         conn.execute(

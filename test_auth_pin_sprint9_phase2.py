@@ -93,6 +93,11 @@ class AppPinAuthTests(unittest.TestCase):
                 "INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES (?, 2, CURRENT_TIMESTAMP, 'app')",
                 ("second@example.test",),
             )
+            for account in conn.execute("SELECT id FROM app_accounts"):
+                conn.execute(
+                    "INSERT INTO app_credentials (account_id, password_hash) VALUES (?, ?)",
+                    (account[0], api.PASSWORD_HASHER.hash("very-safe-password")),
+                )
             conn.commit()
         fast_hasher = PasswordHasher(
             time_cost=1,
@@ -276,6 +281,15 @@ class AppPinAuthTests(unittest.TestCase):
                 self.assertIsNone(api.enforce_session_pin())
             self.assertEqual(client.get("/v1/state").status_code, 423)
 
+    def test_pin_setup_is_allowed_after_password_before_onboarding(self):
+        self.issue_session("new-user")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("UPDATE users SET onboarding_step = 0 WHERE user_id = 1")
+            conn.commit()
+        with self.client_for("new-user") as client:
+            response = self.setup_pin(client)
+        self.assertEqual(response.status_code, 200, response.get_json())
+
     def test_pin_change_requires_current_pin_and_replaces_it(self):
         self.issue_session("device-a")
         with self.client_for("device-a") as client:
@@ -300,12 +314,6 @@ class AppPinAuthTests(unittest.TestCase):
 
     def test_password_recovery_replaces_device_pin_after_lockout(self):
         self.issue_session("device-a")
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            conn.execute(
-                "INSERT INTO app_credentials (account_id, password_hash) VALUES (?, ?)",
-                (self.account_id(), api.PASSWORD_HASHER.hash("very-safe-password")),
-            )
-            conn.commit()
         with self.client_for("device-a") as client:
             self.assertEqual(self.setup_pin(client, "1234").status_code, 200)
             client.post("/v1/auth/pin/lock", json={})

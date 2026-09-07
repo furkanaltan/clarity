@@ -110,17 +110,39 @@ class FrontendCookieAuthTests(unittest.TestCase):
                 self.assertNotIn("account_already_exists", body)
                 self.assertNotIn("Code gesendet an ${email}.", body)
 
-    def test_auth_flow_refreshes_same_url_once_after_successful_session_setup(self):
+    def test_auth_flow_restarts_server_bootstrap_without_hash_reload(self):
         transition = re.search(
-            r"function continueWithSession\(onboarding=false\)\{(?P<body>.*?)\n\}",
+            r"async function continueWithSession\(\)\{(?P<body>.*?)\n\}",
             self.frontend,
             re.DOTALL,
         )
         self.assertIsNotNone(transition)
         body = transition.group("body")
-        self.assertIn("const nextHash=onboarding?'#onboarding':'';", body)
-        self.assertIn("if(location.hash===nextHash){ location.reload(); return; }", body)
-        self.assertEqual(body.count("location.reload()"), 1)
+        self.assertIn("bootstrapAuthenticatedApp()", body)
+        self.assertIn('state==="onboarding"', body)
+        self.assertIn("showServerOnboarding()", body)
+        self.assertNotIn("location.reload()", body)
+
+    def test_authenticated_bootstrap_prioritizes_missing_password(self):
+        pin_status = re.search(
+            r"async function fetchPinStatus\(\)(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(pin_status)
+        body = pin_status.group("body")
+        self.assertIn("data.password_setup_required", body)
+        self.assertIn('showPasswordSetup(true)', body)
+        self.assertIn('return {state:"password_setup"};', body)
+        self.assertLess(body.index("data.password_setup_required"), body.index("data.pin_status"))
+        self.assertLess(body.index("data.pin_status"), body.index('state:"onboarding"'))
+
+    def test_password_setup_continues_through_bootstrap(self):
+        setup = re.search(r"async function completePasswordSetup\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+        self.assertIn("continueWithSession();", body)
+        self.assertNotIn("location.href", body)
 
     def test_password_actions_have_in_flight_guards_and_feedback(self):
         self.assertIn("const AUTH_ACTIONS_IN_FLIGHT = new Set();", self.frontend)
