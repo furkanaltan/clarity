@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260907-5e0c502">
+<meta name="rove-frontend-build" content="20260907-6458466">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3106,10 +3106,12 @@ function readProfile(){
     return (p && p.data && Array.isArray(p.data.assets)) ? p : null;   // defekt/fremd → wie "kein Profil"
   }catch(e){ return null; }
 }
-const APP_MODE = (()=>{
+let APP_MODE = (()=>{
   if(DEMO_HASHES.has(location.hash.slice(1))) return "mock";
   try{ if(sessionStorage.getItem("rove-demo")) return "demo"; }catch(e){}
-  return readProfile() ? "profile" : "bridge";
+  // A local profile is only a fallback. The startup resolver checks the server
+  // session before allowing local financial data to become visible.
+  return "bridge";
 })();
 if(APP_MODE==="bridge") document.getElementById("app")?.setAttribute("hidden","");
 let ROVE_API = null;
@@ -11462,8 +11464,21 @@ async function restoreEmailSession(){
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/me`,{credentials:"include",cache:"no-store"});
     const data=await res.json().catch(()=>({}));
-    return !!(res.ok && data.ok);
-  }catch(e){ return false; }
+    return {valid:!!(res.ok && data.ok), definitive:res.status===401||res.ok};
+  }catch(e){ return {valid:false,definitive:false}; }
+}
+
+async function resolveAppMode(){
+  if(APP_MODE==="mock" || APP_MODE==="demo") return APP_MODE;
+  const session=await restoreEmailSession();
+  if(session.valid){
+    APP_MODE="bridge";
+    return APP_MODE;
+  }
+  // Only an explicit unauthenticated response permits the local profile fallback.
+  // Network/server uncertainty must never reveal stale local financial data.
+  APP_MODE=session.definitive && readProfile() ? "profile" : "bridge";
+  return APP_MODE;
 }
 
 async function requestEmailLoginCode(){
@@ -12019,9 +12034,20 @@ async function toggleTrackingReminder(){
   }
 }
 
+function installProfileAutosave(){
+  if(APP_MODE!=="profile") return;
+  ["renderTx","renderGoals","renderAssets","renderBudgets","renderVertraege","recalcNetWorth"].forEach(n=>{
+    const orig = window[n];
+    if(typeof orig !== "function") return;
+    window[n] = function(...args){ const r = orig.apply(this, args); saveProfile(); return r; };
+  });
+}
+
 // Splash nach der Animation aus dem DOM nehmen — im App-Modus erst NACH dem Laden, damit nie
 // kurz Furkans Mock-Persona (Rewe/Netflix/42.850€) aufblitzt, bevor die echten Daten da sind.
-(function(){
+(async function(){
+  await resolveAppMode();
+  installProfileAutosave();
   const removeSplash=()=>{ const s=document.getElementById("splash"); if(s) s.remove();
     const ob=document.getElementById("onboard");
     if(ob) ob.classList.add("go");
@@ -12051,6 +12077,7 @@ async function toggleTrackingReminder(){
     Promise.all([datenDa, animationDurch]).finally(removeSplash);
   } else if(APP_MODE==="profile"){
     loadProfileState();                    // synchron — Splash-Timing bleibt wie gewohnt
+    document.getElementById("app")?.removeAttribute("hidden");
     setTimeout(removeSplash, 1900);
     setTimeout(()=>{ maybeAutoBookFixedCost(); maybeAutoBookIncome(); }, 2300); // kurz nach dem Splash, nicht mitten in der Animation
   } else {
@@ -12064,18 +12091,6 @@ async function toggleTrackingReminder(){
     }
   }
 })();
-
-// Autosave: JEDE Daten-Mutation der App endet in mindestens einem dieser Renderer — einmal
-// zentral umwickeln statt ~12 Einzelstellen (eine vergessene Stelle = verlorene Nutzerdaten).
-// Klassisches Script: Top-Level-Funktionen leben auf window, Aufrufe binden spät → Wrapper
-// greift überall. Installiert NACH dem initialen Laden, damit der Boot selbst nicht speichert.
-if(APP_MODE==="profile"){
-  ["renderTx","renderGoals","renderAssets","renderBudgets","renderVertraege","recalcNetWorth"].forEach(n=>{
-    const orig = window[n];
-    if(typeof orig !== "function") return;
-    window[n] = function(...args){ const r = orig.apply(this, args); saveProfile(); return r; };
-  });
-}
 
 // ===================== ONBOARDING (Erst-Start-Wizard) =====================
 // Erscheint nur beim echten Erst-Start: kein Profil, keine Bot-Brücke, kein Hash (Deep-Links und
@@ -12739,8 +12754,8 @@ document.getElementById("obSkip").addEventListener("click", ()=>{
 
 // Erst-Start-Trigger: nur ohne Profil, ohne Brücke, ohne Hash (Splash liegt drüber und blendet weich auf)
 if(APP_MODE==="mock" && !location.hash && !readProfile()){
-  restoreEmailSession().then(ok=>{
-    if(ok) return;
+  restoreEmailSession().then(session=>{
+    if(session.valid) return;
     showAppConnect();
     document.getElementById("onboard").hidden=false;
   });

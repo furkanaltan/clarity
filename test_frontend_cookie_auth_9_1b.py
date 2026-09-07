@@ -137,6 +137,52 @@ class FrontendCookieAuthTests(unittest.TestCase):
         self.assertLess(body.index("data.password_setup_required"), body.index("data.pin_status"))
         self.assertLess(body.index("data.pin_status"), body.index('state:"onboarding"'))
 
+    def test_server_session_wins_over_local_profile_before_bootstrap(self):
+        self.assertIn("let APP_MODE = (()=>", self.frontend)
+        self.assertIn('return "bridge";', self.frontend)
+        resolver = re.search(
+            r"async function resolveAppMode\(\)\{(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(resolver)
+        body = resolver.group("body")
+        self.assertIn("const session=await restoreEmailSession();", body)
+        self.assertIn('if(session.valid)', body)
+        self.assertIn('APP_MODE="bridge";', body)
+        self.assertLess(body.index("session.valid"), body.index("readProfile()"))
+
+    def test_local_profile_is_only_used_after_definitive_unauthenticated_response(self):
+        session = re.search(
+            r"async function restoreEmailSession\(\)(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(session)
+        body = session.group("body")
+        self.assertIn("{valid:!!(res.ok && data.ok), definitive:res.status===401||res.ok}", body)
+        self.assertIn("{valid:false,definitive:false}", body)
+        resolver = re.search(
+            r"async function resolveAppMode\(\)(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIn('APP_MODE=session.definitive && readProfile() ? "profile" : "bridge";', resolver.group("body"))
+
+    def test_startup_resolves_mode_before_local_load_or_server_bootstrap(self):
+        startup = self.frontend.split('(async function(){', 1)[1].split('// ===================== ONBOARDING', 1)[0]
+        self.assertLess(startup.index("await resolveAppMode();"), startup.index("installProfileAutosave();"))
+        self.assertLess(startup.index("await resolveAppMode();"), startup.index("loadProfileState();"))
+        self.assertLess(startup.index("await resolveAppMode();"), startup.index("bootstrapAuthenticatedApp()"))
+        self.assertIn('document.getElementById("app")?.removeAttribute("hidden");', startup)
+
+    def test_server_bootstrap_never_uses_the_local_profile_renderer(self):
+        startup = self.frontend.split('(async function(){', 1)[1].split('// ===================== ONBOARDING', 1)[0]
+        bridge = startup.split('if(APP_MODE==="bridge"){', 1)[1].split('} else if(APP_MODE==="profile")', 1)[0]
+        self.assertNotIn("loadProfileState()", bridge)
+        self.assertIn("bootstrapAuthenticatedApp()", bridge)
+        self.assertIn("restoreBridgeLocal(readBridgeLocal(), BRIDGE_USER_ID);", self.frontend)
+
     def test_password_setup_continues_through_bootstrap(self):
         setup = re.search(r"async function completePasswordSetup\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
         self.assertIsNotNone(setup)
