@@ -790,6 +790,157 @@ def ensure_app_month_close_table(conn: sqlite3.Connection) -> None:
     )
 
 
+MONTHLY_FINANCIAL_SNAPSHOT_VERSION = 1
+
+
+def ensure_monthly_financial_snapshots_table(conn: sqlite3.Connection) -> None:
+    """Create the immutable financial input snapshot for completed months."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS monthly_financial_snapshots (
+            user_id                    INTEGER NOT NULL,
+            report_month               TEXT NOT NULL,
+            income                     REAL,
+            other_income               REAL,
+            fixed_costs               REAL,
+            etf_savings                REAL,
+            cash_savings               REAL,
+            cash_total                 REAL,
+            cash_accounts_json         TEXT,
+            investment_market_value   REAL,
+            property_market_value      REAL,
+            property_remaining_debt   REAL,
+            property_equity            REAL,
+            net_worth                  REAL,
+            actual_savings             REAL,
+            clarity_score              INTEGER,
+            source_version             INTEGER NOT NULL DEFAULT 1,
+            created_at                 DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, report_month),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_monthly_financial_snapshots_user_month
+           ON monthly_financial_snapshots (user_id, report_month)"""
+    )
+
+
+def get_monthly_financial_snapshot(
+    conn: sqlite3.Connection, user_id: int, report_month: str
+) -> dict | None:
+    """Return one frozen month, or None when that month was never captured."""
+    try:
+        row = conn.execute(
+            """SELECT * FROM monthly_financial_snapshots
+                 WHERE user_id = ? AND report_month = ?""",
+            (user_id, report_month),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None
+
+
+def _monthly_snapshot_score(conn: sqlite3.Connection, user_id: int, report_month: str) -> int | None:
+    try:
+        row = conn.execute(
+            """SELECT clarity_score FROM monthly_snapshots
+                 WHERE user_id = ? AND month = ?""",
+            (user_id, report_month),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or row["clarity_score"] is None:
+        return None
+    return int(row["clarity_score"])
+
+
+def capture_monthly_financial_snapshot(
+    conn: sqlite3.Connection, user_id: int, report_month: str, actual_savings: float
+) -> dict | None:
+    """Freeze provable financial inputs once, inside the month-close transaction."""
+    ensure_monthly_financial_snapshots_table(conn)
+    existing = get_monthly_financial_snapshot(conn, user_id, report_month)
+    if existing:
+        return existing
+
+    user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if not user:
+        return None
+
+    income = float(user["income"] or 0)
+    other_income = float(user["other_income"] or 0)
+    fixed_costs = float(user["fixed_costs"] or 0)
+    etf_savings = float(user["etf_savings"] or 0)
+    cash_savings = float(user["cash_savings"] or 0)
+
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        accounts = list_financial_accounts(conn, user_id)
+        cash_total = round(sum(float(account["balance"] or 0) for account in accounts), 2)
+        cash_accounts = json.dumps(
+            [
+                {
+                    "id": int(account["id"]),
+                    "name": str(account["name"] or ""),
+                    "account_type": str(account["account_type"] or ""),
+                    "balance": round(float(account["balance"] or 0), 2),
+                    "currency": str(account["currency"] or "EUR"),
+                }
+                for account in accounts
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    else:
+        balances, _ = get_app_cash_accounts(conn, user_id, user["current_cash"])
+        known_balances = [value for value in balances.values() if value is not None]
+        cash_total = round(sum(known_balances), 2) if len(known_balances) == len(balances) else None
+        cash_accounts = json.dumps(balances, ensure_ascii=False, sort_keys=True)
+
+    investment_market_value = (
+        round(float(user["current_investments"] or 0), 2)
+        if user["current_investments"] is not None else None
+    )
+    property_data = get_app_property(conn, user_id)
+    property_market_value = round(float(property_data["market_value"]), 2) if property_data else 0.0
+    property_remaining_debt = round(float(property_data["remaining_debt"]), 2) if property_data else 0.0
+    property_equity = round(property_market_value - property_remaining_debt, 2)
+    net_worth = (
+        round(cash_total + investment_market_value + property_equity, 2)
+        if cash_total is not None and investment_market_value is not None else None
+    )
+    clarity_score = _monthly_snapshot_score(conn, user_id, report_month)
+
+    conn.execute(
+        """INSERT OR IGNORE INTO monthly_financial_snapshots
+           (user_id, report_month, income, other_income, fixed_costs,
+            etf_savings, cash_savings, cash_total, cash_accounts_json,
+            investment_market_value, property_market_value,
+            property_remaining_debt, property_equity, net_worth,
+            actual_savings, clarity_score, source_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user_id,
+            report_month,
+            round(income, 2),
+            round(other_income, 2),
+            round(fixed_costs, 2),
+            round(etf_savings, 2),
+            round(cash_savings, 2),
+            cash_total,
+            cash_accounts,
+            investment_market_value,
+            property_market_value,
+            property_remaining_debt,
+            property_equity,
+            net_worth,
+            round(float(actual_savings), 2),
+            clarity_score,
+            MONTHLY_FINANCIAL_SNAPSHOT_VERSION,
+        ),
+    )
+    return get_monthly_financial_snapshot(conn, user_id, report_month)
+
+
 def _month_key(value: date) -> str:
     return value.strftime("%Y-%m")
 

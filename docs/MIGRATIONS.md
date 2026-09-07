@@ -15,6 +15,7 @@ nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
 | `migrate_report_snapshots_v2.py` | 21.08.2026 | Additive Report-Snapshot-Tabelle | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `report_engine.py` |
 | `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
 | `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
+| `monthly_financial_snapshots` | 07.09.2026 | Immutable Finanzwerte fuer abgeschlossene Monatsreports | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_app_state.py`, Monatsabschluss |
 
 `app_cash_movements.request_id` wird durch die bestehende additive
 Schema-Vorbereitung in `rove_app_state.py` und
@@ -27,6 +28,12 @@ in `rove_app_api.py` angelegt. Die Tabelle speichert ausschliesslich gehashte
 Login-Subjekte sowie temporaere Fehlerzaehler und Backoff-Zeitpunkte; keine
 E-Mail-Adressen oder Passwoerter. Ein separater Produktions-Migrationslauf ist
 nicht erforderlich.
+
+`monthly_financial_snapshots` wird beim bestaetigten Monatsabschluss additiv und
+idempotent angelegt. Pro `(user_id, report_month)` wird genau ein Snapshot in
+derselben Transaktion wie `app_month_closures` geschrieben. Es gibt bewusst
+keinen Backfill aus aktuellen Profilwerten: Fuer alte Monate ohne Snapshot
+bleiben nicht beweisbare Finanzwerte im Report nicht verfuegbar.
 
 ## Ausfuehrungsregeln
 

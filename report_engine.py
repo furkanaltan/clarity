@@ -21,6 +21,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from rove_score import calculate_score as calculate_live_score
+from rove_app_state import get_monthly_financial_snapshot
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -347,11 +348,12 @@ def draw_score_circle(c, x, y, radius, score):
     c.circle(x, y, radius, fill=0, stroke=1)
     c.setStrokeColor(INK)
     c.setLineWidth(9)
-    extent = max(0, min(100, score)) * 3.6
-    c.arc(x - radius, y - radius, x + radius, y + radius, 90, 90 - extent)
+    extent = max(0, min(100, score)) * 3.6 if score is not None else 0
+    if score is not None:
+        c.arc(x - radius, y - radius, x + radius, y + radius, 90, 90 - extent)
     c.setFillColor(INK)
     c.setFont("Helvetica-Bold", 32)
-    c.drawCentredString(x, y - 10, str(int(score or 0)))
+    c.drawCentredString(x, y - 10, str(int(score)) if score is not None else "—")
 
 
 def draw_section_rows(c, x, y, rows, row_gap=26):
@@ -525,6 +527,32 @@ def get_score_rank(score: int) -> tuple:
         if low <= score <= high:
             return name, icon
     return SCORE_RANKS[-1][2], SCORE_RANKS[-1][3]
+
+
+def _historical_score_parts(score: int | None) -> dict:
+    """Represent a stored score without recalculating it from live profile data."""
+    if score is None:
+        return {
+            "total": None,
+            "rank_name": None,
+            "rank_icon": None,
+            "phase": "historical_unavailable",
+            "proof_days": None,
+            "tracking_label": "Historischer Score nicht gespeichert",
+            "days_to_unlock": None,
+            "next_unlock_level": None,
+        }
+    rank_name, rank_icon = get_score_rank(int(score))
+    return {
+        "total": int(score),
+        "rank_name": rank_name,
+        "rank_icon": rank_icon,
+        "phase": "historical",
+        "proof_days": None,
+        "tracking_label": "Historischer Monatsabschluss",
+        "days_to_unlock": 0,
+        "next_unlock_level": None,
+    }
 
 
 def get_platform_days(user_id: int) -> int:
@@ -1165,40 +1193,80 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     snapshot = get_snapshot(user_id, report_month)
     prev_snapshot = get_prev_snapshot(user_id, report_month)
 
-    income = row_float(user, "income")
-    other_income = row_float(user, "other_income")
-    income_total = income + other_income
-    fixed_costs = row_float(user, "fixed_costs")
-    etf_rate = row_float(user, "etf_savings")
-    cash_rate = row_float(user, "cash_savings")
-    current_investments = row_float(user, "current_investments")
-    cash_reserve = row_float(user, "current_cash")
-    property_data = get_app_property(user_id)
-    property_equity = float(property_data["equity"]) if property_data else 0.0
-    goal_description, target_amount, goal_current_amount, goal_monthly_rate = get_report_goal(user_id, user)
+    is_current_month = report_month == datetime.now().strftime("%Y-%m")
+    with get_db() as conn:
+        financial_snapshot = (
+            None
+            if is_current_month
+            else get_monthly_financial_snapshot(conn, user_id, report_month)
+        )
+        previous_financial_snapshot = (
+            None
+            if is_current_month
+            else get_monthly_financial_snapshot(conn, user_id, _report_previous_month(report_month))
+        )
+    if is_current_month:
+        income = row_float(user, "income")
+        other_income = row_float(user, "other_income")
+        fixed_costs = row_float(user, "fixed_costs")
+        etf_rate = row_float(user, "etf_savings")
+        cash_rate = row_float(user, "cash_savings")
+        current_investments = row_float(user, "current_investments")
+        cash_reserve = row_float(user, "current_cash")
+        property_data = get_app_property(user_id)
+        property_market_value = property_data["market_value"] if property_data else 0.0
+        property_remaining_debt = property_data["remaining_debt"] if property_data else 0.0
+        property_equity = float(property_data["equity"]) if property_data else 0.0
+        goal_description, target_amount, goal_current_amount, goal_monthly_rate = get_report_goal(user_id, user)
+    elif financial_snapshot:
+        income = financial_snapshot["income"]
+        other_income = financial_snapshot["other_income"]
+        fixed_costs = financial_snapshot["fixed_costs"]
+        etf_rate = financial_snapshot["etf_savings"]
+        cash_rate = financial_snapshot["cash_savings"]
+        current_investments = financial_snapshot["investment_market_value"]
+        cash_reserve = financial_snapshot["cash_total"]
+        property_market_value = financial_snapshot["property_market_value"]
+        property_remaining_debt = financial_snapshot["property_remaining_debt"]
+        property_equity = financial_snapshot["property_equity"]
+        goal_description, target_amount, goal_current_amount, goal_monthly_rate = "", None, None, None
+    else:
+        # A completed month without a captured snapshot is not reconstructable
+        # from today's profile and must remain explicitly unavailable.
+        income = other_income = fixed_costs = None
+        etf_rate = cash_rate = current_investments = cash_reserve = None
+        property_market_value = property_remaining_debt = property_equity = None
+        goal_description, target_amount, goal_current_amount, goal_monthly_rate = "", None, None, None
+
+    income_total = round(income + other_income, 2) if income is not None and other_income is not None else None
     clarity_points = row_int(user, "clarity_points")
 
-    free_budget = income_total - fixed_costs
-    remaining_budget = free_budget - total_expenses
-    savings_plan = etf_rate + cash_rate
-    savings_rate = (savings_plan / income_total * 100.0) if income_total > 0 else 0.0
+    free_budget = round(income_total - fixed_costs, 2) if income_total is not None and fixed_costs is not None else None
+    remaining_budget = round(free_budget - total_expenses, 2) if free_budget is not None else None
+    savings_plan = round(etf_rate + cash_rate, 2) if etf_rate is not None and cash_rate is not None else None
+    savings_rate = (
+        round(savings_plan / income_total * 100.0, 2)
+        if savings_plan is not None and income_total and income_total > 0 else None
+    )
 
     # A test report for the open month must show the current App and bot state.
     # Closed months remain anchored to their saved monthly snapshot.
-    is_current_month = report_month == datetime.now().strftime("%Y-%m")
     net_worth = (
-        current_investments + cash_reserve + property_equity
+        round(current_investments + cash_reserve + property_equity, 2)
         if is_current_month
         else (
-            float(snapshot["net_worth"])
-            if snapshot and snapshot["net_worth"] is not None
-            else current_investments + cash_reserve + property_equity
+            float(financial_snapshot["net_worth"])
+            if financial_snapshot and financial_snapshot["net_worth"] is not None
+            else (float(snapshot["net_worth"]) if snapshot and snapshot["net_worth"] is not None else None)
         )
     )
     prev_net_worth = (
-        float(prev_snapshot["net_worth"])
-        if prev_snapshot and prev_snapshot["net_worth"] is not None
-        else None
+        float(previous_financial_snapshot["net_worth"])
+        if previous_financial_snapshot and previous_financial_snapshot["net_worth"] is not None
+        else (
+            float(prev_snapshot["net_worth"])
+            if prev_snapshot and prev_snapshot["net_worth"] is not None else None
+        )
     )
     net_worth_delta = net_worth - prev_net_worth if prev_net_worth is not None else None
     net_worth_delta_percent = (
@@ -1207,16 +1275,31 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         else None
     )
 
-    score_parts = calculate_clarity_score_v2(user_id, user, total_expenses, report_month)
+    score_parts = (
+        calculate_clarity_score_v2(user_id, user, total_expenses, report_month)
+        if is_current_month
+        else _historical_score_parts(
+            financial_snapshot["clarity_score"] if financial_snapshot else (
+                snapshot["clarity_score"] if snapshot and "clarity_score" in snapshot.keys() else None
+            )
+        )
+    )
     clarity_score = score_parts["total"]
-    budget_ok = bool(snapshot["budget_ok"]) if snapshot and snapshot["budget_ok"] is not None else (remaining_budget >= 0)
+    budget_ok = (
+        bool(snapshot["budget_ok"])
+        if is_current_month and snapshot and snapshot["budget_ok"] is not None
+        else (remaining_budget >= 0 if remaining_budget is not None else None)
+    )
 
     top_categories = [
         {"category": row["category"], "total": float(row["total"] or 0)}
         for row in category_rows
     ]
     strongest_category = top_categories[0] if top_categories else None
-    goal_progress = (goal_current_amount / target_amount * 100.0) if target_amount > 0 else 0.0
+    goal_progress = (
+        goal_current_amount / target_amount * 100.0
+        if target_amount is not None and target_amount > 0 and goal_current_amount is not None else None
+    )
     # General savings are not assigned to an individual earmark.
     # A goal-specific rate does not exist yet, so no forecast is published.
     months_to_goal = calculate_goal_projection(target_amount, goal_current_amount, goal_monthly_rate)
@@ -1227,7 +1310,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     portfolio_snapshots = get_latest_portfolio_snapshots(user_id)
     badges = get_user_badges(user_id)
     rank = get_rank(clarity_points)
-    details = parse_details(user)
+    details = parse_details(user) if is_current_month else {}
     budget_frame = get_budget_frame(user_id, report_month)
 
     if net_worth_delta is None:
@@ -1254,14 +1337,14 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         )
     elif investment_summary["net_contributions"] > 0:
         best_decision = f"Du hast {investment_summary['net_contributions']:.2f} EUR investiert oder zurückgelegt."
-    elif savings_plan > 0:
+    elif savings_plan is not None and savings_plan > 0:
         best_decision = f"Deine geplante Sparrate liegt bei {savings_plan:.2f} EUR pro Monat."
     elif tracked_days > 0:
         best_decision = f"Du hast an {tracked_days} Tag(en) deine Finanzen sichtbar gemacht."
     else:
         best_decision = "Der erste Schritt ist gemacht: dein Profil steht."
 
-    if remaining_budget < 0:
+    if remaining_budget is not None and remaining_budget < 0:
         focus = "Budgetdruck früh erkennen und variable Ausgaben senken."
     elif strongest_category:
         focus = f"{strongest_category['category']} bewusst beobachten."
@@ -1277,13 +1360,13 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         money_map_insights.append(
             f"Stärkste Kategorie: {strongest_category['category']} mit {strongest_category['total']:.2f} EUR."
         )
-    if remaining_budget < 0:
+    if remaining_budget is not None and remaining_budget < 0:
         money_map_insights.append("Dein freies Budget ist überzogen - hier liegt dein dringendster Hebel.")
     elif strongest_category:
         money_map_insights.append(
             f"{strongest_category['category']} dominiert deinen Monat - hier liegt dein größter Hebel."
         )
-    elif free_budget > 0:
+    elif free_budget is not None and free_budget > 0:
         money_map_insights.append("Dein freies Budget bleibt stabil - diesen Vorsprung solltest du halten.")
 
     recap_good = "Deine Struktur steht: Einnahmen, Fixkosten, Sparziel und Vermögenswerte sind erfasst."
@@ -1295,13 +1378,13 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     needs_attention = "Noch fehlen Vergleichsmonate. Der Report wird mit jedem Monatsabschluss präziser."
     if tracked_days < 3:
         needs_attention = "Der Monat ist noch frisch. Tracke weiter, bevor du aus einzelnen Tagen Schlüsse ziehst."
-    elif remaining_budget < 0:
+    elif remaining_budget is not None and remaining_budget < 0:
         needs_attention = "Dein Restbudget war negativ. Hier liegt der wichtigste Hebel."
     elif strongest_category:
         needs_attention = f"Behalte {strongest_category['category']} im Blick, weil diese Kategorie den Monat dominiert."
 
     next_lever = "Diesen Monat weiter sauber tracken."
-    if target_amount > 0 and goal_current_amount < target_amount:
+    if target_amount is not None and goal_current_amount is not None and target_amount > 0 and goal_current_amount < target_amount:
         next_lever = "Ordne deinem Ziel nur dann Geld zu, wenn du es bewusst dafür reservieren möchtest."
 
     data = {
@@ -1330,8 +1413,8 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "savings_rate": savings_rate,
             "current_investments": current_investments,
             "cash_reserve": cash_reserve,
-            "property_market_value": property_data["market_value"] if property_data else 0.0,
-            "property_remaining_debt": property_data["remaining_debt"] if property_data else 0.0,
+            "property_market_value": property_market_value,
+            "property_remaining_debt": property_remaining_debt,
             "property_equity": property_equity,
             "net_worth": net_worth,
         },
@@ -1391,7 +1474,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
                 "target_amount": target_amount,
                 "current_amount": goal_current_amount,
                 "goal_monthly_rate": goal_monthly_rate,
-                "progress_percent": min(100.0, goal_progress),
+                "progress_percent": min(100.0, goal_progress) if goal_progress is not None else None,
                 "months_to_goal": months_to_goal,
                 "forecast_text": next_lever,
             },
@@ -1462,7 +1545,32 @@ def _report_previous_month(report_month: str) -> str:
     return f"{year - 1:04d}-12" if month == 1 else f"{year:04d}-{month - 1:02d}"
 
 
-def _report_cash_truth(user_id: int) -> dict:
+def _report_cash_truth(
+    user_id: int, snapshot: dict | None = None, *, historical: bool = False
+) -> dict:
+    if historical:
+        if not snapshot or snapshot.get("cash_total") is None:
+            return {
+                "source": "unavailable",
+                "current_cash": None,
+                "account_total": None,
+                "accounts": [],
+                "invariant_ok": False,
+                "available": False,
+            }
+        try:
+            accounts = json.loads(snapshot.get("cash_accounts_json") or "[]")
+        except (TypeError, ValueError):
+            accounts = []
+        return {
+            "source": "monthly_financial_snapshot",
+            "current_cash": round(float(snapshot["cash_total"]), 2),
+            "account_total": round(float(snapshot["cash_total"]), 2),
+            "accounts": accounts if isinstance(accounts, list) else [],
+            "invariant_ok": True,
+            "available": True,
+        }
+
     with get_db() as conn:
         current = conn.execute(
             "SELECT current_cash FROM users WHERE user_id = ?", (user_id,)
@@ -1505,6 +1613,7 @@ def _report_cash_truth(user_id: int) -> dict:
         "account_total": account_total,
         "accounts": accounts,
         "invariant_ok": account_total is None or abs(account_total - current_cash) <= 0.01,
+        "available": True,
     }
 
 
@@ -1545,8 +1654,27 @@ def _report_goal_truth(user_id: int, primary_description: str, primary_target: f
     return {"primary": primary, "goals": goals}
 
 
-def _report_investment_truth(user_id: int, report_month: str, cutoff_date: str | None = None) -> dict:
+def _report_investment_truth(
+    user_id: int,
+    report_month: str,
+    cutoff_date: str | None = None,
+    snapshot: dict | None = None,
+    *,
+    historical: bool = False,
+) -> dict:
     summary = get_investment_summary(user_id, report_month, cutoff_date)
+    if historical:
+        market_value = snapshot.get("investment_market_value") if snapshot else None
+        return {
+            "contributions": summary,
+            "market_value": {
+                "amount": round(float(market_value), 2) if market_value is not None else None,
+                "available": market_value is not None,
+            },
+            "market_movement": {"amount": None, "available": False},
+            "holdings": [],
+            "available": market_value is not None,
+        }
     holdings = []
     with get_db() as conn:
         if table_exists(conn, "portfolio_holdings"):
@@ -1593,14 +1721,35 @@ def _report_investment_truth(user_id: int, report_month: str, cutoff_date: str |
         },
         "market_movement": {"amount": None, "available": False},
         "holdings": holdings,
+        "available": True,
     }
 
 
 def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
     """Build one allocation that reconciles exactly to the frozen wealth total."""
-    cash_total = round(float(cash.get("current_cash") or 0), 2)
-    investment_total = round(float(profile.get("current_investments") or 0), 2)
-    property_equity = round(float(profile.get("property_equity") or 0), 2)
+    cash_value = cash.get("current_cash")
+    market_value = investments.get("market_value") or {}
+    investment_value = market_value.get("amount") if market_value.get("available") else None
+    if investment_value is None:
+        investment_value = profile.get("current_investments")
+    property_value = profile.get("property_equity")
+    if cash_value is None or investment_value is None or property_value is None:
+        return {
+            "total": None,
+            "cash": cash_value,
+            "investments": investment_value,
+            "property_equity": property_value,
+            "allocation": [],
+            "allocation_excludes_negative_property_equity": bool(
+                property_value is not None and property_value < 0
+            ),
+            "reconciles": False,
+            "goals_included": False,
+            "available": False,
+        }
+    cash_total = round(float(cash_value), 2)
+    investment_total = round(float(investment_value), 2)
+    property_equity = round(float(property_value), 2)
     allocation = []
 
     accounts = cash.get("accounts") or []
@@ -1685,11 +1834,19 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
         "allocation_excludes_negative_property_equity": property_equity < 0,
         "reconciles": abs(round(sum(item["amount"] for item in allocation), 2) - total) <= 0.01,
         "goals_included": False,
+        "available": True,
     }
 
 
 def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
     meta = data.get("meta", {})
+    is_current_month = report_month == datetime.now().strftime("%Y-%m")
+    with get_db() as conn:
+        financial_snapshot = (
+            None
+            if is_current_month
+            else get_monthly_financial_snapshot(conn, user_id, report_month)
+        )
     current_end = str(meta.get("period_end") or month_bounds(report_month)[1])
     comparison_mode = str(meta.get("comparison_mode") or "full")
     cutoff_day = int(meta.get("comparison_cutoff_day") or int(current_end[-2:]))
@@ -1770,8 +1927,16 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
     execution = data.get("pages", {}).get("wealth_journey", {}).get("monthly_execution", {})
     goal = data.get("pages", {}).get("goal", {})
     budget = data.get("pages", {}).get("budget", {})
-    cash = _report_cash_truth(user_id)
-    investments = _report_investment_truth(user_id, report_month, current_end)
+    cash = _report_cash_truth(
+        user_id, financial_snapshot, historical=not is_current_month
+    )
+    investments = _report_investment_truth(
+        user_id,
+        report_month,
+        current_end,
+        financial_snapshot,
+        historical=not is_current_month,
+    )
     savings_progress = data.get("pages", {}).get("wealth_journey", {}).get("savings_progress", {})
     previous_eligible = [row for row in previous_rows if row["classification"] == "consumption"]
     previous_investments = get_investment_summary(user_id, previous_month, previous_end)
@@ -1795,7 +1960,11 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "amount": profile.get("income_total", 0),
             "other_income": profile.get("other_income", 0),
             "confirmed": bool(execution.get("income_confirmed")),
-            "source": "confirmed_month" if execution.get("income_confirmed") else "profile_fallback",
+            "source": (
+                "monthly_financial_snapshot"
+                if financial_snapshot
+                else ("live_profile" if is_current_month else "unavailable")
+            ),
         },
         "expenses": {
             "classification_totals": class_totals,
@@ -1809,9 +1978,13 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "largest_expense": largest_expense,
         },
         "fixed_costs": {
-            "amount": profile.get("fixed_costs", 0),
+            "amount": profile.get("fixed_costs"),
             "confirmed": bool(execution.get("fixed_costs_confirmed")),
-            "source": "confirmed_month" if execution.get("fixed_costs_confirmed") else "profile_fallback",
+            "source": (
+                "monthly_financial_snapshot"
+                if financial_snapshot
+                else ("live_profile" if is_current_month else "unavailable")
+            ),
         },
         "budget": budget,
         "cash": cash,
@@ -1825,10 +1998,14 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         },
         "investments": investments,
         "property": {
-            "market_value": profile.get("property_market_value", 0),
-            "remaining_debt": profile.get("property_remaining_debt", 0),
-            "equity": profile.get("property_equity", 0),
-            "source": "app_properties",
+            "market_value": profile.get("property_market_value"),
+            "remaining_debt": profile.get("property_remaining_debt"),
+            "equity": profile.get("property_equity"),
+            "source": (
+                "monthly_financial_snapshot"
+                if financial_snapshot
+                else ("app_properties" if is_current_month else "unavailable")
+            ),
         },
         "goals": _report_goal_truth(
             user_id, goal.get("description", ""), goal.get("target_amount", 0),
@@ -1841,6 +2018,7 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "comparison_mode": comparison_mode,
             "period_end": previous_end,
             "snapshot": dict(get_prev_snapshot(user_id, report_month) or {}) if get_prev_snapshot(user_id, report_month) else None,
+            "financial_snapshot": previous_financial_snapshot,
             "investment_contributions": previous_investments,
             "savings": {
                 "actual_amount": round(max(0.0, float(previous_savings_amount or 0)), 2),
@@ -1857,7 +2035,9 @@ def validate_report_snapshot(data: dict) -> dict:
     cash = truth.get("cash", {})
     story = payload.get("report_story_v2")
     checks = {
-        "cash_invariant": bool(cash.get("invariant_ok")),
+        "cash_invariant": (
+            not cash.get("available", True) or bool(cash.get("invariant_ok"))
+        ),
         "no_non_finite_numbers": True,
         "goal_not_added_to_net_worth": True,
         "investment_market_movement_not_invented": not truth.get("investments", {}).get("market_movement", {}).get("available", False),
@@ -2033,7 +2213,7 @@ def draw_score_page(c, data):
     draw_score_circle(c, PAGE_W / 2, PAGE_H - 220, 70, score["clarity_score"])
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(INK)
-    c.drawCentredString(PAGE_W / 2, PAGE_H - 320, score["rank_name"])
+    c.drawCentredString(PAGE_W / 2, PAGE_H - 320, score.get("rank_name") or "Nicht verfügbar")
     c.setFont("Helvetica", 11)
     c.setFillColor(MUTED)
     tracking_line = score.get("tracking_label") or f"{score['proof_days']}d verified"

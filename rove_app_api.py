@@ -57,6 +57,7 @@ from rove_app_state import (
     get_monthly_checkin_actions,
     ensure_app_monthly_plan_table,
     ensure_app_month_close_table,
+    capture_monthly_financial_snapshot,
     ensure_app_scheduled_savings_table,
     apply_due_scheduled_savings,
     get_app_scheduled_savings,
@@ -3655,6 +3656,7 @@ def confirm_month_close():
                VALUES (?, ?, ?)""",
             (user_id, month_key, actual_savings),
         ).rowcount
+        capture_monthly_financial_snapshot(conn, user_id, month_key, actual_savings)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
     return jsonify({"ok": True, "alreadyConfirmed": not bool(inserted), **live_data})

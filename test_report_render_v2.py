@@ -11,6 +11,8 @@ from report_story_v2 import build_report_story_v2
 from report_html_renderer import _render_hell_pages, build_html_document
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
 import report_engine
+import rove_app_state
+from rove_financial_accounts import ensure_financial_accounts_schema, set_feature_enabled
 from test_report_story_v2 import standard_payload
 
 
@@ -104,6 +106,78 @@ def july_truth_payload() -> dict:
 
 
 class ReportRenderV2Tests(unittest.TestCase):
+    def test_monthly_financial_snapshot_freezes_inputs_and_is_idempotent(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY, income REAL, other_income REAL,
+                fixed_costs REAL, etf_savings REAL, cash_savings REAL,
+                current_cash REAL, current_investments REAL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO users VALUES (1, 4430, 0, 2105.32, 300, 700, 7000, 12000)"""
+        )
+        ensure_financial_accounts_schema(conn)
+        set_feature_enabled(conn, 1, "multi_cash_accounts_v1", True)
+        conn.executemany(
+            """INSERT INTO app_financial_accounts
+               (user_id, account_type, name, currency, balance, legacy_key, source, status)
+               VALUES (1, ?, ?, 'EUR', ?, ?, 'manual', 'active')""",
+            [("checking", "Girokonto", 2000, "giro"), ("savings", "Tagesgeld", 5000, "tagesgeld")],
+        )
+        conn.execute(
+            """CREATE TABLE app_properties (
+                user_id INTEGER PRIMARY KEY, market_value REAL, remaining_debt REAL,
+                monthly_rate REAL, house_fee REAL, management_fee REAL
+            )"""
+        )
+        conn.execute("INSERT INTO app_properties VALUES (1, 180000, 170000, 0, 0, 0)")
+        conn.execute("CREATE TABLE monthly_snapshots (user_id INTEGER, month TEXT, clarity_score INTEGER)")
+        conn.execute("INSERT INTO monthly_snapshots VALUES (1, '2026-08', 64)")
+
+        first = rove_app_state.capture_monthly_financial_snapshot(conn, 1, "2026-08", 0)
+        self.assertEqual(first["cash_total"], 7000.0)
+        self.assertEqual(first["property_equity"], 10000.0)
+        self.assertEqual(first["net_worth"], 29000.0)
+        self.assertEqual(first["clarity_score"], 64)
+
+        conn.execute("UPDATE users SET income = 9999, current_cash = 1, current_investments = 1")
+        second = rove_app_state.capture_monthly_financial_snapshot(conn, 1, "2026-08", 999)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM monthly_financial_snapshots").fetchone()[0], 1
+        )
+
+    def test_historical_report_truth_without_snapshot_is_unavailable(self):
+        wealth = report_engine._report_wealth_truth(
+            {"current_investments": None, "property_equity": None},
+            {"current_cash": None, "available": False},
+            {"market_value": {"amount": None, "available": False}, "holdings": []},
+        )
+        self.assertIsNone(wealth["total"])
+        self.assertFalse(wealth["available"])
+        story = build_report_story_v2({
+            "meta": {"report_month": "2026-08"},
+            "profile": {"savings_plan": None},
+            "pages": {"goal": {}, "wealth_journey": {}},
+            "report_truth": {
+                "income": {"amount": None},
+                "fixed_costs": {"amount": None},
+                "expenses": {"total_consumption": 0, "categories": [], "merchants": []},
+                "cash": {"available": False, "current_cash": None},
+                "investments": {"market_value": {"amount": None, "available": False}, "holdings": {}, "contributions": {}},
+                "property": {"equity": None},
+                "wealth": wealth,
+                "savings": {"actual_amount": 0, "confirmed": False},
+                "score": {"clarity_score": None, "parts": {"total": None}},
+                "budget": {}, "goals": {},
+            },
+        })
+        self.assertFalse(story["pages"]["page_6"]["available"])
+        self.assertFalse(story["pages"]["page_8"]["available"])
+
     def test_property_equity_keeps_signed_value_and_net_worth(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

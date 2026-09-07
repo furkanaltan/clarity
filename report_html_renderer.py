@@ -507,14 +507,17 @@ def render_month(page_html: str, data: dict) -> str:
 def render_score(page_html: str, data: dict) -> str:
     score = data["pages"]["score"]
     parts = score["parts"]
+    score_available = score.get("clarity_score") is not None
     values = [
-        f'{parts.get("budget", 0)}/25',
-        f'{parts.get("savings", 0)}/25',
-        f'{parts.get("consistency", 0)}/25',
-        f'{parts.get("structure", 0)}/25',
+        f'{parts.get("budget", 0)}/25' if score_available else "—",
+        f'{parts.get("savings", 0)}/25' if score_available else "—",
+        f'{parts.get("consistency", 0)}/25' if score_available else "—",
+        f'{parts.get("structure", 0)}/25' if score_available else "—",
     ]
-    page_html = replace_first(page_html, r'(<div class="score-num">).*?(</div>)', rf"\g<1>{h(score['clarity_score'])}\g<2>", flags=re.S)
-    page_html = replace_first(page_html, r'(<div class="score-word">).*?(</div>)', rf"\g<1>{h(score['rank_name'])}\g<2>", flags=re.S)
+    score_text = score.get("clarity_score") if score_available else "—"
+    rank_text = score.get("rank_name") or "Nicht verfügbar"
+    page_html = replace_first(page_html, r'(<div class="score-num">).*?(</div>)', rf"\g<1>{h(score_text)}\g<2>", flags=re.S)
+    page_html = replace_first(page_html, r'(<div class="score-word">).*?(</div>)', rf"\g<1>{h(rank_text)}\g<2>", flags=re.S)
     page_html = replace_all_sequence(
         page_html,
         r'<div class="score-val-(?:green|gold)">.*?</div>',
@@ -527,7 +530,7 @@ def render_score(page_html: str, data: dict) -> str:
         flags=re.S,
     )
     unlock_text = ""
-    if score["days_to_unlock"] > 0:
+    if (score.get("days_to_unlock") or 0) > 0:
         unlock_text = f'Noch {score["days_to_unlock"]} Tage bis {score["next_unlock_level"]}+'
     page_html = replace_first(page_html, r'(<div class="score-unlock">).*?(</div>)', rf'\g<1>{h(unlock_text)}\g<2>', flags=re.S)
     page_html = replace_first(page_html, r'(<div class="score-cta">)([\s\S]*?)(</div>)', rf'\g<1><span>◇</span>{h(score["share_cta"])}<span class="cta-arrow">→</span>\g<3>', flags=re.S)
@@ -1125,18 +1128,21 @@ def render_777_money_map(_page_html: str, data: dict) -> str:
 def render_777_score(_page_html: str, data: dict) -> str:
     score = data["pages"]["score"]
     parts = score["parts"]
-    value = int(score["clarity_score"] or 0)
+    available = score.get("clarity_score") is not None
+    value = int(score["clarity_score"] or 0) if available else 0
+    value_text = str(value) if available else "—"
     circumference = 540.4
     offset = circumference - (max(0, min(100, value)) / 100 * circumference)
     rank_width = max(3, min(100, value))
+    rank_text = h(score.get("rank_name") or "Nicht verfügbar")
     return f"""
   <section class="page">
     <div class="topline">Rov.E Score · Wie bewusst du steuerst</div>
-    <div class="display">{value} von 100 - du hast dein Geld im Blick.</div>
+    <div class="display">{value_text} von 100 - du hast dein Geld im Blick.</div>
     <div class="divider"></div>
     <div class="score-layout">
       <div class="card score-card">
-        <div class="score-ring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="86" fill="none" stroke="#ececee" stroke-width="13"></circle><circle cx="100" cy="100" r="86" fill="none" stroke="#3d8b5b" stroke-width="13" stroke-linecap="round" stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}" transform="rotate(-90 100 100)"></circle></svg><div class="score-center"><div class="score-number">{value}</div><div class="score-rank">{h(score["rank_name"])}</div></div></div>
+        <div class="score-ring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="86" fill="none" stroke="#ececee" stroke-width="13"></circle><circle cx="100" cy="100" r="86" fill="none" stroke="#3d8b5b" stroke-width="13" stroke-linecap="round" stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}" transform="rotate(-90 100 100)"></circle></svg><div class="score-center"><div class="score-number">{value_text}</div><div class="score-rank">{rank_text}</div></div></div>
         <div class="rank-strip"><div class="rank-labels"><span>Rookie</span><span>Controller</span><span>Manager</span><span>Elite</span></div><div class="rank-line"><div class="rank-fill" style="width:{rank_width}%"></div></div><div class="tile-sub" style="text-align:center;">{h(score["proof_days"])}d verified</div></div>
       </div>
       <div class="card score-parts">

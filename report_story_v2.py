@@ -747,7 +747,8 @@ def build_report_story_v2(report_data: dict) -> dict:
             {"semantic_key": "net_worth", "label": "Gesamtvermögen", "value": wealth.get("total")},
             supporting_metrics=wealth.get("allocation") or [], visual={"type": "wealth_allocation", "data": wealth.get("allocation") or []},
             text="Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
-            empty_state="Noch keine Vermögenswerte erfasst.", available=_money(wealth.get("total")) > 0),
+            empty_state="Historische Vermögenswerte sind für diesen Monat nicht vollständig gespeichert." if not wealth.get("available", True) else "Noch keine Vermögenswerte erfasst.",
+            available=bool(wealth.get("available")) and wealth.get("total") is not None),
         "page_7": _page(7, "Was hast du aufgebaut?", "Was hast du wirklich gespart oder investiert?",
             {
                 "semantic_key": "confirmed_savings" if savings.get("confirmed") else "investment_contributions",
@@ -768,7 +769,7 @@ def build_report_story_v2(report_data: dict) -> dict:
             empty_state="Keine bestätigte Sparleistung oder Investmentbeiträge dokumentiert.",
             available=bool(savings.get("confirmed")) or invested != 0),
         "page_8": _page(8, "Score & Ziele", "Wie steht deine finanzielle Struktur und wie weit bist du bei deinen Zielen?",
-            {"semantic_key": "rove_score", "label": "Rov.E Score", "value": _integer(score.get("clarity_score", score_parts.get("total")))},
+            {"semantic_key": "rove_score", "label": "Rov.E Score", "value": _integer(score.get("clarity_score", score_parts.get("total"))) if score.get("clarity_score", score_parts.get("total")) is not None else None},
             supporting_metrics=[
                 {"key": "strongest_factor", "value": strongest_factor},
                 {"key": "next_factor", "value": weakest_factor},
@@ -776,7 +777,8 @@ def build_report_story_v2(report_data: dict) -> dict:
                 {"key": "other_goals", "value": other_goals},
             ], visual={"type": "score_goal", "data": {"score": score, "primary_goal": primary_goal, "other_goals": other_goals}},
             text="Zielstände zeigen zugeordnetes Geld, keinen zusätzlichen Vermögensaufbau.",
-            empty_state="Noch kein primäres Ziel ausgewählt.", available=bool(score or primary_goal)),
+            empty_state="Für diesen Monat ist kein gespeicherter Score verfügbar." if score.get("clarity_score", score_parts.get("total")) is None and not primary_goal else "Noch kein primäres Ziel ausgewählt.",
+            available=score.get("clarity_score", score_parts.get("total")) is not None or bool(primary_goal)),
         "page_9": _page(9, "Rov.E Insight", "Welcher Zusammenhang war diesen Monat wirklich relevant?",
             {"semantic_key": "main_insight", "label": insight["type"], "value": insight["relevance_score"]},
             supporting_metrics=[insight.get("supporting_metrics") or {}], visual={"type": "single_insight", "data": [insight]},
