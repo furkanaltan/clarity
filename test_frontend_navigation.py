@@ -68,6 +68,11 @@ class FrontendNavigationTests(unittest.TestCase):
         )
         self.assertIn('.account-add{width:100%;min-height:50px;', self.frontend)
 
+    def test_budget_parent_card_does_not_jump_when_budget_row_is_pressed(self):
+        self.assertIn('#tab-tx #budget-list>.card:active{transform:none;opacity:1}', self.frontend)
+        self.assertIn('const row=e.target.closest("[data-bgt]");', self.frontend)
+        self.assertIn('if(row) openBudgetSheet(+row.dataset.bgt);', self.frontend)
+
     def test_home_chart_uses_white_drawn_line_without_changing_data(self):
         self.assertIn('@keyframes chartLineDraw', self.frontend)
         self.assertIn('.chart .chart-line-main{stroke-dasharray:1;', self.frontend)

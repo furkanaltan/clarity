@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260907-3f7352c">
+<meta name="rove-frontend-build" content="20260907-0a6b11f">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -144,6 +144,8 @@
   .pin-entry-compact .pin-dot{width:12px;height:12px;background:var(--line2)}
   .pin-entry-compact .pin-dot.filled{background:var(--ink)}
   .pin-change-card{display:flex;flex-direction:column;gap:12px}
+  .pin-change-field{display:flex;flex-direction:column;gap:6px}
+  .pin-change-label{padding-left:4px;color:var(--muted);font-size:13px;font-weight:700;letter-spacing:.01em}
   .pin-change-card .pin-entry-compact{margin-top:0}
   .pin-entry.pin-error{animation:pinReject .34s cubic-bezier(.36,.07,.19,.97)}
   .pin-entry.pin-error .pin-dot{background:var(--red)}
@@ -1076,6 +1078,8 @@
   #tab-tx .tx .logo:not(.merchant){color:#eaf1f5!important;background:radial-gradient(108% 82% at 50% -18%,rgba(255,255,255,.2),transparent 48%),linear-gradient(145deg,rgba(68,79,91,.78),rgba(14,22,31,.98))!important;border:1px solid rgba(224,232,238,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.33),inset 0 -10px 18px rgba(0,0,0,.25),0 7px 15px rgba(0,0,0,.2)}
   #tab-tx #budget-list>.budget-hint{padding:10px 12px;border:1px solid rgba(207,220,229,.13);border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.05),rgba(255,255,255,.018));box-shadow:inset 0 1px 0 rgba(255,255,255,.065);color:#afbec7}
   #tab-tx #budget-list>.card[style*="margin-bottom"]{border-color:rgba(207,220,229,.17);background:linear-gradient(145deg,rgba(30,41,52,.88),rgba(11,18,26,.8));box-shadow:inset 0 1px 0 rgba(255,255,255,.085),inset 0 -12px 23px rgba(0,0,0,.1),0 10px 23px rgba(0,0,0,.11)}
+  /* A budget row opens a sheet, but the shared parent card must stay still while it is pressed. */
+  #tab-tx #budget-list>.card:active{transform:none;opacity:1}
   :root[data-theme="light"] #monthlyplansheet .set-card{border-color:rgba(64,88,104,.15);background:radial-gradient(116% 86% at 0% 0%,rgba(255,255,255,.98),transparent 47%),linear-gradient(145deg,rgba(255,255,255,.98),rgba(234,242,246,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.99),0 10px 21px rgba(40,67,84,.07)}
   :root[data-theme="light"] #monthlyplansheet .vd-btn{color:#176b91;border-color:rgba(54,143,184,.28);background:linear-gradient(145deg,rgba(170,221,244,.7),rgba(226,244,251,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 13px rgba(47,121,159,.09)}
   :root[data-theme="light"] #monthlyplansheet .plan-payday,:root[data-theme="light"] #monthlyplansheet .hint{border-color:rgba(67,90,108,.14);background:linear-gradient(145deg,rgba(255,255,255,.92),rgba(235,242,246,.83));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 5px 12px rgba(40,67,84,.05)}
@@ -11009,7 +11013,7 @@ function showPinScreen(mode="locked"){
   }else if(mode==="change"){
     body.innerHTML=`${common}<div class="ob-title">App-PIN ändern</div>
       <div class="ob-sub">Bestätige deine aktuelle PIN und lege danach vier neue Ziffern fest.</div>
-      <div class="pin-card pin-change-card">${pinField("pinChangeCurrent","Aktuelle PIN")}${pinField("pinChangeNew","Neue PIN")}${pinField("pinChangeConfirm","PIN wiederholen")}
+      <div class="pin-card pin-change-card"><div class="pin-change-field"><div class="pin-change-label">Aktuelle PIN</div>${pinField("pinChangeCurrent","Aktuelle PIN")}</div><div class="pin-change-field"><div class="pin-change-label">Neue PIN</div>${pinField("pinChangeNew","Neue PIN")}</div><div class="pin-change-field"><div class="pin-change-label">PIN wiederholen</div>${pinField("pinChangeConfirm","PIN wiederholen")}</div>
       <div class="pin-message" id="pinMessage"></div></div>`;
     foot.innerHTML=`<button class="ob-cta" data-pin="change">PIN ändern</button><button class="ob-ghost" data-pin="cancel-change">Abbrechen</button>`;
   }else{
