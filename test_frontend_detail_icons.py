@@ -48,6 +48,11 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn("#psheet .profile-menu-icon", self.frontend)
         self.assertNotIn('class="pic rov-icon rov-icon--regular ${m.tone === "white" ? "is-white" : ""}"', self.frontend)
 
+    def test_account_order_uses_local_neutral_icon_language(self):
+        self.assertIn('class="gicon rov-icon rov-icon--regular asset-order-icon"', self.frontend)
+        self.assertIn("#assetordersheet .asset-order-icon", self.frontend)
+        self.assertNotIn('class="gicon asset-icon asset-order-icon" style="background:${asset.tint}22;color:${asset.tint}"', self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

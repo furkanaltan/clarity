@@ -167,6 +167,7 @@ class FrontendPinTests(unittest.TestCase):
         for label in ("Aktuelle PIN", "Neue PIN", "PIN wiederholen"):
             with self.subTest(label=label):
                 self.assertIn(f'<div class="pin-change-label">{label}</div>', screen)
+        self.assertNotIn("Bestätige deine aktuelle PIN und lege danach vier neue Ziffern fest.", screen)
 
     def test_no_retired_bearer_or_state_link_bypass_returns(self):
         for forbidden in ("ROVE_API.token", "Authorization: Bearer", "app-state", "state_url", "?state="):
