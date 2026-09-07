@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260907-662bb00">
+<meta name="rove-frontend-build" content="20260907-3f7352c">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -143,6 +143,8 @@
   .pin-entry-compact .pin-dots{gap:18px}
   .pin-entry-compact .pin-dot{width:12px;height:12px;background:var(--line2)}
   .pin-entry-compact .pin-dot.filled{background:var(--ink)}
+  .pin-change-card{display:flex;flex-direction:column;gap:12px}
+  .pin-change-card .pin-entry-compact{margin-top:0}
   .pin-entry.pin-error{animation:pinReject .34s cubic-bezier(.36,.07,.19,.97)}
   .pin-entry.pin-error .pin-dot{background:var(--red)}
   @keyframes pinReject{
@@ -11007,7 +11009,7 @@ function showPinScreen(mode="locked"){
   }else if(mode==="change"){
     body.innerHTML=`${common}<div class="ob-title">App-PIN ändern</div>
       <div class="ob-sub">Bestätige deine aktuelle PIN und lege danach vier neue Ziffern fest.</div>
-      <div class="pin-card">${pinField("pinChangeCurrent","Aktuelle PIN")}${pinField("pinChangeNew","Neue PIN")}${pinField("pinChangeConfirm","PIN wiederholen")}
+      <div class="pin-card pin-change-card">${pinField("pinChangeCurrent","Aktuelle PIN")}${pinField("pinChangeNew","Neue PIN")}${pinField("pinChangeConfirm","PIN wiederholen")}
       <div class="pin-message" id="pinMessage"></div></div>`;
     foot.innerHTML=`<button class="ob-cta" data-pin="change">PIN ändern</button><button class="ob-ghost" data-pin="cancel-change">Abbrechen</button>`;
   }else{

@@ -148,6 +148,15 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn(definition, screen)
         self.assertLess(screen.index(definition), screen.index('${common}'))
 
+    def test_pin_change_reuses_modern_pin_entry_wrapper(self):
+        screen = self.function_body("showPinScreen")
+        self.assertIn('mode==="change"', screen)
+        self.assertIn('class="pin-card pin-change-card"', screen)
+        for field in ("pinChangeCurrent", "pinChangeNew", "pinChangeConfirm"):
+            with self.subTest(field=field):
+                self.assertIn(f'pinField("{field}"', screen)
+        self.assertIn(".pin-change-card .pin-entry-compact", self.frontend)
+
     def test_no_retired_bearer_or_state_link_bypass_returns(self):
         for forbidden in ("ROVE_API.token", "Authorization: Bearer", "app-state", "state_url", "?state="):
             with self.subTest(forbidden=forbidden):
