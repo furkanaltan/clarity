@@ -99,7 +99,7 @@ class FrontendCookieAuthTests(unittest.TestCase):
         self.assertIn("location.replace(location.pathname);", body)
 
     def test_public_code_requests_use_a_neutral_acknowledgement(self):
-        neutral = "Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet."
+        neutral = "Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut."
         for name in ("requestNewAccountCode", "requestEmailLoginCode"):
             with self.subTest(name=name):
                 match = re.search(rf"async function {name}\(\)\{{(?P<body>.*?)\n\}}", self.frontend, re.DOTALL)
@@ -109,6 +109,56 @@ class FrontendCookieAuthTests(unittest.TestCase):
                 self.assertNotIn("account_required", body)
                 self.assertNotIn("account_already_exists", body)
                 self.assertNotIn("Code gesendet an ${email}.", body)
+
+    def test_auth_flow_refreshes_same_url_once_after_successful_session_setup(self):
+        transition = re.search(
+            r"function continueWithSession\(onboarding=false\)\{(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(transition)
+        body = transition.group("body")
+        self.assertIn("const nextHash=onboarding?'#onboarding':'';", body)
+        self.assertIn("if(location.hash===nextHash){ location.reload(); return; }", body)
+        self.assertEqual(body.count("location.reload()"), 1)
+
+    def test_password_actions_have_in_flight_guards_and_feedback(self):
+        self.assertIn("const AUTH_ACTIONS_IN_FLIGHT = new Set();", self.frontend)
+        for name, key, busy_label in (
+            ("passwordLogin", "password-login", "Anmeldung läuft ..."),
+            ("completePasswordSetup", "password-setup", "Passwort wird gespeichert ..."),
+            ("requestPasswordReset", "password-reset-request", "Code wird gesendet ..."),
+            ("confirmPasswordReset", "password-reset-confirm", "Passwort wird gespeichert ..."),
+        ):
+            with self.subTest(name=name):
+                match = re.search(rf"async function {name}\(\)(?P<body>.*?)\n\}}", self.frontend, re.DOTALL)
+                self.assertIsNotNone(match)
+                body = match.group("body")
+                self.assertIn(f'const action="{key}";', body)
+                self.assertIn("if(!beginAuthAction(action,", body)
+                self.assertIn(busy_label, body)
+                self.assertIn("endAuthAction(action,", body)
+
+    def test_login_errors_remain_neutral_and_distinguish_network_or_rate_limit(self):
+        login = re.search(r"async function passwordLogin\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
+        self.assertIsNotNone(login)
+        body = login.group("body")
+        self.assertIn("Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut.", body)
+        self.assertIn("Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.", body)
+        self.assertIn("Zu viele Versuche. Warte kurz und versuche es später erneut.", self.frontend)
+        self.assertIn('data?.error==="too_many_login_attempts"', self.frontend)
+        self.assertNotIn("E-Mail-Adresse oder Passwort stimmen nicht.", body)
+
+        verify = re.search(r"async function verifyEmailLoginCode\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
+        self.assertIsNotNone(verify)
+        self.assertIn("Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.", verify.group("body"))
+
+    def test_password_setup_reports_success_before_continuing(self):
+        setup = re.search(r"async function completePasswordSetup\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
+        self.assertIsNotNone(setup)
+        body = setup.group("body")
+        self.assertIn("Passwort gespeichert. Wir bringen dich weiter ...", body)
+        self.assertLess(body.index("endAuthAction(action"), body.index("continueWithSession("))
 
 
 if __name__ == "__main__":

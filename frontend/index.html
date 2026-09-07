@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260905-ec00d7f">
+<meta name="rove-frontend-build" content="20260907-662bb00">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3059,6 +3059,26 @@ function restoreBridgeLocal(snapshot,userId){
 }
 const PAIR_API_BASE_URL = "https://getrove.de/app-api";
 let EMAIL_AUTH_PENDING = {email:"",mode:"login"};
+const AUTH_ACTIONS_IN_FLIGHT = new Set();
+
+function beginAuthAction(key, selector, label){
+  if(AUTH_ACTIONS_IN_FLIGHT.has(key)) return false;
+  AUTH_ACTIONS_IN_FLIGHT.add(key);
+  const button=document.querySelector(selector);
+  if(button){ button.disabled=true; button.dataset.authIdleLabel=button.textContent; button.textContent=label; }
+  return true;
+}
+
+function endAuthAction(key, selector, label){
+  AUTH_ACTIONS_IN_FLIGHT.delete(key);
+  const button=document.querySelector(selector);
+  if(button){ button.disabled=false; button.textContent=label||button.dataset.authIdleLabel||button.textContent; delete button.dataset.authIdleLabel; }
+}
+
+function authErrorMessage(response, data, fallback){
+  if(response?.status===429 || data?.error==="too_many_login_attempts") return "Zu viele Versuche. Warte kurz und versuche es später erneut.";
+  return fallback;
+}
 let SERVER_ONBOARDING_REQUIRED = false;
 let SERVER_ONBOARDING_STATUS = {required:false,status:"completed",step:10,completed:true};
 // Diese Hashes sind Dev-/Demo-Einstiege, die DATA leeren/verändern — sie erzwingen Mock-Modus,
@@ -11371,8 +11391,9 @@ async function requestNewAccountCode(){
     emailInput?.focus();
     return;
   }
+  const action="register-code";
+  if(!beginAuthAction(action,'[data-auth="register-send"]',"Code wird gesendet ...")) return;
   const button=document.querySelector('[data-auth="register-send"]');
-  if(button){ button.disabled=true; button.textContent="Code wird gesendet ..."; }
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/request-code`,{
       method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},
@@ -11388,11 +11409,12 @@ async function requestNewAccountCode(){
     document.getElementById("registerCodeWrap").style.display="block";
     document.querySelector('[data-auth="register-verify"]').style.display="block";
     if(button) button.style.display="none";
-    if(hint) hint.textContent="Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet.";
+    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
+    endAuthAction(action,'[data-auth="register-send"]');
     setTimeout(()=>document.getElementById("registerCode")?.focus(),80);
   }catch(error){
-    if(hint) hint.textContent=error.message||"Registrierung fehlgeschlagen.";
-    if(button){ button.disabled=false; button.textContent="Code senden"; }
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.");
+    endAuthAction(action,'[data-auth="register-send"]',"Code senden");
   }
 }
 
@@ -11413,8 +11435,9 @@ async function requestEmailLoginCode(){
     emailInput?.focus();
     return;
   }
+  const action="login-code";
+  if(!beginAuthAction(action,'[data-auth="send-code"]',"Code wird gesendet ...")) return;
   const button=document.querySelector('[data-auth="send-code"]');
-  if(button){ button.disabled=true; button.textContent="Code wird gesendet ..."; }
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/request-code`,{
       method:"POST",
@@ -11433,16 +11456,19 @@ async function requestEmailLoginCode(){
     document.getElementById("loginCodeWrap").style.display="block";
     document.querySelector('[data-auth="verify-code"]').style.display="block";
     if(button) button.style.display="none";
-    if(hint) hint.textContent="Wenn für diese E-Mail der angeforderte Vorgang möglich ist, haben wir weitere Schritte gesendet.";
+    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
+    endAuthAction(action,'[data-auth="send-code"]');
     setTimeout(()=>document.getElementById("loginCode")?.focus(),80);
   }catch(error){
-    if(hint) hint.textContent=error.message || "Login fehlgeschlagen.";
-    if(button){ button.disabled=false; button.textContent="Login-Code senden"; }
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message || "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.");
+    endAuthAction(action,'[data-auth="send-code"]',"Login-Code senden");
   }
 }
 
 function continueWithSession(onboarding=false){
-  location.href=`${location.pathname}${onboarding?'#onboarding':''}`;
+  const nextHash=onboarding?'#onboarding':'';
+  if(location.hash===nextHash){ location.reload(); return; }
+  location.href=`${location.pathname}${nextHash}`;
 }
 
 async function passwordLogin(){
@@ -11450,47 +11476,72 @@ async function passwordLogin(){
   const password=document.getElementById("loginPassword")?.value||"";
   const hint=document.getElementById("authHint");
   if(!email || !password){ if(hint) hint.textContent="Gib E-Mail-Adresse und Passwort ein."; return; }
+  const action="password-login";
+  if(!beginAuthAction(action,'[data-auth="password-login"]',"Anmeldung läuft ...")) return;
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/login`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password})});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error("E-Mail-Adresse oder Passwort stimmen nicht.");
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut."));
+    endAuthAction(action,'[data-auth="password-login"]');
     continueWithSession(!!data.onboarding_required);
-  }catch(error){ if(hint) hint.textContent=error.message||"Anmeldung fehlgeschlagen."; }
+  }catch(error){
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut.");
+    endAuthAction(action,'[data-auth="password-login"]',"Einloggen");
+  }
 }
 
 async function completePasswordSetup(){
   const password=document.getElementById("passwordSetup")?.value||"";
   const password_confirmation=document.getElementById("passwordSetupConfirm")?.value||"";
   const hint=document.getElementById("authHint");
+  const action="password-setup";
+  if(!beginAuthAction(action,'[data-auth="password-setup"]',"Passwort wird gespeichert ...")) return;
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/setup`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({password,password_confirmation})});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error("Das Passwort muss mindestens 10 Zeichen lang sein und zweimal gleich eingegeben werden.");
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Das Passwort muss mindestens 10 Zeichen lang sein und zweimal gleich eingegeben werden."));
+    if(hint) hint.textContent="Passwort gespeichert. Wir bringen dich weiter ...";
+    endAuthAction(action,'[data-auth="password-setup"]');
     continueWithSession(EMAIL_AUTH_PENDING.mandatory);
-  }catch(error){ if(hint) hint.textContent=error.message||"Passwort konnte nicht gespeichert werden."; }
+  }catch(error){
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht gespeichert werden.");
+    endAuthAction(action,'[data-auth="password-setup"]',"Passwort speichern");
+  }
 }
 
 async function requestPasswordReset(){
   const email=(document.getElementById("resetEmail")?.value||"").trim().toLowerCase(), hint=document.getElementById("authHint");
   if(!email){ if(hint) hint.textContent="Gib deine E-Mail-Adresse ein."; return; }
+  const action="password-reset-request";
+  if(!beginAuthAction(action,'[data-auth="reset-request"]',"Code wird gesendet ...")) return;
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/reset/request`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email})});
     const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error("Der Code konnte gerade nicht angefordert werden.");
     EMAIL_AUTH_PENDING={email,mode:"reset"};
     ["resetCodeWrap","resetPasswordWrap","resetConfirmWrap"].forEach(id=>document.getElementById(id).style.display="block");
     document.querySelector('[data-auth="reset-request"]').style.display="none"; document.querySelector('[data-auth="reset-confirm"]').style.display="block";
-    if(hint) hint.textContent="Falls ein Konto mit dieser E-Mail existiert, ist ein Code unterwegs.";
-  }catch(error){ if(hint) hint.textContent=error.message||"Reset konnte nicht gestartet werden."; }
+    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
+    endAuthAction(action,'[data-auth="reset-request"]');
+  }catch(error){
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Reset konnte nicht gestartet werden.");
+    endAuthAction(action,'[data-auth="reset-request"]',"Code senden");
+  }
 }
 
 async function confirmPasswordReset(){
   const hint=document.getElementById("authHint"), code=(document.getElementById("resetCode")?.value||"").trim();
   const password=document.getElementById("resetPassword")?.value||"", password_confirmation=document.getElementById("resetConfirm")?.value||"";
+  const action="password-reset-confirm";
+  if(!beginAuthAction(action,'[data-auth="reset-confirm"]',"Passwort wird gespeichert ...")) return;
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/reset/confirm`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:EMAIL_AUTH_PENDING.email,code,password,password_confirmation})});
-    const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error("Code oder Passwort sind nicht gültig.");
+    const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Code oder Passwort sind nicht gültig."));
+    endAuthAction(action,'[data-auth="reset-confirm"]');
     continueWithSession(false);
-  }catch(error){ if(hint) hint.textContent=error.message||"Passwort konnte nicht zurückgesetzt werden."; }
+  }catch(error){
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht zurückgesetzt werden.");
+    endAuthAction(action,'[data-auth="reset-confirm"]',"Passwort speichern");
+  }
 }
 
 async function verifyEmailLoginCode(){
@@ -11502,8 +11553,10 @@ async function verifyEmailLoginCode(){
     if(hint) hint.textContent="Gib den Code aus deiner E-Mail ein.";
     return;
   }
-  const button=document.querySelector(registration?'[data-auth="register-verify"]':'[data-auth="verify-code"]');
-  if(button){ button.disabled=true; button.textContent="Wird geprüft ..."; }
+  const action=registration?"register-verify":"login-code-verify";
+  const selector=registration?'[data-auth="register-verify"]':'[data-auth="verify-code"]';
+  if(!beginAuthAction(action,selector,"Wird geprüft ...")) return;
+  const button=document.querySelector(selector);
   try{
     const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/verify-code`,{
       method:"POST",
@@ -11518,11 +11571,12 @@ async function verifyEmailLoginCode(){
         "Der Login hat gerade nicht funktioniert.";
       throw new Error(message);
     }
-    if(data.password_setup_required){ showPasswordSetup(registration); return; }
+    if(data.password_setup_required){ endAuthAction(action,selector); showPasswordSetup(registration); return; }
+    endAuthAction(action,selector);
     continueWithSession(!!data.onboarding_required);
   }catch(error){
-    if(hint) hint.textContent=error.message || "Login fehlgeschlagen.";
-    if(button){ button.disabled=false; button.textContent="Code bestätigen"; }
+    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message || "Login fehlgeschlagen.");
+    endAuthAction(action,selector,"Code bestätigen");
   }
 }
 
