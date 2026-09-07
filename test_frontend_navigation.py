@@ -73,6 +73,10 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('const row=e.target.closest("[data-bgt]");', self.frontend)
         self.assertIn('if(row) openBudgetSheet(+row.dataset.bgt);', self.frontend)
 
+    def test_settings_logout_has_no_boolean_badge(self):
+        self.assertIn('action("logout","Abmelden","Auf diesem Gerät sicher abmelden")', self.frontend)
+        self.assertNotIn('action("logout","Abmelden","Auf diesem Gerät sicher abmelden",true)', self.frontend)
+
     def test_home_chart_uses_white_drawn_line_without_changing_data(self):
         self.assertIn('@keyframes chartLineDraw', self.frontend)
         self.assertIn('.chart .chart-line-main{stroke-dasharray:1;', self.frontend)

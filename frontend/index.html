@@ -148,7 +148,7 @@
   .pin-change-label{padding-left:4px;color:var(--muted);font-size:13px;font-weight:700;letter-spacing:.01em}
   .pin-change-card .pin-entry{margin-top:0;height:42px}
   .pin-change-card .pin-entry-compact{margin-top:0}
-  .pin-change-card .pin-pad{margin-top:22px;row-gap:10px}
+  .pin-change-card .pin-pad{margin-top:52px;row-gap:10px}
   .pin-change-card .pin-key{height:44px;font-size:28px}
   .pin-change-card .pin-key.delete{font-size:24px}
   .pin-entry.pin-error{animation:pinReject .34s cubic-bezier(.36,.07,.19,.97)}
@@ -8639,7 +8639,7 @@ function renderSettings(){
       ${info("Push-Grundlage", SW_STATUS)}
       ${info("Version","Rov.E 1.0 · Beta")}
     </div>
-    ${APP_MODE==="bridge"?`<div class="set-card" style="margin-top:10px">${action("logout","Abmelden","Auf diesem Gerät sicher abmelden",true)}</div>`:""}
+    ${APP_MODE==="bridge"?`<div class="set-card" style="margin-top:10px">${action("logout","Abmelden","Auf diesem Gerät sicher abmelden")}</div>`:""}
     ${settingsDataRows()}
     <div class="set-sec">Rechtliches</div>
     <div class="set-card">
