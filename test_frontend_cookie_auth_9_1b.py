@@ -252,6 +252,40 @@ class FrontendCookieAuthTests(unittest.TestCase):
         self.assertIn("Passwort gespeichert. Wir bringen dich weiter ...", body)
         self.assertLess(body.index("endAuthAction(action"), body.index("continueWithSession("))
 
+    def test_auth_surface_hides_financial_app_and_tabbar(self):
+        self.assertIn('body.auth-flow-active #app,body.auth-flow-active .tabbar', self.frontend)
+        self.assertIn('function setAuthSurface(active)', self.frontend)
+        self.assertIn('if(active) document.getElementById("app")?.setAttribute("hidden","");', self.frontend)
+        for name in ("showAppConnect", "showNewAccountRegistration", "showPasswordSetup", "showPasswordReset"):
+            with self.subTest(name=name):
+                body = self.function_body(name)
+                self.assertIn("setAuthSurface(true);", body)
+        bootstrap = self.function_body("loadBridgeState")
+        self.assertLess(bootstrap.index("setAuthSurface(false);"), bootstrap.index('removeAttribute("hidden")'))
+
+    def test_auth_inputs_request_native_mobile_keyboard_semantics(self):
+        for field, attrs in (
+            ("loginEmail", ('type="email"', 'inputmode="email"', 'autocapitalize="none"', 'autocorrect="off"', 'spellcheck="false"')),
+            ("loginPassword", ('type="password"', 'autocomplete="current-password"', 'autocorrect="off"', 'spellcheck="false"')),
+            ("registerEmail", ('type="email"', 'inputmode="email"', 'autocapitalize="none"', 'autocorrect="off"', 'spellcheck="false"')),
+            ("resetEmail", ('type="email"', 'inputmode="email"', 'autocapitalize="none"', 'autocorrect="off"', 'spellcheck="false"')),
+            ("resetCode", ('type="text"', 'inputmode="numeric"', 'autocomplete="one-time-code"')),
+        ):
+            with self.subTest(field=field):
+                field_markup = re.search(rf'<input id="{field}"[^>]+>', self.frontend)
+                self.assertIsNotNone(field_markup)
+                for attr in attrs:
+                    self.assertIn(attr, field_markup.group(0))
+
+    def function_body(self, name):
+        match = re.search(
+            rf"(?:async )?function {re.escape(name)}\([^)]*\)\{{(?P<body>.*?)\n\}}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, name)
+        return match.group("body")
+
 
 if __name__ == "__main__":
     unittest.main()
