@@ -37,7 +37,7 @@
 {{ page_start('02 Überblick') }}
   {{ heading('Überblick', 'Dein Monat auf einen', 'Blick.') }}
   <div style="display:flex;gap:14px;margin-top:62px;">
-    {{ small_card('Nettovermögen', net_worth_amount, 'Gesamtes Vermögen') }}
+    {{ small_card('Nettovermögen', net_worth_amount, 'Konsumschulden: ' ~ consumer_debt_amount) }}
     {{ small_card('Investments', investments_amount, 'im Portfolio', true) }}
     {{ small_card('Cash', cash_amount, 'liquide verfügbar') }}
   </div>

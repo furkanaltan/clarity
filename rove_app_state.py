@@ -33,6 +33,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rove_score import calculate_score
+from rove_consumer_debt import list_consumer_debts, total_consumer_debt, net_worth_total
 from rove_market_data import (
     cached_market_metadata,
     canonical_market_instrument,
@@ -790,7 +791,7 @@ def ensure_app_month_close_table(conn: sqlite3.Connection) -> None:
     )
 
 
-MONTHLY_FINANCIAL_SNAPSHOT_VERSION = 1
+MONTHLY_FINANCIAL_SNAPSHOT_VERSION = 2
 
 
 def ensure_monthly_financial_snapshots_table(conn: sqlite3.Connection) -> None:
@@ -819,6 +820,9 @@ def ensure_monthly_financial_snapshots_table(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(monthly_financial_snapshots)")}
+    if "total_consumer_debt" not in columns:
+        conn.execute("ALTER TABLE monthly_financial_snapshots ADD COLUMN total_consumer_debt REAL")
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_monthly_financial_snapshots_user_month
            ON monthly_financial_snapshots (user_id, report_month)"""
@@ -904,10 +908,8 @@ def capture_monthly_financial_snapshot(
     property_market_value = round(float(property_data["market_value"]), 2) if property_data else 0.0
     property_remaining_debt = round(float(property_data["remaining_debt"]), 2) if property_data else 0.0
     property_equity = round(property_market_value - property_remaining_debt, 2)
-    net_worth = (
-        round(cash_total + investment_market_value + property_equity, 2)
-        if cash_total is not None and investment_market_value is not None else None
-    )
+    consumer_debt = total_consumer_debt(conn, user_id)
+    net_worth = net_worth_total(cash_total, investment_market_value, property_equity, consumer_debt)
     clarity_score = _monthly_snapshot_score(conn, user_id, report_month)
 
     conn.execute(
@@ -916,8 +918,8 @@ def capture_monthly_financial_snapshot(
             etf_savings, cash_savings, cash_total, cash_accounts_json,
             investment_market_value, property_market_value,
             property_remaining_debt, property_equity, net_worth,
-            actual_savings, clarity_score, source_version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            actual_savings, clarity_score, source_version, total_consumer_debt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             report_month,
@@ -936,6 +938,7 @@ def capture_monthly_financial_snapshot(
             round(float(actual_savings), 2),
             clarity_score,
             MONTHLY_FINANCIAL_SNAPSHOT_VERSION,
+            consumer_debt,
         ),
     )
     return get_monthly_financial_snapshot(conn, user_id, report_month)
@@ -1717,44 +1720,40 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
 
 
 def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None):
-    """Rekonstruiert den Vermoegensverlauf rueckwaerts aus den echten Buchungen.
+    """Liefert nur belegte aktuelle Werte ohne historische Finanzwerte zu erfinden.
 
-    Bis 27.07. stand hier ein Platzhalter — derselbe Wert zweimal, fuer jeden Zeitraum. Die Kurve
-    war dadurch eine Waagerechte und die Zeile darunter (`letzter - erster`) immer exakt 0, egal
-    wie viel der Nutzer ausgegeben hatte (Furkan-Fund 27.07.: "die bewegen sich nicht").
-
-    Das Verfahren braucht keine neue Tabelle: das heutige Vermoegen ist bekannt und jede Buchung
-    seit einem Zeitpunkt auch, also ist der Stand von damals rechenbar —
-    `Wert(gestern) = Wert(heute) - Veraenderung(heute)`. Damit ist der Verlauf sofort echt, rueckwirkend
-    so weit, wie der Bot Buchungen hat, statt erst ab dem naechsten Tages-Snapshot zu wachsen.
-
-    ⚠️ Grenze der Genauigkeit, bewusst so: rekonstruiert werden Ausgaben und Einnahmen. Kurs-
-    bewegungen von ETF/Krypto, Aenderungen am Immobilienwert und von Hand korrigierte Kontostaende
-    lassen sich rueckwaerts nicht trennen — die wirken so, als haetten sie immer den heutigen Wert
-    gehabt. Fuer 1W und 1M ist die Kurve damit auf den Cent genau; fuer 1J zeigt sie die Spar- und
-    Ausgabenbewegung, nicht die Kursentwicklung.
+    Historische Tageswerte werden erst wieder ausgegeben, wenn sie aus einem
+    gespeicherten Snapshot stammen. Der aktuelle Punkt bleibt nutzbar, ohne
+    heutige Schuldenänderungen auf frühere Tage zu übertragen.
     """
     if net_worth is None:
         return {}, {}
 
-    max_tage = max(spanne for spanne, _ in NET_SERIES_RANGES.values())
-    deltas = _daily_net_deltas(conn, user_id, max_tage)
-    heute = date.today()
-
-    # werte[i] = Vermoegen vor i Tagen. Rueckwaerts: den Tagesdelta wieder herausrechnen.
-    werte = [float(net_worth)]
-    for i in range(max_tage):
-        tag = (heute - timedelta(days=i)).isoformat()
-        werte.append(werte[-1] - deltas.get(tag, 0.0))
+    frozen = []
+    try:
+        frozen = [
+            (date.fromisoformat(f"{row['report_month']}-01"), float(row["net_worth"]))
+            for row in conn.execute(
+                """SELECT report_month, net_worth FROM monthly_financial_snapshots
+                   WHERE user_id=? AND net_worth IS NOT NULL ORDER BY report_month""",
+                (user_id,),
+            ).fetchall()
+        ]
+    except (sqlite3.OperationalError, ValueError):
+        pass
 
     series: dict = {}
     hist_dates: dict = {}
     for name, (spanne, schritt) in NET_SERIES_RANGES.items():
-        offsets = sorted({*range(spanne, -1, -schritt), 0}, reverse=True)
-        series[name] = [round(werte[min(o, len(werte) - 1)] / 1000, 3) for o in offsets]
+        cutoff = date.today() - timedelta(days=spanne)
+        points = [(tag, value) for tag, value in frozen if name == "Max" or tag >= cutoff]
+        points.append((date.today(), float(net_worth)))
+        deduped = {tag: value for tag, value in points}
+        ordered = sorted(deduped.items())
+        series[name] = [round(value / 1000, 3) for _, value in ordered]
         hist_dates[name] = [
-            "Heute" if o == 0 else _series_label(heute - timedelta(days=o), name)
-            for o in offsets
+            "Heute" if tag == date.today() else _series_label(tag, name)
+            for tag, _ in ordered
         ]
     return series, hist_dates
 
@@ -1801,7 +1800,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     investments = float(u.get("current_investments") or 0)
     property_data = get_app_property(conn, user_id)
     property_equity = float(property_data["equity"] if property_data else 0)
-    net_worth = None if cash is None else cash + investments + property_equity
+    consumer_debt = total_consumer_debt(conn, user_id)
+    net_worth = net_worth_total(cash, investments, property_equity, consumer_debt)
     etf_savings = round(float(u.get("etf_savings") or 0), 2)
     cash_savings = round(float(u.get("cash_savings") or 0), 2)
     sparraten = etf_savings + cash_savings
@@ -1913,6 +1913,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "completed": onboarding_step >= 10,
         },
         "netWorth": round(net_worth, 2) if net_worth is not None else None,
+        "consumerDebtTotal": consumer_debt,
+        "consumerDebts": list_consumer_debts(conn, user_id),
         "series": net_series,
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),

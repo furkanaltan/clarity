@@ -22,6 +22,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from rove_score import calculate_score as calculate_live_score
 from rove_app_state import get_monthly_financial_snapshot
+from rove_consumer_debt import total_consumer_debt, net_worth_total
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -1205,6 +1206,9 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             if is_current_month
             else get_monthly_financial_snapshot(conn, user_id, _report_previous_month(report_month))
         )
+        consumer_debt = total_consumer_debt(conn, user_id) if is_current_month else (
+            financial_snapshot.get("total_consumer_debt") if financial_snapshot else None
+        )
     if is_current_month:
         income = row_float(user, "income")
         other_income = row_float(user, "other_income")
@@ -1252,23 +1256,20 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     # A test report for the open month must show the current App and bot state.
     # Closed months remain anchored to their saved monthly snapshot.
     net_worth = (
-        round(current_investments + cash_reserve + property_equity, 2)
+        net_worth_total(cash_reserve, current_investments, property_equity, consumer_debt)
         if is_current_month
         else (
             float(financial_snapshot["net_worth"])
-            if financial_snapshot and financial_snapshot["net_worth"] is not None
-            else (float(snapshot["net_worth"]) if snapshot and snapshot["net_worth"] is not None else None)
+            if financial_snapshot and consumer_debt is not None and financial_snapshot["net_worth"] is not None
+            else None
         )
     )
     prev_net_worth = (
         float(previous_financial_snapshot["net_worth"])
-        if previous_financial_snapshot and previous_financial_snapshot["net_worth"] is not None
-        else (
-            float(prev_snapshot["net_worth"])
-            if prev_snapshot and prev_snapshot["net_worth"] is not None else None
-        )
+        if previous_financial_snapshot and previous_financial_snapshot.get("total_consumer_debt") is not None
+        and previous_financial_snapshot["net_worth"] is not None else None
     )
-    net_worth_delta = net_worth - prev_net_worth if prev_net_worth is not None else None
+    net_worth_delta = net_worth - prev_net_worth if net_worth is not None and prev_net_worth is not None else None
     net_worth_delta_percent = (
         (net_worth_delta / prev_net_worth * 100.0)
         if prev_net_worth not in (None, 0) and net_worth_delta is not None
@@ -1413,6 +1414,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
             "savings_rate": savings_rate,
             "current_investments": current_investments,
             "cash_reserve": cash_reserve,
+            "total_consumer_debt": consumer_debt,
             "property_market_value": property_market_value,
             "property_remaining_debt": property_remaining_debt,
             "property_equity": property_equity,
@@ -1733,12 +1735,14 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
     if investment_value is None:
         investment_value = profile.get("current_investments")
     property_value = profile.get("property_equity")
-    if cash_value is None or investment_value is None or property_value is None:
+    consumer_debt = profile.get("total_consumer_debt", 0)
+    if cash_value is None or investment_value is None or property_value is None or consumer_debt is None:
         return {
             "total": None,
             "cash": cash_value,
             "investments": investment_value,
             "property_equity": property_value,
+            "total_consumer_debt": consumer_debt,
             "allocation": [],
             "allocation_excludes_negative_property_equity": bool(
                 property_value is not None and property_value < 0
@@ -1822,14 +1826,16 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
             "source": "app_properties",
         })
 
-    total = round(cash_total + investment_total + property_equity, 2)
+    total = net_worth_total(cash_total, investment_total, property_equity, consumer_debt)
+    allocation_total = sum(max(0, item["amount"]) for item in allocation)
     for item in allocation:
-        item["share"] = round(item["amount"] / total * 100, 2) if total > 0 else 0.0
+        item["share"] = round(max(0, item["amount"]) / allocation_total * 100, 2) if allocation_total > 0 else 0.0
     return {
         "total": total,
         "cash": cash_total,
         "investments": investment_total,
         "property_equity": property_equity,
+        "total_consumer_debt": consumer_debt,
         "allocation": allocation,
         "allocation_excludes_negative_property_equity": property_equity < 0,
         "reconciles": abs(round(sum(item["amount"] for item in allocation), 2) - total) <= 0.01,

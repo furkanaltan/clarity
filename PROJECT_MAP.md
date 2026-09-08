@@ -25,6 +25,7 @@ bereits abgeschlossene Zielarchitektur.
 | App-State und Finanzaggregation | `rove_app_state.py` |
 | Ausgabenwahrheit | `rove_expense_domain.py` |
 | Finanzkonten | `rove_financial_accounts.py` |
+| Konsumschulden / Nettovermoegensformel | `rove_consumer_debt.py` |
 | Investmentbeitraege | `rove_investment_contributions.py` |
 | Score | `rove_score.py` |
 | Crypto- und Marktwerte | `rove_market_data.py`, `refresh_market_positions.py` |

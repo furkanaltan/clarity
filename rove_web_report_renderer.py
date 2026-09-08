@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
 from report_story_v2 import get_report_wealth, story_from_snapshot_data, valid_report_merchant
+from rove_consumer_debt import net_worth_total
 
 
 load_dotenv()
@@ -602,7 +603,7 @@ def _pre_truth_story_render_context(data: dict) -> dict:
     property_equity = profile.get("property_equity")
     wealth_total = frozen_value(financial_story.get("net_worth"), profile.get("net_worth"))
     if wealth_total is None and all(value is not None for value in (cash, investments, property_equity)):
-        wealth_total = float(cash) + float(investments) + float(property_equity)
+        wealth_total = net_worth_total(cash, investments, property_equity, profile.get("total_consumer_debt"))
 
     consumption = month.get("total_expenses")
     contribution = frozen_value(
@@ -682,6 +683,7 @@ def _pre_truth_story_render_context(data: dict) -> dict:
             },
         },
         "wealth_total": display_money(wealth_total),
+        "consumer_debt_amount": display_money(profile.get("total_consumer_debt")),
         "consumption_total": display_money(consumption),
         "contribution_total": display_money(contribution),
         "cash_total": display_money(cash),
@@ -1011,11 +1013,12 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     investments_raw = float(wealth.get("investments") or 0)
     property_raw = float(wealth.get("property_equity") or 0)
     wealth_total = max(0.0, net_worth_raw)
+    allocation_base = sum(max(0, value) for value in (cash_raw, investments_raw, property_raw))
 
     allocation_total = sum(float(item.get("share_raw") or 0) for item in report["allocation"]) or 100.0
-    investment_share = (investments_raw / wealth_total * 100) if wealth_total > 0 else 0.0
-    cash_share = (cash_raw / wealth_total * 100) if wealth_total > 0 else 0.0
-    property_share = (property_raw / wealth_total * 100) if wealth_total > 0 else 0.0
+    investment_share = (max(0, investments_raw) / allocation_base * 100) if allocation_base > 0 else 0.0
+    cash_share = (max(0, cash_raw) / allocation_base * 100) if allocation_base > 0 else 0.0
+    property_share = (max(0, property_raw) / allocation_base * 100) if allocation_base > 0 else 0.0
 
     money_map_categories = []
     palette = [
@@ -1284,6 +1287,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "investments_amount": _story_money(investments_raw),
         "cash_amount": _story_money(cash_raw),
         "property_equity_amount": _story_money(property_raw),
+        "consumer_debt_amount": _story_money(wealth.get("total_consumer_debt")) if wealth.get("total_consumer_debt") is not None else "—",
         "property_market_value_amount": _story_money(profile.get("property_market_value") or 0),
         "property_remaining_debt_amount": _story_money(profile.get("property_remaining_debt") or 0),
         "invest_story_headline": h(report["pages"]["page_6"].get("question") or "Wo steckt dein Vermoegen heute?"),
@@ -1320,7 +1324,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "goal_pct_raw": goal["progress_raw"],
         "goal_target_amount": goal["target"],
         "goal_current_amount": goal["current"],
-        "net_worth_amount": _story_money(wealth_total) if wealth_available else "—",
+        "net_worth_amount": _story_money(net_worth_raw) if wealth_available else "—",
         "goal_remaining_amount": goal["remaining"],
         "goal_title_text": h(f"Dein Ziel: {goal_name}."),
         "goal_honest_text": h(goal_honest_text),
@@ -1409,7 +1413,7 @@ def build_render_context(data: dict) -> dict:
     cash = story.get("cash") or profile.get("cash_reserve") or 0
     property_equity = profile.get("property_equity") or 0
     total_expenses = month.get("total_expenses") or 0
-    wealth_total = investments + cash + property_equity
+    wealth_total = net_worth_total(investments, cash, property_equity, profile.get("total_consumer_debt", 0)) or 0
     investments_pct = round((investments / wealth_total * 100) if wealth_total > 0 else 0, 1)
     cash_pct = round((cash / wealth_total * 100) if wealth_total > 0 else 0, 1)
     property_pct = round((property_equity / wealth_total * 100) if wealth_total > 0 else 0, 1)
@@ -1658,6 +1662,7 @@ def build_render_context(data: dict) -> dict:
         "investments_amount": money_text(investments),
         "cash_amount": money_text(cash),
         "property_equity_amount": money_text(property_equity),
+        "consumer_debt_amount": money_text(profile["total_consumer_debt"]) if profile.get("total_consumer_debt") is not None else "—",
         "property_market_value_amount": money_text(profile.get("property_market_value") or 0),
         "property_remaining_debt_amount": money_text(profile.get("property_remaining_debt") or 0),
         "invest_story_headline": invest_story_headline,

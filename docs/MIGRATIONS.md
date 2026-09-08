@@ -37,6 +37,26 @@ bleiben nicht beweisbare Finanzwerte im Report nicht verfuegbar.
 
 ## Ausfuehrungsregeln
 
+Consumer Debt V1: `rove_consumer_debt.ensure_consumer_debt_schema()` legt
+`app_consumer_debts` beim ersten Write additiv/idempotent an. Keine Migration
+aus `fixed_costs_details.kredite.restschuld`. Monatsraten bleiben in Vertraegen;
+die neue Tabelle speichert nur positive/Null-Restschulden, aktiv/inaktiv und Typ.
+Hypothek, Fahrzeugfinanzierung und Dispo sind keine erlaubten Typen. Bereits
+negative Cash-Konten werden ausschliesslich im Cash-Aggregat beruecksichtigt.
+Create-Requests tragen eine optionale user-scoped `request_id` mit einem
+Payload-Fingerprint. Der eindeutige Index verhindert doppelte Anlagen bei
+Responseverlust; ein abweichender Retry wird als Konflikt abgewiesen.
+
+`monthly_financial_snapshots.total_consumer_debt` wird durch die vorhandene
+Snapshot-Schemavorbereitung nullable hinzugefuegt. Neue Snapshots (Version 2)
+frieren die Summe in der bestehenden Abschluss-Transaktion ein. Alte Zeilen
+bleiben NULL und unveraendert; neu erzeugte historische Reports zeigen dann
+kein behauptetes schuldenbereinigtes Nettovermoegen. Kein Backfill, keine
+Aenderung vorhandener `report_snapshots_v2`. Allocation zeigt positive Assets,
+nicht Anteile am nach Schulden moeglicherweise negativen Nettovermoegen.
+User-Export enthaelt die Positionen; bestehende user-scoped Account-Loeschung
+erfasst die Tabelle automatisch. Produktionsstatus: UNKNOWN, nicht deployed.
+
 1. Produktionsstatus und betroffene Nutzer read-only pruefen.
 2. Datenbankbackup mit restriktiven Rechten erstellen und validieren.
 3. Wenn vorhanden, zuerst Dry-run beziehungsweise Inventory ausfuehren.

@@ -257,6 +257,7 @@ html,body { margin:0; padding:0; }
         <div><span style="color:#16161A; font-weight:600; font-variant-numeric:tabular-nums;">{{ investments_amount }}</span> investiert</div>
         <div><span style="color:#16161A; font-weight:600; font-variant-numeric:tabular-nums;">{{ cash_amount }}</span> liquide</div>
         {% if has_property_equity %}<div><span style="color:#8D6526; font-weight:600; font-variant-numeric:tabular-nums;">{{ property_equity_amount }}</span> Immobilien-Eigenkapital</div><div>Marktwert {{ property_market_value_amount }} · Restschuld {{ property_remaining_debt_amount }}</div>{% endif %}
+        <div>Konsumschulden: {{ consumer_debt_amount }}</div>
       </div>
     </div>
 

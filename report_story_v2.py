@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from rove_consumer_debt import net_worth_total
 
 
 REPORT_STORY_VERSION = 2
@@ -244,12 +245,14 @@ def get_report_wealth(data: dict) -> dict:
     cash_value = cash.get("current_cash", profile.get("cash_reserve"))
     investments_value = profile.get("current_investments")
     property_value = property_truth.get("equity", profile.get("property_equity"))
-    if cash_value is None or investments_value is None or property_value is None:
+    consumer_debt = profile.get("total_consumer_debt", 0)
+    if cash_value is None or investments_value is None or property_value is None or consumer_debt is None:
         return {
             "total": None,
             "cash": cash_value,
             "investments": investments_value,
             "property_equity": property_value,
+            "total_consumer_debt": consumer_debt,
             "allocation": [],
             "reconciles": False,
             "goals_included": False,
@@ -258,7 +261,8 @@ def get_report_wealth(data: dict) -> dict:
     cash_amount = _money(cash_value)
     investments = _money(investments_value)
     property_equity = _money(property_value)
-    total = round(cash_amount + investments + property_equity, 2)
+    total = net_worth_total(cash_amount, investments, property_equity, consumer_debt)
+    allocation_total = sum(max(0, value) for value in (cash_amount, investments, property_equity))
     allocation = []
     for key, label, amount in (
         ("cash", "Cash", cash_amount),
@@ -271,7 +275,7 @@ def get_report_wealth(data: dict) -> dict:
                 "label": label,
                 "asset_class": key,
                 "amount": amount,
-                "share": _pct(amount, total) or 0.0,
+                "share": _pct(amount, allocation_total) or 0.0,
                 "source": "frozen_snapshot_fallback",
             })
     return {
@@ -279,6 +283,7 @@ def get_report_wealth(data: dict) -> dict:
         "cash": cash_amount,
         "investments": investments,
         "property_equity": property_equity,
+        "total_consumer_debt": consumer_debt,
         "allocation": allocation,
         "reconciles": abs(sum(item["amount"] for item in allocation) - total) <= 0.01,
         "goals_included": False,

@@ -2765,6 +2765,9 @@ const DATA = {
   features:{},
   featureAnnouncements:{unseen_count:0,eligible:[],archive:[]},
   financialAccounts:[],
+  consumerDebts:[],
+  consumerDebtTotal:0,
+  netWorthAvailable:true,
   netWorth: 42850,
   changePct: "+1,8 %",
   series: { // Vermögens-Verlauf (relativ), pro Zeitraum ein Punktarray
@@ -3818,7 +3821,7 @@ function drawChart(range, scrubIdx, animate=true){
   const W=360,H=150,padX=14,padT=18,padB=24;
   const min=Math.min(...pts), max=Math.max(...pts), rawSpan=max-min, span=rawSpan||1, n=pts.length;
   const xy = pts.map((v,i)=>[
-    padX + i/(n-1)*(W-2*padX),
+    n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
   ]);
   const fullLine = catmullPath(xy, 0, n-1), last = xy[n-1];
@@ -4868,6 +4871,16 @@ function refreshOpenAssetDetail(i, preserveScroll=false){
 function appMoney(raw){
   const clean=String(raw||"").trim().replace(/\s/g,"").replace(/\.(\d{3})\b/g,"$1").replace(",", ".");
   return Math.abs(parseFloat(clean))||0;
+}
+function parseGermanAmount(raw){
+  const clean=String(raw??"").trim().replace(/\s/g,"");
+  if(!clean) return NaN;
+  if(!/^(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d{1,2})?$/.test(clean) &&
+     !/^\d+\.\d{1,2}$/.test(clean)) return NaN;
+  const normalized=/,/.test(clean) ? clean.replace(/\./g,"").replace(",",".")
+    : (/^\d{1,3}(?:\.\d{3})+$/.test(clean) ? clean.replace(/\./g,"") : clean);
+  const value=Number(normalized);
+  return Number.isFinite(value)?value:NaN;
 }
 function accountMoney(raw){
   const clean=String(raw||"").trim().replace(/\s/g,"").replace(/\.(\d{3})\b/g,"$1").replace(",", ".");
@@ -6233,9 +6246,13 @@ function applyKontoDelta(delta,role="expense"){
   if(giro) giro.value += delta;
 }
 function recalcNetWorth(){
-  DATA.netWorth = DATA.assets.reduce((s,a)=>s+a.value,0);
+  if(APP_MODE==="bridge" && DATA.netWorthAvailable===false){
+    DATA.netWorth=null;
+  } else {
+    DATA.netWorth = Math.round((DATA.assets.reduce((s,a)=>s+a.value,0) - (APP_MODE==="bridge"?Number(DATA.consumerDebtTotal||0):0))*100)/100;
+  }
   const nw=document.getElementById("networth");
-  if(nw && !nw.dataset.lock) nw.textContent=eur2(DATA.netWorth);   // dataset.lock = Empty-State/Chart-Scrub hat die Anzeige übernommen
+  if(nw && !nw.dataset.lock) nw.textContent=DATA.netWorth==null?"Nicht verfügbar":eur2(DATA.netWorth);   // dataset.lock = Empty-State/Chart-Scrub hat die Anzeige übernommen
 }
 // Girokonto/Tagesgeld/Bargeld direkt im Chat korrigieren ("Setz mein Girokonto auf 3.500€") —
 // Furkan-Wunsch 17.07.: "hab einen Fehler im Girokonto". Anders als Krypto/ETF (Runde 19) sind das
@@ -7392,6 +7409,9 @@ async function refreshAppDataFromServer(){
     if(data.features&&typeof data.features==="object") DATA.features=data.features;
     if(data.feature_announcements) setFeatureAnnouncements(data.feature_announcements);
     if(Array.isArray(data.financialAccounts)) DATA.financialAccounts=data.financialAccounts;
+    if(Array.isArray(data.consumerDebts)) DATA.consumerDebts=data.consumerDebts;
+    if(Number.isFinite(data.consumerDebtTotal)) DATA.consumerDebtTotal=data.consumerDebtTotal;
+    if(Object.prototype.hasOwnProperty.call(data,"netWorth")) DATA.netWorthAvailable=data.netWorth!=null;
     if(Array.isArray(data.assets)){
       DATA.assets=mergeServerAssets(data.assets,DATA.assets,Boolean(data.features?.multi_cash_accounts_v1));
     }
@@ -8232,7 +8252,9 @@ function reportStats(i){
   if(report?.status==="ready" && !report.mock){
     return {end:null,chgTxt:"-",spar:null,expenses:null,score:null};
   }
-  const j=DATA.series["1J"], end=j[j.length-1-i], start=j[j.length-2-i];
+  const j=DATA.series["1J"]||[];
+  if(j.length<2 || i>=j.length-1) return {end:j.length?Math.round(j[j.length-1]*1000):null, chgTxt:"—", spar:DATA.reports[i].spar};
+  const end=j[j.length-1-i], start=j[j.length-2-i];
   const chg=(end-start)/start*100;
   // Das Onboarding liefert das Einkommen als Profilwert in DATA.sts.income. Es
   // darf nicht nur aus einer zufaelligen Gehaltsbuchung im Ausgaben-Feed kommen.
@@ -8598,6 +8620,7 @@ function renderSettings(){
       ${setupRows}
       ${action("income","Monatliches Einkommen",profileIncome ? eur2(profileIncome) : "Noch nicht hinterlegt")}
       ${action("payday","Zahltag",paydayLabel)}
+      ${action("consumer-debts","Konsumschulden",eur2(DATA.consumerDebtTotal||0)+" Restschuld")}
     </div>` : "";
   // Haptik nur zeigen, wenn das Gerät sie überhaupt kann. iOS unterstützt navigator.vibrate NICHT
   // — auf dem iPhone war der Schalter ein Versprechen ohne Wirkung (Furkan-Fund 27.07.: „ich merk
@@ -8687,6 +8710,74 @@ function settingsDataRows(){
     </div>`;
   return "";
 }
+
+const CONSUMER_DEBT_TYPES={personal_loan:"Privatkredit",installment_loan:"Ratenkredit",credit_card:"Kreditkarte",bnpl:"Ratenkauf / BNPL",other_consumer_debt:"Sonstige Konsumschuld"};
+let CONSUMER_DEBT_BUSY=false;
+let CONSUMER_DEBT_CREATE_REQUEST_ID=null;
+function newConsumerDebtRequestId(){
+  return (globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function")
+    ? globalThis.crypto.randomUUID()
+    : `consumer-debt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+function renderConsumerDebts(editId=null){
+  const debt=(DATA.consumerDebts||[]).find(row=>row.id===editId);
+  if(debt) CONSUMER_DEBT_CREATE_REQUEST_ID=null;
+  else if(!CONSUMER_DEBT_CREATE_REQUEST_ID) CONSUMER_DEBT_CREATE_REQUEST_ID=newConsumerDebtRequestId();
+  document.getElementById("setbody").innerHTML=`<div class="set-sec">Konsumschulden</div>
+    <p class="hint">Nur Restschulden ohne separat erfassten Vermögenswert. Keine Hypotheken, Fahrzeugfinanzierungen oder bereits im Giro enthaltenen Dispos. Monatsraten bleiben bei deinen Verträgen.</p>
+    <div class="set-card">${(DATA.consumerDebts||[]).map(row=>`<button type="button" class="set-row" data-debt-edit="${Number(row.id)}" style="width:100%;text-align:left;color:var(--ink);background:none"><span>${escapeAccountHtml(row.name)}${row.active?"":" · inaktiv"}</span><span>${eur2(row.outstanding_balance)}</span></button>`).join("")||'<div class="set-row">Noch keine Konsumschulden erfasst.</div>'}</div>
+    <form id="consumerDebtForm" data-debt-id="${debt?debt.id:""}" style="display:grid;gap:12px;margin-top:18px">
+      <label>Name<div class="field"><input name="name" required maxlength="120" value="${escapeAccountHtml(debt?.name||"")}" autocomplete="off"></div></label>
+      <label>Art<div class="field"><select name="debt_type">${Object.entries(CONSUMER_DEBT_TYPES).map(([key,label])=>`<option value="${key}" ${debt?.debt_type===key?"selected":""}>${label}</option>`).join("")}</select></div></label>
+      <label>Aktuelle Restschuld in Euro<div class="field"><input name="outstanding_balance" required inputmode="decimal" value="${debt?escapeAccountHtml(debt.outstanding_balance):""}" autocomplete="off"></div></label>
+      <label><input name="active" type="checkbox" ${!debt||debt.active?"checked":""}> Aktiv im Nettovermögen berücksichtigen</label>
+      <div id="consumerDebtError" role="status" class="hint"></div>
+      <button class="vd-btn" type="submit">${debt?"Änderungen speichern":"Schuld hinzufügen"}</button>
+      ${debt?`<button type="button" class="txd-del" data-debt-delete="${debt.id}">Eintrag löschen</button><button type="button" class="vd-btn" data-debt-new>Neuer Eintrag</button>`:""}
+      <button type="button" class="vd-btn" data-debt-back>Zurück zu Einstellungen</button>
+    </form>`;
+}
+async function writeConsumerDebt(method,id,payload){
+  if(CONSUMER_DEBT_BUSY||APP_MODE!=="bridge") return;
+  CONSUMER_DEBT_BUSY=true;
+  const form=document.getElementById("consumerDebtForm");
+  form.querySelectorAll("button").forEach(button=>button.disabled=true);
+  try{
+    const res=await apiFetch(`/v1/consumer-debts${id?"/"+id:""}`,{method,headers:{"Content-Type":"application/json"},...(payload?{body:JSON.stringify(payload)}:{})});
+    const data=await res.json();
+    if(!res.ok||!data.ok) throw new Error(data.error||"debt_save_failed");
+    if(method==="POST") CONSUMER_DEBT_CREATE_REQUEST_ID=null;
+    DATA.consumerDebts=data.consumerDebts; DATA.consumerDebtTotal=data.consumerDebtTotal;
+    recalcNetWorth();
+    await refreshAppDataFromServer();
+    renderConsumerDebts();
+  }catch(error){
+    const message=document.getElementById("consumerDebtError");
+    if(message) message.textContent=error.message==="consumer_debt_request_conflict"
+      ? "Diese Anlage-ID wurde bereits mit anderen Angaben verwendet. Starte einen neuen Eintrag."
+      : "Speichern nicht möglich. Prüfe deine Angaben und versuche es erneut.";
+  }finally{
+    CONSUMER_DEBT_BUSY=false;
+    form.querySelectorAll("button").forEach(button=>button.disabled=false);
+  }
+}
+document.getElementById("setbody").addEventListener("submit",event=>{
+  if(event.target.id!=="consumerDebtForm") return;
+  event.preventDefault();
+  const form=event.target, values=new FormData(form), raw=String(values.get("outstanding_balance")).trim();
+  const balance=parseGermanAmount(raw);
+  if(!raw||!Number.isFinite(balance)||balance<0){ document.getElementById("consumerDebtError").textContent="Bitte eine gültige Restschuld ab 0 Euro eingeben."; return; }
+  const method=form.dataset.debtId?"PUT":"POST";
+  writeConsumerDebt(method,form.dataset.debtId,{name:values.get("name"),debt_type:values.get("debt_type"),outstanding_balance:balance,active:form.elements.active.checked,...(method==="POST"?{request_id:CONSUMER_DEBT_CREATE_REQUEST_ID}: {})});
+});
+document.getElementById("setbody").addEventListener("click",event=>{
+  if(CONSUMER_DEBT_BUSY) return;
+  const edit=event.target.closest("[data-debt-edit]"), del=event.target.closest("[data-debt-delete]");
+  if(edit) renderConsumerDebts(Number(edit.dataset.debtEdit));
+  if(del&&confirm("Diesen Schuldeneintrag löschen?")) writeConsumerDebt("DELETE",del.dataset.debtDelete);
+  if(event.target.closest("[data-debt-new]")) renderConsumerDebts();
+  if(event.target.closest("[data-debt-back]")) renderSettings();
+});
 
 async function logoutCurrentUser(){
   try{
@@ -9504,6 +9595,7 @@ document.getElementById("setbody").addEventListener("click",e=>{
     if(k==="access"){ openAccess(); }
     else if(k==="pin-change"){ closeSheet(); showPinScreen("change"); }
     else if(k==="asset-order"){ openAssetOrder(); }
+    else if(k==="consumer-debts"){ renderConsumerDebts(); }
     else if(k==="name"){ changeDisplayName(); }
     else if(k==="income"){ changeIncomeProfile(); }
     else if(k==="payday"){ changePayday(); }
@@ -9764,6 +9856,7 @@ function ans_debt(){
   const immo=DATA.assets.find(a=>a.real);
   const raten=(DATA.vertraege||[]).flatMap(g=>g.items).filter(isLoan);
   const parts=[];
+  if(APP_MODE==="bridge") parts.push(`Erfasste Konsumschulden: <b>${eur(DATA.consumerDebtTotal||0)}</b> Restschuld. Bereits im Nettovermögen berücksichtigt.`);
   if(immo){
     const r=immo.real, gedeckt=r.eigenkapital>=0;
     parts.push(`Immobilienfinanzierung: <b>${eur(r.restschuld)}</b> Restschuld bei <b>${eur(r.marktwert)}</b> Marktwert.<br>Eigenkapital: <b>${eur(r.eigenkapital)}</b>. Die Finanzierung steht dem Objekt gegenüber.`);
@@ -11273,6 +11366,9 @@ async function loadBridgeState(){
     DATA.features = b.features&&typeof b.features==="object" ? b.features : {};
     setFeatureAnnouncements(b.feature_announcements);
     DATA.financialAccounts = Array.isArray(b.financialAccounts) ? b.financialAccounts : [];
+    DATA.consumerDebts = Array.isArray(b.consumerDebts) ? b.consumerDebts : [];
+    DATA.consumerDebtTotal = Number(b.consumerDebtTotal||0);
+    DATA.netWorthAvailable = b.netWorth != null;
     DATA.assets = DATA.features.multi_cash_accounts_v1
       ? (Array.isArray(b.assets)?b.assets:[])
       : [...new Map((Array.isArray(b.assets)?b.assets:[]).map(asset=>[asset.name,asset])).values()];

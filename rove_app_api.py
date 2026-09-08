@@ -230,6 +230,7 @@ DATA_EXPORT_TABLES = (
     ("financial_accounts", "app_financial_accounts"),
     ("financial_account_roles", "app_financial_account_roles"),
     ("vertraege", "app_contracts"),
+    ("konsumschulden", "app_consumer_debts"),
     ("ziele", "app_goals"),
     ("hauptziel_fortschritt", "app_primary_goal_progress"),
     ("immobilien", "app_properties"),
@@ -4986,6 +4987,41 @@ def update_accounts():
         conn.commit()
 
     return jsonify({"ok": True, "accounts": balances, **live_data})
+
+
+@app.route("/v1/consumer-debts", methods=["GET", "POST"])
+@app.route("/v1/consumer-debts/<int:debt_id>", methods=["PUT", "DELETE"])
+def consumer_debts_endpoint(debt_id=None):
+    from rove_consumer_debt import (list_consumer_debts, total_consumer_debt,
+                                    save_consumer_debt, delete_consumer_debt,
+                                    ConsumerDebtConflictError)
+    payload = request.get_json(silent=True)
+    if request.method in {"POST", "PUT"} and not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_consumer_debt_request"}), 400
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token_from_request())
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        try:
+            if request.method in {"POST", "PUT"}:
+                request_id = clean_text(payload.get("request_id") or payload.get("client_request_id"), "")[:128]
+                if request.method == "POST" and not request_id:
+                    conn.rollback()
+                    return jsonify({"ok": False, "error": "consumer_debt_request_id_required"}), 400
+                debt_id = save_consumer_debt(conn, user_id, payload, debt_id, request_id if request.method == "POST" else None)
+            elif request.method == "DELETE":
+                delete_consumer_debt(conn, user_id, debt_id)
+        except ConsumerDebtConflictError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except (ValueError, LookupError) as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 404 if isinstance(exc, LookupError) else 400
+        debts = list_consumer_debts(conn, user_id)
+        total = total_consumer_debt(conn, user_id)
+        conn.commit()
+    return jsonify({"ok": True, "debtId": debt_id, "consumerDebts": debts, "consumerDebtTotal": total})
 
 
 @app.route("/v1/financial-accounts", methods=["POST"])
