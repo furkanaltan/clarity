@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260908-3db2284">
+<meta name="rove-frontend-build" content="20260908-3234ed6">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -1684,6 +1684,7 @@
     padding:4px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 28px rgba(0,0,0,.07)}
   .analysis-preview-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:66px;
     border-bottom:1px solid var(--line)}
+  .analysis-preview-row.analysis-merchant-row{width:100%;padding:0;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .analysis-preview-row:last-of-type{border-bottom:0}
   .analysis-category-icon{width:38px;height:38px;border-radius:12px;color:var(--cat-color);display:flex;align-items:center;justify-content:center;
     background:linear-gradient(145deg,color-mix(in srgb,var(--cat-color) 19%,var(--card)),color-mix(in srgb,var(--cat-color) 7%,var(--elevate2)));
@@ -1703,6 +1704,7 @@
     padding:3px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 30px rgba(0,0,0,.07)}
   .analysis-detail-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;column-gap:12px;padding:17px 0;
     border-bottom:1px solid var(--line)}
+  .analysis-detail-row.analysis-merchant-row{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .analysis-detail-row:last-child{border-bottom:0}
   .analysis-detail-row .logo{width:40px;height:40px;border-radius:12px;font-size:13px}
   .analysis-detail-copy{min-width:0}
@@ -1743,15 +1745,13 @@
   .sheet.category-deep-sheet{top:0;bottom:auto;height:100vh;height:100dvh;max-height:100dvh;box-sizing:border-box;
     border-radius:0;border-top:0;padding:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:var(--bg)}
   .sheet.category-deep-sheet.on{box-shadow:none}
+  .category-deep-grab{position:fixed!important;top:calc(var(--safe-top) + 8px);left:50%;z-index:6;margin:0;transform:translateX(-50%)}
   .category-deep-nav{position:sticky;top:0;z-index:4;display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;gap:10px;
-    padding:calc(var(--safe-top) + 10px) 18px 10px;background:linear-gradient(to bottom,color-mix(in srgb,var(--bg) 94%,transparent) 72%,transparent);
+    padding:calc(var(--safe-top) + 28px) 18px 10px;background:linear-gradient(to bottom,color-mix(in srgb,var(--bg) 94%,transparent) 72%,transparent);
     backdrop-filter:blur(18px) saturate(145%);-webkit-backdrop-filter:blur(18px) saturate(145%)}
-  .category-deep-nav .analysis-back{width:38px;height:38px}
+  .category-deep-nav{grid-template-columns:minmax(0,1fr);justify-items:center}
   .category-deep-nav-title{min-width:0;text-align:center;font-size:14px;font-weight:730;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .category-deep-body{padding:8px 20px calc(34px + var(--safe-bot))}
-  .category-deep-heading{margin:2px 2px 17px}
-  .category-deep-heading h2{margin:0;font-size:26px;line-height:1.1;font-weight:820;letter-spacing:-.65px}
-  .category-deep-heading p{margin:5px 0 0;color:var(--muted);font-size:13px;font-weight:600;text-transform:capitalize}
   .category-deep-hero{position:relative;overflow:hidden;display:grid;grid-template-columns:48px minmax(0,1fr);gap:14px;align-items:center;
     padding:19px;border-radius:25px;border:1px solid color-mix(in srgb,var(--cat-color) 25%,var(--line));background:
       radial-gradient(circle at 4% 0,color-mix(in srgb,var(--cat-color) 14%,transparent),transparent 42%),
@@ -1770,6 +1770,8 @@
     padding:3px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 28px rgba(0,0,0,.065)}
   .category-deep-merchant,.category-deep-booking{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:12px;padding:15px 0;border-bottom:1px solid var(--line)}
   .category-deep-merchant:last-child,.category-deep-booking:last-child{border-bottom:0}
+  .category-deep-merchant{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+  .category-deep-merchant:active,.analysis-detail-row.analysis-merchant-row:active,.analysis-preview-row.analysis-merchant-row:active{transform:scale(.985)}
   .category-deep-merchant .logo,.category-deep-booking .logo{width:40px;height:40px;border-radius:12px;font-size:13px}
   .category-deep-copy{min-width:0}
   .category-deep-copy b{display:block;font-size:14.5px;font-weight:740;letter-spacing:-.15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2569,12 +2571,9 @@
 
   <!-- Kategorie-Deep-Dive: nutzt die bereits gefilterten Analysebuchungen, keine zweite Datenquelle. -->
   <div class="sheet category-deep-sheet" id="categorysheet" role="dialog" aria-modal="true" aria-labelledby="categoryDeepTitle">
+    <div class="grab category-deep-grab"></div>
     <div class="category-deep-nav">
-      <button class="analysis-back" id="categoryDeepBack" type="button" aria-label="Zurück zu Kategorien">
-        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
-      </button>
-      <div class="category-deep-nav-title">Kategorie</div>
-      <span aria-hidden="true"></span>
+      <div class="category-deep-nav-title" id="categoryDeepTitle">Kategorie</div>
     </div>
     <div class="category-deep-body" id="categoryDeepBody"></div>
   </div>
@@ -5852,11 +5851,11 @@ function analysisMerchantPreview(merchants){
   return `<section class="analysis-section">
     <div class="analysis-section-head"><h3>Top Händler</h3><span>${merchants.length} insgesamt</span></div>
     <div class="analysis-preview">
-      ${merchants.slice(0,3).map(merchant=>`<div class="analysis-preview-row">
+      ${merchants.slice(0,3).map(merchant=>`<button class="analysis-preview-row analysis-merchant-row" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">
         ${analysisMerchantLogo(merchant.sample)}
         <span class="analysis-preview-main"><b>${analysisEsc(merchant.label)}</b><span>${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
         <span class="analysis-preview-amount">${analysisEsc(eur2(merchant.amount))}</span>
-      </div>`).join("")}
+      </button>`).join("")}
       <button class="analysis-more" type="button" data-analysis-go="merchants">Alle Händler ansehen →</button>
     </div>
   </section>`;
@@ -5884,12 +5883,12 @@ function analysisMerchantsView(merchants){
   return `<div class="analysis-view-head"><h2>Bei wem gibst du dein Geld aus?</h2><p>Deine größten Händler im ausgewählten Monat.</p></div>
     <div class="analysis-detail-list">${merchants.map((merchant,index)=>{
       const comparison=isCurrentMonth?null:analysisComparison(merchant.amount,previous.get(merchant.key)||0);
-      return `<div class="analysis-detail-row" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}">
+      return `<button class="analysis-detail-row analysis-merchant-row" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">
         <div class="analysis-merchant-logo">${analysisMerchantLogo(merchant.sample)}<span class="analysis-rank">${index+1}</span></div>
         <span class="analysis-detail-copy"><b>${analysisEsc(merchant.label)}</b><span class="meta">${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
         <span class="analysis-detail-amount">${analysisEsc(eur2(merchant.amount))}</span>
         ${comparison?analysisChangeHtml(comparison):""}
-      </div>`;
+      </button>`;
     }).join("")}</div>`;
 }
 function analysisCategoryDeepData(category){
@@ -5912,12 +5911,10 @@ function renderCategoryDeepDive(category){
   const share=data.total?data.amount/data.total*100:0;
   document.querySelector("#categorysheet .category-deep-nav-title").textContent=category;
   if(!data.bookings.length){
-    body.innerHTML=`<div class="category-deep-heading"><h2 id="categoryDeepTitle">${analysisEsc(category)}</h2><p>${analysisEsc(monthLabel(analysisMonthOffset))}</p></div>
-      <div class="category-deep-list"><div class="category-deep-empty">Für diese Auswahl sind keine Buchungen vorhanden.</div></div>`;
+    body.innerHTML=`<div class="category-deep-list"><div class="category-deep-empty">Für diese Auswahl sind keine Buchungen vorhanden.</div></div>`;
     return;
   }
   body.innerHTML=`
-    <div class="category-deep-heading"><h2 id="categoryDeepTitle">${analysisEsc(category)}</h2><p>${analysisEsc(monthLabel(analysisMonthOffset))}</p></div>
     <div class="category-deep-hero" style="--cat-color:${color}">
       <span class="analysis-category-icon" style="--cat-color:${color}">${analysisCategoryIcon(category)}</span>
       <div><div class="category-deep-total">${analysisEsc(eur2(data.amount))}</div><div class="category-deep-total-label">ausgegeben</div></div>
@@ -5930,9 +5927,9 @@ function renderCategoryDeepDive(category){
       <div class="analysis-section-head"><h3>Bei wem?</h3><span>${data.merchants.length} ${data.merchants.length===1?"Händler":"Händler"}</span></div>
       <div class="category-deep-list">${data.merchants.length?data.merchants.map(merchant=>{
         const merchantShare=data.amount?merchant.amount/data.amount*100:0;
-        return `<div class="category-deep-merchant">${analysisMerchantLogo(merchant.sample)}
+        return `<button class="category-deep-merchant" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">${analysisMerchantLogo(merchant.sample)}
           <span class="category-deep-copy"><b>${analysisEsc(merchant.label)}</b><span>${merchantShare.toLocaleString("de-DE",{maximumFractionDigits:1})} % · ${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
-          <span class="category-deep-value">${analysisEsc(eur2(merchant.amount))}</span></div>`;
+          <span class="category-deep-value">${analysisEsc(eur2(merchant.amount))}</span></button>`;
       }).join(""):`<div class="category-deep-empty">Keine Händlerdetails verfügbar.<br>Die Buchungen findest du direkt darunter.</div>`}</div>
     </section>
     <section class="category-deep-section">
@@ -5946,6 +5943,44 @@ function renderCategoryDeepDive(category){
 }
 function openCategoryDeepDive(category){
   renderCategoryDeepDive(category);
+  openOnly("categorysheet");
+}
+function analysisMerchantDeepData(key){
+  const items=analysisFilteredOutflows().filter(item=>analysisMerchantIdentity(item).key===key);
+  const merchant=analysisMerchantDataFromItems(items).find(item=>item.key===key)||analysisMerchantData().find(item=>item.key===key);
+  const previous=analysisMerchantData(analysisMonthOffset-1).find(item=>item.key===key)?.amount||0;
+  const bookings=items.map((item,index)=>({...item,_deepIndex:index})).sort((a,b)=>
+    String(b._analysisDate||"").localeCompare(String(a._analysisDate||""))||Number(b.id||0)-Number(a.id||0)||a._deepIndex-b._deepIndex
+  );
+  return {items,merchant,amount:Math.round(items.reduce((sum,item)=>sum+Math.abs(Number(item.a)||0),0)*100)/100,previous,bookings};
+}
+function renderMerchantDeepDive(key){
+  const body=document.getElementById("categoryDeepBody");
+  if(!body)return;
+  const data=analysisMerchantDeepData(key);
+  const merchant=data.merchant||{label:"Händler",sample:data.items[0]};
+  document.querySelector("#categorysheet .category-deep-nav-title").textContent=merchant.label;
+  if(!data.bookings.length){
+    body.innerHTML=`<div class="category-deep-list"><div class="category-deep-empty">Für diesen Händler sind keine Buchungen vorhanden.</div></div>`;
+    return;
+  }
+  body.innerHTML=`
+    <div class="category-deep-hero">
+      <div class="analysis-merchant-logo">${analysisMerchantLogo(merchant.sample)}</div>
+      <div><div class="category-deep-total">${analysisEsc(eur2(data.amount))}</div><div class="category-deep-total-label">ausgegeben</div></div>
+      <div class="category-deep-facts"><span class="category-deep-fact">${data.bookings.length} ${data.bookings.length===1?"Buchung":"Buchungen"}</span><span class="category-deep-fact change">${analysisEsc(analysisDeepComparison(data.amount,data.previous))}</span></div>
+    </div>
+    <section class="category-deep-section">
+      <div class="analysis-section-head"><h3>Buchungen</h3><span>${data.bookings.length}</span></div>
+      <div class="category-deep-list">${data.bookings.map(item=>`<div class="category-deep-booking">
+        ${transactionLogo(item)}
+        <span class="category-deep-copy"><b>${analysisEsc(item.n||item.desc||merchant.label)}</b><span>${analysisEsc(analysisBookingDate(item))}</span></span>
+        <span class="category-deep-value">−${analysisEsc(eur2(Math.abs(Number(item.a)||0)))}</span>
+      </div>`).join("")}</div>
+    </section>`;
+}
+function openMerchantDeepDive(key){
+  renderMerchantDeepDive(key);
   openOnly("categorysheet");
 }
 function wealthAnalysisData(assets=DATA.assets){
@@ -6125,7 +6160,6 @@ function renderAnalysisIfOpen(){
   if(document.getElementById("tab-analysis")?.classList.contains("active")) renderAnalysis();
 }
 document.getElementById("analysisBack").addEventListener("click",()=>{go("tx");buzz();});
-document.getElementById("categoryDeepBack").addEventListener("click",()=>{closeSheet();buzz();});
 document.getElementById("analysisBranches").addEventListener("click",event=>{
   const button=event.target.closest("[data-analysis-branch]");if(!button)return;
   analysisBranch=button.dataset.analysisBranch;analysisSelectedCat="";wealthSelectedClass="";renderAnalysis();buzz();
@@ -6158,10 +6192,18 @@ document.getElementById("analysisContent").addEventListener("click",event=>{
   if(goTo){analysisView=goTo.dataset.analysisGo;analysisSelectedCat="";renderAnalysis();buzz();return;}
   const categoryDetail=event.target.closest("[data-analysis-category-key]");
   if(categoryDetail){openCategoryDeepDive(decodeURIComponent(categoryDetail.dataset.analysisCategoryKey));buzz();return;}
+  const merchantDetail=event.target.closest("[data-analysis-merchant-key]");
+  if(merchantDetail){openMerchantDeepDive(decodeURIComponent(merchantDetail.dataset.analysisMerchantKey));buzz();return;}
   const hit=event.target.closest("[data-analysis-cat]");if(!hit)return;
   const category=decodeURIComponent(hit.dataset.analysisCat);
   analysisSelectedCat=analysisSelectedCat===category?"":category;
   renderAnalysis();buzz();
+});
+document.getElementById("categoryDeepBody").addEventListener("click",event=>{
+  const merchant=event.target.closest("[data-analysis-merchant-key]");
+  if(!merchant)return;
+  openMerchantDeepDive(decodeURIComponent(merchant.dataset.analysisMerchantKey));
+  buzz();
 });
 
 // ===================== BUCHUNGS-DETAIL: Kategorie korrigieren + Löschen =====================
@@ -6928,11 +6970,11 @@ function closeSheet(options={}){
 // Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
   "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet","gsheet",
-  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet"
+  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet","categorysheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","bsheet","ngsheet","abosheet","immosheet",
-  "contractsheet","categorysheet","accountaddsheet","paysheet",
+  "contractsheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","etfplansheet",
   "markettrackingsheet","savingssheet"
 ]);
