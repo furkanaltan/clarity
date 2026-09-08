@@ -94,6 +94,19 @@ class PasswordAuthTests(unittest.TestCase):
             status = client.get("/v1/auth/pin/status")
         self.assertFalse(status.get_json()["password_setup_required"])
 
+    def test_state_exposes_only_authenticated_user_id(self):
+        raw_token = self.issue_session()
+        ensure_unlocked_test_session(self.db_path, 1, raw_token)
+        with patch.object(api, "build_live_app_data", return_value={"assets": [], "vertraege": []}), \
+             patch.object(api, "record_due_etf_plan", return_value=None), \
+             patch.object(api, "claim_coach_announcement", return_value=None), \
+             patch.object(api, "get_feature_announcements_for_user", return_value={}):
+            with api.app.test_client() as client:
+                client.set_cookie(api.SESSION_COOKIE_NAME, raw_token, domain="localhost", path="/")
+                response = client.get("/v1/state")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json().get("user_id"), 1)
+
     def test_password_login_and_neutral_failures(self):
         self.issue_session()
         self.assertEqual(self.setup_password().status_code, 200)

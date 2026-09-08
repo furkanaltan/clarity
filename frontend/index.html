@@ -3113,7 +3113,9 @@ let APP_MODE = (()=>{
   // session before allowing local financial data to become visible.
   return "bridge";
 })();
-if(APP_MODE==="bridge") document.getElementById("app")?.setAttribute("hidden","");
+// Keep the fixture hidden until the async session/mode decision is complete.
+// A valid server session must never paint the mock persona first.
+document.getElementById("app")?.setAttribute("hidden","");
 let ROVE_API = null;
 let API_SESSION_FAILURE_HANDLED = false;
 let PIN_SCREEN_ACTIVE=false;
@@ -11242,7 +11244,9 @@ async function loadBridgeState(){
     }
     if(!res.ok) throw new Error("HTTP "+res.status);
     const b = await res.json();
-    BRIDGE_USER_ID = b.user_id ?? null;
+    const serverUserId=Number(b.user_id);
+    if(!Number.isSafeInteger(serverUserId)||serverUserId<1) throw new Error("invalid authenticated state identity");
+    BRIDGE_USER_ID = serverUserId;
     clearAmbiguousBridgeStorage();
     CAT_RULES=loadCatRules();
     REMINDERS=loadReminders();
@@ -11469,12 +11473,20 @@ async function restoreEmailSession(){
 }
 
 async function resolveAppMode(){
-  if(APP_MODE==="mock" || APP_MODE==="demo") return APP_MODE;
   const session=await restoreEmailSession();
   if(session.valid){
     APP_MODE="bridge";
+    try{ sessionStorage.removeItem("rove-demo"); }catch(_){ }
     return APP_MODE;
   }
+  // Do not turn an uncertain server/network state into a local financial view.
+  if(!session.definitive){
+    APP_MODE="bridge";
+    return APP_MODE;
+  }
+  // Hash/sessionStorage are explicit developer entry points, but only after the
+  // server has positively reported that no authenticated session exists.
+  if(APP_MODE==="mock" || APP_MODE==="demo") return APP_MODE;
   // Only an explicit unauthenticated response permits the local profile fallback.
   // Network/server uncertainty must never reveal stale local financial data.
   APP_MODE=session.definitive && readProfile() ? "profile" : "bridge";
@@ -12081,6 +12093,7 @@ function installProfileAutosave(){
     setTimeout(removeSplash, 1900);
     setTimeout(()=>{ maybeAutoBookFixedCost(); maybeAutoBookIncome(); }, 2300); // kurz nach dem Splash, nicht mitten in der Animation
   } else {
+    document.getElementById("app")?.removeAttribute("hidden");
     setTimeout(removeSplash, 1900);
     // Furkan-Feedback 16.07.: "aus Versehen ins Demo, wofür ist der Knopf" — einmal pro Sitzung
     // erklären, was Beispieldaten sind und wie man zurückkommt (nur wenn eigenes Profil existiert,

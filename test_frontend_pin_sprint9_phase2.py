@@ -32,7 +32,7 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn("bootstrapAuthenticatedApp()", boot.group("body"))
 
     def test_financial_app_is_hidden_until_pin_and_lock_screen_has_no_navigation(self):
-        self.assertIn('if(APP_MODE==="bridge") document.getElementById("app")?.setAttribute("hidden","");', self.frontend)
+        self.assertIn('document.getElementById("app")?.setAttribute("hidden","");', self.frontend)
         lock_screen = self.function_body("showPinScreen")
         self.assertIn('document.getElementById("app")?.setAttribute("hidden","")', lock_screen)
         self.assertNotIn("tabbar", lock_screen)

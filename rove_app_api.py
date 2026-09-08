@@ -2996,6 +2996,9 @@ def current_app_state():
         # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
         record_due_etf_plan(conn, user_id)
         state = build_live_app_data(conn, user_id)
+        # The identity is derived from the authenticated HttpOnly session above;
+        # expose it only as an additive consistency marker for the frontend.
+        state["user_id"] = int(user_id)
         coach_announcement = claim_coach_announcement(
             conn,
             user_id,

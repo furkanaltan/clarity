@@ -152,6 +152,30 @@ class FrontendCookieAuthTests(unittest.TestCase):
         self.assertIn('APP_MODE="bridge";', body)
         self.assertLess(body.index("session.valid"), body.index("readProfile()"))
 
+    def test_server_session_wins_over_demo_hash_and_storage(self):
+        resolver = re.search(
+            r"async function resolveAppMode\(\)(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(resolver)
+        body = resolver.group("body")
+        self.assertLess(body.index("if(session.valid)"), body.index('APP_MODE="bridge"'))
+        self.assertIn('sessionStorage.removeItem("rove-demo")', body)
+        self.assertIn("if(!session.definitive)", body)
+        self.assertLess(body.index("if(!session.definitive)"), body.index('APP_MODE==="mock"'))
+
+    def test_app_stays_hidden_until_mode_resolution(self):
+        self.assertIn('document.getElementById("app")?.setAttribute("hidden","");', self.frontend)
+        startup = self.frontend.split('(async function(){', 1)[1].split('// ===================== ONBOARDING', 1)[0]
+        self.assertLess(startup.index("await resolveAppMode();"), startup.index('removeAttribute("hidden")'))
+
+    def test_state_bootstrap_uses_server_user_id_for_bridge_storage(self):
+        self.assertIn("const serverUserId=Number(b.user_id);", self.frontend)
+        self.assertIn("if(!Number.isSafeInteger(serverUserId)||serverUserId<1)", self.frontend)
+        self.assertIn("BRIDGE_USER_ID = serverUserId;", self.frontend)
+        self.assertIn("restoreBridgeLocal(readBridgeLocal(), BRIDGE_USER_ID);", self.frontend)
+
     def test_local_profile_is_only_used_after_definitive_unauthenticated_response(self):
         session = re.search(
             r"async function restoreEmailSession\(\)(?P<body>.*?)\n\}",
