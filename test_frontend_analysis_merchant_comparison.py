@@ -88,6 +88,9 @@ class FrontendAnalysisMerchantComparisonTests(unittest.TestCase):
         self.assertNotIn('<h2 id="categoryDeepTitle">', self.frontend)
         self.assertNotIn('class="category-deep-heading"', self.frontend)
 
+    def test_open_analysis_creates_analysis_history_state(self):
+        self.assertIn('go("analysis",{history:true});', self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6154,7 +6154,7 @@ function openAnalysis(){
   analysisMonthOffset=monthOffset;
   analysisSelectedCat="";wealthSelectedClass="";analysisView="overview";analysisBranch="cashflow";
   renderAnalysis();
-  go("analysis");
+  go("analysis",{history:true});
 }
 function renderAnalysisIfOpen(){
   if(document.getElementById("tab-analysis")?.classList.contains("active")) renderAnalysis();
