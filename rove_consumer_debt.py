@@ -34,6 +34,28 @@ def ensure_consumer_debt_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_consumer_debts_user_request
                    ON app_consumer_debts(user_id, request_id)
                    WHERE request_id IS NOT NULL AND TRIM(request_id) <> ''""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_consumer_debt_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        debt_id INTEGER NOT NULL,
+        outstanding_balance REAL NOT NULL,
+        active INTEGER NOT NULL CHECK(active IN (0,1)),
+        event_type TEXT NOT NULL,
+        effective_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_consumer_debt_events_user_time
+                   ON app_consumer_debt_events(user_id, effective_at, id)""")
+    # Existing rows predate the event table. Their creation timestamp is the
+    # only safe historical start; never apply today's balance before that date.
+    conn.execute("""INSERT INTO app_consumer_debt_events
+        (user_id, debt_id, outstanding_balance, active, event_type, effective_at)
+        SELECT d.user_id, d.id, d.outstanding_balance, d.active,
+               'legacy_baseline', d.created_at
+          FROM app_consumer_debts d
+         WHERE NOT EXISTS (
+             SELECT 1 FROM app_consumer_debt_events e
+              WHERE e.user_id=d.user_id AND e.debt_id=d.id
+         )""")
 
 
 def list_consumer_debts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
@@ -46,6 +68,31 @@ def list_consumer_debts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
 def total_consumer_debt(conn: sqlite3.Connection, user_id: int) -> float:
     return float(sum((Decimal(str(row["outstanding_balance"])) for row in
                       list_consumer_debts(conn, user_id) if row["active"]), Decimal(0)))
+
+
+def list_consumer_debt_events(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    """Return the append-only balance timeline used for historical net worth."""
+    try:
+        rows = conn.execute(
+            """SELECT debt_id, outstanding_balance, active, event_type, effective_at
+               FROM app_consumer_debt_events
+               WHERE user_id=? ORDER BY effective_at, id""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(row) for row in rows]
+
+
+def _record_consumer_debt_event(conn: sqlite3.Connection, user_id: int, debt_id: int,
+                                balance: float, active: bool, event_type: str,
+                                effective_at: str | None = None) -> None:
+    conn.execute(
+        """INSERT INTO app_consumer_debt_events
+           (user_id, debt_id, outstanding_balance, active, event_type, effective_at)
+           VALUES (?,?,?,?,?,COALESCE(?,CURRENT_TIMESTAMP))""",
+        (user_id, debt_id, float(balance), int(active), event_type, effective_at),
+    )
 
 
 def net_worth_total(cash, investments, property_equity, consumer_debt):
@@ -97,19 +144,39 @@ def save_consumer_debt(conn: sqlite3.Connection, user_id: int, payload: dict, de
                 raise ConsumerDebtConflictError("consumer_debt_request_conflict")
             return int(existing["id"])
     if debt_id is None:
-        return conn.execute("""INSERT INTO app_consumer_debts
+        row = conn.execute("""INSERT INTO app_consumer_debts
             (user_id,name,debt_type,outstanding_balance,active,request_id,request_fingerprint)
             VALUES (?,?,?,?,?,?,?)""",
             (user_id, name.strip(), debt_type, float(balance), int(active), request_id, fingerprint)).lastrowid
+        created = conn.execute(
+            "SELECT created_at FROM app_consumer_debts WHERE id=? AND user_id=?",
+            (row, user_id),
+        ).fetchone()
+        _record_consumer_debt_event(conn, user_id, row, float(balance), active, "created",
+                                    created[0] if created else None)
+        return row
     result = conn.execute("""UPDATE app_consumer_debts SET name=?,debt_type=?,
         outstanding_balance=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?""",
         (name.strip(), debt_type, float(balance), int(active), debt_id, user_id))
     if not result.rowcount:
         raise LookupError("consumer_debt_not_found")
+    updated = conn.execute(
+        "SELECT updated_at FROM app_consumer_debts WHERE id=? AND user_id=?",
+        (debt_id, user_id),
+    ).fetchone()
+    _record_consumer_debt_event(conn, user_id, debt_id, float(balance), active,
+                                "updated" if active else "deactivated",
+                                updated[0] if updated else None)
     return debt_id
 
 
 def delete_consumer_debt(conn: sqlite3.Connection, user_id: int, debt_id: int) -> None:
     ensure_consumer_debt_schema(conn)
-    if not conn.execute("DELETE FROM app_consumer_debts WHERE id=? AND user_id=?", (debt_id, user_id)).rowcount:
+    row = conn.execute(
+        "SELECT outstanding_balance FROM app_consumer_debts WHERE id=? AND user_id=?",
+        (debt_id, user_id),
+    ).fetchone()
+    if not row:
         raise LookupError("consumer_debt_not_found")
+    _record_consumer_debt_event(conn, user_id, debt_id, float(row[0]), False, "deleted")
+    conn.execute("DELETE FROM app_consumer_debts WHERE id=? AND user_id=?", (debt_id, user_id))

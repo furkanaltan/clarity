@@ -52,6 +52,40 @@ class ConsumerDebtTests(unittest.TestCase):
         self.assertEqual(after["sts"], before["sts"])
         self.assertEqual(after["score"], before["score"])
 
+    def test_net_worth_series_keeps_existing_history_without_consumer_debt(self):
+        series, labels = state._net_worth_series(self.conn, 1, 15000)
+        self.assertEqual(len(series["1W"]), 8)
+        self.assertEqual(len(labels["1W"]), 8)
+
+    def test_debt_history_changes_only_from_effective_events(self):
+        debt_id = save_consumer_debt(self.conn, 1, self.payload(20000))
+        save_consumer_debt(self.conn, 1, self.payload(15000), debt_id)
+        today = date.today()
+        self.conn.execute(
+            "UPDATE app_consumer_debt_events SET effective_at=? WHERE debt_id=? AND event_type='created'",
+            ((today - state.timedelta(days=4)).isoformat() + " 12:00:00", debt_id),
+        )
+        self.conn.execute(
+            "UPDATE app_consumer_debt_events SET effective_at=? WHERE debt_id=? AND event_type='updated'",
+            ((today - state.timedelta(days=2)).isoformat() + " 12:00:00", debt_id),
+        )
+        series, _ = state._net_worth_series(self.conn, 1, 0)
+        self.assertEqual(series["1W"], [15.0, 15.0, 15.0, -5.0, -5.0, 0.0, 0.0, 0.0])
+
+    def test_legacy_debt_gets_created_at_baseline_without_current_backfill(self):
+        ensure_consumer_debt_schema(self.conn)
+        debt_id = self.conn.execute(
+            """INSERT INTO app_consumer_debts
+               (user_id,name,debt_type,outstanding_balance,active,created_at,updated_at)
+               VALUES (1,'Alt','personal_loan',20000,1,datetime('now','-4 day'),datetime('now'))"""
+        ).lastrowid
+        ensure_consumer_debt_schema(self.conn)
+        events = self.conn.execute(
+            "SELECT event_type, outstanding_balance FROM app_consumer_debt_events WHERE debt_id=?",
+            (debt_id,),
+        ).fetchall()
+        self.assertEqual([(row[0], row[1]) for row in events], [("legacy_baseline", 20000.0)])
+
     def test_mortgage_and_legacy_total_are_not_consumer_debt(self):
         state.ensure_app_properties_table(self.conn)
         self.conn.execute("INSERT INTO app_properties(user_id,market_value,remaining_debt) VALUES (1,250000,280000)")
@@ -215,14 +249,17 @@ class ConsumerDebtTests(unittest.TestCase):
     def test_live_series_does_not_backfill_current_debt(self):
         save_consumer_debt(self.conn, 1, self.payload())
         live = state.build_live_app_data(self.conn, 1)
-        self.assertEqual(live["series"]["1W"], [-5.0])
-        self.assertEqual(live["histDates"]["1W"], ["Heute"])
+        self.assertEqual(len(live["series"]["1W"]), 8)
+        self.assertEqual(live["series"]["1W"][:-1], [15.0] * 7)
+        self.assertEqual(live["series"]["1W"][-1], -5.0)
+        self.assertEqual(live["histDates"]["1W"][-1], "Heute")
 
     def test_historical_series_uses_frozen_monthly_snapshot(self):
         save_consumer_debt(self.conn, 1, self.payload())
         state.capture_monthly_financial_snapshot(self.conn, 1, "2026-08", 0)
         series = state.build_live_app_data(self.conn, 1)["series"]
-        self.assertEqual(series["1J"], [-5.0, -5.0])
+        self.assertGreater(len(series["1J"]), 1)
+        self.assertIn(-5.0, series["1J"])
 
     def test_javascript_syntax(self):
         html = (ROOT / "frontend/index.html").read_text()

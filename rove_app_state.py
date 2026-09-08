@@ -33,7 +33,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from rove_score import calculate_score
-from rove_consumer_debt import list_consumer_debts, total_consumer_debt, net_worth_total
+from rove_consumer_debt import list_consumer_debt_events, list_consumer_debts, total_consumer_debt, net_worth_total
 from rove_market_data import (
     cached_market_metadata,
     canonical_market_instrument,
@@ -1720,14 +1720,59 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
 
 
 def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None):
-    """Liefert nur belegte aktuelle Werte ohne historische Finanzwerte zu erfinden.
+    """Reconstruct the existing financial history with time-aware consumer debt.
 
-    Historische Tageswerte werden erst wieder ausgegeben, wenn sie aus einem
-    gespeicherten Snapshot stammen. Der aktuelle Punkt bleibt nutzbar, ohne
-    heutige Schuldenänderungen auf frühere Tage zu übertragen.
+    Cash/investment movement history remains the base series. Debt is then applied
+    only from its recorded create/update/deactivate/delete event onward. Monthly
+    financial snapshots override reconstructed points because they are the hard
+    historical truth for completed months.
     """
     if net_worth is None:
         return {}, {}
+
+    max_days = max(span for span, _ in NET_SERIES_RANGES.values())
+    current_debt = total_consumer_debt(conn, user_id)
+    deltas = _daily_net_deltas(conn, user_id, max_days)
+
+    debt_events = list_consumer_debt_events(conn, user_id)
+    event_debt_ids = {int(event["debt_id"]) for event in debt_events}
+    try:
+        legacy_debts = conn.execute(
+            "SELECT id, outstanding_balance, active, created_at FROM app_consumer_debts WHERE user_id=?",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        legacy_debts = []
+
+    def event_date(value):
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    def debt_at(day: date) -> float:
+        balances = {}
+        for row in legacy_debts:
+            debt_id = int(row["id"])
+            if debt_id in event_debt_ids:
+                continue
+            created = event_date(row["created_at"])
+            if row["active"] and created and created <= day:
+                balances[debt_id] = float(row["outstanding_balance"] or 0)
+        for event in debt_events:
+            effective = event_date(event["effective_at"])
+            if effective and effective <= day:
+                debt_id = int(event["debt_id"])
+                balances[debt_id] = float(event["outstanding_balance"] or 0) if event["active"] else 0.0
+        return round(sum(balances.values()), 2)
+
+    # Reconstruct the debt-free base first. The current net worth already includes
+    # today's debt, so add today's debt back before reversing dated movements.
+    base_values = [float(net_worth) + current_debt]
+    today = date.today()
+    for offset in range(max_days):
+        day = today - timedelta(days=offset)
+        base_values.append(base_values[-1] - deltas.get(day.isoformat(), 0.0))
 
     frozen = []
     try:
@@ -1746,8 +1791,15 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float |
     hist_dates: dict = {}
     for name, (spanne, schritt) in NET_SERIES_RANGES.items():
         cutoff = date.today() - timedelta(days=spanne)
-        points = [(tag, value) for tag, value in frozen if name == "Max" or tag >= cutoff]
-        points.append((date.today(), float(net_worth)))
+        offsets = sorted({*range(spanne, -1, -schritt), 0}, reverse=True)
+        points = []
+        for offset in offsets:
+            tag = today - timedelta(days=offset)
+            base = base_values[min(offset, len(base_values) - 1)]
+            value = float(net_worth) if offset == 0 else base - debt_at(tag)
+            points.append((tag, value))
+        points.extend((tag, value) for tag, value in frozen
+                      if (name == "Max" or tag >= cutoff) and tag <= today)
         deduped = {tag: value for tag, value in points}
         ordered = sorted(deduped.items())
         series[name] = [round(value / 1000, 3) for _, value in ordered]

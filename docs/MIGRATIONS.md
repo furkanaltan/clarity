@@ -45,7 +45,11 @@ Hypothek, Fahrzeugfinanzierung und Dispo sind keine erlaubten Typen. Bereits
 negative Cash-Konten werden ausschliesslich im Cash-Aggregat beruecksichtigt.
 Create-Requests tragen eine optionale user-scoped `request_id` mit einem
 Payload-Fingerprint. Der eindeutige Index verhindert doppelte Anlagen bei
-Responseverlust; ein abweichender Retry wird als Konflikt abgewiesen.
+Responseverlust; ein abweichender Retry wird als Konflikt abgewiesen. Die
+additive `app_consumer_debt_events`-Tabelle speichert Create-, Balance-,
+Deactivate- und Delete-Zeitpunkte. Bestandszeilen erhalten hoechstens einen
+`legacy_baseline` ab `created_at`; es gibt keinen Backfill des heutigen Saldos
+auf fruehere Zeitraeume.
 
 `monthly_financial_snapshots.total_consumer_debt` wird durch die vorhandene
 Snapshot-Schemavorbereitung nullable hinzugefuegt. Neue Snapshots (Version 2)
