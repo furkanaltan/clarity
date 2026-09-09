@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import threading
@@ -637,6 +638,31 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM app_properties WHERE user_id=1"
             ).fetchone()[0], 0)
+
+    def test_property_contract_fields_can_be_cleared_without_removing_remaining_debt(self):
+        with closing(self.connect()) as conn:
+            conn.execute(
+                "UPDATE users SET fixed_costs_details=? WHERE user_id=1",
+                ('{"kredite":{"immobilie":900,"hausgeld":250,"hausverwalter":100,"restschuld":175000}}',),
+            )
+            conn.commit()
+
+        response = self.request("POST", "/v1/property", json={
+            "market_value": 250000,
+            "remaining_debt": 175000,
+            "monthly_rate": 0,
+            "house_fee": 0,
+            "management_fee": 0,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            details = json.loads(conn.execute(
+                "SELECT fixed_costs_details FROM users WHERE user_id=1"
+            ).fetchone()[0])
+            self.assertEqual(details["kredite"]["restschuld"], 175000)
+            self.assertNotIn("immobilie", details["kredite"])
+            self.assertNotIn("hausgeld", details["kredite"])
+            self.assertNotIn("hausverwalter", details["kredite"])
 
 
 class OnboardingAtomicityTests(unittest.TestCase):

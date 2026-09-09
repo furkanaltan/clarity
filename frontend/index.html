@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-contract-delete">
+<meta name="rove-frontend-build" content="20260909-c6c1f91">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3038,8 +3038,12 @@ function normalizedContractId(value){
 function serverContractId(item){ return normalizedContractId(item?.id); }
 function serverContractLegacyRef(item){ return String(item?.legacyRef||"").trim(); }
 function contractReferenceAttrs(item){
-  const id=serverContractId(item), legacyRef=serverContractLegacyRef(item);
-  return `${id?` data-contract-id="${escapeAccountHtml(id)}"`:""}${legacyRef?` data-contract-legacy-ref="${escapeAccountHtml(legacyRef)}"`:""}`;
+  const id=serverContractId(item), legacyRef=serverContractLegacyRef(item), propertyField=String(item?.propertyField||"").trim();
+  return `${id?` data-contract-id="${escapeAccountHtml(id)}"`:""}${legacyRef?` data-contract-legacy-ref="${escapeAccountHtml(legacyRef)}"`:""}${propertyField?` data-property-field="${escapeAccountHtml(propertyField)}"`:""}`;
+}
+function propertyContractField(item){
+  const field=String(item?.propertyField||"").trim();
+  return ["monthly_rate","house_fee","management_fee"].includes(field) ? field : "";
 }
 function saveBridgeLocal(){
   if(APP_MODE!=="bridge" || BRIDGE_USER_ID==null) return;
@@ -4385,6 +4389,22 @@ async function syncProperty(payload){
     showToast("Immobilie konnte noch nicht gespeichert werden");
     return false;
   }
+}
+async function syncPropertyContract(field,value){
+  const asset=DATA.assets.find(item=>item.name==="Immobilie" && item.real);
+  const real=asset?.real;
+  if(!real || !propertyContractField({propertyField:field})) return false;
+  const values={
+    monthly_rate:Number(real.rate||0),
+    house_fee:Number(real.hausgeld||0),
+    management_fee:Number(real.verwaltung||0)
+  };
+  values[field]=Number(value||0);
+  return syncProperty({
+    market_value:Number(real.marktwert||0),
+    remaining_debt:Number(real.restschuld||0),
+    ...values
+  });
 }
 async function deleteProperty(){
   if(APP_MODE!=="bridge" || !apiReady()) return false;
@@ -8248,7 +8268,14 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
     const amt=appMoney(document.getElementById("vdAmtEdit").value);
     if(v && amt){
       if(APP_MODE==="bridge"){
-        if(!await syncContract("update",{contract_id:v.id,amount:amt})) return;
+        const propertyField=propertyContractField(v);
+        if(propertyField){
+          if(!await syncPropertyContract(propertyField,amt)) return;
+        } else {
+          const contractId=serverContractId(v);
+          if(!contractId){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
+          if(!await syncContract("update",{contract_id:contractId,amount:amt})) return;
+        }
       } else { v.a=amt; persistAppState(); }
       DATA.sts.fixRest=computeFixRest(); renderVertraege(); renderBudgets(); mentorLine(); openContract(v.n); showToast(`${v.n} aktualisiert`); buzz();
     }
@@ -8262,10 +8289,15 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
     let group=DATA.vertraege.find(c=>c.items.some(i=>i.n===n));
     let v=group&&group.items.find(i=>i.n===n);
     if(APP_MODE==="bridge"){
-      const target=await resolveContractDeleteTarget(reference);
-      if(!target){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
-      group=target.group; v=target.item;
-      if(!await syncContract("delete",{contract_id:serverContractId(v)})) return;
+      const propertyField=propertyContractField(v);
+      if(propertyField){
+        if(!await syncPropertyContract(propertyField,0)) return;
+      } else {
+        const target=await resolveContractDeleteTarget(reference);
+        if(!target){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
+        group=target.group; v=target.item;
+        if(!await syncContract("delete",{contract_id:serverContractId(v)})) return;
+      }
     } else {
       if(group){ group.items=group.items.filter(i=>i.n!==n); DATA.vertraege=DATA.vertraege.filter(g=>g.items.length); }
       persistAppState();

@@ -46,6 +46,14 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn('action==="delete" ? "Vertrag konnte nicht gelöscht werden."', self.frontend)
         self.assertIn("Vertrag konnte nicht eindeutig zugeordnet werden.", self.frontend)
 
+    def test_property_contracts_use_property_persistence(self):
+        self.assertIn('"monthly_rate","house_fee","management_fee"', self.frontend)
+        self.assertIn("async function syncPropertyContract(field,value)", self.frontend)
+        self.assertIn("const propertyField=propertyContractField(v);", self.frontend)
+        self.assertIn("syncPropertyContract(propertyField,amt)", self.frontend)
+        self.assertIn("syncPropertyContract(propertyField,0)", self.frontend)
+        self.assertNotIn('syncContract("update",{contract_id:v.id,amount:amt})', self.frontend)
+
     def test_expense_detail_neutralizes_only_generic_icons(self):
         self.assertIn("function transactionDetailLogo(t)", self.frontend)
         self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)

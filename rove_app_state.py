@@ -609,6 +609,18 @@ def _build_vertraege(details: dict) -> list:
 def build_app_contract_groups(conn: sqlite3.Connection, user_id: int, details: dict) -> list:
     """Ergaenzt Bot-Fixkosten um zentral gespeicherte, in der App angelegte Verträge."""
     groups = _build_vertraege(details)
+    property_data = get_app_property(conn, user_id)
+    property_bindings = {
+        "Immobilienkredit": "monthly_rate",
+        "Hausgeld": "house_fee",
+        "Hausverwaltung": "management_fee",
+    }
+    if property_data:
+        for group in groups:
+            for item in group["items"]:
+                field = property_bindings.get(item["n"])
+                if field and float(property_data.get(field) or 0) > 0:
+                    item["propertyField"] = field
     by_category = {group["cat"]: group for group in groups}
     for contract in get_app_contracts(conn, user_id):
         category = contract.pop("category")

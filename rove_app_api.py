@@ -5233,23 +5233,27 @@ def update_property():
             details = {}
         credits = details.get("kredite") if isinstance(details.get("kredite"), dict) else {}
 
-        def upsert_existing_detail(key: str, value: float, sections: tuple[str, ...]) -> None:
-            if not value:
-                return
+        def sync_property_detail(key: str, value: float, sections: tuple[str, ...]) -> None:
             for section in sections:
                 values = details.get(section)
                 if isinstance(values, dict) and key in values:
-                    values[key] = value
+                    if value:
+                        values[key] = value
+                    else:
+                        values.pop(key, None)
+                        if not values:
+                            details.pop(section, None)
                     return
-            credits[key] = value
+            if value:
+                credits[key] = value
 
         # Leere optionale Felder lassen bestehende Bot-Einträge in Ruhe. So führt eine reine
         # Vermögenskorrektur nicht versehentlich zum Löschen schon gepflegter Fixkosten.
         if remaining_debt:
             credits["restschuld"] = remaining_debt
-        upsert_existing_detail("immobilie", monthly_rate, ("kredite",))
-        upsert_existing_detail("hausgeld", house_fee, ("kredite", "wohnen"))
-        upsert_existing_detail("hausverwalter", management_fee, ("kredite", "wohnen"))
+        sync_property_detail("immobilie", monthly_rate, ("kredite",))
+        sync_property_detail("hausgeld", house_fee, ("kredite", "wohnen"))
+        sync_property_detail("hausverwalter", management_fee, ("kredite", "wohnen"))
         if credits:
             details["kredite"] = credits
         conn.execute(
