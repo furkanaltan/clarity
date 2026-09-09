@@ -45,6 +45,13 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         self.assertIn('if(b.dataset.vccat==="Fahrzeugfinanzierung")', self.source)
         self.assertIn('openVehicleFinancingSheet(); buzz(); return;', self.source)
 
+    def test_leasing_toggle_stays_inside_open_sheet(self):
+        self.assertIn('querySelectorAll("#vehiclefinancingsheet [data-vftype]")', self.source)
+        self.assertIn('event.preventDefault();', self.source)
+        self.assertIn('event.stopPropagation();', self.source)
+        self.assertIn('vehicleFinancingType=button.dataset.vftype;', self.source)
+        self.assertNotIn('closeSheet();', self.source[self.source.index('querySelectorAll("#vehiclefinancingsheet [data-vftype]")'):self.source.index('document.getElementById("vcCats")')])
+
 
 if __name__ == "__main__":
     unittest.main()

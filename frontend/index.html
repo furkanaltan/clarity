@@ -8365,9 +8365,14 @@ function openContract(name,reference={}){
   rovePushState("vdsheet");
 }
 document.getElementById("addContractBtn").addEventListener("click",()=>{ openContractCreateSheet(); buzz(); });
+document.querySelectorAll("#vehiclefinancingsheet [data-vftype]").forEach(button=>button.addEventListener("click",event=>{
+  event.preventDefault();
+  event.stopPropagation();
+  vehicleFinancingType=button.dataset.vftype;
+  renderVehicleFinancingType();
+  buzz();
+}));
 document.getElementById("vehiclefinancingsheet").addEventListener("click",e=>{
-  const type=e.target.closest("[data-vftype]");
-  if(type){ vehicleFinancingType=type.dataset.vftype; renderVehicleFinancingType(); buzz(); return; }
   if(e.target.closest("#vfSave")) saveVehicleFinancingSheet();
 });
 document.getElementById("vcCats").addEventListener("click",e=>{
