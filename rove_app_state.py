@@ -609,6 +609,11 @@ def _build_vertraege(details: dict) -> list:
 def build_app_contract_groups(conn: sqlite3.Connection, user_id: int, details: dict) -> list:
     """Ergaenzt Bot-Fixkosten um zentral gespeicherte, in der App angelegte Verträge."""
     groups = _build_vertraege(details)
+    from rove_vehicle_financing import list_vehicle_financings
+
+    vehicle_by_contract = {
+        item["contract_id"]: item for item in list_vehicle_financings(conn, user_id)
+    }
     property_data = get_app_property(conn, user_id)
     property_bindings = {
         "Immobilienkredit": "monthly_rate",
@@ -623,6 +628,9 @@ def build_app_contract_groups(conn: sqlite3.Connection, user_id: int, details: d
                     item["propertyField"] = field
     by_category = {group["cat"]: group for group in groups}
     for contract in get_app_contracts(conn, user_id):
+        vehicle = vehicle_by_contract.get(contract["id"])
+        if vehicle:
+            contract["vehicleFinancing"] = vehicle
         category = contract.pop("category")
         group = by_category.get(category)
         if not group:
@@ -1907,6 +1915,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                if etf_positions else "aus dem Bot")
 
     net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
+    from rove_vehicle_financing import list_vehicle_financings
+
+    vehicle_financings = list_vehicle_financings(conn, user_id)
     tx = _build_tx(conn, user_id)
     # Die App-Navigation kann bis zu drei abgeschlossene Monate zurueckgehen. Diese
     # Buchungen sind bewusst nur lesbar: Der laufende Monat bleibt die einzige Stelle,
@@ -1980,6 +1991,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "netWorth": round(net_worth, 2) if net_worth is not None else None,
         "consumerDebtTotal": consumer_debt,
         "consumerDebts": list_consumer_debts(conn, user_id),
+        "vehicleFinancings": vehicle_financings,
         "series": net_series,
         "histDates": net_hist_dates,
         "identity": _identity(conn, user_id),

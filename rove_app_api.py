@@ -110,6 +110,14 @@ from rove_financial_accounts import (
     transfer_financial_account_balance,
     update_financial_account_balance,
 )
+from rove_vehicle_financing import (
+    VehicleFinancingConflictError,
+    create_vehicle_financing,
+    delete_vehicle_financing,
+    ensure_vehicle_financing_schema,
+    list_vehicle_financings,
+    update_vehicle_financing,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -230,6 +238,7 @@ DATA_EXPORT_TABLES = (
     ("financial_accounts", "app_financial_accounts"),
     ("financial_account_roles", "app_financial_account_roles"),
     ("vertraege", "app_contracts"),
+    ("fahrzeugfinanzierungen", "app_vehicle_financings"),
     ("konsumschulden", "app_consumer_debts"),
     ("ziele", "app_goals"),
     ("hauptziel_fortschritt", "app_primary_goal_progress"),
@@ -263,6 +272,7 @@ def db():
     # und dann den bereits gesenkten Stand lesen, nicht mit "database is locked"
     # abbrechen. 15 s ist grosszuegig — ein Endpunkt haelt die Sperre wenige ms.
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     # sqlite3.Connection.__exit__ commits or rolls back but does not close the
     # file handle. Closing explicitly prevents one leaked connection per API call.
@@ -4848,6 +4858,15 @@ def update_contracts():
             if not existing:
                 return jsonify({"ok": False, "error": "contract_not_found"}), 404
             if action == "delete":
+                vehicle_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_vehicle_financings'"
+                ).fetchone()
+                if vehicle_table and conn.execute(
+                    """SELECT 1 FROM app_vehicle_financings
+                         WHERE user_id = ? AND contract_id = ? AND active = 1 LIMIT 1""",
+                    (user_id, contract_id),
+                ).fetchone():
+                    return jsonify({"ok": False, "error": "vehicle_financing_linked"}), 409
                 conn.execute("DELETE FROM app_contracts WHERE user_id = ? AND contract_id = ?", (user_id, contract_id))
             else:
                 amount = goal_amount(payload.get("amount"))
@@ -4895,6 +4914,50 @@ def update_budgets():
         conn.commit()
 
     return jsonify({"ok": True, "budgets": live_data["budgets"]})
+
+
+@app.route("/v1/vehicle-financings", methods=["GET", "POST"])
+@app.route("/v1/vehicle-financings/<int:financing_id>", methods=["PATCH", "DELETE"])
+def vehicle_financings_endpoint(financing_id=None):
+    payload = request.get_json(silent=True) or {}
+    token = token_from_request()
+    if request.method in {"POST", "PATCH"} and not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_vehicle_financing_request"}), 400
+
+    if request.method == "GET":
+        with db() as conn:
+            user_id = user_from_token(conn, token)
+            if not user_id:
+                return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+            return jsonify({"ok": True, "vehicleFinancings": list_vehicle_financings(conn, user_id)})
+
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        try:
+            if request.method == "POST":
+                request_id = clean_text(payload.get("request_id") or payload.get("client_request_id"), "")
+                financing_id = create_vehicle_financing(conn, user_id, payload, request_id)
+            elif request.method == "PATCH":
+                if financing_id is None:
+                    return jsonify({"ok": False, "error": "vehicle_financing_id_required"}), 400
+                financing_id = update_vehicle_financing(conn, user_id, financing_id, payload)
+            else:
+                if financing_id is None:
+                    return jsonify({"ok": False, "error": "vehicle_financing_id_required"}), 400
+                delete_vehicle_financing(conn, user_id, financing_id)
+            live_data = build_live_app_data(conn, user_id)
+            conn.commit()
+        except VehicleFinancingConflictError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except (ValueError, LookupError) as exc:
+            conn.rollback()
+            status = 404 if isinstance(exc, LookupError) else 400
+            return jsonify({"ok": False, "error": str(exc)}), status
+    return jsonify({"ok": True, "vehicleFinancingId": financing_id, **live_data})
 
 
 @app.route("/v1/accounts", methods=["POST"])

@@ -205,6 +205,8 @@ class PushEndpointSecurityTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp.name) / "clarity.db"
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+            conn.execute("INSERT INTO users (user_id) VALUES (1)")
             api.ensure_push_table(conn)
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),

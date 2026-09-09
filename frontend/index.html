@@ -1106,6 +1106,7 @@
   #tab-vertraege .sum-card .lbl{font-size:12px;font-weight:720;letter-spacing:.095em;text-transform:uppercase;color:#aebdc6}
   #tab-vertraege .sum-card .big{margin-top:7px;font-size:35px;color:#eff5f8}
   #tab-vertraege #addContractBtn{min-height:48px;margin:0 0 17px!important;border-color:rgba(139,194,221,.3);border-radius:15px;background:linear-gradient(145deg,rgba(70,154,196,.22),rgba(29,86,117,.1));box-shadow:inset 0 1px 0 rgba(221,245,255,.18),inset 0 -9px 17px rgba(0,0,0,.1),0 7px 16px rgba(0,0,0,.12);color:#d5f0fa}
+  #tab-vertraege #addVehicleFinancingBtn{min-height:44px;margin:0 0 17px!important;border-color:rgba(208,125,0,.34);border-radius:15px;background:linear-gradient(145deg,rgba(208,125,0,.18),rgba(255,255,255,.025));color:#f1d09d}
   #tab-vertraege .cat-lbl{margin:22px 4px 9px;color:#aebcc5;font-size:11.5px;font-weight:760;letter-spacing:.115em}
   #tab-vertraege #vertraege-list>.card{padding:4px 16px!important;border-color:rgba(211,222,230,.18);border-radius:19px;background:radial-gradient(115% 84% at 0% 0%,rgba(177,213,230,.055),transparent 47%),linear-gradient(145deg,rgba(28,39,50,.9),rgba(9,16,24,.82));box-shadow:inset 0 1px 0 rgba(255,255,255,.085),inset 0 -15px 27px rgba(0,0,0,.11),0 12px 27px rgba(0,0,0,.14)}
   /* The generic .card:active rule also matched this parent while an inner contract row was pressed.
@@ -1128,6 +1129,7 @@
   #vdsheet #vdDelete{border-color:rgba(221,132,142,.25)!important;background:linear-gradient(145deg,rgba(178,78,91,.14),rgba(255,255,255,.018))!important}
   :root[data-theme="light"] #tab-vertraege .sum-card,:root[data-theme="light"] #tab-vertraege #vertraege-list>.card,:root[data-theme="light"] #tab-vertraege #vertraege-list .empty,:root[data-theme="light"] #vdsheet .txd-head{border-color:rgba(67,90,108,.15);background:radial-gradient(118% 88% at 0% 0%,rgba(255,255,255,.98),transparent 48%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(233,240,245,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),inset 0 -14px 26px rgba(71,94,109,.05),0 11px 24px rgba(40,67,84,.08)}
   :root[data-theme="light"] #tab-vertraege #addContractBtn{color:#176b91;border-color:rgba(54,143,184,.28);background:linear-gradient(145deg,rgba(170,221,244,.7),rgba(226,244,251,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 13px rgba(47,121,159,.09)}
+  :root[data-theme="light"] #tab-vertraege #addVehicleFinancingBtn{color:#8b5600;border-color:rgba(181,111,0,.28);background:linear-gradient(145deg,rgba(255,224,169,.72),rgba(255,247,229,.9))}
   :root[data-theme="light"] #tab-vertraege .logo.rov-icon{color:#33424c!important;background:radial-gradient(110% 82% at 50% -18%,rgba(255,255,255,.99),transparent 48%),linear-gradient(145deg,rgba(255,255,255,.98),rgba(220,229,235,.96))!important;border-color:rgba(83,103,117,.32);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),inset 0 -10px 18px rgba(93,112,125,.11),0 7px 15px rgba(55,77,94,.1)}
   :root[data-theme="light"] #vdsheet .txd-del{border-color:rgba(67,90,108,.14);background:linear-gradient(145deg,rgba(255,255,255,.96),rgba(234,241,245,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 5px 12px rgba(40,67,84,.06)}
 
@@ -2359,6 +2361,7 @@
       <div class="big" id="fix-total">—</div>
     </div>
     <button class="vd-btn" id="addContractBtn" style="width:100%;margin:0 0 14px">+ Vertrag hinzufügen</button>
+    <button class="vd-btn" id="addVehicleFinancingBtn" style="width:100%;margin:0 0 14px">+ Fahrzeugfinanzierung hinzufügen</button>
     <div id="vertraege-list"></div>
   </section>
 
@@ -2525,6 +2528,20 @@
     </div>
     <div class="chips" id="vcCats" style="margin-bottom:12px"></div>
     <button class="vd-btn" id="vcSave">Vertrag speichern</button>
+  </div>
+
+  <div class="sheet" id="vehiclefinancingsheet">
+    <div class="grab"></div>
+    <h3 id="vfTitle">Fahrzeugfinanzierung</h3>
+    <div class="hint">Die Rate wird als Vertrag geführt. Fahrzeug und Finanzierung verändern dein Vermögen nicht automatisch.</div>
+    <div class="field" style="margin-bottom:10px"><input id="vfName" type="text" autocomplete="off" placeholder="Fahrzeug, z. B. Mercedes CLA"></div>
+    <div class="chips" style="margin-bottom:12px"><button type="button" class="ob-chip on" data-vftype="financed">Finanziert</button><button type="button" class="ob-chip" data-vftype="leasing">Leasing</button></div>
+    <div class="field" id="vfPurchaseWrap" style="margin-bottom:10px"><input id="vfPurchase" type="text" inputmode="decimal" autocomplete="off" placeholder="Kaufpreis, z. B. 60.000"></div>
+    <div class="field" id="vfBalanceWrap" style="margin-bottom:10px"><input id="vfBalance" type="text" inputmode="decimal" autocomplete="off" placeholder="Finanzierung offen, z. B. 20.000"></div>
+    <div class="field" style="margin-bottom:10px"><input id="vfPayment" type="text" inputmode="decimal" autocomplete="off" placeholder="Monatliche Rate, z. B. 600"></div>
+    <div class="field" style="margin-bottom:10px"><input id="vfMonths" type="number" min="0" max="600" inputmode="numeric" autocomplete="off" placeholder="Restlaufzeit in Monaten"></div>
+    <div class="field" style="margin-bottom:14px"><input id="vfEnd" type="date" autocomplete="off" aria-label="Vertragsende"></div>
+    <button class="vd-btn" id="vfSave">Fahrzeugfinanzierung speichern</button>
   </div>
 
   <!-- Aktivitätscenter (Glocke) -->
@@ -2766,6 +2783,7 @@ const DATA = {
   financialAccounts:[],
   consumerDebts:[],
   consumerDebtTotal:0,
+  vehicleFinancings:[],
   netWorthAvailable:true,
   netWorth: 42850,
   changePct: "+1,8 %",
@@ -7006,7 +7024,7 @@ const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","bsheet","ngsheet","abosheet","immosheet",
-  "contractsheet","accountaddsheet","paysheet",
+  "contractsheet","vehiclefinancingsheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","etfplansheet",
   "markettrackingsheet","savingssheet"
 ]);
@@ -7485,6 +7503,7 @@ async function refreshAppDataFromServer(){
     if(Array.isArray(data.financialAccounts)) DATA.financialAccounts=data.financialAccounts;
     if(Array.isArray(data.consumerDebts)) DATA.consumerDebts=data.consumerDebts;
     if(Number.isFinite(data.consumerDebtTotal)) DATA.consumerDebtTotal=data.consumerDebtTotal;
+    if(Array.isArray(data.vehicleFinancings)) DATA.vehicleFinancings=data.vehicleFinancings;
     if(Object.prototype.hasOwnProperty.call(data,"netWorth")) DATA.netWorthAvailable=data.netWorth!=null;
     if(Array.isArray(data.assets)){
       DATA.assets=mergeServerAssets(data.assets,DATA.assets,Boolean(data.features?.multi_cash_accounts_v1));
@@ -8077,7 +8096,9 @@ function renderVertraege(){
         const scis=`<svg class="tsvg" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.8 20 20M8.2 16.2 20 4"/></svg>`;
         const name=escapeAccountHtml(v.n), date=escapeAccountHtml(v.date);
         const warning=escapeAccountHtml(v.warn), tint=safeContractTint(v.tint);
+        const vehicle=vehicleFinancingByContract(v);
         const badge = v.warn ? `<span class="tag warn">${scis}${warning}</span>`
+                    : vehicle ? `<span class="tag base">${vehicle.financing_type==="leasing"?"Leasing":"Fahrzeugfinanzierung"}</span>`
                     : v.cancel ? `<span class="tag cancel">${scis}Abbuchung ${date}</span>`
                     : `<span class="tag base">Basis-Vertrag · ${date}</span>`;
         return `<div class="tx" data-vn="${name}"${contractReferenceAttrs(v)}>
@@ -8205,12 +8226,95 @@ async function resolveContractDeleteTarget(reference){
   target=findContractByReference(reference);
   return serverContractId(target?.item) ? target : null;
 }
+let vehicleFinancingEditId=null;
+let vehicleFinancingType="financed";
+function vehicleFinancingByContract(item){
+  const id=serverContractId(item);
+  return (DATA.vehicleFinancings||[]).find(row=>String(row.contract_id)===id) || item?.vehicleFinancing || null;
+}
+function vehicleFinancingRequestId(){
+  return typeof crypto!=="undefined" && typeof crypto.randomUUID==="function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+function vehiclePayloadFromItem(item, monthlyOverride){
+  const row=vehicleFinancingByContract(item);
+  if(!row) return null;
+  return {
+    vehicle_name:row.vehicle_name,
+    financing_type:row.financing_type,
+    purchase_price:row.purchase_price,
+    outstanding_balance:row.outstanding_balance,
+    monthly_payment:monthlyOverride==null?Number(item.a||row.monthly_payment||0):monthlyOverride,
+    remaining_months:row.remaining_months,
+    contract_end_date:row.contract_end_date
+  };
+}
+async function syncVehicleFinancing(method,url,payload){
+  if(APP_MODE!=="bridge" || !apiReady()) return false;
+  try{
+    const res=await apiFetch(url,{method,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(Array.isArray(data.vertraege)) DATA.vertraege=mergeBotContracts(data.vertraege);
+    if(Array.isArray(data.vehicleFinancings)) DATA.vehicleFinancings=data.vehicleFinancings;
+    renderVertraege(); renderBudgets(); mentorLine();
+    return true;
+  }catch(err){
+    console.warn("Fahrzeugfinanzierung konnte nicht gespeichert werden",err);
+    showToast(method==="DELETE"?"Fahrzeugfinanzierung konnte nicht gelöscht werden.":"Fahrzeugfinanzierung konnte nicht gespeichert werden.");
+    return false;
+  }
+}
+function renderVehicleFinancingType(){
+  document.querySelectorAll("[data-vftype]").forEach(button=>button.classList.toggle("on",button.dataset.vftype===vehicleFinancingType));
+  const financed=vehicleFinancingType==="financed";
+  document.getElementById("vfPurchaseWrap")?.classList.toggle("hidden",!financed);
+  document.getElementById("vfBalanceWrap")?.classList.toggle("hidden",!financed);
+}
+function openVehicleFinancingSheet(item=null){
+  closeAllSheetsSoft();
+  const row=item?vehicleFinancingByContract(item):null;
+  vehicleFinancingEditId=row?Number(row.id):null;
+  vehicleFinancingType=row?.financing_type||"financed";
+  document.getElementById("vfTitle").textContent=row?"Fahrzeugfinanzierung bearbeiten":"Fahrzeugfinanzierung hinzufügen";
+  document.getElementById("vfName").value=row?.vehicle_name||"";
+  document.getElementById("vfPurchase").value=row?.purchase_price==null?"":eur2(row.purchase_price).replace(/\s*€/,'');
+  document.getElementById("vfBalance").value=row?.outstanding_balance==null?"":eur2(row.outstanding_balance).replace(/\s*€/,'');
+  document.getElementById("vfPayment").value=row?.monthly_payment==null?"":eur2(row.monthly_payment).replace(/\s*€/,'');
+  document.getElementById("vfMonths").value=row?.remaining_months??"";
+  document.getElementById("vfEnd").value=row?.contract_end_date||"";
+  renderVehicleFinancingType();
+  sheetBg.classList.add("on"); document.getElementById("vehiclefinancingsheet").classList.add("on");
+  rovePushState("vehiclefinancingsheet");
+  requestAnimationFrame(()=>liftTabbar(document.getElementById("vehiclefinancingsheet")));
+}
+async function saveVehicleFinancingSheet(){
+  const vehicle_name=document.getElementById("vfName").value.trim();
+  const monthly_payment=appMoney(document.getElementById("vfPayment").value);
+  const purchase_price=appMoney(document.getElementById("vfPurchase").value);
+  const outstanding_balance=appMoney(document.getElementById("vfBalance").value);
+  const rawMonths=document.getElementById("vfMonths").value.trim();
+  const remaining_months=rawMonths===""?null:Number(rawMonths);
+  const contract_end_date=document.getElementById("vfEnd").value||null;
+  if(!vehicle_name||!monthly_payment||(vehicleFinancingType==="financed"&&(!purchase_price||outstanding_balance>purchase_price))){
+    showToast("Bitte prüfe Fahrzeug, Rate und Finanzierungswerte."); return;
+  }
+  const payload={vehicle_name,financing_type:vehicleFinancingType,
+    purchase_price:vehicleFinancingType==="financed"?purchase_price:null,
+    outstanding_balance:vehicleFinancingType==="financed"?outstanding_balance:null,
+    monthly_payment,remaining_months,contract_end_date};
+  const ok=vehicleFinancingEditId
+    ? await syncVehicleFinancing("PATCH",`/v1/vehicle-financings/${vehicleFinancingEditId}`,payload)
+    : await syncVehicleFinancing("POST","/v1/vehicle-financings",{...payload,request_id:vehicleFinancingRequestId()});
+  if(!ok)return;
+  closeSheet(); showToast(`${vehicle_name} gespeichert`); buzz();
+}
 function openContract(name,reference={}){
   const resolved=findContractByReference(reference);
   const group=resolved?.group||DATA.vertraege.find(c=>c.items.some(i=>i.n===name)); if(!group) return;
   const v=resolved?.item||group.items.find(i=>i.n===name); if(!v) return;
   closeAllSheetsSoft();
   const contractName=escapeAccountHtml(v.n), category=escapeAccountHtml(group.cat);
+  const vehicle=vehicleFinancingByContract(v);
   const status=escapeAccountHtml(v.warn ? v.warn : v.cancel ? "Kündbar" : "Basis-Vertrag");
   const debitDate=escapeAccountHtml(nextDebit(v.date));
   document.getElementById("vdbody").innerHTML=`
@@ -8224,12 +8328,17 @@ function openContract(name,reference={}){
     </div>
     <div class="drow"><span class="k">Nächste Abbuchung</span><span class="v">${debitDate}</span></div>
     <div class="drow"><span class="k">Kosten pro Jahr</span><span class="v">${eur2(v.a*12)}</span></div>
+    ${vehicle?`<div class="drow"><span class="k">Art</span><span class="v">${vehicle.financing_type==="leasing"?"Leasing":"Finanzierung"}</span></div>
+      ${vehicle.financing_type==="financed"?`<div class="drow"><span class="k">Kaufpreis</span><span class="v">${eur2(vehicle.purchase_price)}</span></div><div class="drow"><span class="k">Finanzierung offen</span><span class="v">${eur2(vehicle.outstanding_balance)}</span></div><div class="drow"><span class="k">Bereits finanziert/getilgt</span><span class="v">${eur2(vehicle.paid_amount)}</span></div>`:""}
+      ${vehicle.remaining_months!=null?`<div class="drow"><span class="k">Restlaufzeit</span><span class="v">${vehicle.remaining_months} Monate</span></div>`:""}
+      ${vehicle.contract_end_date?`<div class="drow"><span class="k">Vertragsende</span><span class="v">${escapeAccountHtml(vehicle.contract_end_date)}</span></div>`:""}
+      <button class="vd-btn" id="vdVehicleEdit" data-vf-id="${Number(vehicle.id)}" style="margin-top:14px">Finanzierung bearbeiten</button>`:""}
     <div class="drow"><span class="k">Status</span><span class="v">${status}</span></div>
     <div class="field" style="margin-top:14px;margin-bottom:10px">
       <input id="vdAmtEdit" type="text" inputmode="decimal" autocomplete="off" value="${eur2(v.a).replace(/\s*€/,'')}" aria-label="Monatsbetrag ändern">
       <button class="send" id="vdAmtSave" data-vn="${contractName}" aria-label="Betrag speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
     </div>
-    ${LOAN_NAME_RE.test(v.n)?`
+    ${!vehicle&&LOAN_NAME_RE.test(v.n)?`
     <div style="margin-top:14px">
       <div class="hint" style="margin-bottom:8px">Finanzierungsart — du kannst das jederzeit ändern</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -8246,6 +8355,13 @@ function openContract(name,reference={}){
   rovePushState("vdsheet");
 }
 document.getElementById("addContractBtn").addEventListener("click",()=>{ openContractCreateSheet(); buzz(); });
+document.getElementById("addVehicleFinancingBtn").style.display=APP_MODE==="bridge"?"":"none";
+document.getElementById("addVehicleFinancingBtn").addEventListener("click",()=>{ openVehicleFinancingSheet(); buzz(); });
+document.getElementById("vehiclefinancingsheet").addEventListener("click",e=>{
+  const type=e.target.closest("[data-vftype]");
+  if(type){ vehicleFinancingType=type.dataset.vftype; renderVehicleFinancingType(); buzz(); return; }
+  if(e.target.closest("#vfSave")) saveVehicleFinancingSheet();
+});
 document.getElementById("vcCats").addEventListener("click",e=>{
   const b=e.target.closest("[data-vccat]"); if(!b) return;
   VC_CAT=b.dataset.vccat; renderContractCats(); buzz();
@@ -8260,6 +8376,13 @@ document.getElementById("vertraege-list").addEventListener("click",e=>{
   openContract(r.dataset.vn,{contractId:r.dataset.contractId,legacyRef:r.dataset.contractLegacyRef}); buzz();
 });
 document.getElementById("vdbody").addEventListener("click",async e=>{
+  const vehicleEdit=e.target.closest("#vdVehicleEdit");
+  if(vehicleEdit){
+    const group=DATA.vertraege.find(c=>c.items.some(i=>Number(vehicleFinancingByContract(i)?.id)===Number(vehicleEdit.dataset.vfId)));
+    const item=group?.items.find(i=>Number(vehicleFinancingByContract(i)?.id)===Number(vehicleEdit.dataset.vfId));
+    if(item) openVehicleFinancingSheet(item);
+    return;
+  }
   const amtSave=e.target.closest("#vdAmtSave");
   if(amtSave){
     const n=amtSave.dataset.vn;
@@ -8271,6 +8394,9 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
         const propertyField=propertyContractField(v);
         if(propertyField){
           if(!await syncPropertyContract(propertyField,amt)) return;
+        } else if(vehicleFinancingByContract(v)) {
+          const vehicleId=Number(vehicleFinancingByContract(v).id);
+          if(!await syncVehicleFinancing("PATCH",`/v1/vehicle-financings/${vehicleId}`,vehiclePayloadFromItem(v,amt))) return;
         } else {
           const contractId=serverContractId(v);
           if(!contractId){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
@@ -8292,6 +8418,8 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
       const propertyField=propertyContractField(v);
       if(propertyField){
         if(!await syncPropertyContract(propertyField,0)) return;
+      } else if(vehicleFinancingByContract(v)) {
+        if(!await syncVehicleFinancing("DELETE",`/v1/vehicle-financings/${Number(vehicleFinancingByContract(v).id)}`,{})) return;
       } else {
         const target=await resolveContractDeleteTarget(reference);
         if(!target){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
@@ -8677,7 +8805,7 @@ function formatReportExpiry(value){
 function openReportDetail(i){ renderReportDetail(i); openOnly("repdetailsheet"); }
 // Sheet-Wechsel: alle Sheets schließen, Hintergrund bleibt
 function closeAllSheetsSoft(){
-  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","abosheet","immosheet","contractsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
+  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
     .forEach(id=>{
       const element=document.getElementById(id);
       resetSheetSwipeStyles(element);

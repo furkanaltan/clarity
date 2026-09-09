@@ -16,6 +16,7 @@ nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
 | `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
 | `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
 | `monthly_financial_snapshots` | 07.09.2026 | Immutable Finanzwerte fuer abgeschlossene Monatsreports | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_app_state.py`, Monatsabschluss |
+| `app_vehicle_financings` | 09.09.2026 | User-scoped Fahrzeugfinanzierungen, verknuepft mit `app_contracts` | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_vehicle_financing.py`, `rove_app_api.py` |
 
 `app_cash_movements.request_id` wird durch die bestehende additive
 Schema-Vorbereitung in `rove_app_state.py` und
@@ -50,6 +51,15 @@ additive `app_consumer_debt_events`-Tabelle speichert Create-, Balance-,
 Deactivate- und Delete-Zeitpunkte. Bestandszeilen erhalten hoechstens einen
 `legacy_baseline` ab `created_at`; es gibt keinen Backfill des heutigen Saldos
 auf fruehere Zeitraeume.
+
+Vehicle Financing V1: `rove_vehicle_financing.ensure_vehicle_financing_schema()`
+legt `app_vehicle_financings` additiv/idempotent an. Die Tabelle speichert nur
+user-scoped Fahrzeugmetadaten und verweist auf genau einen bestehenden
+`app_contracts`-Datensatz; die Monatsrate bleibt ausschliesslich in
+`app_contracts.amount`. Finanzierung und Leasing werden nicht als Asset,
+Eigenkapital oder Consumer Debt behandelt. Bestehende Auto-/Leasingvertraege
+werden nicht automatisch migriert; neue Datensaetze werden atomar mit ihrem
+Rate-Vertrag angelegt und bei Loeschung gemeinsam entfernt.
 
 `monthly_financial_snapshots.total_consumer_debt` wird durch die vorhandene
 Snapshot-Schemavorbereitung nullable hinzugefuegt. Neue Snapshots (Version 2)
