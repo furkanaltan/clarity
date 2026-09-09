@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-a005209">
+<meta name="rove-frontend-build" content="20260909-contract-delete">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3031,12 +3031,23 @@ function readBridgeLocal(){
     return data&&data.userId!=null?data:null;
   }catch(e){ return null; }
 }
+function normalizedContractId(value){
+  const id=String(value||"").trim();
+  return /^[A-Za-z0-9_-]{6,128}$/.test(id) ? id : "";
+}
+function serverContractId(item){ return normalizedContractId(item?.id); }
+function serverContractLegacyRef(item){ return String(item?.legacyRef||"").trim(); }
+function contractReferenceAttrs(item){
+  const id=serverContractId(item), legacyRef=serverContractLegacyRef(item);
+  return `${id?` data-contract-id="${escapeAccountHtml(id)}"`:""}${legacyRef?` data-contract-legacy-ref="${escapeAccountHtml(legacyRef)}"`:""}`;
+}
 function saveBridgeLocal(){
   if(APP_MODE!=="bridge" || BRIDGE_USER_ID==null) return;
   try{
     const localContracts=(DATA.vertraege||[]).map(group=>({
       cat:group.cat,
-      items:(group.items||[]).filter(item=>item.source!=="bot")
+      // Canonical server contracts must never replace their own live copy after reload.
+      items:(group.items||[]).filter(item=>item.source!=="bot"&&!serverContractId(item))
     })).filter(group=>group.items.length);
     // Zentral gespeicherte App-Ziele werden beim Aktualisieren vom Server geladen.
     // Nur alte lokale Ziele bleiben als Abwaertskompatibilitaet in diesem Snapshot.
@@ -3065,10 +3076,10 @@ function restoreBridgeLocal(snapshot,userId){
   (snapshot.vertraege||[]).forEach(group=>{
     let target=DATA.vertraege.find(current=>current.cat===group.cat);
     if(!target){ target={cat:group.cat,items:[]}; DATA.vertraege.push(target); }
-    (group.items||[]).forEach(item=>{
+    // Restore only genuine local drafts. Server contracts always retain their ID and authority.
+    (group.items||[]).filter(item=>!serverContractId(item)).forEach(item=>{
       const index=target.items.findIndex(current=>String(current.n||"").toLowerCase()===String(item.n||"").toLowerCase());
       if(index<0) target.items.push(item);
-      else if(target.items[index].source!=="bot") target.items[index]=item;
     });
   });
   (snapshot.goals||[]).forEach(goal=>{
@@ -4913,8 +4924,9 @@ async function syncContract(action, payload={}){
     renderVertraege(); renderBudgets(); mentorLine();
     return true;
   }catch(err){
-    console.warn("Vertrag konnte nicht gespeichert werden:",err);
-    showToast("Vertrag konnte noch nicht gespeichert werden");
+    const message=action==="delete" ? "Vertrag konnte nicht gelöscht werden." : "Vertrag konnte nicht gespeichert werden.";
+    console.warn(message,err);
+    showToast(message);
     return false;
   }
 }
@@ -7408,7 +7420,7 @@ function mergeBotContracts(serverGroups){
     const old=current.find(g=>g.cat===group.cat);
     const serverItems=Array.isArray(group.items)?group.items:[];
     const localOnly=(old?.items||[]).filter(item=>
-      item.source!=="bot" && !serverItems.some(server=>
+      item.source!=="bot" && !serverContractId(item) && !serverItems.some(server=>
         String(server.n||"").toLowerCase()===String(item.n||"").toLowerCase()
       )
     );
@@ -8048,7 +8060,7 @@ function renderVertraege(){
         const badge = v.warn ? `<span class="tag warn">${scis}${warning}</span>`
                     : v.cancel ? `<span class="tag cancel">${scis}Abbuchung ${date}</span>`
                     : `<span class="tag base">Basis-Vertrag · ${date}</span>`;
-        return `<div class="tx" data-vn="${name}">
+        return `<div class="tx" data-vn="${name}"${contractReferenceAttrs(v)}>
           <div class="logo rov-icon rov-icon--medium" style="background:${tint}22;color:${tint}">${ic(v.icon)}</div>
           <div class="mid"><div class="nm">${name}</div>${badge}</div>
           <div class="amt neg">${eur2(v.a)}</div>
@@ -8154,9 +8166,29 @@ function restNote(rest, tone){
 let REMINDERS={};
 function loadReminders(){ try{ return JSON.parse(localStorage.getItem(bridgeStorageKey("reminders"))||"{}"); }catch(e){ return {}; } }
 function saveReminders(){ try{ const key=bridgeStorageKey("reminders"); if(key)localStorage.setItem(key, JSON.stringify(REMINDERS)); }catch(e){} }
-function openContract(name){
-  const group=DATA.vertraege.find(c=>c.items.some(i=>i.n===name)); if(!group) return;
-  const v=group.items.find(i=>i.n===name);
+function findContractByReference(reference={}){
+  const contractId=normalizedContractId(reference.contractId);
+  const legacyRef=String(reference.legacyRef||"").trim();
+  for(const group of DATA.vertraege||[]){
+    const item=(group.items||[]).find(candidate=>
+      (contractId && serverContractId(candidate)===contractId)
+      || (legacyRef && serverContractLegacyRef(candidate)===legacyRef)
+    );
+    if(item) return {group,item};
+  }
+  return null;
+}
+async function resolveContractDeleteTarget(reference){
+  let target=findContractByReference(reference);
+  if(serverContractId(target?.item)) return target;
+  await refreshAppDataFromServer();
+  target=findContractByReference(reference);
+  return serverContractId(target?.item) ? target : null;
+}
+function openContract(name,reference={}){
+  const resolved=findContractByReference(reference);
+  const group=resolved?.group||DATA.vertraege.find(c=>c.items.some(i=>i.n===name)); if(!group) return;
+  const v=resolved?.item||group.items.find(i=>i.n===name); if(!v) return;
   closeAllSheetsSoft();
   const contractName=escapeAccountHtml(v.n), category=escapeAccountHtml(group.cat);
   const status=escapeAccountHtml(v.warn ? v.warn : v.cancel ? "Kündbar" : "Basis-Vertrag");
@@ -8188,8 +8220,8 @@ function openContract(name){
     ${v.cancel?`
       <div class="hint" style="margin-top:14px">Die Glocke zeigt dir anstehende Abbuchungen. Automatische Kündigungserinnerungen und der Kündigungsservice kommen mit dem Vertragsservice.</div>
       <button class="txd-del" id="vdCancel" data-vn="${contractName}" style="margin-top:10px">Kündigungsservice vormerken</button>
-      <button class="txd-del" id="vdDelete" data-vn="${contractName}" style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
-    :`<button class="txd-del" id="vdDelete" data-vn="${contractName}" style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
+      <button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
+    :`<button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
   sheetBg.classList.add("on"); document.getElementById("vdsheet").classList.add("on");
   rovePushState("vdsheet");
 }
@@ -8205,7 +8237,7 @@ document.getElementById("immoSave").addEventListener("click",saveImmoSheet);
 
 document.getElementById("vertraege-list").addEventListener("click",e=>{
   const r=e.target.closest("[data-vn]"); if(!r) return;
-  openContract(r.dataset.vn); buzz();
+  openContract(r.dataset.vn,{contractId:r.dataset.contractId,legacyRef:r.dataset.contractLegacyRef}); buzz();
 });
 document.getElementById("vdbody").addEventListener("click",async e=>{
   const amtSave=e.target.closest("#vdAmtSave");
@@ -8226,11 +8258,14 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
   if(del){
     const n=del.dataset.vn;
     if(!del.dataset.arm){ del.dataset.arm="1"; del.textContent="Wirklich löschen? Erneut tippen"; return; }
-    const group=DATA.vertraege.find(c=>c.items.some(i=>i.n===n));
-    const v=group&&group.items.find(i=>i.n===n);
+    const reference={contractId:del.dataset.contractId,legacyRef:del.dataset.contractLegacyRef};
+    let group=DATA.vertraege.find(c=>c.items.some(i=>i.n===n));
+    let v=group&&group.items.find(i=>i.n===n);
     if(APP_MODE==="bridge"){
-      if(!v){ return; }
-      if(!await syncContract("delete",{contract_id:v.id})) return;
+      const target=await resolveContractDeleteTarget(reference);
+      if(!target){ showToast("Vertrag konnte nicht eindeutig zugeordnet werden. Bitte lade die App neu und versuche es erneut."); return; }
+      group=target.group; v=target.item;
+      if(!await syncContract("delete",{contract_id:serverContractId(v)})) return;
     } else {
       if(group){ group.items=group.items.filter(i=>i.n!==n); DATA.vertraege=DATA.vertraege.filter(g=>g.items.length); }
       persistAppState();

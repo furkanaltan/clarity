@@ -37,6 +37,15 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn('data-vn="${contractName}"', self.frontend)
         self.assertIn("const tint = safeContractTint(g.items[0].tint);", self.frontend)
 
+    def test_server_contract_delete_preserves_the_canonical_id(self):
+        self.assertIn("function serverContractId(item)", self.frontend)
+        self.assertIn('item.source!=="bot"&&!serverContractId(item)', self.frontend)
+        self.assertIn('(group.items||[]).filter(item=>!serverContractId(item)).forEach', self.frontend)
+        self.assertIn('data-contract-id="${escapeAccountHtml(id)}"', self.frontend)
+        self.assertIn('if(!await syncContract("delete",{contract_id:serverContractId(v)})) return;', self.frontend)
+        self.assertIn('action==="delete" ? "Vertrag konnte nicht gelöscht werden."', self.frontend)
+        self.assertIn("Vertrag konnte nicht eindeutig zugeordnet werden.", self.frontend)
+
     def test_expense_detail_neutralizes_only_generic_icons(self):
         self.assertIn("function transactionDetailLogo(t)", self.frontend)
         self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)

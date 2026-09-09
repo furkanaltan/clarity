@@ -1491,7 +1491,7 @@ def normalize_legacy_contracts(conn: sqlite3.Connection, user_id: int) -> dict:
 def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     ensure_app_contracts_table(conn)
     rows = conn.execute(
-        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source
+        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source, legacy_ref
              FROM app_contracts WHERE user_id = ? ORDER BY datetime(created_at), contract_id""",
         (user_id,),
     ).fetchall()
@@ -1501,6 +1501,7 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
         "icon": str(row["icon"] or "doc"), "tint": str(row["tint"] or "#8FA8BC"),
         "date": str(row["debit_day"] or "1."), "cancel": bool(row["cancelable"]),
         "source": str(row["source"] or "app"), "category": str(row["category"]),
+        "legacyRef": str(row["legacy_ref"] or ""),
     } for row in rows]
 
 

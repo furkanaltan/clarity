@@ -74,6 +74,8 @@ class StabilitySprint6ContractTests(unittest.TestCase):
             self.assertEqual(first["created"], 2)
             self.assertEqual(conn.execute("SELECT fixed_costs FROM users WHERE user_id=1").fetchone()[0], 950)
             self.assertEqual(len(get_app_contracts(conn, 1)), 2)
+            spotify = next(item for item in get_app_contracts(conn, 1) if item["n"] == "Spotify")
+            self.assertEqual(spotify["legacyRef"], "telegram_legacy:abos:spotify")
             self.assertEqual(json.loads(conn.execute("SELECT fixed_costs_details FROM users WHERE user_id=1").fetchone()[0])["kredite"]["restschuld"], 100000)
             conn.execute("BEGIN IMMEDIATE")
             second = normalize_legacy_contracts(conn, 1)
