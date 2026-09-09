@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-7587064">
+<meta name="rove-frontend-build" content="20260909-370e5d1">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -2237,6 +2237,38 @@
   :root[data-theme="light"] #tab-ziele .goal-add svg{color:var(--blue)}
   :root[data-theme="light"] #setsheet .feed{scroll-padding-top:10px}
   :root[data-theme="light"] #setsheet h3{position:sticky;top:0;z-index:2;padding:5px 0 10px;background:linear-gradient(180deg,#FFFFFF 75%,rgba(255,255,255,0));margin-bottom:0}
+
+  /* Keep analysis labels readable without changing its navigation or data state. */
+  :root[data-theme="light"] #tab-analysis .analysis-view-head h2,
+  :root[data-theme="light"] #tab-analysis .analysis-list-head h2,
+  :root[data-theme="light"] #tab-analysis .analysis-section-head h3,
+  :root[data-theme="light"] #tab-analysis .analysis-preview-main b,
+  :root[data-theme="light"] #tab-analysis .analysis-detail-copy b,
+  :root[data-theme="light"] #tab-analysis .analysis-cat,
+  :root[data-theme="light"] #tab-analysis .analysis-values b,
+  :root[data-theme="light"] #categorysheet .category-deep-copy b{
+    color:var(--ink);
+  }
+  :root[data-theme="light"] #tab-analysis .analysis-view-head p,
+  :root[data-theme="light"] #tab-analysis .analysis-list-head span,
+  :root[data-theme="light"] #tab-analysis .analysis-section-head span,
+  :root[data-theme="light"] #tab-analysis .analysis-preview-main span,
+  :root[data-theme="light"] #tab-analysis .analysis-values span,
+  :root[data-theme="light"] #tab-analysis .analysis-detail-copy .meta,
+  :root[data-theme="light"] #categorysheet .category-deep-copy span,
+  :root[data-theme="light"] #categorysheet .category-deep-nav-title{
+    color:var(--muted);
+  }
+  :root[data-theme="light"] #tab-analysis .analysis-more{color:var(--blue-deep)}
+  :root[data-theme="light"] #tab-analysis .analysis-detail-chevron{stroke:var(--faint)}
+  :root[data-theme="light"] #tab-analysis .analysis-branch.on,
+  :root[data-theme="light"] #tab-analysis .analysis-tab.on{color:#fff}
+  :root[data-theme="light"] .iconbtn:active{
+    color:var(--blue-deep);
+    background:linear-gradient(145deg,#EAF5FA,#DDECF4);
+    border-color:rgba(28,147,214,.32);
+    box-shadow:inset 0 1px 2px rgba(28,147,214,.12),0 2px 6px rgba(28,147,214,.12);
+  }
 
   /* Geschlossene Sheets liegen unterhalb des Viewports. Eigene Design-System-Schatten
      duerfen dort nicht weiterzeichnen, sonst addieren sie sich unter der Bottom-Bar. */
