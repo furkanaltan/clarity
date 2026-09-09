@@ -46,11 +46,25 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         self.assertIn('openVehicleFinancingSheet(); buzz(); return;', self.source)
 
     def test_leasing_toggle_stays_inside_open_sheet(self):
-        self.assertIn('querySelectorAll("#vehiclefinancingsheet [data-vftype]")', self.source)
+        self.assertIn('const vehicleFinancingSheet=document.getElementById("vehiclefinancingsheet")', self.source)
+        self.assertIn('vehicleFinancingSheet.addEventListener("click",event=>', self.source)
+        self.assertIn('const toggle=event.target.closest("[data-vftype]")', self.source)
         self.assertIn('event.preventDefault();', self.source)
-        self.assertIn('event.stopPropagation();', self.source)
-        self.assertIn('vehicleFinancingType=button.dataset.vftype;', self.source)
-        self.assertNotIn('closeSheet();', self.source[self.source.index('querySelectorAll("#vehiclefinancingsheet [data-vftype]")'):self.source.index('document.getElementById("vcCats")')])
+        self.assertIn('event.stopImmediatePropagation();', self.source)
+        self.assertIn('vehicleFinancingType=toggle.dataset.vftype==="leasing" ? "leasing" : "financed";', self.source)
+        start = self.source.index('const vehicleFinancingSheet=')
+        end = self.source.index('document.getElementById("vcCats")', start)
+        handler = self.source[start:end]
+        self.assertNotIn('querySelectorAll("#vehiclefinancingsheet [data-vftype]")', handler)
+        self.assertNotIn('closeSheet();', handler)
+
+    def test_leasing_toggle_uses_one_stable_delegated_handler(self):
+        start = self.source.index('const vehicleFinancingSheet=')
+        end = self.source.index('document.getElementById("vcCats")', start)
+        handler = self.source[start:end]
+        self.assertEqual(handler.count('vehicleFinancingSheet.addEventListener("click"'), 1)
+        self.assertIn('renderVehicleFinancingType();', handler)
+        self.assertIn('return;', handler)
 
 
 if __name__ == "__main__":

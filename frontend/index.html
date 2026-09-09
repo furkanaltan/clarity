@@ -8365,15 +8365,18 @@ function openContract(name,reference={}){
   rovePushState("vdsheet");
 }
 document.getElementById("addContractBtn").addEventListener("click",()=>{ openContractCreateSheet(); buzz(); });
-document.querySelectorAll("#vehiclefinancingsheet [data-vftype]").forEach(button=>button.addEventListener("click",event=>{
-  event.preventDefault();
-  event.stopPropagation();
-  vehicleFinancingType=button.dataset.vftype;
-  renderVehicleFinancingType();
-  buzz();
-}));
-document.getElementById("vehiclefinancingsheet").addEventListener("click",e=>{
-  if(e.target.closest("#vfSave")) saveVehicleFinancingSheet();
+const vehicleFinancingSheet=document.getElementById("vehiclefinancingsheet");
+vehicleFinancingSheet.addEventListener("click",event=>{
+  const toggle=event.target.closest("[data-vftype]");
+  if(toggle && vehicleFinancingSheet.contains(toggle)){
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    vehicleFinancingType=toggle.dataset.vftype==="leasing" ? "leasing" : "financed";
+    renderVehicleFinancingType();
+    buzz();
+    return;
+  }
+  if(event.target.closest("#vfSave")) saveVehicleFinancingSheet();
 });
 document.getElementById("vcCats").addEventListener("click",e=>{
   const b=e.target.closest("[data-vccat]"); if(!b) return;
