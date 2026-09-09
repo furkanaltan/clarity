@@ -21,7 +21,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from rove_score import calculate_score as calculate_live_score
-from rove_app_state import get_monthly_financial_snapshot
+from rove_app_state import get_monthly_financial_snapshot, _monthly_budget_truth
 from rove_consumer_debt import total_consumer_debt, net_worth_total
 
 load_dotenv()
@@ -44,6 +44,25 @@ REPORT_CONTRIBUTION_SOURCE_SQL = ", ".join("?" for _ in REPORT_CONTRIBUTION_SOUR
 
 class ReportSkipped(Exception):
     pass
+
+
+def _report_budget_truth(
+    user_id: int,
+    report_month: str,
+    income_total: float,
+    fixed_costs: float,
+    savings: float,
+) -> dict[str, float]:
+    """Read the report budget through the same truth helper as the App."""
+    with get_db() as conn:
+        return _monthly_budget_truth(
+            conn,
+            user_id,
+            income=income_total,
+            fixed_costs=fixed_costs,
+            savings=savings,
+            month_key=report_month,
+        )
 
 GERMAN_MONTHS = {
     1: "Januar",
@@ -997,7 +1016,7 @@ def get_report_savings_progress(user_id: int, report_month: str, execution: dict
     progress["automatic_etf_amount"] = max(0.0, amounts.get("app_etf_plan", 0.0))
     if close_row is not None:
         progress["full_plan_confirmed"] = True
-        progress["full_plan_amount"] = max(0.0, float(close_row["actual_savings"] or 0))
+        progress["full_plan_amount"] = float(close_row["actual_savings"] or 0)
         progress["confirmation_source"] = "month_close"
     elif progress["full_plan_confirmed"]:
         # A confirmed plan can contain cash-only bookings, or cash plus the
@@ -1245,13 +1264,25 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     income_total = round(income + other_income, 2) if income is not None and other_income is not None else None
     clarity_points = row_int(user, "clarity_points")
 
-    free_budget = round(income_total - fixed_costs, 2) if income_total is not None and fixed_costs is not None else None
-    remaining_budget = round(free_budget - total_expenses, 2) if free_budget is not None else None
     savings_plan = round(etf_rate + cash_rate, 2) if etf_rate is not None and cash_rate is not None else None
     savings_rate = (
         round(savings_plan / income_total * 100.0, 2)
         if savings_plan is not None and income_total and income_total > 0 else None
     )
+
+    budget_truth = None
+    if income_total is not None and fixed_costs is not None and savings_plan is not None:
+        budget_truth = _report_budget_truth(
+            user_id,
+            report_month,
+            income_total,
+            fixed_costs,
+            savings_plan,
+        )
+    free_budget = budget_truth["financial_month_budget"] if budget_truth else None
+    remaining_budget = budget_truth["free_month_remaining"] if budget_truth else None
+    if budget_truth is not None:
+        total_expenses = budget_truth["variable_expenses"]
 
     # A test report for the open month must show the current App and bot state.
     # Closed months remain anchored to their saved monthly snapshot.

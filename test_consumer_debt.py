@@ -57,6 +57,20 @@ class ConsumerDebtTests(unittest.TestCase):
         self.assertEqual(len(series["1W"]), 8)
         self.assertEqual(len(labels["1W"]), 8)
 
+    def test_current_property_equity_does_not_drift_into_old_series_points(self):
+        state.ensure_app_properties_table(self.conn)
+        self.conn.execute(
+            "INSERT INTO app_properties(user_id,market_value,remaining_debt) VALUES (1,180000,171000)"
+        )
+        series, _ = state._net_worth_series(self.conn, 1, 19000)
+        self.assertEqual(series["1W"][:-1], [10.0] * 7)
+        self.assertEqual(series["1W"][-1], 19.0)
+
+    def test_monthly_snapshot_uses_calendar_month_end(self):
+        self.assertEqual(state._report_month_end("2026-08"), date(2026, 8, 31))
+        self.assertEqual(state._report_month_end("2026-02"), date(2026, 2, 28))
+        self.assertEqual(state._report_month_end("2028-02"), date(2028, 2, 29))
+
     def test_debt_history_changes_only_from_effective_events(self):
         debt_id = save_consumer_debt(self.conn, 1, self.payload(20000))
         save_consumer_debt(self.conn, 1, self.payload(15000), debt_id)

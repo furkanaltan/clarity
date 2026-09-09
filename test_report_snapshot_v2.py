@@ -114,6 +114,25 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         self.assertEqual(progress["confirmation_source"], "month_close")
         self.assertNotEqual(progress["full_plan_amount"], 1300.0)
 
+    def test_negative_month_close_savings_remains_negative_in_report_progress(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("INSERT INTO app_month_closures VALUES (1, '2026-08', -100.0)")
+        progress = report_engine.get_report_savings_progress(
+            1, "2026-08", {"savings_confirmed": True}
+        )
+        self.assertTrue(progress["full_plan_confirmed"])
+        self.assertEqual(progress["full_plan_amount"], -100.0)
+
+    def test_report_budget_uses_app_truth_including_savings_targets(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("DELETE FROM expenses")
+            conn.execute(
+                "INSERT INTO expenses VALUES (1, 1, 1700.0, 'Restaurant', 'Dinner', '', '2026-08-10 12:00:00')"
+            )
+        truth = report_engine._report_budget_truth(1, "2026-08", 3000.0, 1000.0, 500.0)
+        self.assertEqual(truth["financial_month_budget"], 1500.0)
+        self.assertEqual(truth["free_month_remaining"], -200.0)
+
     def test_corrected_snapshots_use_new_schema_without_rewriting_v2(self):
         self.assertEqual(report_engine.REPORT_SNAPSHOT_SCHEMA_VERSION, 3)
 

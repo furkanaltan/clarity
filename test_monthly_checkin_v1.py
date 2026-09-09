@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from unittest.mock import patch
 
+import rove_app_api as api
 import rove_app_state as state
 from rove_score import calculate_score, savings_confirmed
 
@@ -156,6 +158,46 @@ class MonthlyCheckinTests(unittest.TestCase):
         self.conn.execute("INSERT OR IGNORE INTO app_month_closures (user_id, month_key, actual_savings) VALUES (1, '2026-02', 200)")
         row = self.conn.execute("SELECT actual_savings FROM app_month_closures WHERE user_id=1 AND month_key='2026-02'").fetchone()
         self.assertEqual(row["actual_savings"], 100)
+
+    def test_api_month_close_accepts_and_persists_negative_actual_savings(self):
+        month_key = (date.today().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+            conn.execute("INSERT INTO users VALUES (1)")
+            state.ensure_app_month_close_table(conn)
+            conn.commit()
+
+            @contextmanager
+            def fake_db():
+                yield conn
+
+            with patch.object(api, "db", fake_db), \
+                 patch.object(api, "token_from_request", return_value="test-token"), \
+                 patch.object(api, "user_from_token", return_value=1), \
+                 patch.object(
+                     api,
+                     "get_monthly_checkin_actions",
+                     return_value=[{
+                         "kind": "month_close",
+                         "month": month_key,
+                         "due": True,
+                         "completed": False,
+                     }],
+                 ), \
+                 patch.object(api, "capture_monthly_financial_snapshot"), \
+                 patch.object(api, "build_live_app_data", return_value={}):
+                response = api.app.test_client().post(
+                    "/v1/month-close",
+                    json={"month": month_key, "actual_savings": -100},
+                )
+
+            self.assertEqual(response.status_code, 200, response.get_json())
+            saved = conn.execute(
+                "SELECT actual_savings FROM app_month_closures WHERE user_id=1 AND month_key=?",
+                (month_key,),
+            ).fetchone()
+            self.assertEqual(saved["actual_savings"], -100.0)
 
     def score(self, actual_savings=None, report_month="2026-08"):
         if actual_savings is not None:

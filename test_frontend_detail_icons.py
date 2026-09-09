@@ -55,6 +55,10 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn("syncPropertyContract(propertyField,0)", self.frontend)
         self.assertNotIn('syncContract("update",{contract_id:v.id,amount:amt})', self.frontend)
 
+    def test_bridge_does_not_restore_stale_server_property_from_local_storage(self):
+        self.assertIn('asset.name==="Immobilie"', self.frontend)
+        self.assertIn('asset.real', self.frontend)
+
     def test_expense_detail_neutralizes_only_generic_icons(self):
         self.assertIn("function transactionDetailLogo(t)", self.frontend)
         self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)

@@ -631,6 +631,16 @@ def build_app_contract_groups(conn: sqlite3.Connection, user_id: int, details: d
         vehicle = vehicle_by_contract.get(contract["id"])
         if vehicle:
             contract["vehicleFinancing"] = vehicle
+        property_field = {
+            "telegram_legacy:kredite:immobilie": "monthly_rate",
+            "app_property:monthly_rate": "monthly_rate",
+            "telegram_legacy:kredite:hausgeld": "house_fee",
+            "app_property:house_fee": "house_fee",
+            "telegram_legacy:kredite:hausverwalter": "management_fee",
+            "app_property:management_fee": "management_fee",
+        }.get(contract.get("legacyRef"))
+        if property_field:
+            contract["propertyField"] = property_field
         category = contract.pop("category")
         group = by_category.get(category)
         if not group:
@@ -1691,6 +1701,12 @@ def _series_label(tag: date, bereich: str) -> str:
     return f"{_MONATE_KURZ[tag.month - 1]} {tag.year}"
 
 
+def _report_month_end(report_month: str) -> date:
+    """Return the factual closing date for a YYYY-MM financial snapshot."""
+    year, month = (int(part) for part in str(report_month).split("-", 1))
+    return date(year, month, monthrange(year, month)[1])
+
+
 def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict:
     """Taegliche Veraenderung des Vermoegens aus den echten Buchungen.
 
@@ -1741,12 +1757,14 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
 
 
 def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None):
-    """Reconstruct the existing financial history with time-aware consumer debt.
+    """Reconstruct the financial history without projecting today's property truth backward.
 
-    Cash/investment movement history remains the base series. Debt is then applied
-    only from its recorded create/update/deactivate/delete event onward. Monthly
-    financial snapshots override reconstructed points because they are the hard
-    historical truth for completed months.
+    Cash/investment movement history remains the reconstructable base series. The
+    current property equity is deliberately excluded from older reconstructed
+    points because no property event history proves it existed on those dates.
+    Debt is applied only from its recorded event onward. Monthly financial
+    snapshots override reconstructed points because they are hard historical
+    truth for completed months.
     """
     if net_worth is None:
         return {}, {}
@@ -1787,9 +1805,13 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float |
                 balances[debt_id] = float(event["outstanding_balance"] or 0) if event["active"] else 0.0
         return round(sum(balances.values()), 2)
 
-    # Reconstruct the debt-free base first. The current net worth already includes
-    # today's debt, so add today's debt back before reversing dated movements.
-    base_values = [float(net_worth) + current_debt]
+    property_data = get_app_property(conn, user_id)
+    current_property_equity = float(property_data["equity"] if property_data else 0.0)
+
+    # Reconstruct the debt-free, property-neutral base first. The current net
+    # worth already includes today's debt and property equity, so remove both
+    # before reversing dated cash/investment movements.
+    base_values = [float(net_worth) - current_property_equity + current_debt]
     today = date.today()
     for offset in range(max_days):
         day = today - timedelta(days=offset)
@@ -1798,7 +1820,7 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float |
     frozen = []
     try:
         frozen = [
-            (date.fromisoformat(f"{row['report_month']}-01"), float(row["net_worth"]))
+            (_report_month_end(row["report_month"]), float(row["net_worth"]))
             for row in conn.execute(
                 """SELECT report_month, net_worth FROM monthly_financial_snapshots
                    WHERE user_id=? AND net_worth IS NOT NULL ORDER BY report_month""",

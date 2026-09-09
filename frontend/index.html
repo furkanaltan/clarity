@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-bcf37d4">
+<meta name="rove-frontend-build" content="20260909-e473628">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3246,7 +3246,7 @@ function saveBridgeLocal(){
 function restoreBridgeLocal(snapshot,userId){
   if(!snapshot || String(snapshot.userId)!==String(userId)) return;
   (snapshot.assets||[]).forEach(asset=>{
-    if(BRIDGE_BOT_ASSET_NAMES.has(asset.name)||asset.source==="financial-account") return;
+    if(BRIDGE_BOT_ASSET_NAMES.has(asset.name)||asset.source==="financial-account"||asset.name==="Immobilie"||asset.real) return;
     const index=DATA.assets.findIndex(current=>current.name===asset.name);
     if(index>=0){
       // Ein bereits zentral gespeicherter Wert gewinnt. Alte lokale Immobilien bleiben

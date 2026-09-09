@@ -664,6 +664,90 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             self.assertNotIn("hausgeld", details["kredite"])
             self.assertNotIn("hausverwalter", details["kredite"])
 
+    def test_property_costs_have_one_canonical_contract_and_repeat_save_is_idempotent(self):
+        payload = {
+            "market_value": 180000,
+            "remaining_debt": 171000,
+            "monthly_rate": 930,
+            "house_fee": 250,
+            "management_fee": 100,
+        }
+        first = self.request("POST", "/v1/property", json=payload)
+        self.assertEqual(first.status_code, 200, first.get_json())
+        second = self.request("POST", "/v1/property", json=payload)
+        self.assertEqual(second.status_code, 200, second.get_json())
+
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                """SELECT name, amount, legacy_ref FROM app_contracts
+                   WHERE user_id=1 AND legacy_ref LIKE 'app_property:%'
+                   ORDER BY legacy_ref"""
+            ).fetchall()
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(
+                {(row["name"], float(row["amount"]), row["legacy_ref"]) for row in rows},
+                {
+                    ("Immobilienkredit", 930.0, "app_property:monthly_rate"),
+                    ("Hausgeld", 250.0, "app_property:house_fee"),
+                    ("Hausverwaltung", 100.0, "app_property:management_fee"),
+                },
+            )
+            self.assertEqual(float(conn.execute(
+                "SELECT fixed_costs FROM users WHERE user_id=1"
+            ).fetchone()[0]), 1280.0)
+
+        changed = self.request("POST", "/v1/property", json={**payload, "monthly_rate": 950})
+        self.assertEqual(changed.status_code, 200, changed.get_json())
+        debt_only = self.request("POST", "/v1/property", json={**payload, "monthly_rate": 950, "remaining_debt": 160000})
+        self.assertEqual(debt_only.status_code, 200, debt_only.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id=1 AND legacy_ref='app_property:monthly_rate'"
+            ).fetchone()[0], 1)
+            self.assertEqual(float(conn.execute(
+                "SELECT amount FROM app_contracts WHERE user_id=1 AND legacy_ref='app_property:monthly_rate'"
+            ).fetchone()[0]), 950.0)
+            self.assertEqual(float(conn.execute(
+                "SELECT fixed_costs FROM users WHERE user_id=1"
+            ).fetchone()[0]), 1300.0)
+
+    def test_normalized_legacy_property_contract_is_updated_without_legacy_duplicate(self):
+        with closing(self.connect()) as conn:
+            api.ensure_app_contracts_table(conn)
+            conn.execute(
+                "UPDATE users SET fixed_costs_details=? WHERE user_id=1",
+                ('{"kredite":{"immobilie":930,"restschuld":171000}}',),
+            )
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, source, legacy_ref)
+                   VALUES (1, 'legacy-property-rate', 'legacy_property_rate',
+                           'Immobilienkredit', 'Kredite', 930, 'telegram_legacy',
+                           'telegram_legacy:kredite:immobilie')"""
+            )
+            conn.commit()
+
+        response = self.request("POST", "/v1/property", json={
+            "market_value": 180000,
+            "remaining_debt": 171000,
+            "monthly_rate": 950,
+            "house_fee": 0,
+            "management_fee": 0,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id=1 AND name='Immobilienkredit'"
+            ).fetchone()[0], 1)
+            self.assertEqual(float(conn.execute(
+                "SELECT amount FROM app_contracts WHERE user_id=1 AND name='Immobilienkredit'"
+            ).fetchone()[0]), 950.0)
+            details = json.loads(conn.execute(
+                "SELECT fixed_costs_details FROM users WHERE user_id=1"
+            ).fetchone()[0])
+            self.assertNotIn("immobilie", details.get("kredite", {}))
+            self.assertEqual(details["kredite"]["restschuld"], 171000)
+
 
 class OnboardingAtomicityTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -3652,7 +3652,7 @@ def confirm_month_close():
     current_month = datetime.now().strftime("%Y-%m")
     if not re.fullmatch(r"\d{4}-\d{2}", month_key) or month_key >= current_month:
         return jsonify({"ok": False, "error": "completed_month_required"}), 400
-    if not 0 <= actual_savings <= 1_000_000:
+    if not -1_000_000 <= actual_savings <= 1_000_000:
         return jsonify({"ok": False, "error": "actual_savings_out_of_range"}), 400
 
     token = token_from_request()
@@ -4657,10 +4657,10 @@ def update_goals():
 
     token = token_from_request()
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-        begin_write(conn)
         ensure_app_goals_table(conn)
 
         if action == "create":
@@ -5267,11 +5267,13 @@ def update_property():
         return jsonify({"ok": False, "error": "valid_property_values_required"}), 400
 
     with db() as conn:
+        begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
         ensure_app_properties_table(conn)
+        ensure_app_contracts_table(conn)
         conn.execute(
             """INSERT INTO app_properties
                (user_id, market_value, remaining_debt, monthly_rate, house_fee,
@@ -5294,37 +5296,90 @@ def update_property():
             details = json.loads(user["fixed_costs_details"] or "{}") if user else {}
         except (json.JSONDecodeError, TypeError):
             details = {}
-        credits = details.get("kredite") if isinstance(details.get("kredite"), dict) else {}
+        property_costs = {
+            "monthly_rate": {
+                "value": monthly_rate,
+                "name": "Immobilienkredit",
+                "category": "Kredite",
+                "legacy_keys": (("kredite", "immobilie"),),
+                "legacy_refs": ("telegram_legacy:kredite:immobilie", "app_property:monthly_rate"),
+                "icon": "house",
+                "tint": "#D8B66A",
+            },
+            "house_fee": {
+                "value": house_fee,
+                "name": "Hausgeld",
+                "category": "Wohnen",
+                "legacy_keys": (("kredite", "hausgeld"), ("wohnen", "hausgeld")),
+                "legacy_refs": ("telegram_legacy:kredite:hausgeld", "app_property:house_fee"),
+                "icon": "house",
+                "tint": "#D8B66A",
+            },
+            "management_fee": {
+                "value": management_fee,
+                "name": "Hausverwaltung",
+                "category": "Wohnen",
+                "legacy_keys": (("kredite", "hausverwalter"), ("wohnen", "hausverwalter")),
+                "legacy_refs": ("telegram_legacy:kredite:hausverwalter", "app_property:management_fee"),
+                "icon": "house",
+                "tint": "#D8B66A",
+            },
+        }
 
-        def sync_property_detail(key: str, value: float, sections: tuple[str, ...]) -> None:
-            for section in sections:
+        for field, spec in property_costs.items():
+            linked = conn.execute(
+                """SELECT contract_id FROM app_contracts
+                    WHERE user_id = ? AND legacy_ref IN (?, ?)
+                    LIMIT 1""",
+                (user_id, *spec["legacy_refs"]),
+            ).fetchone()
+            value = float(spec["value"] or 0)
+
+            if linked and value > 0:
+                conn.execute(
+                    """UPDATE app_contracts
+                          SET name = ?, category = ?, amount = ?, icon = ?, tint = ?,
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND contract_id = ?""",
+                    (spec["name"], spec["category"], value, spec["icon"], spec["tint"],
+                     user_id, linked["contract_id"]),
+                )
+            elif linked:
+                conn.execute(
+                    "DELETE FROM app_contracts WHERE user_id = ? AND contract_id = ?",
+                    (user_id, linked["contract_id"]),
+                )
+            elif value > 0:
+                contract_id = secrets.token_urlsafe(9)
+                conn.execute(
+                    """INSERT INTO app_contracts
+                       (user_id, contract_id, detail_key, name, category, amount,
+                        icon, tint, cancelable, source, legacy_ref)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'property', ?)""",
+                    (user_id, contract_id, f"property_{field}", spec["name"],
+                     spec["category"], value, spec["icon"], spec["tint"],
+                     f"app_property:{field}"),
+                )
+
+            for section, key in spec["legacy_keys"]:
                 values = details.get(section)
                 if isinstance(values, dict) and key in values:
-                    if value:
-                        values[key] = value
-                    else:
-                        values.pop(key, None)
-                        if not values:
-                            details.pop(section, None)
-                    return
-            if value:
-                credits[key] = value
+                    values.pop(key, None)
+                    if not values:
+                        details.pop(section, None)
 
-        # Leere optionale Felder lassen bestehende Bot-Einträge in Ruhe. So führt eine reine
-        # Vermögenskorrektur nicht versehentlich zum Löschen schon gepflegter Fixkosten.
+        credits = details.get("kredite") if isinstance(details.get("kredite"), dict) else {}
         if remaining_debt:
             credits["restschuld"] = remaining_debt
-        sync_property_detail("immobilie", monthly_rate, ("kredite",))
-        sync_property_detail("hausgeld", house_fee, ("kredite", "wohnen"))
-        sync_property_detail("hausverwalter", management_fee, ("kredite", "wohnen"))
         if credits:
             details["kredite"] = credits
+        elif "kredite" in details:
+            details.pop("kredite", None)
         conn.execute(
-            """UPDATE users
-                  SET fixed_costs_details = ?, fixed_costs = ?
-                WHERE user_id = ?""",
-            (json.dumps(details, ensure_ascii=False), fixed_costs_total(details), user_id),
+            "UPDATE users SET fixed_costs_details = ? WHERE user_id = ?",
+            (json.dumps(details, ensure_ascii=False), user_id),
         )
+        sync_contract_fixed_costs(conn, user_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
