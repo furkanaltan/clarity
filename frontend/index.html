@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-0577d08">
+<meta name="rove-frontend-build" content="20260909-vehicle-create">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -1882,6 +1882,11 @@
   .field{display:flex;gap:8px;align-items:center;background:var(--card);border:1px solid var(--line2);border-radius:16px;padding:5px 5px 5px 16px}
   .field input{flex:1;min-width:0;background:none;border:none;outline:none;color:var(--ink);font-size:17px;font-weight:600;padding:13px 0}
   .field input::placeholder{color:var(--faint);font-weight:500}
+  .vehicle-form-field{display:block;margin-bottom:10px}
+  .vehicle-form-label{display:block;margin:0 0 6px 3px;color:var(--muted);font-size:12px;font-weight:720;letter-spacing:.02em}
+  .vehicle-form-label span{color:var(--faint);font-weight:600}
+  .vehicle-term-alternative{margin:2px 0 10px;color:var(--faint);font-size:12px;font-weight:650;text-align:center}
+  #vehiclefinancingsheet [hidden]{display:none!important}
   .send{width:46px;height:46px;border-radius:13px;border:none;cursor:pointer;flex-shrink:0;
     background:linear-gradient(145deg,#3cb6f5,#1b86c7);display:flex;align-items:center;justify-content:center}
   .send svg{width:22px;height:22px;stroke:#fff;stroke-width:2.4;fill:none}
@@ -2531,13 +2536,14 @@
     <div class="grab"></div>
     <h3 id="vfTitle">Fahrzeugfinanzierung</h3>
     <div class="hint">Die Rate wird als Vertrag geführt. Fahrzeug und Finanzierung verändern dein Vermögen nicht automatisch.</div>
-    <div class="field" style="margin-bottom:10px"><input id="vfName" type="text" autocomplete="off" placeholder="Fahrzeug, z. B. Mercedes CLA"></div>
+    <div class="vehicle-form-field"><label class="vehicle-form-label" for="vfName">Fahrzeug</label><div class="field"><input id="vfName" type="text" inputmode="text" enterkeyhint="next" autocomplete="off" placeholder="z. B. Mercedes CLA"></div></div>
     <div class="chips" id="vfTypeChoice" style="margin-bottom:12px"><button type="button" class="ob-chip on" data-vftype="financed">Finanziert</button><button type="button" class="ob-chip" data-vftype="leasing">Leasing</button></div>
-    <div class="field" id="vfPurchaseWrap" style="margin-bottom:10px"><input id="vfPurchase" type="text" inputmode="decimal" autocomplete="off" placeholder="Kaufpreis, z. B. 60.000"></div>
-    <div class="field" id="vfBalanceWrap" style="margin-bottom:10px"><input id="vfBalance" type="text" inputmode="decimal" autocomplete="off" placeholder="Finanzierung offen, z. B. 20.000"></div>
-    <div class="field" style="margin-bottom:10px"><input id="vfPayment" type="text" inputmode="decimal" autocomplete="off" placeholder="Monatliche Rate, z. B. 600"></div>
-    <div class="field" style="margin-bottom:10px"><input id="vfMonths" type="number" min="0" max="600" inputmode="numeric" autocomplete="off" placeholder="Restlaufzeit in Monaten"></div>
-    <div class="field" style="margin-bottom:14px"><input id="vfEnd" type="date" autocomplete="off" aria-label="Vertragsende"></div>
+    <div class="vehicle-form-field" id="vfPurchaseWrap"><label class="vehicle-form-label" for="vfPurchase">Kaufpreis</label><div class="field"><input id="vfPurchase" type="text" inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="z. B. 60.000 €"></div></div>
+    <div class="vehicle-form-field" id="vfBalanceWrap"><label class="vehicle-form-label" for="vfBalance">Finanzierung offen</label><div class="field"><input id="vfBalance" type="text" inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="z. B. 20.000 €"></div></div>
+    <div class="vehicle-form-field"><label class="vehicle-form-label" for="vfPayment">Monatsrate</label><div class="field"><input id="vfPayment" type="text" inputmode="decimal" enterkeyhint="next" autocomplete="off" placeholder="z. B. 600 €"></div></div>
+    <div class="vehicle-form-field"><label class="vehicle-form-label" for="vfMonths">Restlaufzeit <span>in Monaten</span></label><div class="field"><input id="vfMonths" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="next" autocomplete="off" placeholder="z. B. 20"></div></div>
+    <div class="vehicle-term-alternative">oder optional</div>
+    <div class="vehicle-form-field" style="margin-bottom:14px"><label class="vehicle-form-label" for="vfEnd">Vertragsende <span>optional</span></label><div class="field"><input id="vfEnd" type="date" enterkeyhint="done" autocomplete="off"></div></div>
     <button class="vd-btn" id="vfSave">Fahrzeugfinanzierung speichern</button>
   </div>
 
@@ -8277,11 +8283,16 @@ async function syncVehicleFinancing(method,url,payload){
   }
 }
 function renderVehicleFinancingType(){
-  document.querySelectorAll("[data-vftype]").forEach(button=>button.classList.toggle("on",button.dataset.vftype===vehicleFinancingType));
-  document.getElementById("vfTypeChoice")?.classList.toggle("hidden",vehicleFinancingEditId!==null);
+  const typeChoice=document.getElementById("vfTypeChoice");
+  typeChoice.hidden=vehicleFinancingEditId!==null;
+  typeChoice.querySelectorAll("[data-vftype]").forEach(button=>button.classList.toggle("on",button.dataset.vftype===vehicleFinancingType));
   const financed=vehicleFinancingType==="financed";
-  document.getElementById("vfPurchaseWrap")?.classList.toggle("hidden",!financed);
-  document.getElementById("vfBalanceWrap")?.classList.toggle("hidden",!financed);
+  document.getElementById("vfPurchaseWrap").hidden=!financed;
+  document.getElementById("vfBalanceWrap").hidden=!financed;
+}
+function setVehicleFinancingType(type){
+  vehicleFinancingType=type==="leasing" ? "leasing" : "financed";
+  renderVehicleFinancingType();
 }
 function openVehicleFinancingSheet(item=null){
   closeAllSheetsSoft();
@@ -8374,11 +8385,10 @@ document.getElementById("addContractBtn").addEventListener("click",()=>{ openCon
 const vehicleFinancingSheet=document.getElementById("vehiclefinancingsheet");
 vehicleFinancingSheet.addEventListener("click",event=>{
   const toggle=event.target.closest("[data-vftype]");
-  if(toggle && vehicleFinancingSheet.contains(toggle)){
+  if(toggle && vehicleFinancingSheet.contains(toggle) && vehicleFinancingEditId===null){
     event.preventDefault();
-    event.stopImmediatePropagation();
-    vehicleFinancingType=toggle.dataset.vftype==="leasing" ? "leasing" : "financed";
-    renderVehicleFinancingType();
+    event.stopPropagation();
+    setVehicleFinancingType(toggle.dataset.vftype);
     buzz();
     return;
   }
