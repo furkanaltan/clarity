@@ -75,11 +75,15 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         self.assertNotIn('data-vftype=', detail)
         self.assertNotIn('<span class="k">Art</span>', detail)
 
-    def test_vehicle_contract_row_shows_static_type_and_derived_annual_cost(self):
+    def test_vehicle_contract_row_stays_compact_and_keeps_static_type(self):
         self.assertIn('vehicle?.vehicle_name||v.n', self.source)
-        self.assertIn('${eur2(v.a*12)} / Jahr', self.source)
-        self.assertIn('${vehicle.remaining_months} Monate', self.source)
-        self.assertIn('/ Monat</small>', self.source)
+        start = self.source.index('function renderVertraege()')
+        end = self.source.index('renderVertraege();', start)
+        row = self.source[start:end]
+        self.assertNotIn('const vehicleMeta=', row)
+        self.assertNotIn('${eur2(v.a*12)} / Jahr', row)
+        self.assertNotIn('${vehicle.remaining_months} Monate', row)
+        self.assertNotIn('/ Monat</small>', row)
 
     def test_create_toggle_click_updates_real_field_visibility(self):
         render_start = self.source.index('function renderVehicleFinancingType(){')

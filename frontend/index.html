@@ -8265,11 +8265,10 @@ function renderVertraege(){
                     : vehicle ? `<span class="tag base">${vehicle.financing_type==="leasing"?"Leasing":"Fahrzeugfinanzierung"}</span>`
                     : v.cancel ? `<span class="tag cancel">${scis}Abbuchung ${date}</span>`
                     : `<span class="tag base">Basis-Vertrag · ${date}</span>`;
-        const vehicleMeta=vehicle?`<div style="margin-top:4px;color:var(--faint);font-size:11px;font-weight:650;line-height:1.35">${eur2(v.a*12)} / Jahr${vehicle.remaining_months!=null?` · ${vehicle.remaining_months} Monate`:""}</div>`:"";
         return `<div class="tx" data-vn="${contractName}"${contractReferenceAttrs(v)}>
           <div class="logo rov-icon rov-icon--medium" style="background:${tint}22;color:${tint}">${ic(v.icon)}</div>
-          <div class="mid"><div class="nm">${name}</div>${badge}${vehicleMeta}</div>
-          <div class="amt neg">${eur2(v.a)}${vehicle?`<small style="display:block;margin-top:2px;color:var(--muted);font:650 10px system-ui">/ Monat</small>`:""}</div>
+          <div class="mid"><div class="nm">${name}</div>${badge}</div>
+          <div class="amt neg">${eur2(v.a)}</div>
         </div>`;
       }).join("")}
     </div>
