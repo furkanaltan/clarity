@@ -22,6 +22,9 @@ from rove_financial_accounts import (
 )
 
 
+REAL_CATEGORY_RULE_FOR_MERCHANT = api.category_rule_for_merchant
+
+
 def create_db(path: Path) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(
@@ -526,6 +529,57 @@ class Sprint2AccountReferenceTests(unittest.TestCase):
             self.assertEqual(
                 conn.execute("SELECT category FROM expenses WHERE id=?", (expense_id,)).fetchone()[0],
                 "SHOPPING",
+            )
+
+    def test_merchant_category_learning_is_persistent_user_scoped_and_forward_only(self) -> None:
+        with patch.object(api, "category_rule_for_merchant", side_effect=REAL_CATEGORY_RULE_FOR_MERCHANT):
+            first = self.request("POST", "/v1/expenses", json={
+                "amount": 12, "merchant": "dm", "category": "Sonstiges", "request_id": "dm-old-1",
+            })
+            second = self.request("POST", "/v1/expenses", json={
+                "amount": 13, "merchant": "dm", "category": "Sonstiges", "request_id": "dm-old-2",
+            })
+            self.assertEqual(first.status_code, 200, first.get_json())
+            self.assertEqual(second.status_code, 200, second.get_json())
+            first_id = int(first.get_json()["id"])
+            second_id = int(second.get_json()["id"])
+
+            changed = self.request("POST", f"/v1/expenses/{first_id}/category", json={
+                "category": "Drogerie",
+            })
+            self.assertEqual(changed.status_code, 200, changed.get_json())
+
+            future = self.request("POST", "/v1/expenses", json={
+                "amount": 14,
+                "merchant": "dm-drogerie markt",
+                "category": "Sonstiges",
+                "request_id": "dm-future-a",
+            })
+            other_user = self.request("POST", "/v1/expenses", token="other-token", json={
+                "amount": 15,
+                "merchant": "dm-drogerie markt",
+                "category": "Sonstiges",
+                "request_id": "dm-future-b",
+            })
+            self.assertEqual(future.status_code, 200, future.get_json())
+            self.assertEqual(other_user.status_code, 200, other_user.get_json())
+            self.assertEqual(future.get_json()["category"], "DROGERIE")
+            self.assertEqual(other_user.get_json()["category"], "SONSTIGES")
+
+        with closing(self.connect()) as conn:
+            rule = conn.execute(
+                "SELECT category FROM user_category_rules WHERE user_id=? AND alias=?",
+                (1, "dm"),
+            ).fetchone()
+            self.assertIsNotNone(rule)
+            self.assertEqual(rule["category"], "DROGERIE")
+            old_rows = conn.execute(
+                "SELECT id, category FROM expenses WHERE user_id=1 AND id IN (?, ?)",
+                (first_id, second_id),
+            ).fetchall()
+            self.assertEqual(
+                {int(row["id"]): row["category"] for row in old_rows},
+                {first_id: "DROGERIE", second_id: "SONSTIGES"},
             )
 
     def test_budget_and_contract_writes_remain_consistent_under_parallel_updates(self) -> None:
