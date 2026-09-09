@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-dfe9f25">
+<meta name="rove-frontend-build" content="20260909-bcf37d4">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -1813,6 +1813,41 @@
   #tab-analysis .analysis-more{color:#a8d4e7}
   #categorysheet .category-deep-hero,#categorysheet .category-deep-list{border-color:rgba(211,221,229,.18);background:radial-gradient(120% 86% at 0% 0%,rgba(220,236,245,.055),transparent 45%),linear-gradient(145deg,rgba(30,40,51,.9),rgba(10,17,25,.8));box-shadow:inset 0 1px 0 rgba(255,255,255,.085),inset 0 -16px 28px rgba(0,0,0,.1),0 14px 30px rgba(0,0,0,.14)}
   #categorysheet .analysis-category-icon{color:#edf2f5!important;background:radial-gradient(116% 82% at 50% -18%,rgba(255,255,255,.2),transparent 47%),linear-gradient(145deg,rgba(67,77,88,.74),rgba(14,21,30,.97))!important;border-color:rgba(225,232,238,.56);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -10px 18px rgba(0,0,0,.26),0 7px 16px rgba(0,0,0,.21)}
+  /* Analyse Dark Mode: Textstufen bleiben an die vorhandenen Theme-Tokens gebunden.
+     Die Regeln sind auf den dunklen Theme-Zweig begrenzt; Light Mode bleibt unverändert. */
+  :root:not([data-theme="light"]) #tab-analysis .analysis-title,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-view-head h2,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-list-head h2,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-section-head h3,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-preview-main b,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-detail-copy b,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-cat,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-values b,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-copy b,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-total,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-value{color:var(--ink)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-view-head p,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-list-head span,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-section-head span,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-preview-main span,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-values span,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-detail-copy .meta,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-copy span,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-total-label,
+  :root:not([data-theme="light"]) #categorysheet .category-deep-nav-title{color:var(--muted)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-branch,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-account,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-tab{color:var(--muted)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-branch.on,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-account.on,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-tab.on{color:var(--ink)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-more{color:var(--blue)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-change.up,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-change.down,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-change.new{color:var(--ink)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-change.unavailable,
+  :root:not([data-theme="light"]) #tab-analysis .analysis-detail-chevron{color:var(--faint);stroke:var(--faint)}
+  :root:not([data-theme="light"]) #tab-analysis .analysis-total-label{fill:var(--muted)}
   :root[data-theme="light"] #tab-analysis .analysis-back,:root[data-theme="light"] #tab-analysis .analysis-branches,:root[data-theme="light"] #tab-analysis .analysis-tabs,:root[data-theme="light"] #tab-analysis .analysis-month,:root[data-theme="light"] #tab-analysis .analysis-visual,:root[data-theme="light"] #tab-analysis .analysis-preview,:root[data-theme="light"] #tab-analysis .analysis-detail-list,:root[data-theme="light"] #categorysheet .category-deep-hero,:root[data-theme="light"] #categorysheet .category-deep-list{border-color:rgba(67,90,108,.15);background:radial-gradient(120% 86% at 0% 0%,rgba(255,255,255,.98),transparent 48%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(232,239,244,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),inset 0 -14px 26px rgba(71,94,109,.05),0 11px 24px rgba(40,67,84,.08)}
   :root[data-theme="light"] #tab-analysis .analysis-category-icon,:root[data-theme="light"] #categorysheet .analysis-category-icon{color:#33424c!important;background:radial-gradient(116% 82% at 50% -18%,rgba(255,255,255,.98),transparent 48%),linear-gradient(145deg,rgba(255,255,255,.96),rgba(220,229,235,.96))!important;border-color:rgba(83,103,117,.32);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),inset 0 -10px 18px rgba(93,112,125,.11),0 7px 15px rgba(55,77,94,.1)}
 
