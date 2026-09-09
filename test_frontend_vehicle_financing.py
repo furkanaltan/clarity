@@ -20,6 +20,7 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         self.assertIn('vehicleFinancingByContract', self.source)
 
     def test_financing_and_leasing_fields_are_distinct(self):
+        self.assertIn('id="vfTypeChoice"', self.source)
         self.assertIn('data-vftype="financed"', self.source)
         self.assertIn('data-vftype="leasing"', self.source)
         self.assertIn('purchase_price:vehicleFinancingType==="financed"?purchase_price:null', self.source)
@@ -65,6 +66,19 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         self.assertEqual(handler.count('vehicleFinancingSheet.addEventListener("click"'), 1)
         self.assertIn('renderVehicleFinancingType();', handler)
         self.assertIn('return;', handler)
+
+    def test_type_choice_is_create_only_while_detail_is_static(self):
+        self.assertIn('document.getElementById("vfTypeChoice")?.classList.toggle("hidden",vehicleFinancingEditId!==null);', self.source)
+        self.assertIn('const detailSubtitle=vehicle', self.source)
+        detail = self.source[self.source.index('function openContract('):self.source.index('document.getElementById("addContractBtn")')]
+        self.assertNotIn('data-vftype=', detail)
+        self.assertNotIn('<span class="k">Art</span>', detail)
+
+    def test_vehicle_contract_row_shows_static_type_and_derived_annual_cost(self):
+        self.assertIn('vehicle?.vehicle_name||v.n', self.source)
+        self.assertIn('${eur2(v.a*12)} / Jahr', self.source)
+        self.assertIn('${vehicle.remaining_months} Monate', self.source)
+        self.assertIn('/ Monat</small>', self.source)
 
 
 if __name__ == "__main__":

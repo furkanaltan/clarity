@@ -31,8 +31,9 @@ class FrontendDetailIconTests(unittest.TestCase):
 
     def test_contract_views_escape_names_and_restrict_tints(self):
         self.assertIn("function safeContractTint(value)", self.frontend)
-        self.assertIn("const name=escapeAccountHtml(v.n), date=escapeAccountHtml(v.date);", self.frontend)
-        self.assertIn('data-vn="${name}"', self.frontend)
+        self.assertIn("const contractName=escapeAccountHtml(v.n), date=escapeAccountHtml(v.date);", self.frontend)
+        self.assertIn("const name=escapeAccountHtml(vehicle?.vehicle_name||v.n);", self.frontend)
+        self.assertIn('data-vn="${contractName}"', self.frontend)
         self.assertIn("const contractName=escapeAccountHtml(v.n), category=escapeAccountHtml(group.cat);", self.frontend)
         self.assertIn('data-vn="${contractName}"', self.frontend)
         self.assertIn("const tint = safeContractTint(g.items[0].tint);", self.frontend)
