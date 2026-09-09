@@ -17,6 +17,7 @@ from rove_vehicle_financing import (
     list_vehicle_financings,
     update_vehicle_financing,
 )
+from rove_vehicle_financing import _money
 from test_financial_accounts_sprint2 import create_db
 
 
@@ -56,6 +57,21 @@ class VehicleFinancingTests(unittest.TestCase):
             (rows[0]["contract_id"],),
         ).fetchone()
         self.assertEqual(dict(contract), {"amount": 600.0, "category": "Mobilität", "name": "Mercedes CLA · Finanzierung"})
+
+    def test_german_purchase_price_inputs_are_normalized_without_scaling(self):
+        self.assertEqual(_money("60000"), _money("60.000"))
+        self.assertEqual(_money("60000"), _money("60.000,00"))
+        self.assertEqual(float(_money("60000")), 60000.0)
+        financing_id = create_vehicle_financing(
+            self.conn,
+            1,
+            self.payload(purchase_price="60.000", outstanding_balance="26.000"),
+            "german-amounts",
+        )
+        row = next(item for item in list_vehicle_financings(self.conn, 1) if item["id"] == financing_id)
+        self.assertEqual(row["purchase_price"], 60000.0)
+        self.assertEqual(row["outstanding_balance"], 26000.0)
+        self.assertEqual(row["paid_amount"], 34000.0)
 
     def test_retry_is_idempotent_and_changed_payload_conflicts(self):
         first = create_vehicle_financing(self.conn, 1, self.payload(), "req-1")

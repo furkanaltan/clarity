@@ -12,7 +12,9 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
         cls.source = FRONTEND.read_text(encoding="utf-8")
 
     def test_vehicle_financing_has_contracts_entry_and_state_hydration(self):
-        self.assertIn('id="addVehicleFinancingBtn"', self.source)
+        self.assertIn('"Fahrzeugfinanzierung"', self.source)
+        self.assertIn('data-vccat="${c}"', self.source)
+        self.assertNotIn('id="addVehicleFinancingBtn"', self.source)
         self.assertIn('id="vehiclefinancingsheet"', self.source)
         self.assertIn('Array.isArray(data.vehicleFinancings)', self.source)
         self.assertIn('vehicleFinancingByContract', self.source)
@@ -31,6 +33,17 @@ class FrontendVehicleFinancingTests(unittest.TestCase):
     def test_no_vehicle_data_is_routed_to_net_worth_or_debt(self):
         self.assertNotIn('DATA.netWorth += vehicle', self.source)
         self.assertNotIn('consumerDebtTotal += vehicle', self.source)
+
+    def test_vehicle_amounts_are_normalized_and_paid_amount_is_derived_numerically(self):
+        self.assertIn('function normalizeVehicleFinancing(row)', self.source)
+        self.assertIn('function vehicleMoney(raw)', self.source)
+        self.assertIn('paid_amount:purchase_price!=null&&outstanding_balance!=null', self.source)
+        self.assertIn('Math.round((purchase_price-outstanding_balance)*100)/100', self.source)
+        self.assertIn('data.vehicleFinancings.map(normalizeVehicleFinancing)', self.source)
+
+    def test_vehicle_chip_opens_existing_create_flow(self):
+        self.assertIn('if(b.dataset.vccat==="Fahrzeugfinanzierung")', self.source)
+        self.assertIn('openVehicleFinancingSheet(); buzz(); return;', self.source)
 
 
 if __name__ == "__main__":

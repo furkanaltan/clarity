@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -54,7 +55,15 @@ def _money(value, *, required=False, maximum=100_000_000.0):
     if value in (None, "") and not required:
         return None
     try:
-        amount = Decimal(str(value))
+        if isinstance(value, str):
+            text = value.strip().replace(" ", "").replace("€", "")
+            if "," in text:
+                text = text.replace(".", "").replace(",", ".")
+            elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", text):
+                text = text.replace(".", "")
+            amount = Decimal(text)
+        else:
+            amount = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise ValueError("invalid_vehicle_financing_amount") from None
     if not amount.is_finite() or amount < 0 or amount > Decimal(str(maximum)):
