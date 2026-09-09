@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260908-e5c0e0a">
+<meta name="rove-frontend-build" content="20260909-a005209">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -1684,7 +1684,7 @@
     padding:4px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 28px rgba(0,0,0,.07)}
   .analysis-preview-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:66px;
     border-bottom:1px solid var(--line)}
-  .analysis-preview-row.analysis-merchant-row{width:100%;padding:0;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+  .analysis-preview-row.analysis-merchant-row{width:100%;grid-template-columns:40px minmax(0,1fr) auto 17px;padding:0;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .analysis-preview-row:last-of-type{border-bottom:0}
   .analysis-category-icon{width:38px;height:38px;border-radius:12px;color:var(--cat-color);display:flex;align-items:center;justify-content:center;
     background:linear-gradient(145deg,color-mix(in srgb,var(--cat-color) 19%,var(--card)),color-mix(in srgb,var(--cat-color) 7%,var(--elevate2)));
@@ -1704,7 +1704,7 @@
     padding:3px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 30px rgba(0,0,0,.07)}
   .analysis-detail-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;column-gap:12px;padding:17px 0;
     border-bottom:1px solid var(--line)}
-  .analysis-detail-row.analysis-merchant-row{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+  .analysis-detail-row.analysis-merchant-row{width:100%;grid-template-columns:40px minmax(0,1fr) auto 17px;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .analysis-detail-row:last-child{border-bottom:0}
   .analysis-detail-row .logo{width:40px;height:40px;border-radius:12px;font-size:13px}
   .analysis-detail-copy{min-width:0}
@@ -1745,7 +1745,7 @@
   .sheet.category-deep-sheet{top:0;bottom:auto;height:100vh;height:100dvh;max-height:100dvh;box-sizing:border-box;
     border-radius:0;border-top:0;padding:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:var(--bg)}
   .sheet.category-deep-sheet.on{box-shadow:none}
-  .category-deep-grab{position:fixed!important;top:calc(var(--safe-top) + 8px);left:50%;z-index:6;margin:0;transform:translateX(-50%)}
+  .category-deep-grab{position:fixed!important;top:calc(var(--safe-top) + 8px);left:50%;z-index:6;margin:0;transform:translateX(-50%);background:var(--line2);opacity:.95;box-shadow:0 1px 5px rgba(0,0,0,.18)}
   .category-deep-nav{position:sticky;top:0;z-index:4;display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;gap:10px;
     padding:calc(var(--safe-top) + 28px) 18px 10px;background:linear-gradient(to bottom,color-mix(in srgb,var(--bg) 94%,transparent) 72%,transparent);
     backdrop-filter:blur(18px) saturate(145%);-webkit-backdrop-filter:blur(18px) saturate(145%)}
@@ -1770,7 +1770,7 @@
     padding:3px 16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 28px rgba(0,0,0,.065)}
   .category-deep-merchant,.category-deep-booking{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:12px;padding:15px 0;border-bottom:1px solid var(--line)}
   .category-deep-merchant:last-child,.category-deep-booking:last-child{border-bottom:0}
-  .category-deep-merchant{width:100%;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+  .category-deep-merchant{width:100%;grid-template-columns:40px minmax(0,1fr) auto 17px;border-left:0;border-right:0;border-top:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .category-deep-merchant:active,.analysis-detail-row.analysis-merchant-row:active,.analysis-preview-row.analysis-merchant-row:active{transform:scale(.985)}
   .category-deep-merchant .logo,.category-deep-booking .logo{width:40px;height:40px;border-radius:12px;font-size:13px}
   .category-deep-copy{min-width:0}
@@ -5854,7 +5854,7 @@ function analysisMerchantPreview(merchants){
       ${merchants.slice(0,3).map(merchant=>`<button class="analysis-preview-row analysis-merchant-row" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">
         ${analysisMerchantLogo(merchant.sample)}
         <span class="analysis-preview-main"><b>${analysisEsc(merchant.label)}</b><span>${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
-        <span class="analysis-preview-amount">${analysisEsc(eur2(merchant.amount))}</span>
+        <span class="analysis-preview-amount">${analysisEsc(eur2(merchant.amount))}</span><svg class="analysis-detail-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
       </button>`).join("")}
       <button class="analysis-more" type="button" data-analysis-go="merchants">Alle Händler ansehen →</button>
     </div>
@@ -5886,7 +5886,7 @@ function analysisMerchantsView(merchants){
       return `<button class="analysis-detail-row analysis-merchant-row" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">
         <div class="analysis-merchant-logo">${analysisMerchantLogo(merchant.sample)}<span class="analysis-rank">${index+1}</span></div>
         <span class="analysis-detail-copy"><b>${analysisEsc(merchant.label)}</b><span class="meta">${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
-        <span class="analysis-detail-amount">${analysisEsc(eur2(merchant.amount))}</span>
+        <span class="analysis-detail-amount">${analysisEsc(eur2(merchant.amount))}</span><svg class="analysis-detail-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
         ${comparison?analysisChangeHtml(comparison):""}
       </button>`;
     }).join("")}</div>`;
@@ -5929,7 +5929,7 @@ function renderCategoryDeepDive(category){
         const merchantShare=data.amount?merchant.amount/data.amount*100:0;
         return `<button class="category-deep-merchant" type="button" data-analysis-merchant-key="${encodeURIComponent(merchant.key)}" aria-label="${analysisEsc(merchant.label)} öffnen">${analysisMerchantLogo(merchant.sample)}
           <span class="category-deep-copy"><b>${analysisEsc(merchant.label)}</b><span>${merchantShare.toLocaleString("de-DE",{maximumFractionDigits:1})} % · ${merchant.count} ${merchant.count===1?"Buchung":"Buchungen"}</span></span>
-          <span class="category-deep-value">${analysisEsc(eur2(merchant.amount))}</span></button>`;
+          <span class="category-deep-value">${analysisEsc(eur2(merchant.amount))}</span><svg class="analysis-detail-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>`;
       }).join(""):`<div class="category-deep-empty">Keine Händlerdetails verfügbar.<br>Die Buchungen findest du direkt darunter.</div>`}</div>
     </section>
     <section class="category-deep-section">

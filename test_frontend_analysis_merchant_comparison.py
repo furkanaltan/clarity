@@ -73,6 +73,7 @@ class FrontendAnalysisMerchantComparisonTests(unittest.TestCase):
         self.assertIn('class="analysis-preview-row analysis-merchant-row"', self.frontend)
         self.assertIn('class="analysis-detail-row analysis-merchant-row"', self.frontend)
         self.assertIn('class="category-deep-merchant" type="button"', self.frontend)
+        self.assertGreaterEqual(self.frontend.count('class="analysis-detail-chevron"'), 3)
         self.assertIn("function openMerchantDeepDive(key)", self.frontend)
         self.assertIn(
             'analysisFilteredOutflows().filter(item=>analysisMerchantIdentity(item).key===key)',
@@ -87,6 +88,15 @@ class FrontendAnalysisMerchantComparisonTests(unittest.TestCase):
         self.assertIn('id="categoryDeepTitle"', self.frontend)
         self.assertNotIn('<h2 id="categoryDeepTitle">', self.frontend)
         self.assertNotIn('class="category-deep-heading"', self.frontend)
+
+    def test_category_and_merchant_sheet_reuse_visible_grab_handle(self):
+        self.assertIn('class="grab category-deep-grab"', self.frontend)
+        self.assertIn('background:var(--line2)', self.frontend)
+        self.assertIn('"categorysheet"', re.search(
+            r"const SWIPE_DISMISS_SHEET_IDS=Object\.freeze\(\[(?P<body>.*?)\]\);",
+            self.frontend,
+            re.DOTALL,
+        ).group("body"))
 
     def test_open_analysis_creates_analysis_history_state(self):
         self.assertIn('go("analysis",{history:true});', self.frontend)
