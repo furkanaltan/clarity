@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-370e5d1">
+<meta name="rove-frontend-build" content="20260909-dfe9f25">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -2268,6 +2268,31 @@
     background:linear-gradient(145deg,#EAF5FA,#DDECF4);
     border-color:rgba(28,147,214,.32);
     box-shadow:inset 0 1px 2px rgba(28,147,214,.12),0 2px 6px rgba(28,147,214,.12);
+  }
+  :root[data-theme="light"] #actsheet{
+    background:radial-gradient(120% 72% at 50% 0%,rgba(255,255,255,.98),transparent 48%),linear-gradient(155deg,#FFFFFF,#EEF3F7);
+    border-top-color:rgba(67,90,108,.18);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 -18px 42px rgba(40,67,84,.12);
+  }
+  :root[data-theme="light"] #actsheet .grab{background:linear-gradient(90deg,rgba(67,90,108,.16),rgba(67,90,108,.5),rgba(67,90,108,.16))}
+  :root[data-theme="light"] #actsheet h3{color:var(--ink)}
+  :root[data-theme="light"] #actsheet .act{
+    border-color:rgba(67,90,108,.14);
+    background:linear-gradient(145deg,rgba(255,255,255,.98),rgba(235,241,246,.9));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 7px 17px rgba(40,67,84,.07);
+  }
+  :root[data-theme="light"] #actsheet .act .ai{color:#33424c;background:linear-gradient(145deg,#FFFFFF,#DCE5EB);border-color:rgba(83,103,117,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 14px rgba(55,77,94,.1)}
+  :root[data-theme="light"] #tab-home #chart [stroke="#94A3AF"]{stroke:#718391!important}
+  :root[data-theme="light"] #tab-home #chart .chart-line-main,
+  :root[data-theme="light"] #tab-home #chart .chart-line-static,
+  :root[data-theme="light"] #tab-home #chart #chartScrubPath,
+  :root[data-theme="light"] #tab-home #chart [stroke="#F5F7F8"]{stroke:#1C93D6!important}
+  :root[data-theme="light"] #tab-home #chart [stroke="#FFFFFF"]{stroke:#5B7180!important}
+  :root[data-theme="light"] #tab-home #chart .chart-endcap{stroke:#33424C!important;fill:#1C93D6!important}
+  :root[data-theme="light"] #tab-analysis .analysis-branch,
+  :root[data-theme="light"] #tab-analysis .analysis-account,
+  :root[data-theme="light"] #tab-analysis .analysis-tab{
+    color:var(--ink)!important;
   }
 
   /* Geschlossene Sheets liegen unterhalb des Viewports. Eigene Design-System-Schatten
