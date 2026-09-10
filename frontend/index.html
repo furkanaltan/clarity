@@ -7570,8 +7570,7 @@ async function syncExpenseToServer(e, raw){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
     e.sid=data.id;   // Server-ID merken, damit dieselbe Buchung ohne Reload löschbar ist
-    if(multiCashEnabled()) await refreshAppDataFromServer();
-    else applyServerCashAccounts(data.accounts);
+    await refreshAppDataFromServer();
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;

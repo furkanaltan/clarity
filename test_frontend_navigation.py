@@ -108,6 +108,7 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('drawChart("1T")', self.frontend)
         self.assertIn('dEl.textContent = neutralDay || pts.length===1 ? "—"', self.frontend)
         self.assertIn('drawChart(CHART.range||"1W",null,false)', self.frontend)
+        self.assertIn('e.sid=data.id;   // Server-ID merken, damit dieselbe Buchung ohne Reload löschbar ist\n    await refreshAppDataFromServer();', self.frontend)
         self.assertIn('stroke="#F5F7F8"', self.frontend)
         self.assertIn('stroke="#FFFFFF"', self.frontend)
         self.assertIn('id="chartScrubClipRect"', self.frontend)
