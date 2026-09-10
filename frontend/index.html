@@ -3954,12 +3954,18 @@ function chartDataForRange(range){
   }
   if(Array.isArray(DATA.series["1T"])){
     const dates=DATA.histDates?.["1T"]||[];
-    return {pts:DATA.series["1T"],dates,intraday:DATA.series["1T"].length>1};
+    if(DATA.series["1T"].length>1) return {pts:DATA.series["1T"],dates,intraday:true,dayDeltaAvailable:false};
   }
   const source=Array.isArray(DATA.series["1W"]) ? DATA.series["1W"] : [];
-  const dates=DATA.histDates?.["1W"]||[];
-  const last=source.length-1;
-  return {pts:last>=0 ? [source[last]] : [],dates:last>=0 ? [dates[last]||"Heute"] : ["Heute"],intraday:false};
+  const current=Number(DATA.netWorth);
+  const currentK=Number.isFinite(current) ? current/1000 : null;
+  const dayStart=source.length>1 ? Number(source[source.length-2]) : null;
+  if(Number.isFinite(dayStart) && Number.isFinite(currentK)){
+    const dayDeltaAvailable=Math.abs(currentK-dayStart)>0.0005;
+    return {pts:[dayStart,currentK],dates:[],intraday:false,dayDeltaAvailable};
+  }
+  const fallback=Number.isFinite(currentK) ? currentK : (source.length ? Number(source[source.length-1]) : null);
+  return {pts:Number.isFinite(fallback) ? [fallback] : [],dates:[],intraday:false,dayDeltaAvailable:false};
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
@@ -4042,7 +4048,7 @@ function monotonePath(xy){
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function drawChart(range, scrubIdx, animate=true){
   const rangeData=chartDataForRange(range), pts=rangeData.pts;
-  const neutralDay=range==="1T"&&!rangeData.intraday;
+  const neutralDay=range==="1T"&&!rangeData.intraday&&!rangeData.dayDeltaAvailable;
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
   const min=Math.min(...pts), max=Math.max(...pts), rawSpan=max-min, span=rawSpan||1, n=pts.length;
@@ -4071,6 +4077,8 @@ function drawChart(range, scrubIdx, animate=true){
   } else if(neutralDay){
     const neutralLine=`M ${padX} ${last[1].toFixed(1)} L ${W-padX} ${last[1].toFixed(1)}`;
     body = `<g>${grid}</g>`+glassLine(neutralLine,false);
+  } else if(range==="1T"&&!rangeData.intraday){
+    body = `<g>${grid}</g>`+glassLine(fullLine,false);
   } else {
     body = `<g>${grid}</g>`
       + glassLine(fullLine,animate)
@@ -4079,6 +4087,7 @@ function drawChart(range, scrubIdx, animate=true){
   }
   document.getElementById("chart").innerHTML = body;
   CHART.xy=xy; CHART.pts=pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
+  CHART.dayDeltaAvailable=rangeData.dayDeltaAvailable===true;
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
   CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
   if(scrubIdx==null){                            // Datums-Labels + Delta nur im Normalzustand neu setzen
