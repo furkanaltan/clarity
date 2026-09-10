@@ -3190,8 +3190,8 @@ function emptyCard({icon, title, sub, cta, action}){
 
 // ===================== PROFIL-PERSISTENZ (Onboarding-Fundament) =====================
 // Drei Datenquellen, EINE Struktur: authentifizierte Web-App > eigenes Profil > Demo.
-// (eigene Daten, localStorage) > Mock/Demo. Gespeichert wird NUR im Profil-Modus — Demo- und
-// Brücken-Sitzungen bleiben bewusst flüchtig (bei der Brücke ist der Bot die Quelle der Wahrheit).
+// (eigene Daten, localStorage) > Mock/Demo. Finanzielle Serverwerte bleiben kanonisch; der
+// Brückenmodus speichert nur den bereits vorhandenen lokalen Tagesverlauf user-scoped zwischen.
 const PROFILE_KEY = "rove-profile";
 // Bot-Daten bleiben die Quelle der Wahrheit. Werte, die aktuell nur die App kennt
 // (z. B. Immobilienwert, Bargeld oder Sachwerte), sichern wir pro Nutzer auf diesem Gerät.
@@ -3244,6 +3244,7 @@ function saveBridgeLocal(){
       vertraege:localContracts,
       goals:localGoals,
       budgets:DATA.budgets||[],
+      netHistory:Array.isArray(PROFILE_META.netHistory)?PROFILE_META.netHistory.slice(-760):[],
       savedAt:Date.now()
     }));
   }catch(e){ console.warn("Lokale App-Ergaenzungen konnten nicht gesichert werden:",e); }
@@ -3272,6 +3273,9 @@ function restoreBridgeLocal(snapshot,userId){
     if(!(DATA.goals||[]).some(current=>String(current.t||"").toLowerCase()===String(goal.t||"").toLowerCase())) DATA.goals.push(goal);
   });
   if(Array.isArray(snapshot.budgets) && snapshot.budgets.length) DATA.budgets=snapshot.budgets;
+  if(Array.isArray(snapshot.netHistory) && snapshot.netHistory.length){
+    PROFILE_META.netHistory=snapshot.netHistory.filter(point=>point&&typeof point.d==="string"&&Number.isFinite(Number(point.v)));
+  }
 }
 const PAIR_API_BASE_URL = "https://getrove.de/app-api";
 let EMAIL_AUTH_PENDING = {email:"",mode:"login"};
@@ -3956,15 +3960,8 @@ function chartDataForRange(range){
     const dates=DATA.histDates?.["1T"]||[];
     if(DATA.series["1T"].length>1) return {pts:DATA.series["1T"],dates,intraday:true,dayDeltaAvailable:false};
   }
-  const source=Array.isArray(DATA.series["1W"]) ? DATA.series["1W"] : [];
   const current=Number(DATA.netWorth);
-  const currentK=Number.isFinite(current) ? current/1000 : null;
-  const dayStart=source.length>1 ? Number(source[source.length-2]) : null;
-  if(Number.isFinite(dayStart) && Number.isFinite(currentK)){
-    const dayDeltaAvailable=Math.abs(currentK-dayStart)>0.0005;
-    return {pts:[dayStart,currentK],dates:[],intraday:false,dayDeltaAvailable};
-  }
-  const fallback=Number.isFinite(currentK) ? currentK : (source.length ? Number(source[source.length-1]) : null);
+  const fallback=Number.isFinite(current) ? current/1000 : null;
   return {pts:Number.isFinite(fallback) ? [fallback] : [],dates:[],intraday:false,dayDeltaAvailable:false};
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
@@ -3984,15 +3981,21 @@ function seedNetHistoryIfEmpty(){
   let h=PROFILE_META.netHistory;
   if(Array.isArray(h)) h=PROFILE_META.netHistory=h.filter(s=>s&&typeof s.d==="string"&&typeof s.v==="number");
   if(!Array.isArray(h) || !h.length){
-    PROFILE_META.netHistory=[{ d:dayKey(new Date()), v:DATA.netWorth||0 }];   // keine Rück-Erfindung
+    PROFILE_META.netHistory=[{ d:dayKey(new Date()), v:DATA.netWorth||0, t:Date.now() }];   // keine Rück-Erfindung
   }
 }
 function syncNetHistory(){
-  if(APP_MODE!=="profile") return;
+  if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;
   const h=PROFILE_META.netHistory; if(!Array.isArray(h)) return;
-  const dk=dayKey(new Date()), last=h[h.length-1];
-  if(last && last.d===dk) last.v=DATA.netWorth;    // heutiger Punkt folgt live der großen Zahl
-  else h.push({ d:dk, v:DATA.netWorth });          // neuer Tag: neuer Punkt (trägt Bewegung des Tages)
+  const now=Date.now(), dk=dayKey(new Date(now)), value=Number(DATA.netWorth);
+  if(!Number.isFinite(value)) return;
+  const last=h[h.length-1];
+  if(last && last.d===dk){
+    // Ein unveränderter Refresh ist kein neuer Datenpunkt. Ein echter Kontostandwechsel
+    // (z.B. Ausgabe oder Einnahme) bleibt dagegen als Tagespunkt für 1T erhalten.
+    if(Math.abs(Number(last.v)-value)>0.005) h.push({d:dk,v:value,t:now});
+    else if(last.t==null) last.t=now;
+  }else h.push({d:dk,v:value,t:now});
   if(h.length>760) h.splice(0, h.length-760);      // Deckel: ~2 Jahre Tagespunkte
 }
 // Auf ~44 Punkte ausdünnen, damit lange Zeiträume glatt bleiben (letzten Punkt = Heute garantieren).
@@ -4009,13 +4012,31 @@ function rebuildSeriesFromHistory(){
   const h=PROFILE_META.netHistory;
   if(!Array.isArray(h) || !h.length) return false;
   DATA.histDates=DATA.histDates||{};
+  const today=dayKey(new Date());
+  const todayPoints=h.filter(point=>point.d===today);
+  const intraday=todayPoints.length?todayPoints:[h[h.length-1]];
+  DATA.series["1T"]=intraday.map(point=>Math.round(Number(point.v))/1000);
+  DATA.histDates["1T"]=intraday.map((point,index)=>{
+    if(intraday.length===1) return "Heute";
+    const stamp=Number(point.t);
+    return Number.isFinite(stamp)
+      ? new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})
+      : (index===intraday.length-1?"Jetzt":"Heute");
+  });
+  const daily=[];
+  h.forEach(point=>{
+    const previous=daily[daily.length-1];
+    if(previous && previous.d===point.d) daily[daily.length-1]=point;
+    else daily.push(point);
+  });
+  // In der Brücke ersetzt ein einzelner lokaler Startpunkt keine echte Server-Historie.
+  // Auch mehrere Punkte am selben Tag bleiben ausschließlich im 1T-Chart lokal.
+  if(APP_MODE==="bridge" && daily.length===1) return true;
   Object.keys(HIST_WINDOW_DAYS).forEach(range=>{
     const cut=new Date(); cut.setDate(cut.getDate()-HIST_WINDOW_DAYS[range]);
     const cutK=dayKey(cut);
-    let win=h.filter(s=> s.d>=cutK);                      // "YYYY-MM-DD" ist lexikografisch = chronologisch
-    // Ein einzelner echter Stand bleibt ein einzelner Stand. Eine verdoppelte Vollbreitenlinie
-    // würde eine Entwicklung vortäuschen, die es nicht gibt.
-    if(!win.length) win=[h[h.length-1]];
+    let win=daily.filter(s=> s.d>=cutK);                   // "YYYY-MM-DD" ist lexikografisch = chronologisch
+    if(!win.length) win=[daily[daily.length-1]];
     win=downsampleHist(win, 44);
     DATA.series[range]=win.map(s=>Math.round(s.v)/1000);              // Kilo-Euro wie überall
     DATA.histDates[range]=win.map((s,i)=> i===win.length-1 ? "Heute" : dLabel(s.d, HIST_FMT[range]));
@@ -7788,6 +7809,10 @@ async function refreshAppDataFromServer(){
     BRIDGE_LIVE_STATE_READY=true;
     renderGoals();renderAssets();renderTx();renderBudgets();renderVertraege();renderActivity();renderAnalysisIfOpen();
     recalcNetWorth();mentorLine();applyHomeEmpty();applyProfileIdentity();
+    seedNetHistoryIfEmpty();
+    syncNetHistory();
+    rebuildSeriesFromHistory();
+    saveBridgeLocal();
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
     if(!document.querySelector(".chart-wrap.scrubbing")) drawChart(CHART.range||"1W",null,false);
@@ -11940,10 +11965,14 @@ async function loadBridgeState(){
     DATA.tx.forEach(d=>d.items.forEach(i=>{ if(i.id==null) i.id=TXID++; }));
 
     renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
+    recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
+    seedNetHistoryIfEmpty();
+    syncNetHistory();
+    rebuildSeriesFromHistory();
+    saveBridgeLocal();
     drawChart(CHART.range||"1W",null,false); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
     updateChangeBadge(CHART.range||"1W");
     if(nw) delete nw.dataset.lock;
-    recalcNetWorth();   // schreibt jetzt final + ungestört, alter Ticker ist längst tot
     maybeOpenMonthlyPlanOnMonthStart();
     // Die Push-Zeile braucht erst die API aus dem Live-Zugang. Beim App-Start kann der
     // Service Worker schneller bereit sein als diese Bruecke; deshalb hier noch einmal
