@@ -288,6 +288,32 @@ class CryptoV1Tests(unittest.TestCase):
         self.assertEqual(logo_url, "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png")
         self.assertEqual(self.values(), (5000, 1000))
 
+    def test_crypto_state_uses_cache_only_while_a_write_is_open(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """INSERT INTO portfolio_holdings
+                       (user_id, instrument_key, instrument_label, instrument_type,
+                        total_invested, market_value, valuation_enabled, price_symbol,
+                        quantity, provider_asset_id)
+                   VALUES (1, 'crypto:LOCK_TEST', 'Lock Test', 'crypto', 100, 100,
+                           1, 'LOCK', 1, '1')"""
+            )
+            with patch.object(app_state, "fetch_crypto_metadata", side_effect=AssertionError("network must not run")), \
+                 patch.object(app_state, "cached_crypto_metadata", return_value={"1": {
+                     "logo_url": "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png",
+                 }}) as cached:
+                positions = _crypto_positions(conn, 1)
+            self.assertTrue(conn.in_transaction)
+            self.assertTrue(cached.called)
+            position = next(row for row in positions if row.get("providerAssetId") == "1")
+            self.assertEqual(position["logoUrl"], "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png")
+
+    def test_crypto_header_cache_miss_never_fetches_under_write_lock(self):
+        with patch.object(app_state, "fetch_crypto_metadata", side_effect=AssertionError("network must not run")), \
+             patch.object(app_state, "cached_crypto_metadata", return_value={}):
+            self.assertEqual(_crypto_header_logo_url(cache_only=True), "")
+
     def test_screenshot_commit_is_explicit_idempotent_and_requires_quantity(self):
         bad = self.request("POST", "/v1/crypto/import/screenshot/commit", json={"positions": [{
             **self.payload(), "quantity": None, "importKey": "a" * 32,

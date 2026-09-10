@@ -343,6 +343,30 @@ def fetch_crypto_metadata(
         return cached
 
 
+def cached_crypto_metadata(
+    provider_asset_ids: list[str | int], *, now: datetime | None = None,
+) -> dict[str, dict]:
+    """Return fresh crypto logo metadata already held in memory without network access."""
+    ids: list[str] = []
+    for value in provider_asset_ids:
+        text = str(value or "").strip()
+        if text.isdigit() and int(text) > 0 and text not in ids:
+            ids.append(text)
+    if not ids:
+        return {}
+
+    checked_at = now or datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    with _CRYPTO_METADATA_LOCK:
+        return {
+            asset_id: dict(entry)
+            for asset_id in ids
+            if (entry := _CRYPTO_METADATA_CACHE.get(asset_id))
+            and entry["expires_at"] > checked_at
+        }
+
+
 def normalize_symbol(value: object) -> str:
     symbol = str(value or "").strip().upper()
     return symbol if SYMBOL_RE.fullmatch(symbol) else ""

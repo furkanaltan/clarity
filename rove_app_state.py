@@ -35,6 +35,7 @@ from pathlib import Path
 from rove_score import calculate_score
 from rove_consumer_debt import list_consumer_debt_events, list_consumer_debts, total_consumer_debt, net_worth_total
 from rove_market_data import (
+    cached_crypto_metadata,
     cached_market_metadata,
     canonical_market_instrument,
     ensure_market_tracking_schema,
@@ -1920,7 +1921,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     crypto = min(investments, _crypto_holdings_value(conn, user_id))
     etf = investments - crypto
     crypto_positions = _crypto_positions(conn, user_id) if crypto else []
-    crypto_header_logo_url = _crypto_header_logo_url() if crypto else ""
+    crypto_header_logo_url = _crypto_header_logo_url(cache_only=conn.in_transaction) if crypto else ""
     crypto_sub = (f"{len(crypto_positions)} Position" + ("" if len(crypto_positions) == 1 else "en")
                   if crypto_positions else "aus dem Bot")
     etf_positions = _etf_positions(conn, user_id) if etf else []
@@ -2215,9 +2216,10 @@ def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
     return round(legacy + max(0.0, float(row["total"] or 0)), 2)
 
 
-def _crypto_header_logo_url() -> str:
+def _crypto_header_logo_url(*, cache_only: bool = False) -> str:
     """Returns Bitcoin's cached CMC logo for the crypto summary without creating a holding."""
-    return str(fetch_crypto_metadata(["1"]).get("1", {}).get("logo_url") or "")
+    metadata = cached_crypto_metadata(["1"]) if cache_only else fetch_crypto_metadata(["1"])
+    return str(metadata.get("1", {}).get("logo_url") or "")
 
 
 def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
@@ -2241,10 +2243,17 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
         ).fetchall()
     except sqlite3.OperationalError:
         holding_rows = []
-    metadata = fetch_crypto_metadata([
+    provider_asset_ids = [
         row["provider_asset_id"] for row in holding_rows
         if str(row["provider_asset_id"] or "").strip()
-    ])
+    ]
+    # Market metadata is optional presentation data. A response assembled while
+    # a write is open must not wait on CoinMarketCap when the cache is cold.
+    metadata = (
+        cached_crypto_metadata(provider_asset_ids)
+        if conn.in_transaction
+        else fetch_crypto_metadata(provider_asset_ids)
+    )
     for row in holding_rows:
         market_value = max(0.0, float(row["market_value"] or 0))
         cost_basis = None if row["total_invested"] is None else max(0.0, float(row["total_invested"]))
