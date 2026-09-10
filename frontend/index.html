@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260910-c4a7e91">
+<meta name="rove-frontend-build" content="20260910-ea6bdca">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -2421,11 +2421,11 @@
       <div class="chart-context" id="chartContext" aria-live="polite"><span>—</span><span>—</span></div>
       <div class="delta" id="chartDelta"></div>
       <div class="ranges" id="ranges">
-        <button class="range on" data-r="1W">1W</button>
+        <button class="range on" data-r="1T">1T</button>
+        <button class="range" data-r="1W">1W</button>
         <button class="range" data-r="1M">1M</button>
         <button class="range" data-r="6M">6M</button>
         <button class="range" data-r="1J">1J</button>
-        <button class="range" data-r="Max">2J</button>
       </div>
     </div>
 
@@ -3932,6 +3932,7 @@ const CHART={};
 // Plausible Datums-Labels je Zeitraum, rückwärts von heute gerechnet (Mock)
 function seriesDates(range){
   // Profil mit echter Monats-Historie: reale Monats-Labels statt synthetisch gleichverteilter.
+  ensureOneDaySeries(range);
   if(DATA.histDates && DATA.histDates[range]) return DATA.histDates[range];
   const n=(DATA.series[range]||DATA.series["1J"]).length, today=new Date();
   if(n<=1) return ["Heute"];
@@ -3946,6 +3947,15 @@ function seriesDates(range){
     else out.push(String(d.getFullYear()));
   }
   return out;
+}
+function ensureOneDaySeries(range){
+  if(range!=="1T" || Array.isArray(DATA.series["1T"])) return;
+  const source=Array.isArray(DATA.series["1W"]) ? DATA.series["1W"] : [];
+  const dates=DATA.histDates?.["1W"]||[];
+  const last=source.length-1;
+  DATA.series["1T"]=last>=0 ? [source[last]] : [];
+  DATA.histDates=DATA.histDates||{};
+  DATA.histDates["1T"]=last>=0 ? [dates[last]||"Heute"] : ["Heute"];
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
@@ -4027,6 +4037,7 @@ function monotonePath(xy){
 }
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function drawChart(range, scrubIdx, animate=true){
+  ensureOneDaySeries(range);
   const pts = DATA.series[range]||DATA.series["1J"];
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
@@ -4069,12 +4080,12 @@ function drawChart(range, scrubIdx, animate=true){
     if(dEl){
       const dv=(pts[pts.length-1]-pts[0])*1000;
       const dates=CHART.dates, first=dates[0]||"Heute", end=dates[dates.length-1]||"Heute";
-      dEl.textContent = pts.length===1 ? `Erster Stand · ${end}` : `${first} – ${end} · ${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
+      dEl.textContent = pts.length===1 ? "—" : `${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
       if(context) context.innerHTML=`<span>${first}</span><span>${end}</span>`;
     }
   }
 }
-drawChart("1W");
+drawChart("1T");
 
 // ===================== CHART-SCRUBBING (Kurve abfahren → Wert + Datum) =====================
 (function(){
