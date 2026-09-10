@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260910-ea6bdca">
+<meta name="rove-frontend-build" content="20260910-1a2b3c4">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -3932,7 +3932,6 @@ const CHART={};
 // Plausible Datums-Labels je Zeitraum, rückwärts von heute gerechnet (Mock)
 function seriesDates(range){
   // Profil mit echter Monats-Historie: reale Monats-Labels statt synthetisch gleichverteilter.
-  ensureOneDaySeries(range);
   if(DATA.histDates && DATA.histDates[range]) return DATA.histDates[range];
   const n=(DATA.series[range]||DATA.series["1J"]).length, today=new Date();
   if(n<=1) return ["Heute"];
@@ -3948,14 +3947,18 @@ function seriesDates(range){
   }
   return out;
 }
-function ensureOneDaySeries(range){
-  if(range!=="1T" || Array.isArray(DATA.series["1T"])) return;
+function chartDataForRange(range){
+  if(range!=="1T"){
+    return {pts:DATA.series[range]||DATA.series["1J"],dates:DATA.histDates?.[range]||null,intraday:true};
+  }
+  if(Array.isArray(DATA.series["1T"])){
+    const dates=DATA.histDates?.["1T"]||[];
+    return {pts:DATA.series["1T"],dates,intraday:DATA.series["1T"].length>1};
+  }
   const source=Array.isArray(DATA.series["1W"]) ? DATA.series["1W"] : [];
   const dates=DATA.histDates?.["1W"]||[];
   const last=source.length-1;
-  DATA.series["1T"]=last>=0 ? [source[last]] : [];
-  DATA.histDates=DATA.histDates||{};
-  DATA.histDates["1T"]=last>=0 ? [dates[last]||"Heute"] : ["Heute"];
+  return {pts:last>=0 ? [source[last]] : [],dates:last>=0 ? [dates[last]||"Heute"] : ["Heute"],intraday:false};
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
@@ -4037,8 +4040,8 @@ function monotonePath(xy){
 }
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function drawChart(range, scrubIdx, animate=true){
-  ensureOneDaySeries(range);
-  const pts = DATA.series[range]||DATA.series["1J"];
+  const rangeData=chartDataForRange(range), pts=rangeData.pts;
+  const neutralDay=range==="1T"&&!rangeData.intraday;
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
   const min=Math.min(...pts), max=Math.max(...pts), rawSpan=max-min, span=rawSpan||1, n=pts.length;
@@ -4064,6 +4067,8 @@ function drawChart(range, scrubIdx, animate=true){
       + `<g>${grid}</g>`
       + `<path d="${fullLine}" fill="none" stroke="#94A3AF" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round" opacity=".22"/>`
       + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  } else if(neutralDay){
+    body = `<g>${grid}</g><line class="chart-day-reference" x1="${padX}" y1="${last[1].toFixed(1)}" x2="${W-padX}" y2="${last[1].toFixed(1)}" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="2 6" opacity=".3"/>`;
   } else {
     body = `<g>${grid}</g>`
       + glassLine(fullLine,animate)
@@ -4071,7 +4076,7 @@ function drawChart(range, scrubIdx, animate=true){
       + `<circle class="endcap chart-endcap chart-endcap-core" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="#F5F7F8" stroke="#07131D" stroke-width="1.15"/>`;
   }
   document.getElementById("chart").innerHTML = body;
-  CHART.xy=xy; CHART.pts=pts; CHART.range=range;
+  CHART.xy=xy; CHART.pts=pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
   CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
   if(scrubIdx==null){                            // Datums-Labels + Delta nur im Normalzustand neu setzen
@@ -4080,8 +4085,8 @@ function drawChart(range, scrubIdx, animate=true){
     if(dEl){
       const dv=(pts[pts.length-1]-pts[0])*1000;
       const dates=CHART.dates, first=dates[0]||"Heute", end=dates[dates.length-1]||"Heute";
-      dEl.textContent = pts.length===1 ? "—" : `${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
-      if(context) context.innerHTML=`<span>${first}</span><span>${end}</span>`;
+      dEl.textContent = neutralDay || pts.length===1 ? "—" : `${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
+      if(context){ context.hidden=range==="1T"; context.innerHTML=`<span>${first}</span><span>${end}</span>`; }
     }
   }
 }
@@ -4135,6 +4140,7 @@ drawChart("1T");
     });
   }
   function start(e){
+    if(CHART.range==="1T"&&!CHART.dayHasIntraday) return;
     e.preventDefault();
     scrubbing=true; scrubEl.classList.add("on"); wrap.classList.add("scrubbing");
     try{chartEl.setPointerCapture(e.pointerId);}catch(_){}
