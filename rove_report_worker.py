@@ -124,10 +124,21 @@ def recover_stale_jobs(conn: sqlite3.Connection, now: datetime) -> int:
     cutoff = (now - timedelta(minutes=REPORT_PROCESSING_TIMEOUT_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
     cursor = conn.execute(
         """UPDATE report_jobs
-              SET status = 'pending', scheduled_at = ?,
-                  last_error = 'Worker-Neustart: haengenden Job erneut eingeplant', updated_at = ?
+              SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
+                  scheduled_at = ?,
+                  last_error = CASE
+                      WHEN attempts >= ? THEN 'Worker-Neustart: Retry-Limit erreicht'
+                      ELSE 'Worker-Neustart: haengenden Job erneut eingeplant'
+                  END,
+                  updated_at = ?
             WHERE status = 'processing' AND datetime(updated_at) < datetime(?)""",
-        (now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"), cutoff),
+        (
+            REPORT_MAX_ATTEMPTS,
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            REPORT_MAX_ATTEMPTS,
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            cutoff,
+        ),
     )
     return cursor.rowcount
 
