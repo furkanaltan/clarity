@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260909-e473628">
+<meta name="rove-frontend-build" content="20260910-c4a7e91">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -774,22 +774,24 @@
   .chip svg{width:13px;height:13px}
   .chip.negative{background:transparent;color:#F45E5E}
   .chip.score{background:var(--blue-soft);color:var(--blue);margin-left:6px}
-  .delta{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px;font-variant-numeric:tabular-nums}
+  .chart-context{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:8px;color:var(--faint);font-size:11.5px;font-weight:650;font-variant-numeric:tabular-nums}
+  .chart-context span:last-child{text-align:right}
+  .delta{font-size:12.5px;color:var(--muted);text-align:center;margin-top:8px;font-variant-numeric:tabular-nums;min-height:18px}
 
   /* Chart */
-  .chart-wrap{margin:20px 0 6px;position:relative;touch-action:none}
+  .chart-wrap{margin:20px 0 6px;position:relative}
   .chart{width:100%;height:150px;display:block;touch-action:none;cursor:crosshair}
   /* Scrubbing — Kurve mit dem Finger abfahren (Trade-Republic-Stil) */
-  .scrub-dot{position:absolute;width:13px;height:13px;border-radius:50%;background:#F5F7F8;border:2px solid var(--bg);
-    transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 0 0 5px rgba(245,247,248,.16)}
+  .scrub-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:#F5F7F8;border:2px solid var(--bg);
+    transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 0 0 5px rgba(245,247,248,.14)}
   .scrub.on .scrub-dot{opacity:1}
   .chart-wrap.scrubbing .endcap{opacity:0}   /* fester Endpunkt weicht dem wandernden Knopf */
   .net .val.scrubbing{color:var(--ink)}
   .delta.scrub-date{color:var(--ink);font-weight:700}
   @keyframes chartLineDraw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
   @keyframes chartEndcapIn{from{opacity:0;transform:scale(.72)}to{opacity:1;transform:scale(1)}}
-  .chart .chart-line-main{stroke-dasharray:1;stroke-dashoffset:1;animation:chartLineDraw 1.35s cubic-bezier(.22,1,.36,1) forwards}
-  .chart .chart-endcap{transform-box:fill-box;transform-origin:center;opacity:0;animation:chartEndcapIn .3s ease 1.08s forwards}
+  .chart .chart-line-main{stroke-dasharray:1;stroke-dashoffset:1;animation:chartLineDraw .55s cubic-bezier(.22,1,.36,1) forwards}
+  .chart .chart-endcap{transform-box:fill-box;transform-origin:center;opacity:0;animation:chartEndcapIn .22s ease .42s forwards}
   @media (prefers-reduced-motion:reduce){
     .chart .chart-line-main{stroke-dashoffset:0;animation:none}
     .chart .chart-endcap{opacity:1;transform:none;animation:none}
@@ -2323,7 +2325,8 @@
   :root[data-theme="light"] #tab-home #chart #chartScrubPath,
   :root[data-theme="light"] #tab-home #chart [stroke="#F5F7F8"]{stroke:#1C93D6!important}
   :root[data-theme="light"] #tab-home #chart [stroke="#FFFFFF"]{stroke:#5B7180!important}
-  :root[data-theme="light"] #tab-home #chart .chart-endcap{stroke:#33424C!important;fill:#1C93D6!important}
+  :root[data-theme="light"] #tab-home #chart .chart-endcap-core{stroke:#33424C!important;fill:#1C93D6!important}
+  :root[data-theme="light"] #tab-home #chart .chart-endcap-halo{stroke:#1C93D6!important;fill:none!important}
   :root[data-theme="light"] #tab-analysis .analysis-branch,
   :root[data-theme="light"] #tab-analysis .analysis-account,
   :root[data-theme="light"] #tab-analysis .analysis-tab{
@@ -2415,14 +2418,15 @@
     <div class="chart-wrap">
       <svg class="chart" id="chart" viewBox="0 0 360 150" preserveAspectRatio="none"></svg>
       <div class="scrub" id="scrub"><div class="scrub-dot"></div></div>
+      <div class="chart-context" id="chartContext" aria-live="polite"><span>—</span><span>—</span></div>
+      <div class="delta" id="chartDelta"></div>
       <div class="ranges" id="ranges">
         <button class="range on" data-r="1W">1W</button>
         <button class="range" data-r="1M">1M</button>
         <button class="range" data-r="6M">6M</button>
         <button class="range" data-r="1J">1J</button>
-        <button class="range" data-r="Max">Max</button>
+        <button class="range" data-r="Max">2J</button>
       </div>
-      <div class="delta" id="chartDelta" hidden></div>
     </div>
 
     <!-- Mentor-Karte bewusst NICHT mehr direkt unter dem Titel (Furkan-Feinschliff 16.07.: Kopf
@@ -3930,8 +3934,9 @@ function seriesDates(range){
   // Profil mit echter Monats-Historie: reale Monats-Labels statt synthetisch gleichverteilter.
   if(DATA.histDates && DATA.histDates[range]) return DATA.histDates[range];
   const n=(DATA.series[range]||DATA.series["1J"]).length, today=new Date();
+  if(n<=1) return ["Heute"];
   const cfg={"1W":{stepD:1,fmt:"day"},"1M":{stepD:30/(n-1),fmt:"date"},"6M":{stepD:182/(n-1),fmt:"month"},
-    "1J":{stepD:365/(n-1),fmt:"month"},"Max":{stepD:3652/(n-1),fmt:"year"}}[range]||{stepD:30,fmt:"month"};
+    "1J":{stepD:365/(n-1),fmt:"month"},"Max":{stepD:730/(n-1),fmt:"year"}}[range]||{stepD:30,fmt:"month"};
   const out=[];
   for(let i=0;i<n;i++){
     const d=new Date(today); d.setDate(d.getDate()-Math.round((n-1-i)*cfg.stepD));
@@ -3988,24 +3993,39 @@ function rebuildSeriesFromHistory(){
     const cut=new Date(); cut.setDate(cut.getDate()-HIST_WINDOW_DAYS[range]);
     const cutK=dayKey(cut);
     let win=h.filter(s=> s.d>=cutK);                      // "YYYY-MM-DD" ist lexikografisch = chronologisch
-    if(win.length<2) win=[h[0], h[h.length-1]];          // Fallback: erster + letzter (mind. 2 Punkte)
+    // Ein einzelner echter Stand bleibt ein einzelner Stand. Eine verdoppelte Vollbreitenlinie
+    // würde eine Entwicklung vortäuschen, die es nicht gibt.
+    if(!win.length) win=[h[h.length-1]];
     win=downsampleHist(win, 44);
     DATA.series[range]=win.map(s=>Math.round(s.v)/1000);              // Kilo-Euro wie überall
     DATA.histDates[range]=win.map((s,i)=> i===win.length-1 ? "Heute" : dLabel(s.d, HIST_FMT[range]));
   });
   return true;
 }
-// Sanfte Kurve (Catmull-Rom -> kubische Bézier) für den Teilbereich a..b
-function catmullPath(xy, a, b){
-  let d=`M ${xy[a][0].toFixed(1)} ${xy[a][1].toFixed(1)}`;
-  for(let i=a;i<b;i++){
-    const p0=xy[i-1]||xy[i], p1=xy[i], p2=xy[i+1], p3=xy[i+2]||p2;
-    const c1x=p1[0]+(p2[0]-p0[0])/6, c1y=p1[1]+(p2[1]-p0[1])/6;
-    const c2x=p2[0]-(p3[0]-p1[0])/6, c2y=p2[1]-(p3[1]-p1[1])/6;
-    d+=` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+function straightPath(xy){
+  return xy.map((p,i)=>`${i?"L":"M"} ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+}
+// Monotone kubische Bézier-Segmente: weich bei längeren Reihen, ohne zwischen echten
+// Datenpunkten über oder unter den Verlauf auszuschwingen.
+function monotonePath(xy){
+  if(xy.length<=3) return straightPath(xy);
+  const slopes=[], tangents=[];
+  for(let i=0;i<xy.length-1;i++) slopes.push((xy[i+1][1]-xy[i][1])/(xy[i+1][0]-xy[i][0]));
+  tangents[0]=slopes[0]; tangents[xy.length-1]=slopes[slopes.length-1];
+  for(let i=1;i<xy.length-1;i++) tangents[i]=(slopes[i-1]+slopes[i])/2;
+  for(let i=0;i<slopes.length;i++){
+    if(slopes[i]===0){ tangents[i]=0; tangents[i+1]=0; continue; }
+    const a=tangents[i]/slopes[i], b=tangents[i+1]/slopes[i], norm=Math.hypot(a,b);
+    if(norm>3){ const scale=3/norm; tangents[i]=scale*a*slopes[i]; tangents[i+1]=scale*b*slopes[i]; }
+  }
+  let d=`M ${xy[0][0].toFixed(1)} ${xy[0][1].toFixed(1)}`;
+  for(let i=0;i<xy.length-1;i++){
+    const p1=xy[i],p2=xy[i+1],dx=(p2[0]-p1[0])/3;
+    d+=` C ${(p1[0]+dx).toFixed(1)} ${(p1[1]+tangents[i]*dx).toFixed(1)}, ${(p2[0]-dx).toFixed(1)} ${(p2[1]-tangents[i+1]*dx).toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
   }
   return d;
 }
+function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function drawChart(range, scrubIdx, animate=true){
   const pts = DATA.series[range]||DATA.series["1J"];
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
@@ -4015,29 +4035,29 @@ function drawChart(range, scrubIdx, animate=true){
     n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
   ]);
-  const fullLine = catmullPath(xy, 0, n-1), last = xy[n-1];
+  const fullLine = n>1 ? chartPath(xy) : "", last = xy[n-1];
   // Nur drei hauchzarte Horizontal-Linien als Halt — das volle Raster machte die Kurve
   // zum Dashboard; die Referenz (Vermoegen Redesign 23.07.) lässt die Kurve frei stehen.
   let grid="";
   const gx0=padX, gx1=W-padX, gy0=padT, gy1=H-padB;
   for(let k=0;k<=2;k++){const y=(gy0+k/2*(gy1-gy0)).toFixed(1); grid+=`<line x1="${gx0}" y1="${y}" x2="${gx1}" y2="${y}" style="stroke:var(--grid2)" stroke-width="0.6"/>`;}
-  // Präzise Fintech-Linie ohne Flächenfüllung oder breiten Neon-Teppich. Die dunkle Unterkante
-  // trennt die Kurve vom Raster, die feine helle Kante gibt ihr weiterhin etwas Glastiefe.
-  const glassLine=(d,animate)=>`<path d="${d}" fill="none" stroke="#94A3AF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path class="${animate?"chart-line-main":"chart-line-static"}" pathLength="1" d="${d}" fill="none" stroke="#F5F7F8" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="#FFFFFF" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round" opacity=".62"/>`;
+  // Eine klare Linie mit einem sehr dezenten Halo trennt den Verlauf vom Raster,
+  // ohne aus einem Finanzchart ein dekoratives Glasobjekt zu machen.
+  const glassLine=(d,animate)=>`<path d="${d}" fill="none" stroke="#94A3AF" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" opacity=".16"/><path class="${animate?"chart-line-main":"chart-line-static"}" pathLength="1" d="${d}" fill="none" stroke="#F5F7F8" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round"/>`;
   let body;
   if(scrubIdx!=null){
     // Die volle Kurve bleibt im DOM. Beim Abfahren wird nur die helle Ebene
     // per Clip-Maske bewegt, statt das komplette SVG in jedem Frame neu aufzubauen.
     const initialX=xy[scrubIdx][0].toFixed(1);
-    body = `<defs><clipPath id="chartScrubClip"><rect id="chartScrubClipRect" x="0" y="0" width="${initialX}" height="${H}"/></clipPath></defs>`
+    body = n===1 ? `<g>${grid}</g>` : `<defs><clipPath id="chartScrubClip"><rect id="chartScrubClipRect" x="0" y="0" width="${initialX}" height="${H}"/></clipPath></defs>`
       + `<g>${grid}</g>`
-      + `<path d="${fullLine}" fill="none" stroke="#94A3AF" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round" opacity=".3"/>`
-      + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"/><path d="${fullLine}" fill="none" stroke="#FFFFFF" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round" opacity=".62"/></g>`;
+      + `<path d="${fullLine}" fill="none" stroke="#94A3AF" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round" opacity=".22"/>`
+      + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   } else {
     body = `<g>${grid}</g>`
       + glassLine(fullLine,animate)
-      + `<circle class="endcap chart-endcap" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6.5" fill="none" stroke="#F5F7F8" stroke-width="1" opacity=".24"/>`
-      + `<circle class="endcap chart-endcap" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.2" fill="#F5F7F8" stroke="#07131D" stroke-width="1.35"/>`;
+      + `<circle class="endcap chart-endcap chart-endcap-halo" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="none" stroke="#F5F7F8" stroke-width="1" opacity=".2"/>`
+      + `<circle class="endcap chart-endcap chart-endcap-core" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="#F5F7F8" stroke="#07131D" stroke-width="1.15"/>`;
   }
   document.getElementById("chart").innerHTML = body;
   CHART.xy=xy; CHART.pts=pts; CHART.range=range;
@@ -4045,11 +4065,12 @@ function drawChart(range, scrubIdx, animate=true){
   CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
   if(scrubIdx==null){                            // Datums-Labels + Delta nur im Normalzustand neu setzen
     CHART.dates=seriesDates(range);
-    const dEl=document.getElementById("chartDelta");
+    const dEl=document.getElementById("chartDelta"), context=document.getElementById("chartContext");
     if(dEl){
       const dv=(pts[pts.length-1]-pts[0])*1000;
-      const lbl={"1W":"in 1 Woche","1M":"in 1 Monat","6M":"in 6 Monaten","1J":"in 1 Jahr","Max":"seit Beginn"}[range]||"";
-      dEl.textContent = `${dv>=0?"+":"−"}${eur(Math.abs(dv))} ${lbl}`;
+      const dates=CHART.dates, first=dates[0]||"Heute", end=dates[dates.length-1]||"Heute";
+      dEl.textContent = pts.length===1 ? `Erster Stand · ${end}` : `${first} – ${end} · ${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
+      if(context) context.innerHTML=`<span>${first}</span><span>${end}</span>`;
     }
   }
 }
@@ -4068,24 +4089,27 @@ drawChart("1W");
     const plotL=rect.left+(padX/W)*rect.width, plotR=rect.left+((W-padX)/W)*rect.width;
     let frac=(clientX-plotL)/(plotR-plotL); frac=Math.max(0,Math.min(1,frac));
     const idx=Math.round(frac*(n-1));
-    if(!CHART.scrubClip || !CHART.scrubPath) drawChart(CHART.range, idx);
+    if(n>1 && (!CHART.scrubClip || !CHART.scrubPath)) drawChart(CHART.range, idx);
     // Die Maske und der Punkt folgen der echten Kurven-Geometrie kontinuierlich.
     // Der angezeigte Wert bleibt auf dem naechsten vorhandenen Datenpunkt stabil.
-    const targetX=padX+frac*(W-2*padX);
-    const length=CHART.scrubPath.getTotalLength();
-    let lo=0, hi=length;
-    for(let step=0;step<11;step++){
-      const mid=(lo+hi)/2;
-      if(CHART.scrubPath.getPointAtLength(mid).x<targetX) lo=mid; else hi=mid;
+    let point=CHART.xy[idx];
+    if(n>1){
+      const targetX=padX+frac*(W-2*padX), length=CHART.scrubPath.getTotalLength();
+      let lo=0, hi=length;
+      for(let step=0;step<11;step++){
+        const mid=(lo+hi)/2;
+        if(CHART.scrubPath.getPointAtLength(mid).x<targetX) lo=mid; else hi=mid;
+      }
+      point=CHART.scrubPath.getPointAtLength((lo+hi)/2);
+      CHART.scrubClip.setAttribute("width",Math.max(0,point.x).toFixed(2));
     }
-    const point=CHART.scrubPath.getPointAtLength((lo+hi)/2);
-    CHART.scrubClip.setAttribute("width",Math.max(0,point.x).toFixed(2));
-    const px=(point.x/W)*rect.width, py=(point.y/150)*rect.height;
+    const wrapRect=wrap.getBoundingClientRect();
+    const px=(rect.left-wrapRect.left)+(point.x/W)*rect.width, py=(rect.top-wrapRect.top)+(point.y/150)*rect.height;
     dot.style.left=px+"px"; dot.style.top=py+"px";   // runder Knopf sitzt am Übergang
     nwEl.dataset.lock="1";                       // Zahlen-Ticker nicht dazwischenfunken
     nwEl.textContent=eur2(CHART.pts[idx]*1000);
     nwEl.classList.add("scrubbing");
-    deltaEl.textContent=CHART.dates[idx]; deltaEl.classList.add("scrub-date");
+    deltaEl.textContent=`${CHART.dates[idx]} · ${eur2(CHART.pts[idx]*1000)}`; deltaEl.classList.add("scrub-date");
     if(chip) chip.style.opacity="0";             // Monats-Delta passt nicht zum historischen Wert
   }
   // Finger-Events koennen schneller eintreffen als der SVG-Neuaufbau. Ein Frame-Puffer verhindert,
@@ -4100,11 +4124,9 @@ drawChart("1W");
     });
   }
   function start(e){
-    const chartRect=wrap.getBoundingClientRect();
-    if(e.clientY<chartRect.top || e.clientY>chartRect.bottom) return;
     e.preventDefault();
     scrubbing=true; scrubEl.classList.add("on"); wrap.classList.add("scrubbing");
-    try{wrap.setPointerCapture(e.pointerId);}catch(_){}
+    try{chartEl.setPointerCapture(e.pointerId);}catch(_){}
     scrubAt(e.clientX);
   }
   function move(e){ if(scrubbing){ e.preventDefault(); scrubAt(e.clientX); } }
@@ -4119,10 +4141,10 @@ drawChart("1W");
     if(chip) chip.style.opacity="";
     drawChart(CHART.range,null,false);             // Delta-Zeile wiederherstellen, ohne Repaint-Zucken
   }
-  wrap.addEventListener("pointerdown",start);
-  wrap.addEventListener("pointermove",move);
-  wrap.addEventListener("pointerup",end);
-  wrap.addEventListener("pointercancel",end);
+  chartEl.addEventListener("pointerdown",start);
+  chartEl.addEventListener("pointermove",move);
+  chartEl.addEventListener("pointerup",end);
+  chartEl.addEventListener("pointercancel",end);
 })();
 document.getElementById("ranges").addEventListener("click",e=>{
   const b=e.target.closest(".range"); if(!b)return;
