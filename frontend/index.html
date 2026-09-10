@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260910-1a2b3c4">
+<meta name="rove-frontend-build" content="20260910-3f4a8b1">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -775,6 +775,7 @@
   .chip.negative{background:transparent;color:#F45E5E}
   .chip.score{background:var(--blue-soft);color:var(--blue);margin-left:6px}
   .chart-context{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:8px;color:var(--faint);font-size:11.5px;font-weight:650;font-variant-numeric:tabular-nums}
+  .chart-context[hidden]{display:none}
   .chart-context span:last-child{text-align:right}
   .delta{font-size:12.5px;color:var(--muted);text-align:center;margin-top:8px;font-variant-numeric:tabular-nums;min-height:18px}
 
@@ -4068,7 +4069,8 @@ function drawChart(range, scrubIdx, animate=true){
       + `<path d="${fullLine}" fill="none" stroke="#94A3AF" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round" opacity=".22"/>`
       + `<g clip-path="url(#chartScrubClip)"><path id="chartScrubPath" d="${fullLine}" fill="none" stroke="#F5F7F8" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   } else if(neutralDay){
-    body = `<g>${grid}</g><line class="chart-day-reference" x1="${padX}" y1="${last[1].toFixed(1)}" x2="${W-padX}" y2="${last[1].toFixed(1)}" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="2 6" opacity=".3"/>`;
+    const neutralLine=`M ${padX} ${last[1].toFixed(1)} L ${W-padX} ${last[1].toFixed(1)}`;
+    body = `<g>${grid}</g>`+glassLine(neutralLine,false);
   } else {
     body = `<g>${grid}</g>`
       + glassLine(fullLine,animate)
@@ -4080,7 +4082,7 @@ function drawChart(range, scrubIdx, animate=true){
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
   CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
   if(scrubIdx==null){                            // Datums-Labels + Delta nur im Normalzustand neu setzen
-    CHART.dates=seriesDates(range);
+    CHART.dates=rangeData.dates||seriesDates(range);
     const dEl=document.getElementById("chartDelta"), context=document.getElementById("chartContext");
     if(dEl){
       const dv=(pts[pts.length-1]-pts[0])*1000;
