@@ -4386,6 +4386,9 @@ async function syncCashAccount(action, payload){
   if(APP_MODE!=="bridge" || !apiReady()){
     return false;
   }
+  if(action==="transfer" || action==="adjust"){
+    payload.request_id ||= globalThis.crypto?.randomUUID?.() || `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
   try{
     const res=await apiFetch("/v1/accounts",{
       method:"POST",
@@ -7432,19 +7435,18 @@ function applyServerCashAccounts(accounts){
 // lief der Kontostand dadurch systematisch nach unten (Furkan 26.07.: „es darf sich nichts
 // nach 45 sek löschen"). Eigener Endpunkt, weil eine Einnahme nicht in `expenses` gehört —
 // dort würde sie als Ausgabe in Budget, Bot und Report zählen.
-// `before` ist der Kontostand VOR der lokalen Buchung. Er muss von commitEntry() kommen —
-// hier drin gemessen wäre er bereits um den Buchungsbetrag verschoben und ein Rollback
-// würde den falschen Wert wiederherstellen.
-async function syncIncomeToServer(e, raw, before){
+async function syncIncomeToServer(e, raw){
   if(!apiReady()) return;
+  const requestId=e.requestId||(e.requestId=(globalThis.crypto?.randomUUID?.()||
+    `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`));
   try{
     const res=await apiFetch("/v1/income",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({amount:Math.abs(e.a), label:e.n})
+      body:JSON.stringify({amount:Math.abs(e.a), label:e.n, request_id:requestId})
     });
     const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
     // `csid`, nicht `sid`: die Einnahme steht in app_cash_movements. Ein `sid` würde beim
     // Löschen DELETE /v1/expenses/<id> auslösen und eine fremde Ausgabe treffen.
     e.csid=data.id;
@@ -7457,47 +7459,46 @@ async function syncIncomeToServer(e, raw, before){
     }
   }catch(err){
     console.warn("Einnahme konnte nicht gespeichert werden:", err);
-    rollbackFailedBooking(e, before);
-    showToast("Nicht gespeichert — bitte erneut versuchen");
+    if(isDefiniteBookingRejection(err)){
+      rollbackFailedBooking(e);
+      showToast("Nicht gespeichert — bitte erneut versuchen");
+    }else{
+      await refreshAppDataFromServer();
+      showToast("Verbindung unterbrochen. Rov.E gleicht den Stand ab.");
+    }
   }
 }
-// Ein fehlgeschlagener Sync muss die Buchung UND die Kontowirkung zurücknehmen. Bis 26.07.
-// wurde nur die Zeile entfernt: das Girokonto blieb gesenkt, obwohl die Buchung weg war —
-// bis zum nächsten Voll-Refresh stand dort eine zu niedrige Zahl.
-function snapshotCashAccounts(){
-  const read=name=>{ const a=DATA.assets.find(x=>x.name===name); return a?Number(a.value)||0:null; };
-  return {
-    giro:read("Girokonto"),tagesgeld:read("Tagesgeld"),bargeld:read("Bargeld"),konto:DATA.sts.konto,
-    financial:Object.fromEntries((DATA.assets||[]).filter(asset=>asset.financialAccountId!=null).map(asset=>[String(asset.financialAccountId),Number(asset.value)||0]))
-  };
+// Nur eine eindeutig abgelehnte eigene Mutation darf lokal zurückgenommen werden.
+// Bei Timeout/5xx bleibt der lokale Stand bis zur Server-Reconciliation unangetastet:
+// ein alter Snapshot darf keinen inzwischen erfolgreichen Parallel-Write überschreiben.
+function isDefiniteBookingRejection(error){
+  return [400,409,422].includes(Number(error?.httpStatus));
 }
-function rollbackFailedBooking(e, before){
+function rollbackFailedBooking(e){
   const hit=findTx(e.id);
   if(hit){
     hit.day.items=hit.day.items.filter(item=>item!==hit.item);
     DATA.tx=DATA.tx.filter(day=>day.items.length);
   }
-  if(before){
-    if(before.financial&&multiCashEnabled()){
-      Object.entries(before.financial).forEach(([accountId,value])=>{
-        const asset=DATA.assets.find(item=>Number(item.financialAccountId)===Number(accountId));
-        if(asset) asset.value=Number(value)||0;
-      });
-    }
-    [["Girokonto","giro"],["Tagesgeld","tagesgeld"],["Bargeld","bargeld"]].forEach(([name,key])=>{
-      if(before[key]==null) return;
-      const asset=DATA.assets.find(a=>a.name===name);
-      if(asset) asset.value=before[key];
-    });
-    DATA.sts.konto=before.konto;
+  if(e.transfer){
+    recalcNetWorth();
+    renderTx(); renderBudgets(); renderAssets(); mentorLine();
+    return;
+  }
+  if(e.bar){
+    const wallet=legacyCashAsset("bargeld");
+    if(wallet) wallet.value+=Math.abs(Number(e.a)||0);
+    if(multiCashEnabled()) DATA.sts.konto-=Number(e.a)||0;
+  }else{
+    applyKontoDelta(-Number(e.a)||0,e.a>=0?"income":"expense");
   }
   recalcNetWorth();
   renderTx(); renderBudgets(); renderAssets(); mentorLine();
 }
-async function syncExpenseToServer(e, raw, before){
+async function syncExpenseToServer(e, raw){
   if(!apiReady()) return;
   if(e.transfer) return;                       // Abhebungen laufen über syncCashWithdrawal()
-  if(e.a>=0) return syncIncomeToServer(e, raw, before);
+  if(e.a>=0) return syncIncomeToServer(e, raw);
   const requestId=e.requestId||(e.requestId=(globalThis.crypto?.randomUUID?.()||
     `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`));
   try{
@@ -7517,7 +7518,7 @@ async function syncExpenseToServer(e, raw, before){
       })
     });
     const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
     e.sid=data.id;   // Server-ID merken, damit dieselbe Buchung ohne Reload löschbar ist
     if(multiCashEnabled()) await refreshAppDataFromServer();
     else applyServerCashAccounts(data.accounts);
@@ -7536,13 +7537,17 @@ async function syncExpenseToServer(e, raw, before){
     // melden hat die Glocke nur zugemüllt. Sync läuft weiter, nur ohne Aktivitäts-Notiz.
   }catch(err){
     console.warn("App-Sync fehlgeschlagen:", err);
-    // Eine lokale Buchung darf bei einem fehlgeschlagenen Server-Sync nicht wie eine
-    // echte Finanzbuchung aussehen — und der Kontostand darf nicht gesenkt bleiben,
-    // wenn die Buchung wieder verschwindet. Der anschliessende Refresh stellt den
-    // DB-Stand her; falls der POST serverseitig doch angekommen ist, erscheint sie wieder.
-    rollbackFailedBooking(e, before);
-    await refreshTransactionsFromServer();
-    showToast("Nicht gespeichert — bitte erneut versuchen");
+    // Bei einem sicheren 4xx-Fehler wird nur diese eigene optimistische Mutation entfernt.
+    // Bei unklarem Ausgang entscheidet der anschliessende Server-State-Refresh.
+    if(isDefiniteBookingRejection(err)){
+      rollbackFailedBooking(e);
+      showToast("Nicht gespeichert — bitte erneut versuchen");
+    }else{
+      // Timeout, Reset oder 5xx kann nach einem serverseitigen Commit eintreten.
+      // Niemals den alten lokalen Snapshot zurueckschreiben; der Server entscheidet.
+      await refreshAppDataFromServer();
+      showToast("Verbindung unterbrochen. Rov.E gleicht den Stand ab.");
+    }
   }
 }
 
@@ -7820,9 +7825,6 @@ setInterval(()=>{
 // Coaching-Zeile (ans_cash_expense). Alles, was nur zum „+"-Sheet gehört (Eingabefeld leeren,
 // Sheet schliessen, Tab wechseln, Toast), bleibt bewusst in addEntry.
 function commitEntry(e, raw){
-  // Kontostand VOR der Buchung sichern — nur damit kann ein fehlgeschlagener Server-Sync
-  // sauber zurückrollen. Nach den Änderungen unten gemessen wäre der Wert schon verschoben.
-  const before=snapshotCashAccounts();
   const dgroup=e.dayGroup||"Heute"; delete e.dayGroup;   // nur Platzierungs-Info, nicht Teil des tx-Items
   let grp=DATA.tx.find(d=>d.d===dgroup);
   if(!grp){
@@ -7849,7 +7851,7 @@ function commitEntry(e, raw){
   // Transaktion auch das Bargeld. Eine getrennte /v1/accounts-Runde würde mitten im Speichern
   // refreshAppDataFromServer() auslösen und DATA.tx ersetzen — die gerade getippte Buchung wäre
   // für 45 Sekunden wieder aus der Liste verschwunden.
-  syncExpenseToServer(e, raw, before);
+  syncExpenseToServer(e, raw);
 }
 function addEntry(){
   const raw=quickIn.value;

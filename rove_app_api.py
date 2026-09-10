@@ -308,6 +308,42 @@ def begin_write(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
 
 
+def cash_request_replay(conn, user_id, request_id, operation, payload):
+    """Reserve a durable receipt under the caller's BEGIN IMMEDIATE lock."""
+    if not request_id:
+        return None
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_cash_request_receipts (
+        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        response TEXT,
+        PRIMARY KEY(user_id, request_id)
+    )""")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    row = conn.execute(
+        "SELECT operation,payload,response FROM app_cash_request_receipts WHERE user_id=? AND request_id=?",
+        (user_id, request_id),
+    ).fetchone()
+    if row:
+        if row["operation"] != operation or row["payload"] != canonical:
+            return jsonify({"ok": False, "error": "cash_request_conflict"}), 409
+        return jsonify(json.loads(row["response"]))
+    conn.execute(
+        "INSERT INTO app_cash_request_receipts(user_id,request_id,operation,payload) VALUES (?,?,?,?)",
+        (user_id, request_id, operation, canonical),
+    )
+    return None
+
+
+def finish_cash_request(conn, user_id, request_id, response):
+    if request_id:
+        conn.execute(
+            "UPDATE app_cash_request_receipts SET response=? WHERE user_id=? AND request_id=?",
+            (json.dumps(response), user_id, request_id),
+        )
+
+
 def cors(resp):
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin in ALLOWED_ORIGINS:
@@ -4969,6 +5005,9 @@ def update_accounts():
     payload = request.get_json(silent=True) or {}
     action = clean_text(payload.get("action")).lower()
     token = token_from_request()
+    request_id = clean_text(payload.get("request_id") or payload.get("idempotency_key"))[:128] or None
+    if action not in {"transfer", "adjust"}:
+        request_id = None
 
     with db() as conn:
         begin_write(conn)   # siehe begin_write(): Lesen und Schreiben muessen ein Block sein
@@ -4985,12 +5024,32 @@ def update_accounts():
         except (TypeError, ValueError):
             amount = 0.0
 
+        if not 0 <= amount < float("inf"):
+            conn.rollback()
+            return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
+        canonical_request = {"action": action, "amount": amount}
+        if action == "transfer":
+            canonical_request.update(source=clean_text(payload.get("from")).lower(),
+                                     target=clean_text(payload.get("to")).lower(),
+                                     log=clean_text(payload.get("log")).lower())
+        elif action == "adjust":
+            canonical_request.update(account=clean_text(payload.get("account")).lower(),
+                                     direction=clean_text(payload.get("direction"), "add").lower())
+        # Check retries before balance-dependent validation: a completed transfer
+        # may have exhausted the original source balance.
+        if request_id:
+            replay = cash_request_replay(conn, user_id, request_id, "accounts", canonical_request)
+            if replay is not None:
+                return replay
+
         if action == "transfer":
             source = clean_text(payload.get("from")).lower()
             target = clean_text(payload.get("to")).lower()
             if source not in ACCOUNT_KEYS or target not in ACCOUNT_KEYS or source == target:
+                conn.rollback()
                 return jsonify({"ok": False, "error": "valid_transfer_accounts_required"}), 400
             if amount <= 0 or (amount > balances[source] and (not pilot or source != "giro")):
+                conn.rollback()
                 return jsonify({"ok": False, "error": "transfer_amount_not_available"}), 400
             source_account_id = None
             target_account_id = None
@@ -5035,9 +5094,11 @@ def update_accounts():
             account = clean_text(payload.get("account")).lower()
             direction = clean_text(payload.get("direction"), "add").lower()
             if account not in ACCOUNT_KEYS or direction not in {"add", "subtract"} or amount <= 0:
+                conn.rollback()
                 return jsonify({"ok": False, "error": "valid_account_adjustment_required"}), 400
             delta = amount if direction == "add" else -amount
             if balances[account] + delta < 0 or balances[account] + delta > 10_000_000:
+                conn.rollback()
                 return jsonify({"ok": False, "error": "account_adjustment_not_available"}), 400
             balances[account] = round(balances[account] + delta, 2)
             if pilot:
@@ -5050,6 +5111,9 @@ def update_accounts():
         if not pilot:
             save_app_cash_accounts(conn, user_id, balances)
         live_data = build_live_app_data(conn, user_id)
+        response = {"ok": True, "accounts": balances, **live_data}
+        if request_id:
+            finish_cash_request(conn, user_id, request_id, response)
         conn.commit()
 
     return jsonify({"ok": True, "accounts": balances, **live_data})
@@ -7291,6 +7355,7 @@ def create_expense():
                 paid_cash=paid_cash,
             )
         except (LookupError, ValueError) as exc:
+            conn.rollback()
             return jsonify({"ok": False, "error": str(exc)}), 400
         balances = app_cash_accounts(conn, user_id)
         live_data = build_live_app_data(conn, user_id)
@@ -7331,9 +7396,10 @@ def create_income():
         amount = abs(float(payload.get("amount") or 0))
     except (TypeError, ValueError):
         amount = 0
-    if amount <= 0:
+    if not 0 < amount < float("inf") or round(amount, 2) <= 0:
         return jsonify({"ok": False, "error": "amount_required"}), 400
     label = clean_text(payload.get("label") or payload.get("name"), "Einnahme")
+    request_id = clean_text(payload.get("request_id") or payload.get("idempotency_key"))[:128] or None
 
     token = token_from_request()
     with db() as conn:
@@ -7342,6 +7408,10 @@ def create_income():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
+        replay = cash_request_replay(conn, user_id, request_id, "income",
+                                    {"amount": round(amount, 2), "label": label})
+        if replay is not None:
+            return replay
         ensure_app_cash_movements_table(conn)
         applied = round(amount, 2)
         # gelesen unter der Sperre aus begin_write() — sonst geht eine von zwei
@@ -7369,6 +7439,10 @@ def create_income():
             )
         movement_id = cur.lastrowid
         live_data = build_live_app_data(conn, user_id)
+        finish_cash_request(conn, user_id, request_id, {
+            "ok": True, "id": movement_id, "amount": applied, "label": label,
+            "accounts": balances, "available": live_data["sts"]["available"],
+        })
         conn.commit()
 
     return jsonify({

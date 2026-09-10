@@ -43,6 +43,26 @@ class FrontendTransferVisibilityTests(unittest.TestCase):
         self.assertIn("request_id:transferId", self.frontend)
         self.assertIn("PENDING_TRANSFER_REQUEST=null", self.frontend)
 
+    def test_booking_failure_does_not_restore_a_stale_account_snapshot(self):
+        rollback = re.search(
+            r"function rollbackFailedBooking\(e\)\{(?P<body>.*?)\n\}",
+            self.frontend,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(rollback)
+        body = rollback.group("body")
+        self.assertNotIn("before.", body)
+        self.assertNotIn("snapshotCashAccounts", self.frontend)
+        self.assertIn("applyKontoDelta(-Number(e.a)||0", body)
+        self.assertIn("function isDefiniteBookingRejection(error)", self.frontend)
+        self.assertIn('"Verbindung unterbrochen. Rov.E gleicht den Stand ab."', self.frontend)
+
+    def test_uncertain_booking_keeps_request_id_and_reconciles_server_state(self):
+        self.assertIn("const requestId=e.requestId||", self.frontend)
+        self.assertIn("request_id:requestId", self.frontend)
+        self.assertIn("await refreshAppDataFromServer();", self.frontend)
+        self.assertIn("if(isDefiniteBookingRejection(err))", self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

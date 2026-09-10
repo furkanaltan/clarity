@@ -1,5 +1,16 @@
 # Rov.E Migrations
 
+## Cash request receipts (09.09.2026)
+
+`rove_app_api.cash_request_replay()` creates `app_cash_request_receipts`
+additively inside the existing `BEGIN IMMEDIATE` transaction. The primary key
+is `(user_id, request_id)`. Operation, canonical payload and original response
+are request receipts, not another balance source. Income and legacy
+transfer/adjust writes commit or roll back together with their receipt.
+No historical movements are migrated. Calls without request IDs remain
+compatible but cannot be deduplicated; the current frontend supplies IDs.
+
+
 Stand: 31.08.2026. Migrationen werden niemals allein aufgrund ihres Namens
 erneut ausgefuehrt. Der produktive Anwendungsstatus ist in diesem Repository
 nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.

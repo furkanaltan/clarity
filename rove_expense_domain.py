@@ -162,6 +162,12 @@ def create_expense_for_user(
         if paid_cash and amount > float(account["balance"] or 0.0) + 0.009:
             raise ValueError("cash_balance_insufficient")
 
+    else:
+        balances = _legacy_balances(conn, user_id)
+        key = "bargeld" if paid_cash else "giro"
+        if paid_cash and amount > balances[key] + 0.009:
+            raise ValueError("cash_balance_insufficient")
+
     if pilot:
         cursor = conn.execute(
             """INSERT INTO expenses
@@ -189,10 +195,6 @@ def create_expense_for_user(
             (user_id, "payment" if paid_cash else "card", amount, expense_id, account_id),
         )
     else:
-        balances = _legacy_balances(conn, user_id)
-        key = "bargeld" if paid_cash else "giro"
-        if paid_cash and amount > balances[key] + 0.009:
-            raise ValueError("cash_balance_insufficient")
         balances[key] = round(balances[key] - amount, 2)
         _save_legacy_balances(conn, user_id, balances)
         conn.execute(
