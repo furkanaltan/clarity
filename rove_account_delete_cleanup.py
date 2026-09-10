@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import json
 import secrets
 import shutil
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -18,6 +20,40 @@ def configured_roots(app_dir: Path) -> tuple[Path, Path, Path, Path]:
         reports_dir,
         reports_dir / "archive",
     )
+
+
+def tombstone_path(app_dir: Path | None = None) -> Path:
+    """Return the deletion ledger path, deliberately outside the SQLite backup."""
+    default_dir = app_dir or Path(__file__).resolve().parent.parent
+    return Path(os.getenv("ROVE_ACCOUNT_DELETE_TOMBSTONES", str(default_dir / "account_delete_tombstones.jsonl")))
+
+
+def record_delete_tombstone(user_id: int, path: Path | None = None) -> None:
+    """Durably record deletion intent before the mutable account rows are removed."""
+    target = path or tombstone_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"user_id": int(user_id), "deleted_at": datetime.now(timezone.utc).isoformat()}) + "\n"
+    fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, line.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def read_delete_tombstones(path: Path | None = None) -> set[int]:
+    target = path or tombstone_path()
+    if not target.is_file():
+        return set()
+    result: set[int] = set()
+    for line in target.read_text(encoding="utf-8").splitlines():
+        try:
+            value = json.loads(line).get("user_id")
+            if value is not None:
+                result.add(int(value))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return result
 
 
 def ensure_table(conn: sqlite3.Connection) -> None:
@@ -50,16 +86,26 @@ def remove_path(path: Path, roots: Iterable[Path]) -> str | None:
     return None
 
 
-def queue_paths(db_path: Path, roots: Iterable[Path], paths: Iterable[Path]) -> None:
+def queue_paths_in_conn(
+    conn: sqlite3.Connection, roots: Iterable[Path], paths: Iterable[Path]
+) -> None:
+    """Persist allowlisted cleanup paths inside the caller's active transaction."""
     allowed_paths = [path for path in paths if path_allowed(path, roots)]
     if not allowed_paths:
         return
+    ensure_table(conn)
+    for path in allowed_paths:
+        conn.execute(
+            """INSERT OR IGNORE INTO account_delete_file_cleanup
+               (opaque_cleanup_id, internal_path) VALUES (?, ?)""",
+            (secrets.token_urlsafe(18), str(path)),
+        )
+
+
+def queue_paths(db_path: Path, roots: Iterable[Path], paths: Iterable[Path]) -> None:
     with sqlite3.connect(db_path, timeout=15.0) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        ensure_table(conn)
-        for path in allowed_paths:
-            conn.execute("""INSERT OR IGNORE INTO account_delete_file_cleanup
-                (opaque_cleanup_id, internal_path) VALUES (?, ?)""", (secrets.token_urlsafe(18), str(path)))
+        queue_paths_in_conn(conn, roots, paths)
 
 
 def retry_paths(db_path: Path, roots: Iterable[Path], limit: int = 20) -> int:

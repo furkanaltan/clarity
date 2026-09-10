@@ -27,6 +27,7 @@ REPORT_PROCESSING_TIMEOUT_MINUTES = int(os.getenv("REPORT_PROCESSING_TIMEOUT_MIN
 REPORT_TIMEZONE = ZoneInfo("Europe/Berlin")
 STEP_NORMAL = 10
 ACCOUNT_DELETE_CLEANUP_BATCH_SIZE = 20
+AUTH_RETENTION_GRACE_DAYS = int(os.getenv("ROVE_AUTH_RETENTION_GRACE_DAYS", "30"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("rove-report-worker")
@@ -244,7 +245,89 @@ def process_due_jobs() -> dict:
     return result
 
 
+def cleanup_auth_artifacts() -> dict:
+    """Bounded cleanup for auth rows that are no longer usable.
+
+    The grace period keeps expired/consumed rows available for diagnostics while
+    protecting all currently valid sessions, codes, and invitations.
+    """
+    cutoff = f"-{AUTH_RETENTION_GRACE_DAYS} days"
+    removed: dict[str, int] = {}
+
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        def table_exists(name: str) -> bool:
+            return bool(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone())
+
+        def delete_rows(key: str, table: str, predicate: str) -> None:
+            if not table_exists(table):
+                return
+            cursor = conn.execute(f"DELETE FROM {table} WHERE {predicate}", (cutoff, cutoff))
+            removed[key] = int(cursor.rowcount or 0)
+
+        delete_rows(
+            "sessions",
+            "app_sessions",
+            "(datetime(expires_at) < datetime('now', 'localtime', ?))"
+            " OR (revoked_at IS NOT NULL AND datetime(revoked_at) < datetime('now', 'localtime', ?))",
+        )
+        if table_exists("app_session_pins") and table_exists("app_sessions"):
+            cursor = conn.execute(
+                """DELETE FROM app_session_pins
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM app_sessions s WHERE s.id = app_session_pins.session_id
+                   )"""
+            )
+            removed["session_pins"] = int(cursor.rowcount or 0)
+
+        for key, table in (
+            ("login_codes", "app_login_codes"),
+            ("password_reset_codes", "app_password_reset_codes"),
+            ("account_delete_codes", "app_account_delete_codes"),
+        ):
+            delete_rows(
+                key,
+                table,
+                "(datetime(expires_at) < datetime('now', 'localtime', ?))"
+                " OR (consumed_at IS NOT NULL AND datetime(consumed_at) < datetime('now', 'localtime', ?))",
+            )
+
+        delete_rows(
+            "invitations",
+            "app_invitations",
+            "(datetime(expires_at) < datetime('now', 'localtime', ?))"
+            " OR (consumed_at IS NOT NULL AND datetime(consumed_at) < datetime('now', 'localtime', ?))",
+        )
+
+        if table_exists("app_state_links"):
+            cursor = conn.execute(
+                """DELETE FROM app_state_links
+                   WHERE (
+                       datetime(COALESCE(expires_at, created_at))
+                           < datetime('now', 'localtime', ?)
+                   )""",
+                (cutoff,),
+            )
+            removed["state_links"] = int(cursor.rowcount or 0)
+
+        if table_exists("app_auth_login_limits"):
+            cursor = conn.execute(
+                """DELETE FROM app_auth_login_limits
+                   WHERE datetime(updated_at) < datetime('now', 'localtime', ?)""",
+                (cutoff,),
+            )
+            removed["login_limits"] = int(cursor.rowcount or 0)
+
+        conn.commit()
+
+    return removed
+
+
 def maintain_archives() -> dict:
+    auth_cleanup = cleanup_auth_artifacts()
     # Run the bounded recovery first so report archive errors cannot defer it.
     cleanup_completed = account_delete_cleanup.retry_paths(
         DB_PATH, account_delete_cleanup_roots(), ACCOUNT_DELETE_CLEANUP_BATCH_SIZE
@@ -257,6 +340,7 @@ def maintain_archives() -> dict:
         "web_reports_removed": int(removed or 0),
         "pdf_reports_archived": int(archived or 0),
         "account_delete_cleanup_completed": int(cleanup_completed or 0),
+        "auth_cleanup": auth_cleanup,
     }
     logger.info("Report-Pflege: %s", result)
     return result

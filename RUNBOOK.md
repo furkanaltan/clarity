@@ -110,10 +110,15 @@ muessen SQLite-Integritaet, Dateigroesse und Lesbarkeit einschliessen.
 2. Alle DB-schreibenden Dienste und Timer kontrolliert stoppen.
 3. Aktuelle defekte DB separat sichern, nicht ueberschreiben oder loeschen.
 4. Backup mit korrekten Rechten an den produktiven DB-Pfad kopieren.
-5. `PRAGMA integrity_check` und `pragma_foreign_key_check` ausfuehren.
-6. Finanzielle Drift-Gates ausfuehren.
-7. Dienste schrittweise starten und Healthcheck pruefen.
-8. App-, Bot- und Worker-Smoke-Tests durchfuehren.
+5. `reapply_account_delete_tombstones.py` mit dem externen Loeschledger ausfuehren.
+6. `PRAGMA integrity_check` und `pragma_foreign_key_check` ausfuehren.
+7. Finanzielle Drift-Gates ausfuehren.
+8. Dienste schrittweise starten und Healthcheck pruefen.
+9. App-, Bot- und Worker-Smoke-Tests durchfuehren.
+
+Der Loeschledger liegt absichtlich ausserhalb der automatischen SQLite-Backups.
+Ein wiederhergestellter Account wird vor dem erneuten API-Start daraus erneut
+user-scoped entfernt; das ist unabhaengig vom spaeteren Datei-Cleanup.
 
 Ein Restore wird nicht improvisiert und niemals auf Basis einer lokalen
 Entwicklungsdatenbank durchgefuehrt.

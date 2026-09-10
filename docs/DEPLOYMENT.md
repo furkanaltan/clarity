@@ -76,7 +76,7 @@ Struktur zusammengeführt ab.
 - Statisches Root: `/var/www/getrove`
 - API-Prefix: `/app-api/`
 - Upstream: `http://127.0.0.1:5057/`
-- Reports: `/reports/` aus `/var/www/reports/`, privat gecacht für 300 Sekunden
+- Reports: `/reports/` wird über den API-Token-Gate ausgeliefert; die Dateien liegen intern unter `/var/www/reports/`
 - Legacy-App-State: `/app-state/` liefert `410`
 - TLS: Certbot-Pfade; Zertifikate und Schlüssel werden nicht aus Git erzeugt
 
@@ -145,14 +145,15 @@ auszuführender Produktionsbefehl:
 5. Requirements pro Runtime installieren; native Reportpakete und Fonts separat bereitstellen.
 6. `deploy/env.example` in getrennte, nicht versionierte Environment-Dateien überführen.
 7. Validiertes SQLite-Backup wiederherstellen; niemals die lokale Entwicklungs-DB verwenden.
-8. Produktionsschema und bereits angewandte Migrationen gegen `docs/MIGRATIONS.md` inventarisieren.
-9. Nur fehlende additive Migrationen nach eigenem Gate ausführen.
-10. Sanitizierte systemd-Templates gegen den Zielhost prüfen und installieren.
-11. Nginx-Site und TLS bereitstellen; Konfiguration vor Aktivierung validieren.
-12. `frontend/` vollständig nach `/var/www/getrove/app/` übertragen.
-13. Erst API, dann abhängige Worker/Timer und zuletzt den Bot kontrolliert aktivieren.
-14. Healthcheck, Integrität, Foreign Keys, Finance-Drift und isolierte Smoke-Tests ausführen.
-15. Backup-Timer und einen dokumentierten Restore-Test verifizieren.
+8. Den externen Löschledger mit `reapply_account_delete_tombstones.py` auf die wiederhergestellte DB anwenden.
+9. Produktionsschema und bereits angewandte Migrationen gegen `docs/MIGRATIONS.md` inventarisieren.
+10. Nur fehlende additive Migrationen nach eigenem Gate ausführen.
+11. Sanitizierte systemd-Templates gegen den Zielhost prüfen und installieren.
+12. Nginx-Site und TLS bereitstellen; Konfiguration vor Aktivierung validieren.
+13. `frontend/` vollständig nach `/var/www/getrove/app/` übertragen.
+14. Erst API, dann abhängige Worker/Timer und zuletzt den Bot kontrolliert aktivieren.
+15. Healthcheck, Integrität, Foreign Keys, Finance-Drift und isolierte Smoke-Tests ausführen.
+16. Backup-Timer und einen dokumentierten Restore-Test verifizieren.
 
 ## Datenbank und Migrationen
 

@@ -9221,6 +9221,7 @@ async function logoutCurrentUser(){
 
   try{
     const userId=BRIDGE_USER_ID;    localStorage.removeItem(BRIDGE_LOCAL_KEY);
+    clearPaydayHistory(userId);
     localStorage.removeItem("rove-cat-rules");
     localStorage.removeItem("rove-reminders");
     if(userId!=null){
@@ -9744,7 +9745,8 @@ async function confirmAccountDelete(){
         "Das Konto konnte gerade nicht gelöscht werden.";
       throw new Error(message);
     }
-    try{      localStorage.removeItem(BRIDGE_LOCAL_KEY);
+    try{      clearPaydayHistory(BRIDGE_USER_ID);
+      localStorage.removeItem(BRIDGE_LOCAL_KEY);
       localStorage.removeItem("rove-cat-rules");
       localStorage.removeItem("rove-reminders");
       sessionStorage.removeItem("rove-demo");
@@ -11116,8 +11118,30 @@ document.getElementById("celebrate").addEventListener("click", e=>{ if(e.target.
 // (PAYDAY_LEARN_MIN vergangene Verteilungen) schlägt er stattdessen die gelernte, persönliche
 // Aufteilung vor — maximale Flexibilität bleibt: jeder Betrag ist per Stepper frei anpassbar.
 const PAYHIST_KEY="rove-payday-hist", PAYDAY_LEARN_MIN=2;
-let PAYHIST=(()=>{ try{ return JSON.parse(localStorage.getItem(PAYHIST_KEY)||"[]"); }catch(e){ return []; } })();
-function savePayHist(){ try{ localStorage.setItem(PAYHIST_KEY, JSON.stringify(PAYHIST)); }catch(e){} }
+let PAYHIST=[];
+function paydayHistoryStorageKey(){
+  if(APP_MODE==="bridge" && BRIDGE_USER_ID!=null) return `rove:${BRIDGE_USER_ID}:payday-hist`;
+  if(APP_MODE==="profile" || APP_MODE==="mock" || APP_MODE==="demo") return PAYHIST_KEY;
+  return null;
+}
+function loadPaydayHistory(){
+  const key=paydayHistoryStorageKey();
+  try{ PAYHIST=key ? JSON.parse(localStorage.getItem(key)||"[]") : []; }
+  catch(e){ PAYHIST=[]; }
+  if(!Array.isArray(PAYHIST)) PAYHIST=[];
+}
+function savePayHist(){
+  const key=paydayHistoryStorageKey();
+  if(!key) return;
+  try{ localStorage.setItem(key, JSON.stringify(PAYHIST)); }catch(e){}
+}
+function clearPaydayHistory(userId=null){
+  try{
+    localStorage.removeItem(PAYHIST_KEY);
+    if(userId!=null) localStorage.removeItem(`rove:${userId}:payday-hist`);
+  }catch(e){}
+  PAYHIST=[];
+}
 
 // Aus der Historie gelernte Durchschnitts-Anteile je Topf (Anteil am jeweiligen Verteil-Pool), nach Name
 function paydayLearnedShares(){
@@ -12015,19 +12039,22 @@ async function resolveAppMode(){
   if(session.valid){
     APP_MODE="bridge";
     try{ sessionStorage.removeItem("rove-demo"); }catch(_){ }
+    loadPaydayHistory();
     return APP_MODE;
   }
   // Do not turn an uncertain server/network state into a local financial view.
   if(!session.definitive){
     APP_MODE="bridge";
+    loadPaydayHistory();
     return APP_MODE;
   }
   // Hash/sessionStorage are explicit developer entry points, but only after the
   // server has positively reported that no authenticated session exists.
-  if(APP_MODE==="mock" || APP_MODE==="demo") return APP_MODE;
+  if(APP_MODE==="mock" || APP_MODE==="demo"){ loadPaydayHistory(); return APP_MODE; }
   // Only an explicit unauthenticated response permits the local profile fallback.
   // Network/server uncertainty must never reveal stale local financial data.
   APP_MODE=session.definitive && readProfile() ? "profile" : "bridge";
+  loadPaydayHistory();
   return APP_MODE;
 }
 

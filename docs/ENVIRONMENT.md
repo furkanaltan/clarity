@@ -19,6 +19,7 @@ Production secrets must stay in root-readable environment files outside Git.
 | `ROVE_APP_AUTH_CODE_TTL_MINUTES` | Login code expiry | NO | NO | `10` |
 | `ROVE_ACCOUNT_DELETE_CODE_TTL_MINUTES` | Account deletion verification | NO | NO | `10` |
 | `ROVE_APP_AUTH_SESSION_TTL_DAYS` | Account session expiry | NO | NO | `180` |
+| `ROVE_AUTH_RETENTION_GRACE_DAYS` | Daily auth-artifact maintenance cleanup grace period | NO | NO | `30` |
 | `ROVE_APP_SESSION_COOKIE` | API session cookie name | NO | NO | `rove_app_session` |
 | `ROVE_APP_COOKIE_SECURE` | Secure-cookie enforcement | YES | NO | `1` |
 | `ROVE_LOGIN_FROM_EMAIL` | Login and recovery mail | YES when email auth is enabled | NO | `info@getrove.de` for the documented host |

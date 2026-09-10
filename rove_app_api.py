@@ -254,6 +254,9 @@ DATA_EXPORT_TABLES = (
     ("rove_points", "rove_point_events"),
     ("badges", "user_badges"),
     ("monatssnapshots", "monthly_snapshots"),
+    ("monatliche_finanzsnapshots", "monthly_financial_snapshots"),
+    ("report_snapshots", "report_snapshots_v2"),
+    ("konsumschulden_verlauf", "app_consumer_debt_events"),
     ("reports", "report_jobs"),
     ("zugangsstatus", "user_access"),
     ("push_einstellungen", "app_push_preferences"),
@@ -6711,6 +6714,40 @@ def commit_screenshot_import():
     })
 
 
+@app.route("/v1/public-reports/<token>/", defaults={"relative_path": ""}, methods=["GET"])
+@app.route("/v1/public-reports/<token>/<path:relative_path>", methods=["GET"])
+def serve_public_report(token: str, relative_path: str):
+    """Gate the existing public report URL before serving its static HTML file."""
+    if relative_path not in {"", "index.html"}:
+        return jsonify({"ok": False, "error": "report_not_available"}), 404
+    with db() as conn:
+        try:
+            row = conn.execute(
+                """SELECT rl.html_path
+                     FROM report_links rl
+                     JOIN users u ON u.user_id = rl.user_id
+                    WHERE rl.token = ?
+                      AND rl.status = 'active'
+                      AND datetime(rl.expires_at) > datetime('now', 'localtime')""",
+                (token,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if not row:
+            return jsonify({"ok": False, "error": "report_not_available"}), 410
+
+    report_root = PUBLIC_REPORT_DIR.resolve(strict=False)
+    report_path = Path(str(row["html_path"])).resolve(strict=False)
+    if report_path.name != "index.html" or report_path.parent.parent != report_root:
+        return jsonify({"ok": False, "error": "report_not_available"}), 404
+    if not report_path.is_file():
+        return jsonify({"ok": False, "error": "report_file_missing"}), 404
+    response = send_file(report_path, mimetype="text/html", as_attachment=False)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
 @app.route("/v1/reports/<report_month>/pdf", methods=["GET"])
 def download_report_pdf(report_month: str):
     """Liefert nur dem gekoppelten Nutzer seinen tatsaechlich versendeten PDF-Report."""
@@ -6979,9 +7016,71 @@ def queue_account_cleanup_failures(paths: list[Path]) -> None:
     account_delete_cleanup.queue_paths(DB_PATH, account_delete_cleanup_roots(), paths)
 
 
+def delete_user_rows_for_tombstone(conn: sqlite3.Connection, user_id: int) -> None:
+    """Reapply an external deletion tombstone to a restored database, idempotently."""
+    account_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_accounts'"
+    ).fetchone()
+    account_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(app_accounts)")} if account_exists else set()
+    account_select = "id, email" if "email" in account_columns else "id"
+    account_rows = conn.execute(
+        f"SELECT {account_select} FROM app_accounts WHERE user_id = ?", (user_id,)
+    ).fetchall() if account_exists else []
+    account_ids = [int(row[0]) for row in account_rows]
+    emails = [normalize_email(row[1]) for row in account_rows if "email" in account_columns and normalize_email(row[1])]
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        for table in ("app_password_reset_codes", "app_credentials"):
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                conn.execute(f"DELETE FROM {table} WHERE account_id IN ({placeholders})", account_ids)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_sessions'").fetchone():
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_session_pins'").fetchone():
+                conn.execute(f"DELETE FROM app_session_pins WHERE session_id IN (SELECT id FROM app_sessions WHERE account_id IN ({placeholders}))", account_ids)
+            conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
+    if emails and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_login_codes'").fetchone():
+        placeholders = ",".join("?" for _ in emails)
+        conn.execute(f"DELETE FROM app_login_codes WHERE email IN ({placeholders})", emails)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_financial_accounts'").fetchone():
+        delete_financial_account_data(conn, user_id)
+    tables = [str(row[0]) for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )]
+    excluded = {"users", "app_accounts", "app_sessions", "app_login_codes", "app_financial_account_roles", "app_financial_accounts", "app_user_features"}
+    for table in tables:
+        if table in excluded:
+            continue
+        escaped = table.replace('"', '""')
+        columns = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{escaped}")')}
+        if "user_id" in columns:
+            conn.execute(f'DELETE FROM "{escaped}" WHERE user_id = ?', (user_id,))
+    if account_exists:
+        conn.execute("DELETE FROM app_accounts WHERE user_id = ?", (user_id,))
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+
 def retry_account_delete_file_cleanup(limit: int = 20) -> int:
     """Retries only persisted, allowlisted leftovers; safe to call from maintenance."""
     return account_delete_cleanup.retry_paths(DB_PATH, account_delete_cleanup_roots(), limit)
+
+
+def account_delete_cleanup_paths(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[Path]:
+    """Builds the allowlisted file set before the account transaction commits."""
+    paths = [PUBLIC_APP_STATE_DIR / f"{token}.json" for token in state_tokens]
+    try:
+        public_report_root = PUBLIC_REPORT_DIR.resolve()
+    except OSError:
+        public_report_root = PUBLIC_REPORT_DIR
+    for html_path in html_paths:
+        try:
+            report_dir = Path(html_path).resolve().parent
+            if report_dir.parent == public_report_root:
+                paths.append(report_dir)
+        except OSError:
+            paths.append(Path(html_path))
+    paths.extend(REPORTS_DIR.glob(f"rove_report_{user_id}_*.pdf"))
+    paths.extend(REPORTS_ARCHIVE_DIR.glob(f"rove_report_{user_id}_*.pdf.gz"))
+    return paths
 
 
 def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_paths: list[str]) -> list[Path]:
@@ -7074,6 +7173,20 @@ def delete_account():
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='report_links'"
         ).fetchone() else []
 
+        # Record the deletion intent outside SQLite before mutating account rows.
+        # A restored database is therefore fail-closed and can be scrubbed again.
+        try:
+            account_delete_cleanup.record_delete_tombstone(token_user_id)
+        except OSError:
+            conn.rollback()
+            return jsonify({"ok": False, "error": "delete_protection_unavailable"}), 503
+
+        account_delete_cleanup.queue_paths_in_conn(
+            conn,
+            account_delete_cleanup_roots(),
+            account_delete_cleanup_paths(token_user_id, state_tokens, html_paths),
+        )
+
         conn.execute("PRAGMA defer_foreign_keys = ON")
         if account_ids:
             placeholders = ",".join("?" for _ in account_ids)
@@ -7089,6 +7202,12 @@ def delete_account():
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
         for email in emails:
             conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
+            # app_invitations is email-scoped, so only the normalized email owned by
+            # this account may be removed. Invitations for other addresses remain intact.
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_invitations'"
+            ).fetchone():
+                conn.execute("DELETE FROM app_invitations WHERE email = ?", (email,))
 
         # Diese Kindtabelle muss vor portfolio_holdings weg; danach entfernt die dynamische
         # user_id-Schleife auch neue, spaeter hinzukommende Rov.E-Tabellen automatisch.
@@ -7122,8 +7241,8 @@ def delete_account():
         conn.commit()
 
     cleanup_errors = remove_deleted_account_files(token_user_id, state_tokens, html_paths)
+    retry_account_delete_file_cleanup()
     if cleanup_errors:
-        queue_account_cleanup_failures(cleanup_errors)
         app.logger.error("Kontodaten geloescht, Dateibereinigung wartet auf Retry: %s", len(cleanup_errors))
     resp = make_response(jsonify({"ok": True, "deleted": True, "cleanupPending": bool(cleanup_errors)}))
     resp.delete_cookie(SESSION_COOKIE_NAME, path="/app-api/")
