@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -94,12 +96,17 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('data-r="1J">1J', self.frontend)
         self.assertNotIn('data-r="Max"', self.frontend)
         self.assertIn('function chartDataForRange(range)', self.frontend)
+        self.assertIn('const pts=chartDataForRange(range).pts;', self.frontend)
         self.assertIn('const current=Number(DATA.netWorth);', self.frontend)
         self.assertIn('const dayDeltaAvailable=Math.abs(currentK-dayStart)>0.0005;', self.frontend)
         self.assertIn('return {pts:[dayStart,currentK],dates:[],intraday:false,dayDeltaAvailable};', self.frontend)
         self.assertIn('const neutralDay=range==="1T"&&!rangeData.intraday&&!rangeData.dayDeltaAvailable;', self.frontend)
         self.assertIn('const neutralLine=`M ${padX} ${last[1].toFixed(1)} L ${W-padX} ${last[1].toFixed(1)}`;', self.frontend)
         self.assertIn('} else if(range==="1T"&&!rangeData.intraday){', self.frontend)
+        self.assertIn('function chartValueDomain(range, rangeData)', self.frontend)
+        self.assertIn('const domains=CHART.valueDomains||(CHART.valueDomains={});', self.frontend)
+        self.assertIn('if(previous&&previous.key===key)', self.frontend)
+        self.assertIn('const domain=chartValueDomain(range,rangeData);', self.frontend)
         self.assertNotIn('chart-day-reference', self.frontend)
         self.assertIn('context.hidden=range==="1T"', self.frontend)
         self.assertIn('.chart-context[hidden]{display:none}', self.frontend)
@@ -115,6 +122,36 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('id="chartScrubPath"', self.frontend)
         self.assertIn('clip-path="url(#chartScrubClip)"', self.frontend)
         self.assertNotIn('id="chartStroke"', self.frontend)
+
+    def test_chart_value_domain_stays_stable_during_live_balance_updates(self):
+        start = self.frontend.index("function chartValueDomain(")
+        end = self.frontend.index("function drawChart(", start)
+        function_source = self.frontend[start:end]
+        script = f"""
+const CHART={{}};
+eval({json.dumps(function_source)});
+function y(value, domain) {{
+  return 126 - (value-domain.min)/(domain.max-domain.min)*108;
+}}
+for (const [range, initial, updated, intraday] of [
+  ["1T", [31.336, 40], [31.336, 39.4], false],
+  ["1W", [30.56, 30.627, 30.278, 30.988, 31.5, 31.342, 31.336, 40],
+          [30.56, 30.627, 30.278, 30.988, 31.5, 31.342, 31.336, 39.4], true]
+]) {{
+  const first=chartValueDomain(range, {{pts:initial, dates:["Start","Heute"], intraday}});
+  const before=y(initial.at(-1), first);
+  const second=chartValueDomain(range, {{pts:updated, dates:["Start","Heute"], intraday}});
+  const after=y(updated.at(-1), second);
+  if (first.min!==second.min || first.max!==second.max || !(after>before+1)) process.exit(1);
+}}
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_chart_scrubbing_coalesces_pointer_updates_per_frame(self):
         self.assertIn('let scrubbing=false, scrubRaf=0, pendingClientX=null;', self.frontend)

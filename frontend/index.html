@@ -3423,7 +3423,7 @@ let CHANGE_MODE="percent";
 function updateChangeBadge(range=CHART.range||"1W"){
   const el=document.getElementById("change"), chip=document.querySelector("#tab-home .net .chip");
   const arrow=document.getElementById("changeArrow");
-  const pts=DATA.series && DATA.series[range];
+  const pts=chartDataForRange(range).pts;
   if(!el || !chip || !arrow) return;
   if(!pts || pts.length<2 || !pts[0]){
     el.textContent="—"; chip.classList.remove("negative"); return;
@@ -4046,12 +4046,35 @@ function monotonePath(xy){
   return d;
 }
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
+function chartValueDomain(range, rangeData){
+  const pts=rangeData.pts, dataMin=Math.min(...pts), dataMax=Math.max(...pts);
+  const anchor=Number(pts[0]), rawSpan=dataMax-dataMin;
+  const padding=range==="1T"
+    ? Math.max(rawSpan*.2,Math.abs(anchor)*.05,.5)
+    : Math.max(rawSpan*.08,Math.abs(anchor)*.005,.25);
+  const dates=rangeData.dates||[];
+  const key=`${pts.length}:${anchor}:${dates[0]||""}`;
+  const domains=CHART.valueDomains||(CHART.valueDomains={});
+  const previous=domains[range];
+  let min=dataMin-padding, max=dataMax+padding;
+  // Keep the viewport stable while the same visible timeline receives live writes.
+  // Otherwise a new minimum/maximum makes different balances occupy identical pixels.
+  if(previous&&previous.key===key){
+    min=previous.min;
+    max=previous.max;
+    if(dataMin<min) min=dataMin-padding;
+    if(dataMax>max) max=dataMax+padding;
+  }
+  domains[range]={key,min,max};
+  return {min,max};
+}
 function drawChart(range, scrubIdx, animate=true){
   const rangeData=chartDataForRange(range), pts=rangeData.pts;
   const neutralDay=range==="1T"&&!rangeData.intraday&&!rangeData.dayDeltaAvailable;
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
-  const min=Math.min(...pts), max=Math.max(...pts), rawSpan=max-min, span=rawSpan||1, n=pts.length;
+  const domain=chartValueDomain(range,rangeData);
+  const min=domain.min, max=domain.max, rawSpan=max-min, span=rawSpan||1, n=pts.length;
   const xy = pts.map((v,i)=>[
     n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
