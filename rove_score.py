@@ -312,7 +312,24 @@ def calculate_score(
         )
         expected_spend = spendable_budget * elapsed_ratio
         pace_ratio = total_expenses / expected_spend if expected_spend > 0 else 0.0
-        if pace_ratio <= 1.0:
+        if report_month == today.strftime("%Y-%m"):
+            # In a running month, a fast start is a warning while the full
+            # monthly envelope is still positive; only an actual overrun is 0.
+            if remaining < 0:
+                budget = 0
+            elif pace_ratio <= 1.00:
+                budget = 25
+            elif pace_ratio <= 1.15:
+                budget = 22
+            elif pace_ratio <= 1.30:
+                budget = 18
+            elif pace_ratio <= 1.50:
+                budget = 14
+            elif pace_ratio <= 1.75:
+                budget = 10
+            else:
+                budget = 6
+        elif pace_ratio <= 1.0:
             budget = 25
         elif pace_ratio <= 1.10:
             budget = 20

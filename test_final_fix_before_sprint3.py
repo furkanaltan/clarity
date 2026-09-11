@@ -131,6 +131,68 @@ class FinalFixServerTests(unittest.TestCase):
                     self.assertEqual(score, expected_score)
                     self.assertEqual(len(classified_expenses(conn,1,month)), 1)
 
+    def test_running_month_budget_pace_calibration(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE expenses (
+                id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL,
+                category TEXT, created_at TEXT
+            );
+            CREATE TABLE app_user_features(
+                user_id INTEGER, feature_key TEXT, enabled INTEGER
+            );
+        """)
+        conn.execute(
+            "INSERT INTO expenses VALUES (1, 1, 1, 'SONSTIGES', '2026-09-01 12:00:00')"
+        )
+        user = {
+            "income": 1000, "other_income": 0, "fixed_costs": 0,
+            "etf_savings": 0, "cash_savings": 0, "current_cash": 0,
+            "onboarding_step": 10, "clarity_points": 0,
+        }
+        today = date(2026, 9, 11)
+        expected_spend = 1000 * 11 / 30
+        baseline_other_components = None
+        for pace, points in (
+            (0.90, 25), (1.10, 22), (1.20, 18), (1.40, 14),
+            (1.58, 10), (1.90, 6),
+        ):
+            with self.subTest(pace=pace):
+                total = expected_spend * pace
+                score = calculate_score(
+                    conn, 1, user, total_expenses=total,
+                    report_month="2026-09", today=today,
+                )
+                self.assertEqual(score["budget"], points)
+                self.assertGreater(score["spendable_budget"] - total, 0)
+                other_components = (
+                    score["savings"], score["consistency"], score["structure"]
+                )
+                if baseline_other_components is None:
+                    baseline_other_components = other_components
+                else:
+                    self.assertEqual(other_components, baseline_other_components)
+
+        overrun = calculate_score(
+            conn, 1, user, total_expenses=1001,
+            report_month="2026-09", today=today,
+        )
+        self.assertEqual(overrun["budget"], 0)
+
+        live_user = {
+            "income": 3500, "other_income": 930, "fixed_costs": 2587.62,
+            "etf_savings": 300, "cash_savings": 700, "current_cash": 6100,
+            "onboarding_step": 10, "clarity_points": 0,
+        }
+        live = calculate_score(
+            conn, 1, live_user, total_expenses=489,
+            report_month="2026-09", today=today,
+        )
+        self.assertAlmostEqual(live["spendable_budget"], 842.38, places=2)
+        self.assertAlmostEqual(live["spendable_budget"] - 489.0, 353.38, places=2)
+        self.assertAlmostEqual(live["budget"], 10, places=0)
+
     def test_opened_is_not_prominent_but_remains_in_archive(self):
         with closing(sqlite3.connect(":memory:")) as conn:
             conn.row_factory = sqlite3.Row
