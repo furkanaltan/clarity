@@ -3969,7 +3969,7 @@ function chartDataForRange(range){
   const todayPoints=chartTodayPoints();
   if(range==="1T"){
     if(todayPoints.length>1){
-      return {pts:todayPoints.map(point=>Math.round(Number(point.v))/1000),dates:todayPoints.map(chartTodayPointLabel),intraday:true,dayDeltaAvailable:true};
+      return {pts:todayPoints.map(point=>Number(point.v)/1000),dates:todayPoints.map(chartTodayPointLabel),intraday:true,dayDeltaAvailable:true};
     }
     const current=Number(DATA.netWorth);
     const fallback=Number.isFinite(current) ? current/1000 : null;
@@ -3978,14 +3978,15 @@ function chartDataForRange(range){
   if(range!=="1T"){
     const pts=Array.isArray(DATA.series[range]) ? DATA.series[range].slice() : (DATA.series["1J"]||[]).slice();
     const dates=(DATA.histDates?.[range]||[]).slice();
-    // Server-Ranges bleiben die historische Wahrheit. Mehrere echte lokale
-    // Tagesstaende ersetzen nur den heutigen Serverpunkt fuer sofortiges Feedback.
-    if(todayPoints.length && pts.length){
-      if(!dates.length || dates[dates.length-1]==="Heute"){
-        pts.pop(); if(dates.length) dates.pop();
+    // Server-Historie beibehalten; nur den heutigen Endpunkt aktualisieren.
+    const current=Number(DATA.netWorth);
+    if(Number.isFinite(current)){
+      if(dates[dates.length-1]==="Heute"){
+        pts[pts.length-1]=current/1000;
+      } else {
+        pts.push(current/1000);
+        dates.push("Heute");
       }
-      pts.push(...todayPoints.map(point=>Math.round(Number(point.v))/1000));
-      dates.push(...todayPoints.map(chartTodayPointLabel));
     }
     return {pts,dates:dates.length?dates:null,intraday:true};
   }

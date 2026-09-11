@@ -57,7 +57,7 @@ const PROFILE_META = {{netHistory:[
 const before = JSON.stringify(DATA);
 const oneDay = chartDataForRange("1T");
 const ranges = ["1W","1M","6M","1J"].map(range => [range, chartDataForRange(range)]);
-console.log(JSON.stringify({oneDay,ranges,unchanged:before===JSON.stringify(DATA),lastIsCurrent:ranges.every(([,data])=>data.pts.at(-1)===31)}));
+console.log(JSON.stringify({oneDay,ranges,unchanged:before===JSON.stringify(DATA),lastIsCurrent:ranges.every(([,data])=>data.pts.at(-1)===34)}));
 """)
         self.assertEqual(result["oneDay"]["pts"], [32, 31])
         self.assertEqual(len(result["oneDay"]["dates"]), 2)
@@ -65,7 +65,33 @@ console.log(JSON.stringify({oneDay,ranges,unchanged:before===JSON.stringify(DATA
         self.assertTrue(result["unchanged"])
         self.assertTrue(result["lastIsCurrent"])
         for _, data in result["ranges"]:
-            self.assertEqual(data["pts"][-2:], [32, 31])
+            self.assertEqual(data["pts"][-1], 34)
+            self.assertEqual(data["dates"][-1], "Heute")
+            self.assertEqual(len(data["pts"]), 3 if _ == "1W" else 2)
+
+    def test_chart_adapter_preserves_cents(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory[0].v = 32000.49;
+PROFILE_META.netHistory[1].v = 32000.51;
+console.log(JSON.stringify(chartDataForRange("1T")));
+""")
+        self.assertEqual(result["pts"], [32.00049, 32.00051])
+        self.assertAlmostEqual((result["pts"][1]-result["pts"][0])*1000, 0.02)
+
+    def test_chart_adapter_appends_only_one_today_without_local_history(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory = [];
+for (const range of ["1W","1M","6M","1J"]) DATA.histDates[range][DATA.histDates[range].length-1] = "Gestern";
+const before = JSON.stringify(DATA);
+const ranges = ["1W","1M","6M","1J"].map(range => ({range, data:chartDataForRange(range)}));
+console.log(JSON.stringify({ranges,unchanged:before===JSON.stringify(DATA)}));
+""")
+        self.assertTrue(result["unchanged"])
+        for item in result["ranges"]:
+            data = item["data"]
+            self.assertEqual(data["pts"][-1], 34)
+            self.assertEqual(data["dates"][-2:], ["Gestern", "Heute"])
+            self.assertEqual(len(data["pts"]), 4 if item["range"] == "1W" else 3)
 
     def test_chart_adapter_keeps_single_point_neutral(self):
         result = self.run_chart_adapter("""
