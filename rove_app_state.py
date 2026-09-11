@@ -2313,6 +2313,38 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
     return positions
 
 
+def hydrate_crypto_logos(state: dict) -> dict:
+    """Add optional provider logos after the state write transaction ended.
+
+    The state builder remains cache-only while a write is open. This presentation
+    pass reuses the existing metadata fetch without touching financial values.
+    """
+    assets = state.get("assets") if isinstance(state, dict) else None
+    if not isinstance(assets, list):
+        return state
+    crypto = next((asset for asset in assets if asset.get("assetKey") == "asset:crypto"), None)
+    if not isinstance(crypto, dict):
+        return state
+    positions = crypto.get("positions") if isinstance(crypto.get("positions"), list) else []
+    ids = {"1"}
+    ids.update(
+        str(position.get("providerAssetId") or "").strip()
+        for position in positions
+        if isinstance(position, dict) and str(position.get("providerAssetId") or "").strip()
+    )
+    metadata = fetch_crypto_metadata(sorted(ids))
+    header_logo = metadata.get("1", {}).get("logo_url")
+    if header_logo:
+        crypto["headerLogoUrl"] = header_logo
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        logo_url = metadata.get(str(position.get("providerAssetId") or ""), {}).get("logo_url")
+        if logo_url:
+            position["logoUrl"] = logo_url
+    return state
+
+
 def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     """ETF- und Aktienpositionen fuer die gemeinsame Investment-Schublade.
 

@@ -43,6 +43,7 @@ from rove_app_state import (
     REPORTS_DIR,
     _build_tx,
     build_live_app_data,
+    hydrate_crypto_logos,
     ensure_app_account_balances_table,
     ensure_app_asset_order_table,
     ensure_app_cash_movements_table,
@@ -3058,6 +3059,9 @@ def current_app_state():
         feature_announcements["coach"] = coach_announcement
         state["feature_announcements"] = feature_announcements
         conn.commit()
+
+    # Metadata is presentation-only. Fetch it after the state write lock is released.
+    hydrate_crypto_logos(state)
 
     return jsonify({"ok": True, **state})
 

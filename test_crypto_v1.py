@@ -13,7 +13,7 @@ from unittest.mock import patch
 import rove_app_api as api
 import rove_app_state as app_state
 import rove_market_data as market
-from rove_app_state import _crypto_header_logo_url, _crypto_holdings_value, _crypto_positions, _etf_positions
+from rove_app_state import _crypto_header_logo_url, _crypto_holdings_value, _crypto_positions, _etf_positions, hydrate_crypto_logos
 
 
 def create_crypto_db(path: Path) -> None:
@@ -313,6 +313,32 @@ class CryptoV1Tests(unittest.TestCase):
         with patch.object(app_state, "fetch_crypto_metadata", side_effect=AssertionError("network must not run")), \
              patch.object(app_state, "cached_crypto_metadata", return_value={}):
             self.assertEqual(_crypto_header_logo_url(cache_only=True), "")
+
+    def test_committed_state_hydrates_real_logos_without_changing_financial_data(self):
+        state = {
+            "netWorth": 6000,
+            "assets": [{
+                "assetKey": "asset:crypto", "name": "Krypto", "value": 5000,
+                "positions": [{"providerAssetId": "1", "symbol": "BTC", "v": 5000}],
+            }],
+        }
+        logo = "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png"
+        with patch.object(app_state, "fetch_crypto_metadata", return_value={"1": {"logo_url": logo}}):
+            hydrate_crypto_logos(state)
+        self.assertEqual(state["assets"][0]["headerLogoUrl"], logo)
+        self.assertEqual(state["assets"][0]["positions"][0]["logoUrl"], logo)
+        self.assertEqual(state["netWorth"], 6000)
+
+    def test_committed_state_logo_hydration_preserves_existing_logo_on_fetch_miss(self):
+        logo = "https://s2.coinmarketcap.com/static/img/coins/64x64/1.png"
+        state = {"assets": [{
+            "assetKey": "asset:crypto", "headerLogoUrl": logo,
+            "positions": [{"providerAssetId": "1", "logoUrl": logo}],
+        }]}
+        with patch.object(app_state, "fetch_crypto_metadata", return_value={}):
+            hydrate_crypto_logos(state)
+        self.assertEqual(state["assets"][0]["headerLogoUrl"], logo)
+        self.assertEqual(state["assets"][0]["positions"][0]["logoUrl"], logo)
 
     def test_screenshot_commit_is_explicit_idempotent_and_requires_quantity(self):
         bad = self.request("POST", "/v1/crypto/import/screenshot/commit", json={"positions": [{
