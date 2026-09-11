@@ -39,6 +39,16 @@ class FrontendAnalysisMerchantComparisonTests(unittest.TestCase):
         self.assertIn("${analysisChangeHtml(comparison)}", body)
         self.assertIn("const percent=Math.round(delta/previous*1000)/10;", self.frontend)
 
+    def test_missing_previous_value_omits_comparison_markup(self):
+        self.assertIn('if(!available || !(previous>0))return null;', self.frontend)
+        self.assertIn('if(!comparison)return "";', self.frontend)
+        self.assertNotIn('text:"Kein Wert im Vormonat"', self.frontend)
+        self.assertNotIn('return "Kein Wert im Vormonat";', self.frontend)
+
+    def test_running_report_uses_user_facing_creation_label(self):
+        self.assertIn('const tag = running?"Wird erstellt":', self.frontend)
+        self.assertIn('status==="running"', self.frontend)
+
     def test_completed_month_merchant_comparison_keeps_negative_delta(self):
         self.assertIn(
             "const delta=Math.round((current-previous)*100)/100;",

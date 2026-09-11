@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Rov.E">
-<meta name="rove-frontend-build" content="20260910-3f4a8b1">
+<meta name="rove-frontend-build" content="20260911-a91c7e4">
 <meta name="theme-color" id="themeColor" content="#0A0F16">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="app-icon.png">
@@ -6064,8 +6064,7 @@ function analysisIsCurrentCalendarMonth(offset=analysisMonthOffset){
   return monthKey(offset)===monthKey(0);
 }
 function analysisComparison(current,previous,available=analysisPreviousAvailable()){
-  if(!available)return {kind:"unavailable",text:"Noch kein Vergleich verfügbar"};
-  if(!(previous>0))return {kind:"new",text:"Kein Wert im Vormonat"};
+  if(!available || !(previous>0))return null;
   const delta=Math.round((current-previous)*100)/100;
   if(Math.abs(delta)<.005)return {kind:"same",text:"• 0 % zum Vormonat"};
   const percent=Math.round(delta/previous*1000)/10;
@@ -6073,11 +6072,11 @@ function analysisComparison(current,previous,available=analysisPreviousAvailable
   return {kind:delta>0?"up":"down",text:`${arrow} ${Math.abs(percent).toLocaleString("de-DE",{maximumFractionDigits:1})} % zum Vormonat`};
 }
 function analysisChangeHtml(comparison){
+  if(!comparison)return "";
   return `<div class="analysis-change ${comparison.kind}">${analysisEsc(comparison.text)}</div>`;
 }
 function analysisDeepComparison(current,previous,available=analysisPreviousAvailable()){
-  if(!available)return "Noch kein Vergleich verfügbar";
-  if(!(previous>0))return "Kein Wert im Vormonat";
+  if(!available || !(previous>0))return "";
   const delta=Math.round((current-previous)*100)/100;
   if(Math.abs(delta)<.005)return "• 0,00 € · unverändert zum Vormonat";
   const percent=Math.round(delta/previous*1000)/10;
@@ -6220,6 +6219,7 @@ function renderCategoryDeepDive(category){
   const categoryData=analysisCategoryData().find(item=>item.name===category);
   const color=categoryData?.color||ANALYSIS_CATEGORY_COLORS[category]||"#6E7B8C";
   const share=data.total?data.amount/data.total*100:0;
+  const deepComparison=analysisDeepComparison(data.amount,data.previous);
   document.querySelector("#categorysheet .category-deep-nav-title").textContent=category;
   if(!data.bookings.length){
     body.innerHTML=`<div class="category-deep-list"><div class="category-deep-empty">Für diese Auswahl sind keine Buchungen vorhanden.</div></div>`;
@@ -6231,7 +6231,7 @@ function renderCategoryDeepDive(category){
       <div><div class="category-deep-total">${analysisEsc(eur2(data.amount))}</div><div class="category-deep-total-label">ausgegeben</div></div>
       <div class="category-deep-facts">
         <span class="category-deep-fact">${share.toLocaleString("de-DE",{maximumFractionDigits:1})} % deiner Gesamtausgaben</span>
-        <span class="category-deep-fact change">${analysisEsc(analysisDeepComparison(data.amount,data.previous))}</span>
+        ${deepComparison?`<span class="category-deep-fact change">${analysisEsc(deepComparison)}</span>`:""}
       </div>
     </div>
     <section class="category-deep-section">
@@ -6270,6 +6270,7 @@ function renderMerchantDeepDive(key){
   if(!body)return;
   const data=analysisMerchantDeepData(key);
   const merchant=data.merchant||{label:"Händler",sample:data.items[0]};
+  const deepComparison=analysisDeepComparison(data.amount,data.previous);
   document.querySelector("#categorysheet .category-deep-nav-title").textContent=merchant.label;
   if(!data.bookings.length){
     body.innerHTML=`<div class="category-deep-list"><div class="category-deep-empty">Für diesen Händler sind keine Buchungen vorhanden.</div></div>`;
@@ -6279,7 +6280,7 @@ function renderMerchantDeepDive(key){
     <div class="category-deep-hero">
       <div class="analysis-merchant-logo">${analysisMerchantLogo(merchant.sample)}</div>
       <div><div class="category-deep-total">${analysisEsc(eur2(data.amount))}</div><div class="category-deep-total-label">ausgegeben</div></div>
-      <div class="category-deep-facts"><span class="category-deep-fact">${data.bookings.length} ${data.bookings.length===1?"Buchung":"Buchungen"}</span><span class="category-deep-fact change">${analysisEsc(analysisDeepComparison(data.amount,data.previous))}</span></div>
+      <div class="category-deep-facts"><span class="category-deep-fact">${data.bookings.length} ${data.bookings.length===1?"Buchung":"Buchungen"}</span>${deepComparison?`<span class="category-deep-fact change">${analysisEsc(deepComparison)}</span>`:""}</div>
     </div>
     <section class="category-deep-section">
       <div class="analysis-section-head"><h3>Buchungen</h3><span>${data.bookings.length}</span></div>
@@ -9049,7 +9050,7 @@ function renderReports(){
   body.innerHTML = DATA.reports.map((r,i)=>{
     const st=reportStats(i);
     const running=r.status==="running";
-    const tag = running?"Läuft":r.webUrl&&r.pdfAvailable?"Web + PDF":r.webUrl?"Web":r.pdfAvailable?"PDF":"Archiv";
+    const tag = running?"Wird erstellt":r.webUrl&&r.pdfAvailable?"Web + PDF":r.webUrl?"Web":r.pdfAvailable?"PDF":"Archiv";
     const cls = running?"live":r.webUrl?"new":"old";
     const sub = running
       ? "Dein Monatsbild entsteht gerade"
