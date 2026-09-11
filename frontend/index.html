@@ -3952,33 +3952,41 @@ function seriesDates(range){
   }
   return out;
 }
+function chartTodayPoints(){
+  const today=dayKey(new Date());
+  const h=Array.isArray(PROFILE_META.netHistory) ? PROFILE_META.netHistory : [];
+  return h.filter(point=>point&&point.d===today&&Number.isFinite(Number(point.v)))
+    .slice().sort((a,b)=>Number(a.t||0)-Number(b.t||0));
+}
+function chartTodayPointLabel(point,index,points){
+  const stamp=Number(point.t);
+  if(Number.isFinite(stamp)) return new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"});
+  return index===points.length-1 ? "Jetzt" : "Heute";
+}
 function chartDataForRange(range){
+  const todayPoints=chartTodayPoints();
+  if(range==="1T"){
+    if(todayPoints.length>1){
+      return {pts:todayPoints.map(point=>Math.round(Number(point.v))/1000),dates:todayPoints.map(chartTodayPointLabel),intraday:true,dayDeltaAvailable:true};
+    }
+    const current=Number(DATA.netWorth);
+    const fallback=Number.isFinite(current) ? current/1000 : null;
+    return {pts:Number.isFinite(fallback) ? [fallback] : [],dates:[],intraday:false,dayDeltaAvailable:false};
+  }
   if(range!=="1T"){
     const pts=Array.isArray(DATA.series[range]) ? DATA.series[range].slice() : (DATA.series["1J"]||[]).slice();
     const dates=(DATA.histDates?.[range]||[]).slice();
     // Server-Ranges bleiben die historische Wahrheit. Mehrere echte lokale
     // Tagesstaende ersetzen nur den heutigen Serverpunkt fuer sofortiges Feedback.
-    const h=PROFILE_META.netHistory, today=dayKey(new Date());
-    const todayPoints=Array.isArray(h) ? h.filter(point=>point&&point.d===today) : [];
-    if(todayPoints.length>1 && pts.length){
+    if(todayPoints.length && pts.length){
       if(!dates.length || dates[dates.length-1]==="Heute"){
         pts.pop(); if(dates.length) dates.pop();
       }
       pts.push(...todayPoints.map(point=>Math.round(Number(point.v))/1000));
-      dates.push(...todayPoints.map(point=>{
-        const stamp=Number(point.t);
-        return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}) : "Heute";
-      }));
+      dates.push(...todayPoints.map(chartTodayPointLabel));
     }
     return {pts,dates:dates.length?dates:null,intraday:true};
   }
-  if(Array.isArray(DATA.series["1T"])){
-    const dates=DATA.histDates?.["1T"]||[];
-    if(DATA.series["1T"].length>1) return {pts:DATA.series["1T"],dates,intraday:true,dayDeltaAvailable:false};
-  }
-  const current=Number(DATA.netWorth);
-  const fallback=Number.isFinite(current) ? current/1000 : null;
-  return {pts:Number.isFinite(fallback) ? [fallback] : [],dates:[],intraday:false,dayDeltaAvailable:false};
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
@@ -4027,21 +4035,8 @@ const HIST_FMT={ "1W":"day", "1M":"day", "6M":"month", "1J":"month", "Max":"mont
 function rebuildSeriesFromHistory(){
   const h=PROFILE_META.netHistory;
   if(!Array.isArray(h) || !h.length) return false;
-  DATA.histDates=DATA.histDates||{};
-  const today=dayKey(new Date());
-  const todayPoints=h.filter(point=>point.d===today);
-  const intraday=todayPoints.length?todayPoints:[h[h.length-1]];
-  DATA.series["1T"]=intraday.map(point=>Math.round(Number(point.v))/1000);
-  DATA.histDates["1T"]=intraday.map((point,index)=>{
-    if(intraday.length===1) return "Heute";
-    const stamp=Number(point.t);
-    return Number.isFinite(stamp)
-      ? new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})
-      : (index===intraday.length-1?"Jetzt":"Heute");
-  });
-  // Die lokale History ist nur fuer den echten Tagesverlauf zustaendig. Die
-  // laengeren Zeitraeume bleiben kanonisch aus dem Server-State; eine lokale,
-  // unvollstaendige History darf sie nicht auf wenige Punkte kuerzen.
+  // Die lokale History wird ausschliesslich vom Chart-Adapter gelesen. Die
+  // kanonischen Serverarrays bleiben unveraendert.
   return true;
 }
 function straightPath(xy){

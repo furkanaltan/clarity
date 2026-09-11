@@ -20,6 +20,62 @@ class FrontendNavigationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.frontend = FRONTEND_PATH.read_text(encoding="utf-8")
+        day_start = cls.frontend.index("function dayKey(d){")
+        day_end = cls.frontend.index("function dLabel", day_start)
+        chart_start = cls.frontend.index("function chartTodayPoints()")
+        chart_end = cls.frontend.index("function straightPath", chart_start)
+        cls.chart_adapter = cls.frontend[day_start:day_end] + cls.frontend[chart_start:chart_end]
+
+    def run_chart_adapter(self, script):
+        node_script = f"""
+const DATA = {{
+  netWorth: 34000,
+  series: {{"1W":[30,31,32],"1M":[10,11],"6M":[1,2],"1J":[3,4]}},
+  histDates: {{"1W":["8. Sep","9. Sep","Heute"],"1M":["8. Aug","Heute"],"6M":["Apr. 2026","Heute"],"1J":["Sept. 2025","Heute"]}}
+}};
+const today = new Date();
+const todayKey = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
+const PROFILE_META = {{netHistory:[
+  {{d:todayKey,v:32000,t:today.getTime()+3600000}},
+  {{d:todayKey,v:31000,t:today.getTime()+7200000}}
+]}};
+{self.chart_adapter}
+{script}
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs"],
+            input=node_script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_chart_adapter_overlays_local_today_without_mutating_server_state(self):
+        result = self.run_chart_adapter("""
+const before = JSON.stringify(DATA);
+const oneDay = chartDataForRange("1T");
+const ranges = ["1W","1M","6M","1J"].map(range => [range, chartDataForRange(range)]);
+console.log(JSON.stringify({oneDay,ranges,unchanged:before===JSON.stringify(DATA),lastIsCurrent:ranges.every(([,data])=>data.pts.at(-1)===31)}));
+""")
+        self.assertEqual(result["oneDay"]["pts"], [32, 31])
+        self.assertEqual(len(result["oneDay"]["dates"]), 2)
+        self.assertTrue(result["oneDay"]["intraday"])
+        self.assertTrue(result["unchanged"])
+        self.assertTrue(result["lastIsCurrent"])
+        for _, data in result["ranges"]:
+            self.assertEqual(data["pts"][-2:], [32, 31])
+
+    def test_chart_adapter_keeps_single_point_neutral(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory = [{d:todayKey,v:34000,t:1000}];
+console.log(JSON.stringify(chartDataForRange("1T")));
+""")
+        self.assertEqual(result["pts"], [34])
+        self.assertEqual(result["dates"], [])
+        self.assertFalse(result["intraday"])
+        self.assertFalse(result["dayDeltaAvailable"])
 
     def test_uses_one_marked_history_bridge(self):
         self.assertIn('const ROVE_NAV_STATE="roveNav"', self.frontend)
@@ -96,8 +152,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertNotIn('data-r="Max"', self.frontend)
         self.assertIn('function chartDataForRange(range)', self.frontend)
         self.assertIn('const pts=chartDataForRange(range).pts;', self.frontend)
-        self.assertIn('const todayPoints=h.filter(point=>point.d===today);', self.frontend)
-        self.assertIn('DATA.series["1T"]=intraday.map(point=>Math.round(Number(point.v))/1000);', self.frontend)
+        self.assertIn('function chartTodayPoints()', self.frontend)
+        self.assertIn('const todayPoints=chartTodayPoints();', self.frontend)
+        self.assertNotIn('DATA.series["1T"]=intraday.map(point=>Math.round(Number(point.v))/1000);', self.frontend)
         self.assertIn('const stamp=Number(point.t);', self.frontend)
         self.assertIn('if(last && last.d===dk){', self.frontend)
         self.assertIn('if(Math.abs(Number(last.v)-value)>0.005) h.push({d:dk,v:value,t:now});', self.frontend)
@@ -130,9 +187,10 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('PROFILE_META.netHistory=snapshot.netHistory.filter', self.frontend)
         self.assertIn('if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;', self.frontend)
         self.assertIn('syncNetHistory();\n    rebuildSeriesFromHistory();\n    saveBridgeLocal();', self.frontend)
-        self.assertIn('const todayPoints=h.filter(point=>point.d===today);', self.frontend)
-        self.assertIn('return Number.isFinite(stamp)', self.frontend)
-        self.assertIn('Die lokale History ist nur fuer den echten Tagesverlauf zustaendig.', self.frontend)
+        self.assertIn('return h.filter(point=>point&&point.d===today&&Number.isFinite(Number(point.v)))', self.frontend)
+        self.assertIn('return index===points.length-1 ? "Jetzt" : "Heute";', self.frontend)
+        self.assertIn('Die lokale History wird ausschliesslich vom Chart-Adapter gelesen.', self.frontend)
+        self.assertNotIn('DATA.histDates["1T"]=', self.frontend)
         self.assertNotIn('DATA.series[range]=win.map(s=>Math.round(s.v)/1000);', self.frontend)
 
     def test_home_empty_state_keeps_chart_for_canonical_financial_data(self):
