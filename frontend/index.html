@@ -4023,24 +4023,9 @@ function rebuildSeriesFromHistory(){
       ? new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})
       : (index===intraday.length-1?"Jetzt":"Heute");
   });
-  const daily=[];
-  h.forEach(point=>{
-    const previous=daily[daily.length-1];
-    if(previous && previous.d===point.d) daily[daily.length-1]=point;
-    else daily.push(point);
-  });
-  // In der Brücke ersetzt ein einzelner lokaler Startpunkt keine echte Server-Historie.
-  // Auch mehrere Punkte am selben Tag bleiben ausschließlich im 1T-Chart lokal.
-  if(APP_MODE==="bridge" && daily.length===1) return true;
-  Object.keys(HIST_WINDOW_DAYS).forEach(range=>{
-    const cut=new Date(); cut.setDate(cut.getDate()-HIST_WINDOW_DAYS[range]);
-    const cutK=dayKey(cut);
-    let win=daily.filter(s=> s.d>=cutK);                   // "YYYY-MM-DD" ist lexikografisch = chronologisch
-    if(!win.length) win=[daily[daily.length-1]];
-    win=downsampleHist(win, 44);
-    DATA.series[range]=win.map(s=>Math.round(s.v)/1000);              // Kilo-Euro wie überall
-    DATA.histDates[range]=win.map((s,i)=> i===win.length-1 ? "Heute" : dLabel(s.d, HIST_FMT[range]));
-  });
+  // Die lokale History ist nur fuer den echten Tagesverlauf zustaendig. Die
+  // laengeren Zeitraeume bleiben kanonisch aus dem Server-State; eine lokale,
+  // unvollstaendige History darf sie nicht auf wenige Punkte kuerzen.
   return true;
 }
 function straightPath(xy){

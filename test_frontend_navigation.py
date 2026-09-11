@@ -88,7 +88,6 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('function monotonePath(xy)', self.frontend)
         self.assertIn('function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }', self.frontend)
         self.assertNotIn('function catmullPath(', self.frontend)
-        self.assertIn('if(!win.length) win=[daily[daily.length-1]];', self.frontend)
         self.assertNotIn('if(win.length<2) win=[h[0], h[h.length-1]];', self.frontend)
         self.assertIn('id="chartContext"', self.frontend)
         self.assertNotIn('id="chartDelta" hidden', self.frontend)
@@ -131,9 +130,10 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('PROFILE_META.netHistory=snapshot.netHistory.filter', self.frontend)
         self.assertIn('if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;', self.frontend)
         self.assertIn('syncNetHistory();\n    rebuildSeriesFromHistory();\n    saveBridgeLocal();', self.frontend)
-        self.assertIn('const daily=[];', self.frontend)
         self.assertIn('const todayPoints=h.filter(point=>point.d===today);', self.frontend)
         self.assertIn('return Number.isFinite(stamp)', self.frontend)
+        self.assertIn('Die lokale History ist nur fuer den echten Tagesverlauf zustaendig.', self.frontend)
+        self.assertNotIn('DATA.series[range]=win.map(s=>Math.round(s.v)/1000);', self.frontend)
 
     def test_home_empty_state_keeps_chart_for_canonical_financial_data(self):
         self.assertIn('function homeHasFinancialData()', self.frontend)
