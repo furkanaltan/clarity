@@ -11084,8 +11084,20 @@ if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("
 
 // ===================== EMPTY STATES: Verkabelung + Home-Kopf + Demo =====================
 // Home-Kopf im leeren Zustand beruhigen — keine 0,00-€-Wüste, kein leeres Diagramm
+function homeHasFinancialData(){
+  if(Array.isArray(DATA.assets) && DATA.assets.length) return true;
+  // Im Bridge-Start darf die eingebettete Demo-Struktur den Empty-State nicht kurz aufheben.
+  const liveReady=APP_MODE!=="bridge" || BRIDGE_LIVE_STATE_READY;
+  if(!liveReady) return false;
+  if(Array.isArray(DATA.financialAccounts) && DATA.financialAccounts.length) return true;
+  const netWorth=Number(DATA.netWorth);
+  if(DATA.netWorthAvailable===true && Number.isFinite(netWorth) && netWorth!==0) return true;
+  return Object.values(DATA.series||{}).some(series=>
+    Array.isArray(series) && series.some(value=>Number.isFinite(Number(value)) && Number(value)!==0)
+  );
+}
 function applyHomeEmpty(){
-  const empty=!DATA.assets.length;
+  const empty=!homeHasFinancialData();
   const wrap=document.querySelector("#tab-home .chart-wrap");
   const chip=document.querySelector("#tab-home .net .chip");
   if(wrap) wrap.style.display = empty?"none":"";

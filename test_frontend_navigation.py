@@ -135,6 +135,13 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('const todayPoints=h.filter(point=>point.d===today);', self.frontend)
         self.assertIn('return Number.isFinite(stamp)', self.frontend)
 
+    def test_home_empty_state_keeps_chart_for_canonical_financial_data(self):
+        self.assertIn('function homeHasFinancialData()', self.frontend)
+        self.assertIn('if(Array.isArray(DATA.financialAccounts) && DATA.financialAccounts.length) return true;', self.frontend)
+        self.assertIn('if(DATA.netWorthAvailable===true && Number.isFinite(netWorth) && netWorth!==0) return true;', self.frontend)
+        self.assertIn('function applyHomeEmpty(){\n  const empty=!homeHasFinancialData();', self.frontend)
+        self.assertNotIn('function applyHomeEmpty(){\n  const empty=!DATA.assets.length;', self.frontend)
+
     def test_chart_value_domain_stays_stable_during_live_balance_updates(self):
         start = self.frontend.index("function chartValueDomain(")
         end = self.frontend.index("function drawChart(", start)
