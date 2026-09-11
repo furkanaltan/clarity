@@ -685,6 +685,11 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn("this.hidden=true;this.nextElementSibling.hidden=false", self.html)
         self.assertIn("s2\\.coinmarketcap\\.com", self.html)
 
+    def test_crypto_detail_meta_stays_compact(self):
+        self.assertIn('const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}`:"";', self.html)
+        self.assertNotIn("Einstand unbekannt", self.html)
+        self.assertNotIn("P/L ${p.profitLoss", self.html)
+
     def test_stock_and_etf_positions_have_premium_logo_fallback(self):
         self.assertIn("function investmentPositionMark(position)", self.html)
         self.assertIn('position?.logoUrl', self.html)

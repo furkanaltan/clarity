@@ -5070,7 +5070,7 @@ function openAssetDetail(i){
             Number(p.pendingContribution||0)>.009?`${eur2(p.pendingContribution)} Sparrate zugeordnet`:"",
             !p.live?"Wert manuell gepflegt":""
           ].filter(Boolean).join(" · "):"";
-          const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}${p.costBasis==null?" · Einstand unbekannt":` · Einstand ${eur2(p.costBasis)}`}${p.profitLoss==null?"":` · P/L ${p.profitLoss>=0?"+":"−"}${eur2(Math.abs(p.profitLoss))}`}`:"";
+          const cryptoMeta=isCrypto&&!p.legacy?`${String(p.quantity).replace(".",",")} ${p.symbol}`:"";
           return `<div class="drow investment-position${isCrypto&&!p.legacy?" crypto-position-row":!isCrypto?" asset-position-row":""}" ${!isCrypto?`data-invest-position="${idx}"`:editablePosition(p)?`data-invest-edit="${idx}" style="cursor:pointer"`:""}>
             ${isCrypto&&!p.legacy?cryptoPositionMark(p):!isCrypto?investmentPositionMark(p):""}
 	            <span class="investment-position-main"><span class="k">${p.n}<small style="color:${p.live?"var(--green)":"var(--faint)"}">${isCrypto?positionType+cryptoMeta:positionType}</small></span></span>
