@@ -1871,7 +1871,7 @@
     padding:10px 20px calc(22px + var(--safe-bot));transform:translateY(115%);
     transition:transform .36s cubic-bezier(.22,1,.36,1);z-index:52;box-shadow:none}
   /* iOS keeps a small strip of the layout viewport visible above its native keyboard. */
-  .sheet::after{content:"";position:absolute;left:0;right:0;bottom:-64px;height:64px;background:var(--bg2);pointer-events:none}
+  .sheet::after{content:"";position:absolute;left:0;right:0;bottom:calc(-1 * var(--keyboard-cover,0px));height:var(--keyboard-cover,0px);background:var(--bg2);pointer-events:none}
   .sheet.on{transform:none;box-shadow:0 -12px 40px rgba(0,0,0,.4)}
   .sheet-dismiss{position:absolute;top:10px;right:14px;width:34px;height:34px;border:0;border-radius:50%;
     background:transparent;color:var(--muted);font-size:27px;line-height:1;cursor:pointer}
@@ -2550,10 +2550,10 @@
     <div class="grab"></div>
     <h3>Schnell erfassen</h3>
     <div class="hint">Trag deine Ausgabe oder Einnahme ein.</div>
-    <div class="field">
+    <form id="quickForm" class="field">
       <input id="quickIn" type="text" inputmode="text" enterkeyhint="done" autocomplete="off" placeholder="z. B. Rewe 32,90">
-      <button class="send" id="quickSend" aria-label="Verbuchen"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 6l6 6-6 6"/></svg></button>
-    </div>
+      <button class="send" id="quickSend" type="submit" aria-label="Verbuchen"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 6l6 6-6 6"/></svg></button>
+    </form>
     <div id="quickError" class="quick-error" role="alert"></div>
     <div class="livecat" id="quickCat"></div>
     <div class="chips" id="quickChips"></div>
@@ -7243,6 +7243,7 @@ function detectCat(t){
   return null;
 }
 const sheet=document.getElementById("sheet"), sheetBg=document.getElementById("sheetBg"), quickIn=document.getElementById("quickIn");
+const quickForm=document.getElementById("quickForm");
 const quickError=document.getElementById("quickError");
 const gsheet=document.getElementById("gsheet");
 // Nutzer-Präferenzen (persistiert)
@@ -7250,9 +7251,21 @@ const PREFS = (()=>{ try{ return Object.assign({haptik:true,notif:true}, JSON.pa
 function savePrefs(){ try{ localStorage.setItem('rove-prefs', JSON.stringify(PREFS)); }catch(e){} }
 function buzz(){ if(!PREFS.haptik) return; try{ navigator.vibrate && navigator.vibrate(15); }catch(e){} }
 const tabbar=document.querySelector(".tabbar");
+function syncSheetKeyboardCover(){
+  if(!sheet) return;
+  const vv=window.visualViewport;
+  const layoutHeight=Math.max(document.documentElement.clientHeight||0,window.innerHeight||0);
+  const keyboardOpen=document.activeElement===quickIn && vv && vv.height < layoutHeight-80;
+  const cover=keyboardOpen ? Math.max(0,Math.ceil(layoutHeight-vv.height-vv.offsetTop)) : 0;
+  sheet.style.setProperty("--keyboard-cover",cover+"px");
+}
+quickIn.addEventListener("focus",syncSheetKeyboardCover);
+quickIn.addEventListener("blur",()=>requestAnimationFrame(syncSheetKeyboardCover));
+window.addEventListener("resize",syncSheetKeyboardCover);
+if(window.visualViewport){ visualViewport.addEventListener("resize",syncSheetKeyboardCover); visualViewport.addEventListener("scroll",syncSheetKeyboardCover); }
 // Tab-Leiste bleibt fix — Sheets liegen darüber, der Dimm-Layer deckt sie zu (kein Hochschieben mehr)
 function liftTabbar(){ tabbar.style.transform=""; tabbar.classList.remove("lift"); }
-function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>quickIn.focus(),340); }
+function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>{ quickIn.focus(); syncSheetKeyboardCover(); },340); }
 function setQuickError(message){
   if(!quickError) return;
   quickError.textContent=message||"";
@@ -8153,8 +8166,7 @@ document.getElementById("gChips").addEventListener("click",e=>{
 });
 document.getElementById("addBtn").addEventListener("click",openSheet);
 sheetBg.addEventListener("click",closeSheet);
-document.getElementById("quickSend").addEventListener("click",addEntry);
-quickIn.addEventListener("keydown",e=>{ if(e.key==="Enter") addEntry(); });
+quickForm.addEventListener("submit",e=>{ e.preventDefault(); addEntry(); });
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape" && sheet.classList.contains("on")) closeSheet();
   if(e.key==="Escape" && (document.getElementById("whatsnewsheet")?.classList.contains("on") ||
