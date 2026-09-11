@@ -3954,7 +3954,23 @@ function seriesDates(range){
 }
 function chartDataForRange(range){
   if(range!=="1T"){
-    return {pts:DATA.series[range]||DATA.series["1J"],dates:DATA.histDates?.[range]||null,intraday:true};
+    const pts=Array.isArray(DATA.series[range]) ? DATA.series[range].slice() : (DATA.series["1J"]||[]).slice();
+    const dates=(DATA.histDates?.[range]||[]).slice();
+    // Server-Ranges bleiben die historische Wahrheit. Mehrere echte lokale
+    // Tagesstaende ersetzen nur den heutigen Serverpunkt fuer sofortiges Feedback.
+    const h=PROFILE_META.netHistory, today=dayKey(new Date());
+    const todayPoints=Array.isArray(h) ? h.filter(point=>point&&point.d===today) : [];
+    if(todayPoints.length>1 && pts.length){
+      if(!dates.length || dates[dates.length-1]==="Heute"){
+        pts.pop(); if(dates.length) dates.pop();
+      }
+      pts.push(...todayPoints.map(point=>Math.round(Number(point.v))/1000));
+      dates.push(...todayPoints.map(point=>{
+        const stamp=Number(point.t);
+        return Number.isFinite(stamp) ? new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}) : "Heute";
+      }));
+    }
+    return {pts,dates:dates.length?dates:null,intraday:true};
   }
   if(Array.isArray(DATA.series["1T"])){
     const dates=DATA.histDates?.["1T"]||[];
@@ -11969,7 +11985,10 @@ async function loadBridgeState(){
     saveBridgeLocal();
     drawChart(CHART.range||"1W",null,false); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
     updateChangeBadge(CHART.range||"1W");
-    if(nw) delete nw.dataset.lock;
+    if(nw){
+      delete nw.dataset.lock;
+      recalcNetWorth();             // echte Zahl direkt nach dem Unlock sichtbar machen
+    }
     maybeOpenMonthlyPlanOnMonthStart();
     // Die Push-Zeile braucht erst die API aus dem Live-Zugang. Beim App-Start kann der
     // Service Worker schneller bereit sein als diese Bruecke; deshalb hier noch einmal

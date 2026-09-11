@@ -142,6 +142,9 @@ class FrontendNavigationTests(unittest.TestCase):
         self.assertIn('function applyHomeEmpty(){\n  const empty=!homeHasFinancialData();', self.frontend)
         self.assertNotIn('function applyHomeEmpty(){\n  const empty=!DATA.assets.length;', self.frontend)
 
+    def test_bridge_start_renders_net_worth_after_ticker_unlock(self):
+        self.assertIn('if(nw){\n      delete nw.dataset.lock;\n      recalcNetWorth();', self.frontend)
+
     def test_chart_value_domain_stays_stable_during_live_balance_updates(self):
         start = self.frontend.index("function chartValueDomain(")
         end = self.frontend.index("function drawChart(", start)
