@@ -24,7 +24,7 @@ if [ -n "$untracked" ]; then printf '%s\n' "$untracked"; else printf '%s\n' '(no
 if printf '%s\n' "$staged" | grep -Ev '^$|^(ARCHITECTURE\.md|PROJECT_MAP\.md|README\.md|RUNBOOK\.md|docs/PROJECT_RULES\.md|scripts/repo_health\.sh|report_templates/rove_web_report\.html)$' | grep -q .; then
   warn 'unexpected staged file present'
 fi
-if printf '%s\n' "$untracked" | grep -Ev '^$|^(CLAUDE\.md|docs/PROJECT_RULES\.md|scripts/repo_health\.sh)$' | grep -q .; then
+if printf '%s\n' "$untracked" | grep -Ev '^$|^(CLAUDE\.md|docs/PROJECT_RULES\.md|scripts/repo_health\.sh|scripts/build_frontend_release\.py|test_frontend_build\.py)$' | grep -q .; then
   warn 'unexpected untracked file present'
 fi
 

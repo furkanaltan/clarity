@@ -186,16 +186,18 @@ SOURCE:
 TARGET: `/var/www/getrove/app/`
 
 Vor einer Veröffentlichung werden JavaScript, Full Suite, Diff und Hashes
-geprüft. Vor dem Commit eines Frontend-Releases wird die Meta-ID einmalig aus
-dem Release-Datum und dem aktuellen Quellstand gestempelt, zum Beispiel:
+geprüft. Ein Frontend-Release wird ausschließlich aus einem sauberen Git-Stand
+erzeugt. Das kanonische Script liest den aktuellen Commit und erzeugt das
+deploybare Artefakt mit der passenden Meta-ID:
 
 ```bash
-BUILD_ID="$(date -u +%Y%m%d)-$(git rev-parse --short HEAD)"
-sed -E -i '' "s/(name=\"rove-frontend-build\" content=\")[^\"]+(\")/\\1${BUILD_ID}\\2/" frontend/index.html
+python3 scripts/build_frontend_release.py /tmp/rove-index.html
 ```
 
-Danach wird geprüft, dass die ID im Diff neu und eindeutig ist, und sie wird
-mit dem Frontend-Release committed. Eine unveränderte ID darf nicht erneut
+Das Script prüft, dass `frontend/index.html` bereits committed ist, liest den
+Commit-Hash und setzt `rove-frontend-build` automatisch auf
+`frontend-<git-short-commit>`. Commit-Hash, Build-ID und ausgeliefertes Artefakt
+sind damit gemeinsam verifizierbar. Eine unveränderte ID darf nicht erneut
 veröffentlicht werden. Die fünf Dateien werden als Satz gesichert und
 veröffentlicht. Danach werden Serverhashes, die gleiche Meta-ID und
 PWA-Verhalten geprüft. Kein Backend-Service wird neu gestartet.

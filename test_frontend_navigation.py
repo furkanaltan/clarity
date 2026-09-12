@@ -367,7 +367,7 @@ for (const [range, initial, updated, intraday] of [
     def test_frontend_build_check_reloads_only_once_for_a_new_server_build(self):
         build = re.search(r'<meta name="rove-frontend-build" content="([^"]+)">', self.frontend)
         self.assertIsNotNone(build)
-        self.assertRegex(build.group(1), r"^\d{8}-[0-9a-f]{7,40}$")
+        self.assertRegex(build.group(1), r"^frontend-[0-9a-f]{7,40}$|^frontend-__GIT_COMMIT__$")
         self.assertIn('fetch(location.pathname, {cache:"no-store", credentials:"same-origin"})', self.frontend)
         self.assertIn('meta[name="rove-frontend-build"]', self.frontend)
         self.assertIn('if(serverBuild===CURRENT_BUILD)', self.frontend)
