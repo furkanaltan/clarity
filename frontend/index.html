@@ -3277,9 +3277,7 @@ function restoreBridgeLocal(snapshot,userId){
     if(!(DATA.goals||[]).some(current=>String(current.t||"").toLowerCase()===String(goal.t||"").toLowerCase())) DATA.goals.push(goal);
   });
   if(Array.isArray(snapshot.budgets) && snapshot.budgets.length) DATA.budgets=snapshot.budgets;
-  if(Array.isArray(snapshot.netHistory) && snapshot.netHistory.length){
-    PROFILE_META.netHistory=snapshot.netHistory.filter(point=>point&&typeof point.d==="string"&&Number.isFinite(Number(point.v)));
-  }
+  PROFILE_META.netHistory=validatedNetHistory(snapshot.netHistory);
   if(snapshot.netHistorySchemaVersion===2) PROFILE_META.netHistorySchemaVersion=2;
 }
 const PAIR_API_BASE_URL = "https://getrove.de/app-api";
@@ -4031,22 +4029,36 @@ function chartDataForRange(range){
     return {pts,dates:dates.length?dates:null,intraday:false,...(coverage||{})};
   }
 }
+function validatedNetHistory(history){
+  const seen=new Set();
+  return (Array.isArray(history)?history:[]).filter(point=>{
+    if(!point||typeof point.d!=="string"||!Number.isFinite(point.v)||!Number.isFinite(point.t)) return false;
+    // Keep explicit V2 baselines and identified events; anonymous observed values
+    // cannot prove a booking and must not be restored as intraday events.
+    const baseline=point.source==="system"&&point.event_id==null&&point.version===2;
+    const event=typeof point.source==="string"&&point.source!=="system"&&point.source.length>0
+      &&point.event_id!=null&&String(point.event_id).trim()!==""&&point.version===2;
+    if(!baseline&&!event) return false;
+    const key=baseline?`baseline:${point.d}`:`event:${point.source}:${String(point.event_id)}`;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(point=>({...point})).sort((a,b)=>a.d.localeCompare(b.d)||a.t-b.t);
+}
 function tagLatestNetHistoryPoint(source,eventId){
   migrateNetHistoryV2();
-  const h=PROFILE_META.netHistory;
-  const current=Number(DATA.netWorth), last=h?.[h.length-1];
-  if(!Array.isArray(h)||!Number.isFinite(current)||eventId==null) return;
-  if(last&&last.d===dayKey(new Date())&&Math.abs(Number(last.v)-current)<=0.005
-     && !last.source&&!last.event_id){
-    last.source=source; last.event_id=String(eventId); last.version=2;
-  }else if(!last||Math.abs(Number(last.v)-current)>0.005){
-    h.push({d:dayKey(new Date()),v:current,t:Date.now(),source,event_id:String(eventId),version:2});
-  }
+  if(typeof source!=="string"||!source||source==="system"||eventId==null||!String(eventId).trim()) return;
+  const current=DATA.netWorth;
+  if(!Number.isFinite(current)) return;
+  const h=PROFILE_META.netHistory=validatedNetHistory(PROFILE_META.netHistory);
+  if(h.some(point=>point.source===source&&String(point.event_id)===String(eventId))) return;
+  h.push({d:dayKey(new Date()),v:current,t:Date.now(),source,event_id:String(eventId),version:2});
   if(APP_MODE==="bridge") saveBridgeLocal();
+  redrawAfterHistoryReconciliation();
 }
 function reconcileDeletedExpenseHistory(eventId){
   migrateNetHistoryV2();
-  const h=PROFILE_META.netHistory;
+  const h=validatedNetHistory(PROFILE_META.netHistory);
   if(!Array.isArray(h)||eventId==null) return;
   PROFILE_META.netHistory=h.filter(point=>!(point.source==="expense"&&String(point.event_id)===String(eventId)));
   if(APP_MODE==="bridge") saveBridgeLocal();
@@ -4079,6 +4091,10 @@ function seedNetHistoryIfEmpty(){
 }
 function syncNetHistory(){
   if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;
+  if(APP_MODE==="bridge"){
+    PROFILE_META.netHistory=validatedNetHistory(PROFILE_META.netHistory);
+    return;
+  }
   migrateNetHistoryV2();
   const h=PROFILE_META.netHistory; if(!Array.isArray(h)) return;
   const now=Date.now(), dk=dayKey(new Date(now)), value=Number(DATA.netWorth);

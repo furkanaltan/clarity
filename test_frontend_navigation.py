@@ -25,6 +25,9 @@ class FrontendNavigationTests(unittest.TestCase):
         chart_start = cls.frontend.index("function chartTodayPoints()")
         chart_end = cls.frontend.index("function straightPath", chart_start)
         cls.chart_adapter = cls.frontend[day_start:day_end] + cls.frontend[chart_start:chart_end]
+        restore_start = cls.frontend.index("function restoreBridgeLocal(")
+        restore_end = cls.frontend.index("const PAIR_API_BASE_URL", restore_start)
+        cls.chart_adapter += cls.frontend[restore_start:restore_end]
 
     def run_chart_adapter(self, script):
         node_script = f"""
@@ -35,6 +38,11 @@ const DATA = {{
 }};
 const APP_MODE = "bridge";
 function saveBridgeLocal() {{}}
+const BRIDGE_BOT_ASSET_NAMES=new Set();
+const document={{querySelector:()=>null}};
+const CHART={{range:"1T"}};
+function drawChart() {{}}
+function updateChangeBadge() {{}}
 const today = new Date();
 const todayKey = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
 const PROFILE_META = {{netHistorySchemaVersion:2,coverageBoundaries:{{}},netHistory:[
@@ -53,6 +61,61 @@ const PROFILE_META = {{netHistorySchemaVersion:2,coverageBoundaries:{{}},netHist
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_anonymous_value_changes_never_form_persistent_v(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory=[{d:todayKey,v:40138,t:1,source:"system",event_id:null,version:2}];
+DATA.netWorth=35138; syncNetHistory();
+DATA.netWorth=40138;
+for(let i=0;i<5;i++) syncNetHistory();
+console.log(JSON.stringify(PROFILE_META.netHistory.map(p=>p.v)));
+""")
+        self.assertEqual(result, [40138])
+
+    def test_confirmed_event_identity_is_idempotent_and_delete_is_exact(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory=[{d:todayKey,v:40138,t:1,source:"system",event_id:null,version:2}];
+DATA.netWorth=35138; syncNetHistory(); tagLatestNetHistoryPoint("expense","X");
+for(let i=0;i<5;i++){syncNetHistory();tagLatestNetHistoryPoint("expense","X");}
+const created=JSON.parse(JSON.stringify(PROFILE_META.netHistory));
+DATA.netWorth=35121;tagLatestNetHistoryPoint("expense","Y");
+reconcileDeletedExpenseHistory("X");reconcileDeletedExpenseHistory("X");
+console.log(JSON.stringify({created,remaining:PROFILE_META.netHistory.map(p=>p.event_id)}));
+""")
+        self.assertEqual([p["v"] for p in result["created"]], [40138, 35138])
+        self.assertEqual(result["remaining"], [None, "Y"])
+
+    def test_create_delete_returns_day_delta_to_zero(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory=[{d:todayKey,v:40138,t:1,source:"system",event_id:null,version:2}];
+DATA.netWorth=35138;tagLatestNetHistoryPoint("expense","X");
+DATA.netWorth=40138;syncNetHistory();reconcileDeletedExpenseHistory("X");
+console.log(JSON.stringify(chartDataForRange("1T").pts));
+""")
+        self.assertEqual(result, [40.138])
+
+    def test_restore_filters_legacy_and_preserves_identified_events_idempotently(self):
+        result = self.run_chart_adapter("""
+const baseline={d:todayKey,v:40138,t:1,source:"system",event_id:null,version:2};
+const event={d:todayKey,v:35138,t:2,source:"expense",event_id:"X",version:2};
+const snapshot={userId:7,netHistorySchemaVersion:2,netHistory:[baseline,{d:todayKey,v:30000,t:3},event,event]};
+restoreBridgeLocal(snapshot,7);syncNetHistory();
+const first=JSON.stringify(PROFILE_META.netHistory);
+const saved=JSON.parse(JSON.stringify({userId:7,netHistorySchemaVersion:2,netHistory:PROFILE_META.netHistory}));
+PROFILE_META.netHistory=[];
+restoreBridgeLocal(saved,7);syncNetHistory();restoreBridgeLocal(saved,7);syncNetHistory();
+console.log(JSON.stringify({same:first===JSON.stringify(PROFILE_META.netHistory),values:PROFILE_META.netHistory.map(p=>p.v)}));
+""")
+        self.assertTrue(result["same"])
+        self.assertEqual(result["values"], [40138, 35138])
+
+    def test_range_sequence_does_not_change_provenance_history(self):
+        result = self.run_chart_adapter("""
+const before=JSON.stringify(PROFILE_META.netHistory),server=JSON.stringify(DATA.series);
+for(const range of ["1T","1W","1M","6M","1J","1T"]) chartDataForRange(range);
+console.log(JSON.stringify({history:before===JSON.stringify(PROFILE_META.netHistory),server:server===JSON.stringify(DATA.series)}));
+""")
+        self.assertEqual(result, {"history": True, "server": True})
 
     def test_chart_adapter_keeps_long_ranges_server_based_without_mutating_state(self):
         result = self.run_chart_adapter("""
@@ -302,7 +365,7 @@ console.log(JSON.stringify(PROFILE_META.coverageBoundaries));
     def test_one_day_chart_reuses_user_scoped_local_history(self):
         self.assertIn('netHistory:Array.isArray(PROFILE_META.netHistory)?PROFILE_META.netHistory.slice(-760):[]', self.frontend)
         self.assertIn('netHistorySchemaVersion:PROFILE_META.netHistorySchemaVersion||2', self.frontend)
-        self.assertIn('PROFILE_META.netHistory=snapshot.netHistory.filter', self.frontend)
+        self.assertIn('PROFILE_META.netHistory=validatedNetHistory(snapshot.netHistory)', self.frontend)
         self.assertIn('if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;', self.frontend)
         self.assertIn('syncNetHistory();\n    rebuildSeriesFromHistory();\n    saveBridgeLocal();', self.frontend)
         self.assertIn('return h.filter(point=>point&&point.d===today&&Number.isFinite(Number(point.v)))', self.frontend)
