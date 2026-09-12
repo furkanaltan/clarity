@@ -3430,12 +3430,12 @@ let CHANGE_MODE="percent";
 function updateChangeBadge(range=CHART.range||"1W"){
   const el=document.getElementById("change"), chip=document.querySelector("#tab-home .net .chip");
   const arrow=document.getElementById("changeArrow");
-  const pts=chartDataForRange(range).pts;
+  const rangeData=chartDataForRange(range), pts=rangeData.pts;
   if(!el || !chip || !arrow) return;
   if(!pts || pts.length<2 || !pts[0]){
     el.textContent="—"; chip.classList.remove("negative"); return;
   }
-  const euroDelta=(pts[pts.length-1]-pts[0])*1000;
+  const euroDelta=rangeData.v2 ? rangeData.deltaEuro : (pts[pts.length-1]-pts[0])*1000;
   const percentDelta=euroDelta/(pts[0]*1000)*100;
   const negative=euroDelta<0;
   el.textContent=CHANGE_MODE==="euro"
@@ -4003,6 +4003,7 @@ function coverageForRange(range,pts,dates){
   return {breakBefore:pts.length-1,adjustment:Number(boundary.value)/1000};
 }
 function chartDataForRange(range){
+  if(APP_MODE==="bridge"&&Object.prototype.hasOwnProperty.call(DATA,"chartV2")) return buildRangeSeriesV2(DATA.chartV2,range);
   const todayPoints=chartTodayPoints();
   if(range==="1T"){
     if(todayPoints.length>1){
@@ -4029,6 +4030,33 @@ function chartDataForRange(range){
     return {pts,dates:dates.length?dates:null,intraday:false,...(coverage||{})};
   }
 }
+function normalizeChartSeriesV2(input){
+  const ranges={};
+  for(const [range,rows] of Object.entries(input?.ranges||{})){
+    const ids=new Set();
+    ranges[range]=(Array.isArray(rows)?rows:[]).filter(point=>{
+      if(!point||typeof point.id!=="string"||typeof point.at!=="string"||!Number.isFinite(point.value)||ids.has(point.id)) return false;
+      ids.add(point.id);return true;
+    }).map(point=>({...point})).sort((a,b)=>a.at.localeCompare(b.at));
+  }
+  return {version:2,netWorth:input?.netWorth,ranges};
+}
+function buildRangeSeriesV2(input,range){
+  const data=normalizeChartSeriesV2(input), rows=data.ranges[range]||[];
+  const breaks=[], segments=[];
+  let segment=[], deltaCents=0;
+  rows.forEach((point,index)=>{
+    if(index){
+      if(point.scope!==rows[index-1].scope){breaks.push(index);segments.push(segment);segment=[];}
+      else deltaCents+=Math.round(point.value*100)-Math.round(rows[index-1].value*100);
+    }
+    segment.push(index);
+  });
+  if(segment.length)segments.push(segment);
+  return {pts:rows.map(point=>point.value/1000),dates:rows.map(point=>point.label),
+    rawPoints:rows,segments,breaks,deltaEuro:rows.length>1?deltaCents/100:null,
+    intraday:range==="1T"&&rows.length>1,dayDeltaAvailable:range==="1T"&&rows.length>1,v2:true};
+}
 function validatedNetHistory(history){
   const seen=new Set();
   return (Array.isArray(history)?history:[]).filter(point=>{
@@ -4046,6 +4074,7 @@ function validatedNetHistory(history){
   }).map(point=>({...point})).sort((a,b)=>a.d.localeCompare(b.d)||a.t-b.t);
 }
 function tagLatestNetHistoryPoint(source,eventId){
+  if(APP_MODE==="bridge"&&DATA.chartV2?.version===2) return;
   migrateNetHistoryV2();
   if(typeof source!=="string"||!source||source==="system"||eventId==null||!String(eventId).trim()) return;
   const current=DATA.netWorth;
@@ -4057,6 +4086,7 @@ function tagLatestNetHistoryPoint(source,eventId){
   redrawAfterHistoryReconciliation();
 }
 function reconcileDeletedExpenseHistory(eventId){
+  if(APP_MODE==="bridge"&&DATA.chartV2?.version===2) return;
   migrateNetHistoryV2();
   const h=validatedNetHistory(PROFILE_META.netHistory);
   if(!Array.isArray(h)||eventId==null) return;
@@ -4091,6 +4121,7 @@ function seedNetHistoryIfEmpty(){
 }
 function syncNetHistory(){
   if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;
+  if(APP_MODE==="bridge"&&DATA.chartV2?.version===2) return;
   if(APP_MODE==="bridge"){
     PROFILE_META.netHistory=validatedNetHistory(PROFILE_META.netHistory);
     return;
@@ -4150,6 +4181,14 @@ function monotonePath(xy){
 }
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function chartValueDomain(range, rangeData){
+  if(rangeData.v2){
+    const pts=rangeData.pts;
+    if(!pts.length)return {min:0,max:1};
+    const low=Math.min(...pts),high=Math.max(...pts);
+    const floor=Math.max(Math.abs(pts.at(-1))*.05,1);
+    const span=Math.max(high-low,floor),padding=span*.15;
+    return {min:(low+high-span)/2-padding,max:(low+high+span)/2+padding};
+  }
   const pts=rangeData.pts, dataMin=Math.min(...pts), dataMax=Math.max(...pts);
   const anchor=Number(pts[0]), rawSpan=dataMax-dataMin;
   const padding=range==="1T"
@@ -4173,6 +4212,13 @@ function chartValueDomain(range, rangeData){
 }
 function drawChart(range, scrubIdx, animate=true){
   const rangeData=chartDataForRange(range), pts=rangeData.pts;
+  if(!pts.length){
+    document.getElementById("chart").innerHTML="";
+    document.getElementById("chartDelta").textContent="—";
+    document.getElementById("chartContext").hidden=true;
+    Object.assign(CHART,{range,pts:[],xy:[],dates:[],dayHasIntraday:false});
+    return;
+  }
   const neutralDay=range==="1T"&&!rangeData.intraday&&!rangeData.dayDeltaAvailable;
   // Keep the low point clear of the chart edge; the values and time series stay unchanged.
   const W=360,H=150,padX=14,padT=18,padB=24;
@@ -4182,7 +4228,7 @@ function drawChart(range, scrubIdx, animate=true){
     n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
   ]);
-  const linePoints=rangeData.breakBefore!=null
+  const linePoints=rangeData.v2 ? rangeData.segments.map(indices=>indices.map(i=>xy[i])).filter(segment=>segment.length>1) : rangeData.breakBefore!=null
     ? [xy.slice(0,rangeData.breakBefore),xy.slice(rangeData.breakBefore)].filter(segment=>segment.length>1)
     : [xy];
   const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];
@@ -4216,6 +4262,7 @@ function drawChart(range, scrubIdx, animate=true){
   }
   document.getElementById("chart").innerHTML = body;
   CHART.xy=xy; CHART.pts=pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
+  CHART.v2=rangeData.v2===true;
   CHART.dayDeltaAvailable=rangeData.dayDeltaAvailable===true;
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
   CHART.scrubPath=scrubIdx!=null ? document.getElementById("chartScrubPath") : null;
@@ -4223,7 +4270,7 @@ function drawChart(range, scrubIdx, animate=true){
     CHART.dates=rangeData.dates||seriesDates(range);
     const dEl=document.getElementById("chartDelta"), context=document.getElementById("chartContext");
     if(dEl){
-      const dv=(pts[pts.length-1]-pts[0]-Number(rangeData.adjustment||0))*1000;
+      const dv=rangeData.v2 ? rangeData.deltaEuro : (pts[pts.length-1]-pts[0]-Number(rangeData.adjustment||0))*1000;
       const dates=CHART.dates, first=dates[0]||"Heute", end=dates[dates.length-1]||"Heute";
       dEl.textContent = neutralDay || pts.length===1 ? "—" : `${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
       if(context){ context.hidden=range==="1T"; context.innerHTML=`<span>${first}</span><span>${end}</span>`; }
@@ -4248,8 +4295,8 @@ drawChart("1T");
     if(n>1 && (!CHART.scrubClip || !CHART.scrubPath)) drawChart(CHART.range, idx);
     // Die Maske und der Punkt folgen der echten Kurven-Geometrie kontinuierlich.
     // Der angezeigte Wert bleibt auf dem naechsten vorhandenen Datenpunkt stabil.
-    let point=CHART.xy[idx];
-    if(n>1){
+    let point={x:CHART.xy[idx][0],y:CHART.xy[idx][1]};
+    if(n>1&&!CHART.v2){
       const targetX=padX+frac*(W-2*padX), length=CHART.scrubPath.getTotalLength();
       let lo=0, hi=length;
       for(let step=0;step<11;step++){
@@ -4259,6 +4306,7 @@ drawChart("1T");
       point=CHART.scrubPath.getPointAtLength((lo+hi)/2);
       CHART.scrubClip.setAttribute("width",Math.max(0,point.x).toFixed(2));
     }
+    if(CHART.v2&&CHART.scrubClip) CHART.scrubClip.setAttribute("width",point.x.toFixed(2));
     const wrapRect=wrap.getBoundingClientRect();
     const px=(rect.left-wrapRect.left)+(point.x/W)*rect.width, py=(rect.top-wrapRect.top)+(point.y/150)*rect.height;
     dot.style.left=px+"px"; dot.style.top=py+"px";   // runder Knopf sitzt am Übergang
@@ -7643,8 +7691,7 @@ async function syncIncomeToServer(e, raw){
     // `csid`, nicht `sid`: die Einnahme steht in app_cash_movements. Ein `sid` würde beim
     // Löschen DELETE /v1/expenses/<id> auslösen und eine fremde Ausgabe treffen.
     e.csid=data.id;
-    if(multiCashEnabled()) await refreshAppDataFromServer();
-    else applyServerCashAccounts(data.accounts);
+    await refreshAppDataFromServer();
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
@@ -7849,10 +7896,20 @@ function mergeBotGoals(serverGoals){
   return merged;
 }
 
-let appDataRefreshInFlight=false;
-async function refreshAppDataFromServer(){
-  if(appDataRefreshInFlight || !apiReady()) return false;
-  appDataRefreshInFlight=true;
+let appDataRefreshInFlight=null, appDataRefreshQueued=false;
+function refreshAppDataFromServer(){
+  if(!apiReady()) return Promise.resolve(false);
+  appDataRefreshQueued=true;
+  if(!appDataRefreshInFlight){
+    appDataRefreshInFlight=(async()=>{
+      let ok=false;
+      do {appDataRefreshQueued=false;ok=await fetchCanonicalAppState();} while(appDataRefreshQueued);
+      return ok;
+    })().finally(()=>{appDataRefreshInFlight=null;});
+  }
+  return appDataRefreshInFlight;
+}
+async function fetchCanonicalAppState(){
   try{
     const res=await apiFetch("/v1/state",{
       headers:{},cache:"no-store"
@@ -7860,6 +7917,8 @@ async function refreshAppDataFromServer(){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
 
+    if(appDataRefreshQueued) return true;
+    DATA.chartV2=data.chartV2||null;
     if(Array.isArray(data.tx)){
       DATA.tx=data.tx.length?data.tx:[{d:"Heute",items:[]}];
       TXID=DATA.tx.flatMap(d=>d.items).length+1000;
@@ -7931,8 +7990,6 @@ async function refreshAppDataFromServer(){
   }catch(err){
     console.warn("Bot-Datenaktualisierung fehlgeschlagen:",err);
     return false;
-  }finally{
-    appDataRefreshInFlight=false;
   }
 }
 
@@ -12064,6 +12121,7 @@ async function loadBridgeState(){
     // Ohne Bot-Budgets darf die App weiterhin nur lokal mit Vorschlaegen arbeiten.
     if(!botBudgets.length) DATA.budgets = [];
     if(b.series) DATA.series = b.series;
+    DATA.chartV2=b.chartV2||null;
     if(b.histDates) DATA.histDates = b.histDates;   // echte Datums-Labels vom Server (27.07.)
     if(b.identity) DATA.identity = b.identity;      // Name + Login-Adresse des Kontos (27.07.)
     if(b.payday) DATA.payday = b.payday;            // Zahltag des Kontos (27.07.)

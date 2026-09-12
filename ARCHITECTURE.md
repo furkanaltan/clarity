@@ -40,6 +40,32 @@ Der Browser entscheidet nicht allein ueber den Zugriff auf Finanzdaten.
 
 ## Datenbank
 
+### Wealth Chart V2
+
+`rove_app_state.build_live_app_data()` supplies `chartV2` alongside the legacy
+series contract. Its points carry exact euro values, IDs, timestamps, source
+and coverage scope. Intraday values are reconstructed from the current total
+and remaining committed expense, income/fixed and market-valuation events;
+they are not recorded observations or browser snapshots. Deleting an event
+reconstructs subsequent points without that effect. Transfers and expense
+cash mirrors are excluded. Unlogged balance corrections are reflected in the
+current anchor, not invented as timed events. The day follows the server's
+existing calendar/time convention.
+
+Long ranges reuse the existing reconstruction and immutable monthly snapshots
+without kEUR rounding. Property-excluded reconstructions, full current totals
+and snapshots with unproven comparable coverage are separate line segments.
+The displayed delta sums only comparable adjacent intervals; coverage gaps
+contribute no claimed performance. This does not backfill property equity.
+`coverage_started_at` bounds today's comparable reconstruction when applicable.
+
+Frontend `normalizeChartSeriesV2` and `buildRangeSeriesV2` are pure. Local
+netHistory remains a legacy/profile comparison path and cannot override a
+received V2 contract. Refresh callers share a queued read, so a mutation during
+a request waits for a subsequent read. The existing renderer consumes the
+result, using a deterministic padded domain with a 5% minimum span (at least
+EUR 1,000) and separate paths at coverage gaps. No new persistence table.
+
 API, Bot und Worker verwenden dieselbe SQLite-Datenbank unter
 `/root/clarity/clarity.db`. WAL ist produktiv aktiv. Tabellen und additive
 Schemaerweiterungen werden derzeit durch mehrere Runtime-Module und

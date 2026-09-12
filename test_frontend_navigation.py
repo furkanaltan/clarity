@@ -330,7 +330,7 @@ console.log(JSON.stringify(PROFILE_META.coverageBoundaries));
         self.assertIn('data-r="1J">1J', self.frontend)
         self.assertNotIn('data-r="Max"', self.frontend)
         self.assertIn('function chartDataForRange(range)', self.frontend)
-        self.assertIn('const pts=chartDataForRange(range).pts;', self.frontend)
+        self.assertIn('const rangeData=chartDataForRange(range), pts=rangeData.pts;', self.frontend)
         self.assertIn('function chartTodayPoints()', self.frontend)
         self.assertIn('const todayPoints=chartTodayPoints();', self.frontend)
         self.assertNotIn('DATA.series["1T"]=intraday.map(point=>Math.round(Number(point.v))/1000);', self.frontend)

@@ -23,6 +23,7 @@ bereits abgeschlossene Zielarchitektur.
 |---|---|
 | Auth, Sessions, PIN, Admin | `rove_app_api.py` |
 | App-State und Finanzaggregation | `rove_app_state.py` |
+| Wealth Chart V2 input / pure range adapter | `rove_app_state.py`, `frontend/index.html`; regression: `test_chart_engine_v2.py` |
 | Ausgabenwahrheit | `rove_expense_domain.py` |
 | Finanzkonten | `rove_financial_accounts.py` |
 | Konsumschulden / Nettovermoegensformel | `rove_consumer_debt.py` |

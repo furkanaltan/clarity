@@ -243,6 +243,8 @@ process.stdout.write(JSON.stringify({{
 
     def test_state_hydrates_on_start_and_refresh_without_financial_writes(self):
         refresh = self.function_source("refreshAppDataFromServer")
+        self.assertIn("fetchCanonicalAppState()", refresh)
+        refresh = self.function_source("fetchCanonicalAppState")
         load = self.function_source("loadBridgeState")
         self.assertIn("setFeatureAnnouncements(data.feature_announcements)", refresh)
         self.assertIn("setFeatureAnnouncements(b.feature_announcements)", load)

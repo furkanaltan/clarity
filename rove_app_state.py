@@ -1778,7 +1778,8 @@ def _daily_net_deltas(conn: sqlite3.Connection, user_id: int, tage: int) -> dict
     return deltas
 
 
-def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None):
+def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float | None,
+                      chart_ranges: dict | None = None):
     """Reconstruct the financial history without projecting today's property truth backward.
 
     Cash/investment movement history remains the reconstructable base series. The
@@ -1867,12 +1868,74 @@ def _net_worth_series(conn: sqlite3.Connection, user_id: int, net_worth: float |
                       if (name == "Max" or tag >= cutoff) and tag <= today)
         deduped = {tag: value for tag, value in points}
         ordered = sorted(deduped.items())
+        if chart_ranges is not None:
+            frozen_dates = {tag for tag, _ in frozen}
+            chart_ranges[name] = [
+                {"id": f"day:{tag.isoformat()}", "at": tag.isoformat(),
+                 "value": round(float(net_worth) if tag == today else value, 2),
+                 "label": "Heute" if tag == today else _series_label(tag, name),
+                 "source": "current" if tag == today else
+                           "monthly_snapshot" if tag in frozen_dates else "reconstructed",
+                 # A completed snapshot has its own known coverage. Never connect
+                 # it to a reconstruction which explicitly excludes property.
+                 "scope": "full" if tag == today and current_property_equity else
+                          "base" if tag == today else
+                          f"snapshot:{tag.isoformat()}" if tag in frozen_dates else "base"}
+                for tag, value in ordered
+            ]
         series[name] = [round(value / 1000, 3) for _, value in ordered]
         hist_dates[name] = [
             "Heute" if tag == date.today() else _series_label(tag, name)
             for tag, _ in ordered
         ]
     return series, hist_dates
+
+
+def _intraday_chart_points(conn: sqlite3.Connection, user_id: int,
+                          net_worth: float | None, property_data: dict | None) -> list:
+    """Reconstruct today's remaining committed events, never observed UI values.
+
+    Deleting an expense removes its event and its effect on all subsequent
+    reconstructed points. Card/payment mirrors and transfers are net neutral.
+    """
+    if net_worth is None:
+        return []
+    today = date.today().isoformat()
+    events = []
+    queries = [
+        ("expense", "SELECT id, created_at, -amount AS delta FROM expenses "
+         "WHERE user_id=? AND date(created_at)=?"),
+        ("cash", "SELECT id, created_at, CASE WHEN kind='income' THEN amount ELSE -amount END AS delta "
+         "FROM app_cash_movements WHERE user_id=? AND date(created_at)=? AND kind IN ('income','fixed')"),
+        ("valuation", "SELECT id, created_at, CASE WHEN direction='out' THEN -amount ELSE amount END AS delta "
+         "FROM investment_events WHERE user_id=? AND date(created_at)=? AND event_type='market_valuation'"),
+    ]
+    for source, query in queries:
+        try:
+            rows = conn.execute(query, (user_id, today)).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            continue
+        for row in rows:
+            events.append({"id": f"{source}:{row['id']}", "at": str(row["created_at"]),
+                           "delta": round(float(row["delta"] or 0) * 100)})
+    events.sort(key=lambda event: (event["at"], event["id"]))
+    coverage = str((property_data or {}).get("coverage_started_at") or "")
+    # No observed property value exists before its coverage start. Limit today's
+    # comparable reconstruction to the known scope rather than backfilling it.
+    if coverage[:10] == today:
+        events = [event for event in events if event["at"] >= coverage]
+    current = round(net_worth * 100)
+    value = current - sum(event["delta"] for event in events)
+    start = coverage if coverage[:10] == today else today + " 00:00:00"
+    points = [{"id": "day-start:" + today, "at": start, "value": value / 100,
+               "label": start[11:16], "scope": "day", "source": "reconstructed"}]
+    for event in events:
+        value += event["delta"]
+        points.append({"id": event["id"], "at": event["at"], "value": value / 100,
+                       "label": event["at"][11:16], "scope": "day", "source": "reconstructed_event"})
+    return points
 
 
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
@@ -1959,7 +2022,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     etf_sub = (f"{len(etf_positions)} Position" + ("" if len(etf_positions) == 1 else "en")
                if etf_positions else "aus dem Bot")
 
-    net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth)
+    chart_ranges = {}
+    net_series, net_hist_dates = _net_worth_series(conn, user_id, net_worth, chart_ranges)
+    chart_ranges["1T"] = _intraday_chart_points(conn, user_id, net_worth, property_data)
     from rove_vehicle_financing import list_vehicle_financings
 
     vehicle_financings = list_vehicle_financings(conn, user_id)
@@ -2039,6 +2104,10 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "vehicleFinancings": vehicle_financings,
         "series": net_series,
         "histDates": net_hist_dates,
+        "chartV2": {"version": 2, "day": date.today().isoformat(),
+                    "netWorth": round(net_worth, 2) if net_worth is not None else None,
+                    "coverageStartedAt": (property_data or {}).get("coverage_started_at"),
+                    "ranges": chart_ranges},
         "identity": _identity(conn, user_id),
         "payday": _payday_block(conn, user_id, u, income),
         "features": {FEATURE_MULTI_CASH_ACCOUNTS_V1: multi_cash},
