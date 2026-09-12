@@ -142,6 +142,15 @@ console.log(JSON.stringify({low:y(Math.min(...data.pts)),high:y(Math.max(...data
         self.assertIn('cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}"', self.html)
         self.assertIn('const domain=chartValueDomain(range,rangeData);', self.html)
 
+    def test_singleton_current_v2_segment_keeps_endpoint_without_cross_scope_line(self):
+        start = self.html.index('function drawChart(range, scrubIdx, animate=true){')
+        end = self.html.index('\ndrawChart("1T");', start)
+        renderer = self.html[start:end]
+        self.assertIn('currentIsV2Singleton=rangeData.v2===true', renderer)
+        self.assertIn('chart-endcap-v2-current', renderer)
+        self.assertIn('+ (fullLine ? glassLine(fullLine,animate) : "")', renderer)
+        self.assertIn('.filter(segment=>segment.length>1)', renderer)
+
     def test_bridge_start_never_falls_back_to_v1_before_hydration(self):
         adapter = "function chartDataForRange" + self.html.split("function chartDataForRange", 1)[1].split("function normalizeChartSeriesV2", 1)[0]
         result = node(adapter + """

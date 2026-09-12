@@ -4234,6 +4234,9 @@ function drawChart(range, scrubIdx, animate=true){
     ? [xy.slice(0,rangeData.breakBefore),xy.slice(rangeData.breakBefore)].filter(segment=>segment.length>1)
     : [xy];
   const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];
+  const currentIsV2Singleton=rangeData.v2===true
+    && Array.isArray(rangeData.segments)
+    && rangeData.segments.some(segment=>segment.length===1&&segment[0]===n-1);
   // Nur drei hauchzarte Horizontal-Linien als Halt — das volle Raster machte die Kurve
   // zum Dashboard; die Referenz (Vermoegen Redesign 23.07.) lässt die Kurve frei stehen.
   let grid="";
@@ -4257,10 +4260,13 @@ function drawChart(range, scrubIdx, animate=true){
   } else if(range==="1T"&&!rangeData.intraday){
     body = `<g>${grid}</g>`+glassLine(fullLine,false);
   } else {
+    // A coverage boundary may leave today's real V2 point as a one-point segment.
+    // Keep it visible as the endpoint, but never draw a synthetic line across scopes.
+    const endMarker=`<circle class="endcap chart-endcap chart-endcap-halo${currentIsV2Singleton?" chart-endcap-v2-current":""}" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="none" stroke="#F5F7F8" stroke-width="1" opacity=".2"/>`
+      +`<circle class="endcap chart-endcap chart-endcap-core${currentIsV2Singleton?" chart-endcap-v2-current":""}" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="#F5F7F8" stroke="#07131D" stroke-width="1.15"/>`;
     body = `<g>${grid}</g>`
-      + glassLine(fullLine,animate)
-      + `<circle class="endcap chart-endcap chart-endcap-halo" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="6" fill="none" stroke="#F5F7F8" stroke-width="1" opacity=".2"/>`
-      + `<circle class="endcap chart-endcap chart-endcap-core" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="#F5F7F8" stroke="#07131D" stroke-width="1.15"/>`;
+      + (fullLine ? glassLine(fullLine,animate) : "")
+      + endMarker;
   }
   document.getElementById("chart").innerHTML = body;
   CHART.xy=xy; CHART.pts=pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
