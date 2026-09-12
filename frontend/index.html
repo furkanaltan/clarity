@@ -4004,7 +4004,11 @@ function coverageForRange(range,pts,dates){
   return {breakBefore:pts.length-1,adjustment:Number(boundary.value)/1000};
 }
 function chartDataForRange(range){
-  if(APP_MODE==="bridge"&&Object.prototype.hasOwnProperty.call(DATA,"chartV2")) return buildRangeSeriesV2(DATA.chartV2,range);
+  if(APP_MODE==="bridge"&&Object.prototype.hasOwnProperty.call(DATA,"chartV2")){
+    const coverageEquityAtStart=Number(DATA.chartV2?.coverageEquityAtStart);
+    return buildRangeSeriesV2(DATA.chartV2,range,
+      Number.isFinite(coverageEquityAtStart)&&coverageEquityAtStart>0?coverageEquityAtStart:0);
+  }
   const todayPoints=chartTodayPoints();
   if(range==="1T"){
     if(todayPoints.length>1){
@@ -4042,8 +4046,16 @@ function normalizeChartSeriesV2(input){
   }
   return {version:2,netWorth:input?.netWorth,ranges};
 }
-function buildRangeSeriesV2(input,range){
-  const data=normalizeChartSeriesV2(input), rows=data.ranges[range]||[];
+function buildRangeSeriesV2(input,range,coverageEquityAtStart=0){
+  const data=normalizeChartSeriesV2(input), rawRows=data.ranges[range]||[];
+  const coverage=String(input?.coverageStartedAt||"").slice(0,10);
+  const canNormalize=range!=="1T"&&/^\d{4}-\d{2}-\d{2}$/.test(coverage)&&Number.isFinite(coverageEquityAtStart)&&coverageEquityAtStart>0;
+  const rows=rawRows.map(point=>{
+    const afterCoverage=canNormalize&&String(point.at).slice(0,10)>=coverage;
+    if(!afterCoverage||point.scope==="full") return point;
+    if(point.scope!=="base") return point;
+    return {...point,value:point.value+coverageEquityAtStart,scope:"full"};
+  });
   const breaks=[], segments=[];
   let segment=[], deltaCents=0;
   rows.forEach((point,index)=>{

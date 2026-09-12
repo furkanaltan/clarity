@@ -1599,6 +1599,7 @@ def ensure_app_properties_table(conn: sqlite3.Connection) -> None:
             house_fee      REAL NOT NULL DEFAULT 0.0,
             management_fee REAL NOT NULL DEFAULT 0.0,
             coverage_started_at DATETIME,
+            coverage_equity_at_start REAL,
             updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
@@ -1606,11 +1607,19 @@ def ensure_app_properties_table(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(app_properties)").fetchall()}
     if "coverage_started_at" not in columns:
         conn.execute("ALTER TABLE app_properties ADD COLUMN coverage_started_at DATETIME")
+    if "coverage_equity_at_start" not in columns:
+        conn.execute("ALTER TABLE app_properties ADD COLUMN coverage_equity_at_start REAL")
     # Existing rows use the rollout moment, never an invented purchase date.
     conn.execute(
         """UPDATE app_properties
            SET coverage_started_at = COALESCE(coverage_started_at, CURRENT_TIMESTAMP)
          WHERE coverage_started_at IS NULL"""
+    )
+    # Freeze the known equity once at rollout; later property updates must not rewrite it.
+    conn.execute(
+        """UPDATE app_properties
+              SET coverage_equity_at_start = ROUND(market_value - remaining_debt, 2)
+            WHERE coverage_equity_at_start IS NULL"""
     )
 
 
@@ -1619,17 +1628,26 @@ def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
         try:
             row = conn.execute(
                 """SELECT market_value, remaining_debt, monthly_rate,
-                          house_fee, management_fee, coverage_started_at
+                          house_fee, management_fee, coverage_started_at,
+                          coverage_equity_at_start
                      FROM app_properties WHERE user_id = ?""",
                 (user_id,),
             ).fetchone()
         except sqlite3.OperationalError:
-            row = conn.execute(
-                """SELECT market_value, remaining_debt, monthly_rate,
-                          house_fee, management_fee
-                     FROM app_properties WHERE user_id = ?""",
-                (user_id,),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    """SELECT market_value, remaining_debt, monthly_rate,
+                              house_fee, management_fee, coverage_started_at
+                         FROM app_properties WHERE user_id = ?""",
+                    (user_id,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    """SELECT market_value, remaining_debt, monthly_rate,
+                              house_fee, management_fee
+                         FROM app_properties WHERE user_id = ?""",
+                    (user_id,),
+                ).fetchone()
     except sqlite3.OperationalError:
         return None
     if not row or float(row["market_value"] or 0) <= 0:
@@ -1645,6 +1663,10 @@ def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
         "management_fee": round(max(0.0, float(row["management_fee"] or 0)), 2),
         "coverage_started_at": row["coverage_started_at"]
         if "coverage_started_at" in row.keys()
+        else None,
+        "coverage_equity_at_start": round(float(row["coverage_equity_at_start"]), 2)
+        if "coverage_equity_at_start" in row.keys()
+        and row["coverage_equity_at_start"] is not None
         else None,
     }
 
@@ -2107,6 +2129,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "chartV2": {"version": 2, "day": date.today().isoformat(),
                     "netWorth": round(net_worth, 2) if net_worth is not None else None,
                     "coverageStartedAt": (property_data or {}).get("coverage_started_at"),
+                    "coverageEquityAtStart": (property_data or {}).get("coverage_equity_at_start"),
                     "ranges": chart_ranges},
         "identity": _identity(conn, user_id),
         "payday": _payday_block(conn, user_id, u, income),
@@ -2131,6 +2154,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                  "hausgeld": property_data["house_fee"],
                  "verwaltung": property_data["management_fee"],
                  "coverageStartedAt": property_data.get("coverage_started_at"),
+                 "coverageEquityAtStart": property_data.get("coverage_equity_at_start"),
                  "wert": "—",
              }} if property_data else None,
         ) if a],

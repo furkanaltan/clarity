@@ -46,12 +46,13 @@ class ChartEngineV2Tests(unittest.TestCase):
             return state.build_live_app_data(conn, uid)
 
     def ranges(self, live):
+        coverage_equity = live.get("chartV2", {}).get("coverageEquityAtStart") or 0
         return node(self.engine + "\nconst input=" + json.dumps(live["chartV2"]) + """;
 const before=JSON.stringify(input);
-const output=Object.fromEntries(['1T','1W','1M','6M','1J'].map(r=>[r,buildRangeSeriesV2(input,r)]));
+const output=Object.fromEntries(['1T','1W','1M','6M','1J'].map(r=>[r,buildRangeSeriesV2(input,r,PROPERTY_EQUITY)]));
 if(before!==JSON.stringify(input)) throw new Error('mutated canonical input');
 console.log(JSON.stringify(output));
-""")
+""".replace('PROPERTY_EQUITY', json.dumps(coverage_equity)))
 
     def test_expense_create_delete_all_ranges_restore_without_restart(self):
         for amount in (60, 5000, 17):
@@ -100,11 +101,151 @@ console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),pure:befo
         for name, data in self.ranges(after).items():
             if name=='1T': continue
             self.assertEqual(data['deltaEuro'],0)
-            self.assertEqual(data['breaks'],[len(data['pts'])-1])
-            self.assertEqual(data['rawPoints'][0]['value'],40138)
+            if name=='1J':
+                self.assertEqual(data['breaks'],[4])
+                self.assertEqual(data['rawPoints'][0]['value'],before['netWorth'])
+                self.assertEqual(data['rawPoints'][4]['value'],before['netWorth']+11000)
+            else:
+                self.assertEqual(data['breaks'],[])
+                self.assertEqual(data['rawPoints'][0]['value'],before['netWorth']+11000)
         with sqlite3.connect(self.path) as conn:
             conn.execute('DELETE FROM app_properties WHERE user_id=1')
         self.assertEqual(self.ranges(self.live()),self.ranges(before))
+
+    def test_coverage_snapshot_is_migrated_and_immutable_when_equity_changes(self):
+        with sqlite3.connect(self.path) as conn:
+            state.ensure_app_properties_table(conn)
+            conn.execute(
+                """INSERT INTO app_properties
+                   (user_id, market_value, remaining_debt, coverage_started_at)
+                   VALUES (1, 9000, 0, '2026-01-01 00:00:00')"""
+            )
+        first = self.live()
+        self.assertEqual(first["chartV2"]["coverageEquityAtStart"], 9000)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                "UPDATE app_properties SET market_value=12000 WHERE user_id=1"
+            )
+        second = self.live()
+        self.assertEqual(second["chartV2"]["coverageEquityAtStart"], 9000)
+        self.assertEqual(second["assets"][-1]["real"]["eigenkapital"], 12000)
+
+        first_points = self.ranges(first)["1J"]["rawPoints"]
+        second_points = self.ranges(second)["1J"]["rawPoints"]
+        self.assertEqual(
+            [point["value"] for point in first_points[:-1]],
+            [point["value"] for point in second_points[:-1]],
+        )
+        self.assertEqual(second_points[-1]["value"] - first_points[-1]["value"], 3000)
+
+    def test_property_api_preserves_snapshot_across_update_delete_and_readd(self):
+        create = self.client.post(
+            "/v1/property",
+            json={"market_value": 9000, "remaining_debt": 0},
+        )
+        self.assertEqual(create.status_code, 200, create.get_json())
+        self.assertEqual(create.get_json()["chartV2"]["coverageEquityAtStart"], 9000)
+
+        update = self.client.post(
+            "/v1/property",
+            json={"market_value": 12000, "remaining_debt": 0},
+        )
+        self.assertEqual(update.status_code, 200, update.get_json())
+        self.assertEqual(update.get_json()["chartV2"]["coverageEquityAtStart"], 9000)
+        with sqlite3.connect(self.path) as conn:
+            snapshot = conn.execute(
+                "SELECT coverage_equity_at_start FROM app_properties WHERE user_id=1"
+            ).fetchone()[0]
+        self.assertEqual(snapshot, 9000)
+
+        deleted = self.client.delete("/v1/property")
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        self.assertIsNone(deleted.get_json()["chartV2"]["coverageEquityAtStart"])
+
+        readd = self.client.post(
+            "/v1/property",
+            json={"market_value": 12000, "remaining_debt": 0},
+        )
+        self.assertEqual(readd.status_code, 200, readd.get_json())
+        self.assertEqual(readd.get_json()["chartV2"]["coverageEquityAtStart"], 12000)
+
+    def test_coverage_snapshot_is_user_scoped(self):
+        with sqlite3.connect(self.path) as conn:
+            state.ensure_app_properties_table(conn)
+            conn.execute(
+                """INSERT INTO app_properties
+                   (user_id, market_value, remaining_debt, coverage_started_at,
+                    coverage_equity_at_start)
+                   VALUES (1, 9000, 0, '2026-01-01 00:00:00', 9000)"""
+            )
+            conn.execute(
+                """INSERT INTO app_properties
+                   (user_id, market_value, remaining_debt, coverage_started_at,
+                    coverage_equity_at_start)
+                   VALUES (2, 12000, 0, '2026-02-01 00:00:00', 12000)"""
+            )
+        self.assertEqual(
+            self.live(1)["chartV2"]["coverageEquityAtStart"], 9000
+        )
+        self.assertEqual(
+            self.live(2)["chartV2"]["coverageEquityAtStart"], 12000
+        )
+
+    def test_v2_uses_persisted_snapshot_not_current_property_equity(self):
+        adapter = "function chartDataForRange" + self.html.split(
+            "function chartDataForRange", 1
+        )[1].split("function normalizeChartSeriesV2", 1)[0]
+        result = node(self.engine + adapter + """
+const APP_MODE='bridge';
+const DATA={
+  netWorth:41000,
+  chartV2:{
+    version:2,
+    coverageStartedAt:'2026-09-01 00:00:00',
+    coverageEquityAtStart:9000,
+    ranges:{'1M':[
+      {id:'old',at:'2026-08-31',value:31000,label:'31. Aug',scope:'base'},
+      {id:'covered',at:'2026-09-01',value:31000,label:'1. Sep',scope:'base'},
+      {id:'today',at:'2026-09-12',value:41000,label:'Heute',scope:'full'}
+    ]}
+  },
+  assets:[{name:'Immobilie',value:12000,real:{eigenkapital:12000}}]
+};
+const first=chartDataForRange('1M');
+DATA.assets[0].value=9000;
+DATA.assets[0].real.eigenkapital=9000;
+const second=chartDataForRange('1M');
+console.log(JSON.stringify({
+  first:first.rawPoints.map(point=>point.value),
+  second:second.rawPoints.map(point=>point.value),
+  unchanged:JSON.stringify(first)===JSON.stringify(second)
+}));
+""")
+        self.assertEqual(result["first"], [31000, 40000, 41000])
+        self.assertEqual(result["second"], result["first"])
+        self.assertTrue(result["unchanged"])
+
+    def test_coverage_normalizes_base_points_into_continuous_full_line(self):
+        input_data = {
+            "version": 2,
+            "coverageStartedAt": "2026-09-08 12:00:00",
+            "ranges": {"1W": [
+                {"id": "d1", "at": "2026-09-06", "value": 29000, "label": "So", "scope": "base"},
+                {"id": "d2", "at": "2026-09-07", "value": 29100, "label": "Mo", "scope": "base"},
+                {"id": "d3", "at": "2026-09-08", "value": 31100, "label": "Di", "scope": "base"},
+                {"id": "d4", "at": "2026-09-09", "value": 31100, "label": "Mi", "scope": "base"},
+                {"id": "d5", "at": "2026-09-10", "value": 31100, "label": "Do", "scope": "base"},
+                {"id": "d6", "at": "2026-09-12", "value": 40127, "label": "Heute", "scope": "full"},
+            ]},
+        }
+        result = node(self.engine + "\nconst input=" + json.dumps(input_data) + """;
+const output=buildRangeSeriesV2(input,'1W',9000);
+console.log(JSON.stringify(output));
+""")
+        self.assertEqual(result['breaks'], [2])
+        self.assertEqual(result['segments'], [[0, 1], [2, 3, 4, 5]])
+        self.assertEqual([p['value'] for p in result['rawPoints']], [29000, 29100, 40100, 40100, 40100, 40127])
+        self.assertEqual(result['deltaEuro'], 127)
 
     def test_raw_series_preserves_cents_and_user_isolation(self):
         with sqlite3.connect(self.path) as conn:

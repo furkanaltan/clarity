@@ -4402,13 +4402,15 @@ def complete_app_onboarding():
             if amounts["property_value"] > 0:
                 conn.execute(
                     """INSERT INTO app_properties
-                       (user_id, market_value, remaining_debt, coverage_started_at, updated_at)
-                       VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                       (user_id, market_value, remaining_debt, coverage_started_at,
+                        coverage_equity_at_start, updated_at)
+                       VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
                        ON CONFLICT(user_id) DO UPDATE SET
                          market_value = excluded.market_value,
                          remaining_debt = excluded.remaining_debt,
                          updated_at = CURRENT_TIMESTAMP""",
-                    (user_id, amounts["property_value"], amounts["property_debt"]),
+                    (user_id, amounts["property_value"], amounts["property_debt"],
+                     round(amounts["property_value"] - amounts["property_debt"], 2)),
                 )
 
             for asset_type, amount, label in (
@@ -5349,8 +5351,8 @@ def update_property():
         conn.execute(
             """INSERT INTO app_properties
                (user_id, market_value, remaining_debt, monthly_rate, house_fee,
-                management_fee, coverage_started_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                management_fee, coverage_started_at, coverage_equity_at_start, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
                ON CONFLICT(user_id) DO UPDATE SET
                  market_value = excluded.market_value,
                  remaining_debt = excluded.remaining_debt,
@@ -5358,7 +5360,8 @@ def update_property():
                  house_fee = excluded.house_fee,
                  management_fee = excluded.management_fee,
                  updated_at = CURRENT_TIMESTAMP""",
-            (user_id, market_value, remaining_debt, monthly_rate, house_fee, management_fee),
+            (user_id, market_value, remaining_debt, monthly_rate, house_fee, management_fee,
+             round(market_value - remaining_debt, 2)),
         )
 
         user = conn.execute(

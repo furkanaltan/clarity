@@ -9,6 +9,13 @@ timestamp on schema preparation; no purchase date or historical value is
 inferred. The frontend reads this server value and may cache only a mirror;
 the field does not change net-worth calculations or financial history.
 
+`app_properties.coverage_equity_at_start` is an additive snapshot of the
+property equity known when coverage began. It is set only on first creation;
+updates leave it unchanged. Existing rows receive their current stored equity
+once during schema preparation as the rollout baseline, never as a backdated
+historical value. The V2 chart uses this snapshot for post-boundary comparison;
+current equity remains the source for current net worth.
+
 ## Cash request receipts (09.09.2026)
 
 `rove_app_api.cash_request_replay()` creates `app_cash_request_receipts`
