@@ -1,0 +1,17 @@
+[Unit]
+Description=Rov.E daily ETF and stock valuation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.rove-market-data.env
+EnvironmentFile=-/root/clarity/.rove-leeway.env
+ExecStart=/root/rove-app-api-venv/bin/python /root/clarity/refresh_market_positions.py --db /root/clarity/clarity.db
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=30min

@@ -1,0 +1,8 @@
+-r base.txt
+
+# Verified on production system Python 3.12.3 on 31.08.2026.
+Jinja2==3.1.2
+Pillow==12.2.0
+reportlab==4.1.0
+WeasyPrint==69.0
+openai==2.38.0

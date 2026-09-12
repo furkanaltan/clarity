@@ -1,0 +1,17 @@
+[Unit]
+Description=Send due Rov.E daily tracking reminders
+Wants=network-online.target
+After=network-online.target rove-app-api.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.env
+EnvironmentFile=-/root/clarity/.rove-app-api.env
+ExecStart=/root/rove-app-api-venv/bin/python /root/clarity/rove_tracking_reminders.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=10min

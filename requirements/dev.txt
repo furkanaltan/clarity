@@ -1,0 +1,6 @@
+# The current unittest suite imports API, bot and report dependencies.
+-r api.txt
+-r bot.txt
+-r reports.txt
+
+# Node.js is a separate system dependency used for frontend syntax tests.

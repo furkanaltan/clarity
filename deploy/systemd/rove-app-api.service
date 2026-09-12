@@ -1,0 +1,17 @@
+[Unit]
+Description=Rov.E App API
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=/root/clarity/.env
+EnvironmentFile=/root/clarity/.rove-app-api.env
+EnvironmentFile=-/root/clarity/.rove-leeway.env
+EnvironmentFile=-/root/clarity/.rove-market-data.env
+ExecStart=/root/rove-app-api-venv/bin/python /root/clarity/rove_app_api.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
