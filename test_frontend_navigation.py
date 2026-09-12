@@ -231,6 +231,13 @@ console.log(JSON.stringify(chartDataForRange("1T")));
         self.assertNotIn('DATA.histDates["1T"]=', self.frontend)
         self.assertNotIn('DATA.series[range]=win.map(s=>Math.round(s.v)/1000);', self.frontend)
 
+    def test_expense_delete_reconciles_full_state_for_single_cash(self):
+        start = self.frontend.index("async function syncExpenseDeleteToServer(sid){")
+        end = self.frontend.index("async function syncExpenseCategoryToServer", start)
+        delete_source = self.frontend[start:end]
+        self.assertIn("await refreshAppDataFromServer();", delete_source)
+        self.assertNotIn("applyServerCashAccounts(data.accounts)", delete_source)
+
     def test_home_empty_state_keeps_chart_for_canonical_financial_data(self):
         self.assertIn('function homeHasFinancialData()', self.frontend)
         self.assertIn('if(Array.isArray(DATA.financialAccounts) && DATA.financialAccounts.length) return true;', self.frontend)

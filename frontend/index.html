@@ -7670,8 +7670,9 @@ async function syncExpenseDeleteToServer(sid){
     if(res.status===404) return true;   // schon weg (Doppelklick/Bot /undo) — Ziel ist erreicht
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
-    if(multiCashEnabled()) await refreshAppDataFromServer();
-    else applyServerCashAccounts(data.accounts);
+    // Auch im Single-Cash-Pfad muss der vollstaendige State-Refresh laufen:
+    // nur Konten zu setzen laesst die lokale 1T-History hinter dem Serverstand zurueck.
+    await refreshAppDataFromServer();
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
