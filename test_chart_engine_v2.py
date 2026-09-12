@@ -142,6 +142,28 @@ console.log(JSON.stringify({low:y(Math.min(...data.pts)),high:y(Math.max(...data
         self.assertIn('cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}"', self.html)
         self.assertIn('const domain=chartValueDomain(range,rangeData);', self.html)
 
+    def test_bridge_start_never_falls_back_to_v1_before_hydration(self):
+        adapter = "function chartDataForRange" + self.html.split("function chartDataForRange", 1)[1].split("function normalizeChartSeriesV2", 1)[0]
+        result = node(adapter + """
+const APP_MODE='bridge';
+const DATA={chartV2:null,netWorth:42850,series:{'1W':[1,2]},histDates:{'1W':['Start','Heute']}};
+function buildRangeSeriesV2(input,range){return {v2:true,pts:input? [99]:[]};}
+const before=chartDataForRange('1W');
+DATA.chartV2={version:2,ranges:{'1W':[]}};
+const after=chartDataForRange('1W');
+console.log(JSON.stringify({before,after}));
+""")
+        self.assertEqual(result['before'], {'v2': True, 'pts': []})
+        self.assertEqual(result['after'], {'v2': True, 'pts': [99]})
+
+    def test_bridge_hydration_assigns_v2_before_the_single_normal_render(self):
+        start = self.html.index('async function loadBridgeState(){')
+        end = self.html.index('\n// Web-Login', start)
+        source = self.html[start:end]
+        self.assertLess(source.index('DATA.chartV2=b.chartV2||null;'), source.index('drawChart(CHART.range||"1W",null,false);'))
+        self.assertEqual(source.count('drawChart(CHART.range||"1W",null,false);'), 1)
+        self.assertIn('if(b.series) DATA.series = b.series;', source)
+
     def test_refresh_during_read_queues_and_awaits_fresh_read(self):
         queue='let appDataRefreshInFlight'+self.html.split('let appDataRefreshInFlight',1)[1].split('async function fetchCanonicalAppState',1)[0]
         result=node(queue+"""
