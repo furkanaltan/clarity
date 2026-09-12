@@ -117,12 +117,13 @@ console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),pure:befo
     def test_small_movement_domain_is_pure_and_not_a_crash(self):
         domain='function chartValueDomain'+self.html.split('function chartValueDomain',1)[1].split('function drawChart',1)[0]
         result=node(domain+"""
-const data={v2:true,pts:[40.138,40.078]};
+const data={v2:true,netWorth:40078,pts:[40.138,40.078]};
 const a=chartValueDomain('1T',data),b=chartValueDomain('1T',data);
-console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),fraction:.06/(a.max-a.min),a}));
+console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),span:a.max-a.min,pixels:.06/(a.max-a.min)*108,a}));
 """)
         self.assertTrue(result['same'])
-        self.assertLess(result['fraction'],.04)
+        self.assertAlmostEqual(result['span'],40.078*.015,places=6)
+        self.assertGreater(result['pixels'],10)
         self.assertLess(result['a']['min'],40.078)
         self.assertGreater(result['a']['max'],40.138)
 

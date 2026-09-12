@@ -4186,10 +4186,18 @@ function chartValueDomain(range, rangeData){
     const pts=rangeData.pts;
     if(!pts.length)return {min:0,max:1};
     const dataMin=Math.min(...pts),dataMax=Math.max(...pts),midpoint=(dataMin+dataMax)/2;
-    const dataRange=dataMax-dataMin;
-    const minimumSpan=Math.max(Math.abs(midpoint)*.05,1);
-    const span=Math.max(dataRange,minimumSpan),padding=Math.max(span*.25,.5);
-    return {min:midpoint-(span/2+padding),max:midpoint+(span/2+padding)};
+    const actualRange=dataMax-dataMin;
+    const currentNetWorth=Number(rangeData.netWorth ?? (typeof DATA!=="undefined"?DATA.netWorth:NaN))/1000;
+    const current=Math.abs(Number.isFinite(currentNetWorth)?currentNetWorth:midpoint);
+    const targetSpan=range==="1T"
+      ? Math.max(actualRange*2.5,current*.015)
+      : range==="1W"
+        ? Math.max(actualRange,current*.025)
+        : range==="1M"
+          ? Math.max(actualRange,current*.04)
+          : Math.max(actualRange*1.5,current*.04);
+    const span=Math.max(targetSpan,.001);
+    return {min:midpoint-span/2,max:midpoint+span/2};
   }
   const pts=rangeData.pts, dataMin=Math.min(...pts), dataMax=Math.max(...pts);
   const anchor=Number(pts[0]), rawSpan=dataMax-dataMin;
