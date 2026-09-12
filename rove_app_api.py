@@ -4401,8 +4401,9 @@ def complete_app_onboarding():
             ensure_app_properties_table(conn)
             if amounts["property_value"] > 0:
                 conn.execute(
-                    """INSERT INTO app_properties (user_id, market_value, remaining_debt, updated_at)
-                       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """INSERT INTO app_properties
+                       (user_id, market_value, remaining_debt, coverage_started_at, updated_at)
+                       VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                        ON CONFLICT(user_id) DO UPDATE SET
                          market_value = excluded.market_value,
                          remaining_debt = excluded.remaining_debt,
@@ -5348,8 +5349,8 @@ def update_property():
         conn.execute(
             """INSERT INTO app_properties
                (user_id, market_value, remaining_debt, monthly_rate, house_fee,
-                management_fee, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                management_fee, coverage_started_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                ON CONFLICT(user_id) DO UPDATE SET
                  market_value = excluded.market_value,
                  remaining_debt = excluded.remaining_debt,

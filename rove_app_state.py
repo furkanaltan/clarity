@@ -1598,20 +1598,38 @@ def ensure_app_properties_table(conn: sqlite3.Connection) -> None:
             monthly_rate   REAL NOT NULL DEFAULT 0.0,
             house_fee      REAL NOT NULL DEFAULT 0.0,
             management_fee REAL NOT NULL DEFAULT 0.0,
+            coverage_started_at DATETIME,
             updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(app_properties)").fetchall()}
+    if "coverage_started_at" not in columns:
+        conn.execute("ALTER TABLE app_properties ADD COLUMN coverage_started_at DATETIME")
+    # Existing rows use the rollout moment, never an invented purchase date.
+    conn.execute(
+        """UPDATE app_properties
+           SET coverage_started_at = COALESCE(coverage_started_at, CURRENT_TIMESTAMP)
+         WHERE coverage_started_at IS NULL"""
     )
 
 
 def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
     try:
-        row = conn.execute(
-            """SELECT market_value, remaining_debt, monthly_rate,
-                      house_fee, management_fee
-                 FROM app_properties WHERE user_id = ?""",
-            (user_id,),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                """SELECT market_value, remaining_debt, monthly_rate,
+                          house_fee, management_fee, coverage_started_at
+                     FROM app_properties WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = conn.execute(
+                """SELECT market_value, remaining_debt, monthly_rate,
+                          house_fee, management_fee
+                     FROM app_properties WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
     except sqlite3.OperationalError:
         return None
     if not row or float(row["market_value"] or 0) <= 0:
@@ -1625,6 +1643,9 @@ def get_app_property(conn: sqlite3.Connection, user_id: int) -> dict | None:
         "monthly_rate": round(max(0.0, float(row["monthly_rate"] or 0)), 2),
         "house_fee": round(max(0.0, float(row["house_fee"] or 0)), 2),
         "management_fee": round(max(0.0, float(row["management_fee"] or 0)), 2),
+        "coverage_started_at": row["coverage_started_at"]
+        if "coverage_started_at" in row.keys()
+        else None,
     }
 
 
@@ -1862,6 +1883,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     überschreiben. Der Bot ist derzeit nur Quelle für Cash, Investments, Fixkosten, Ziele und
     Monatsbuchungen.
     """
+    ensure_app_properties_table(conn)
     # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
     # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
     apply_due_scheduled_savings(conn, user_id)
@@ -2039,6 +2061,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
                  "rate": property_data["monthly_rate"],
                  "hausgeld": property_data["house_fee"],
                  "verwaltung": property_data["management_fee"],
+                 "coverageStartedAt": property_data.get("coverage_started_at"),
                  "wert": "—",
              }} if property_data else None,
         ) if a],

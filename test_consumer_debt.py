@@ -66,6 +66,37 @@ class ConsumerDebtTests(unittest.TestCase):
         self.assertEqual(series["1W"][:-1], [10.0] * 7)
         self.assertEqual(series["1W"][-1], 19.0)
 
+    def test_property_coverage_timestamp_is_additive_and_stable(self):
+        state.ensure_app_properties_table(self.conn)
+        self.conn.execute(
+            "INSERT INTO app_properties(user_id,market_value,remaining_debt) VALUES (1,180000,171000)"
+        )
+        state.ensure_app_properties_table(self.conn)
+        first = state.get_app_property(self.conn, 1)["coverage_started_at"]
+        self.assertTrue(first)
+        self.conn.execute("UPDATE app_properties SET market_value=181000 WHERE user_id=1")
+        second = state.get_app_property(self.conn, 1)["coverage_started_at"]
+        self.assertEqual(first, second)
+
+    def test_property_coverage_timestamp_is_exposed_in_live_state(self):
+        state.ensure_app_properties_table(self.conn)
+        self.conn.execute(
+            "INSERT INTO app_properties(user_id,market_value,remaining_debt,coverage_started_at) "
+            "VALUES (1,180000,171000,'2026-09-12 08:00:00')"
+        )
+        live = state.build_live_app_data(self.conn, 1)
+        property_asset = next(asset for asset in live["assets"] if asset["name"] == "Immobilie")
+        self.assertEqual(property_asset["real"]["coverageStartedAt"], "2026-09-12 08:00:00")
+
+    def test_property_coverage_timestamp_is_user_scoped(self):
+        state.ensure_app_properties_table(self.conn)
+        self.conn.execute(
+            "INSERT INTO app_properties(user_id,market_value,remaining_debt,coverage_started_at) "
+            "VALUES (1,180000,171000,'2026-09-12 08:00:00')"
+        )
+        self.assertIsNotNone(state.get_app_property(self.conn, 1))
+        self.assertIsNone(state.get_app_property(self.conn, 2))
+
     def test_monthly_snapshot_uses_calendar_month_end(self):
         self.assertEqual(state._report_month_end("2026-08"), date(2026, 8, 31))
         self.assertEqual(state._report_month_end("2026-02"), date(2026, 2, 28))

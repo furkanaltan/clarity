@@ -3248,6 +3248,7 @@ function saveBridgeLocal(){
       budgets:DATA.budgets||[],
       netHistory:Array.isArray(PROFILE_META.netHistory)?PROFILE_META.netHistory.slice(-760):[],
       netHistorySchemaVersion:PROFILE_META.netHistorySchemaVersion||2,
+      coverageBoundaries:PROFILE_META.coverageBoundaries||{},
       savedAt:Date.now()
     }));
   }catch(e){ console.warn("Lokale App-Ergaenzungen konnten nicht gesichert werden:",e); }
@@ -3374,7 +3375,7 @@ async function apiFetch(path,options={}){
 // Zugangssnapshot kann aelter sein und wuerde sonst beim Start kurz falsche Monatswerte melden.
 let BRIDGE_LIVE_STATE_READY = false;
 const PROFILE_META = Object.assign(
-  {name:"", payday:null, wantsApi:false, onboarded:false, source:"manual", lastIncomeMonth:null, bookedFixed:{}, mentorAlert:null},
+  {name:"", payday:null, wantsApi:false, onboarded:false, source:"manual", lastIncomeMonth:null, bookedFixed:{}, mentorAlert:null, coverageBoundaries:{}},
   (readProfile()||{}).meta || {}
 );
 let _saveT = null;
@@ -3981,6 +3982,28 @@ function chartTodayPointLabel(point,index,points){
   if(Number.isFinite(stamp)) return new Date(stamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"});
   return index===points.length-1 ? "Jetzt" : "Heute";
 }
+function syncPropertyCoverageBoundaryFromServer(){
+  if(APP_MODE!=="bridge") return false;
+  const property=(DATA.assets||[]).find(asset=>asset?.name==="Immobilie"&&Number(asset.value)>0);
+  const boundaries=PROFILE_META.coverageBoundaries&&typeof PROFILE_META.coverageBoundaries==="object"
+    ? PROFILE_META.coverageBoundaries : (PROFILE_META.coverageBoundaries={});
+  const raw=property?.real?.coverageStartedAt||property?.real?.coverage_started_at;
+  const d=String(raw||"").slice(0,10);
+  const value=Number(property?.value);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)||!Number.isFinite(value)||value<=0){
+    delete boundaries.property;
+    return false;
+  }
+  boundaries.property={d,value};
+  return true;
+}
+function coverageForRange(range,pts,dates){
+  if(APP_MODE!=="bridge"||range==="1T"||pts.length<2) return null;
+  const boundary=PROFILE_META.coverageBoundaries?.property;
+  if(!boundary||boundary.d!==dayKey(new Date())||!Number.isFinite(Number(boundary.value))) return null;
+  if(!dates?.length||dates[dates.length-1]!=="Heute") return null;
+  return {breakBefore:pts.length-1,adjustment:Number(boundary.value)/1000};
+}
 function chartDataForRange(range){
   const todayPoints=chartTodayPoints();
   if(range==="1T"){
@@ -4004,7 +4027,8 @@ function chartDataForRange(range){
         dates.push("Heute");
       }
     }
-    return {pts,dates:dates.length?dates:null,intraday:false};
+    const coverage=coverageForRange(range,pts,dates);
+    return {pts,dates:dates.length?dates:null,intraday:false,...(coverage||{})};
   }
 }
 function tagLatestNetHistoryPoint(source,eventId){
@@ -4026,6 +4050,11 @@ function reconcileDeletedExpenseHistory(eventId){
   if(!Array.isArray(h)||eventId==null) return;
   PROFILE_META.netHistory=h.filter(point=>!(point.source==="expense"&&String(point.event_id)===String(eventId)));
   if(APP_MODE==="bridge") saveBridgeLocal();
+}
+function redrawAfterHistoryReconciliation(){
+  if(document.querySelector(".chart-wrap.scrubbing")) return;
+  drawChart(CHART.range||"1W",null,false);
+  updateChangeBadge(CHART.range||"1W");
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
@@ -4137,7 +4166,10 @@ function drawChart(range, scrubIdx, animate=true){
     n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
   ]);
-  const fullLine = n>1 ? chartPath(xy) : "", last = xy[n-1];
+  const linePoints=rangeData.breakBefore!=null
+    ? [xy.slice(0,rangeData.breakBefore),xy.slice(rangeData.breakBefore)].filter(segment=>segment.length>1)
+    : [xy];
+  const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];
   // Nur drei hauchzarte Horizontal-Linien als Halt — das volle Raster machte die Kurve
   // zum Dashboard; die Referenz (Vermoegen Redesign 23.07.) lässt die Kurve frei stehen.
   let grid="";
@@ -4175,7 +4207,7 @@ function drawChart(range, scrubIdx, animate=true){
     CHART.dates=rangeData.dates||seriesDates(range);
     const dEl=document.getElementById("chartDelta"), context=document.getElementById("chartContext");
     if(dEl){
-      const dv=(pts[pts.length-1]-pts[0])*1000;
+      const dv=(pts[pts.length-1]-pts[0]-Number(rangeData.adjustment||0))*1000;
       const dates=CHART.dates, first=dates[0]||"Heute", end=dates[dates.length-1]||"Heute";
       dEl.textContent = neutralDay || pts.length===1 ? "—" : `${dv>=0?"+":"−"}${eur(Math.abs(dv))}`;
       if(context){ context.hidden=range==="1T"; context.innerHTML=`<span>${first}</span><span>${end}</span>`; }
@@ -7709,6 +7741,7 @@ async function syncExpenseDeleteToServer(sid){
     if(res.status===404){
       await refreshAppDataFromServer();
       reconcileDeletedExpenseHistory(sid);
+      redrawAfterHistoryReconciliation();
       return true;   // schon weg (Doppelklick/Bot /undo) — Ziel ist erreicht
     }
     const data=await res.json().catch(()=>({}));
@@ -7717,6 +7750,7 @@ async function syncExpenseDeleteToServer(sid){
     // nur Konten zu setzen laesst die lokale 1T-History hinter dem Serverstand zurueck.
     await refreshAppDataFromServer();
     reconcileDeletedExpenseHistory(sid);
+    redrawAfterHistoryReconciliation();
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
@@ -7870,6 +7904,7 @@ async function refreshAppDataFromServer(){
     seedNetHistoryIfEmpty();
     syncNetHistory();
     rebuildSeriesFromHistory();
+    syncPropertyCoverageBoundaryFromServer();
     saveBridgeLocal();
     // Nicht neu zeichnen, während der Finger auf der Kurve liegt — sonst springt der Wert unter
     // dem Finger weg (gleicher Schutz wie im Autosave).
@@ -12544,6 +12579,7 @@ function loadProfileState(){
   // Onboarding-Linie. netWorth zuerst live berechnen (recalcNetWorth kommt erst am Ende).
   DATA.netWorth = DATA.assets.reduce((s,a)=>s+(a.value||0),0);
   seedNetHistoryIfEmpty(); syncNetHistory(); rebuildSeriesFromHistory();
+  syncPropertyCoverageBoundaryFromServer();
   renderGoals(); renderAssets(); renderTx(); renderBudgets(); renderVertraege(); renderActivity();
   drawChart(CHART.range||"1W",null,false); mentorLine(); applyHomeEmpty(); applyProfileIdentity();
   updateChangeBadge(CHART.range||"1W");

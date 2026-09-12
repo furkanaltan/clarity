@@ -1,5 +1,14 @@
 # Rov.E Migrations
 
+## Property coverage boundary (12.09.2026)
+
+`app_properties.coverage_started_at` is an additive, user-scoped asset
+metadata field. New properties receive `CURRENT_TIMESTAMP` when first
+created. Existing properties without a value receive the one-time rollout
+timestamp on schema preparation; no purchase date or historical value is
+inferred. The frontend reads this server value and may cache only a mirror;
+the field does not change net-worth calculations or financial history.
+
 ## Cash request receipts (09.09.2026)
 
 `rove_app_api.cash_request_replay()` creates `app_cash_request_receipts`

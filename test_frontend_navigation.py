@@ -37,7 +37,7 @@ const APP_MODE = "bridge";
 function saveBridgeLocal() {{}}
 const today = new Date();
 const todayKey = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
-const PROFILE_META = {{netHistorySchemaVersion:2,netHistory:[
+const PROFILE_META = {{netHistorySchemaVersion:2,coverageBoundaries:{{}},netHistory:[
   {{d:todayKey,v:32000,t:today.getTime()+3600000,source:"system",event_id:null,version:2}},
   {{d:todayKey,v:31000,t:today.getTime()+7200000,source:"expense",event_id:"seed",version:2}}
 ]}};
@@ -141,6 +141,57 @@ console.log(JSON.stringify(chartDataForRange("1T")));
         self.assertEqual(result["dates"], [])
         self.assertFalse(result["intraday"])
         self.assertFalse(result["dayDeltaAvailable"])
+
+    def test_property_coverage_break_neutralizes_long_range_delta(self):
+        result = self.run_chart_adapter("""
+DATA.netWorth = 40138.41;
+DATA.assets = [{name:"Immobilie",value:9000,source:"app"}];
+PROFILE_META.coverageBoundaries = {property:{d:todayKey,value:9000}};
+const ranges = ["1W","1M","6M","1J"].map(range => chartDataForRange(range));
+console.log(JSON.stringify(ranges));
+""")
+        for data in result:
+            self.assertEqual(data["breakBefore"], len(data["pts"]) - 1)
+            self.assertEqual(data["adjustment"], 9)
+
+    def test_property_coverage_does_not_mutate_raw_server_points(self):
+        result = self.run_chart_adapter("""
+DATA.netWorth = 40138.41;
+DATA.assets = [{name:"Immobilie",value:9000,source:"app"}];
+PROFILE_META.coverageBoundaries = {property:{d:todayKey,value:9000}};
+const beforeSeries = JSON.stringify(DATA.series);
+const beforeDates = JSON.stringify(DATA.histDates);
+const data = chartDataForRange("1W");
+console.log(JSON.stringify({beforeSeries,beforeDates,afterSeries:JSON.stringify(DATA.series),afterDates:JSON.stringify(DATA.histDates),data}));
+""")
+        self.assertEqual(result["beforeSeries"], result["afterSeries"])
+        self.assertEqual(result["beforeDates"], result["afterDates"])
+        self.assertEqual(result["data"]["pts"][-1], 40.13841)
+
+    def test_property_coverage_boundary_comes_from_server_metadata(self):
+        result = self.run_chart_adapter("""
+DATA.assets = [{name:"Immobilie",value:9000,source:"app",real:{coverageStartedAt:todayKey+" 08:00:00"}}];
+PROFILE_META.coverageBoundaries = {property:{d:"2000-01-01",value:1}};
+syncPropertyCoverageBoundaryFromServer();
+console.log(JSON.stringify({boundary:PROFILE_META.coverageBoundaries.property,todayKey}));
+""")
+        self.assertEqual(result["boundary"], {"d": result["todayKey"], "value": 9000})
+
+    def test_local_coverage_boundary_is_not_a_source_without_server_metadata(self):
+        result = self.run_chart_adapter("""
+DATA.assets = [{name:"Immobilie",value:9000,source:"app",real:{}}];
+PROFILE_META.coverageBoundaries = {property:{d:todayKey,value:9000}};
+syncPropertyCoverageBoundaryFromServer();
+console.log(JSON.stringify(PROFILE_META.coverageBoundaries));
+""")
+        self.assertEqual(result, {})
+
+    def test_delete_reconciliation_requests_immediate_chart_redraw(self):
+        self.assertIn("function redrawAfterHistoryReconciliation()", self.frontend)
+        self.assertIn(
+            "reconcileDeletedExpenseHistory(sid);\n    redrawAfterHistoryReconciliation();",
+            self.frontend,
+        )
 
     def test_uses_one_marked_history_bridge(self):
         self.assertIn('const ROVE_NAV_STATE="roveNav"', self.frontend)
