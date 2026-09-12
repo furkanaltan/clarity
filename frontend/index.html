@@ -4184,10 +4184,11 @@ function chartValueDomain(range, rangeData){
   if(rangeData.v2){
     const pts=rangeData.pts;
     if(!pts.length)return {min:0,max:1};
-    const low=Math.min(...pts),high=Math.max(...pts);
-    const floor=Math.max(Math.abs(pts.at(-1))*.05,1);
-    const span=Math.max(high-low,floor),padding=span*.15;
-    return {min:(low+high-span)/2-padding,max:(low+high+span)/2+padding};
+    const dataMin=Math.min(...pts),dataMax=Math.max(...pts),midpoint=(dataMin+dataMax)/2;
+    const dataRange=dataMax-dataMin;
+    const minimumSpan=Math.max(Math.abs(midpoint)*.05,1);
+    const span=Math.max(dataRange,minimumSpan),padding=Math.max(span*.25,.5);
+    return {min:midpoint-(span/2+padding),max:midpoint+(span/2+padding)};
   }
   const pts=rangeData.pts, dataMin=Math.min(...pts), dataMax=Math.max(...pts);
   const anchor=Number(pts[0]), rawSpan=dataMax-dataMin;

@@ -126,6 +126,22 @@ console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),fraction:
         self.assertLess(result['a']['min'],40.078)
         self.assertGreater(result['a']['max'],40.138)
 
+    def test_range_domain_keeps_real_points_away_from_plot_edges(self):
+        domain='function chartValueDomain'+self.html.split('function chartValueDomain',1)[1].split('function drawChart',1)[0]
+        result=node(domain+"""
+const data={v2:true,pts:[31,31.1,31.05,31,35.138]};
+const d=chartValueDomain('1W',data);
+const y=value=>126-(value-d.min)/(d.max-d.min)*108;
+console.log(JSON.stringify({low:y(Math.min(...data.pts)),high:y(Math.max(...data.pts)),d}));
+""")
+        self.assertGreater(result['low'], 15)
+        self.assertLess(result['high'], 111)
+
+    def test_end_marker_uses_the_rendered_last_point(self):
+        self.assertIn('const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];', self.html)
+        self.assertIn('cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}"', self.html)
+        self.assertIn('const domain=chartValueDomain(range,rangeData);', self.html)
+
     def test_refresh_during_read_queues_and_awaits_fresh_read(self):
         queue='let appDataRefreshInFlight'+self.html.split('let appDataRefreshInFlight',1)[1].split('async function fetchCanonicalAppState',1)[0]
         result=node(queue+"""
