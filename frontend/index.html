@@ -3978,17 +3978,17 @@ function chartDataForRange(range){
   if(range!=="1T"){
     const pts=Array.isArray(DATA.series[range]) ? DATA.series[range].slice() : (DATA.series["1J"]||[]).slice();
     const dates=(DATA.histDates?.[range]||[]).slice();
-    // Server-Historie beibehalten; nur den heutigen Endpunkt aktualisieren.
+    // Lange Ranges bleiben serverbasiert; lokale Intraday-Punkte gehoeren ausschliesslich in 1T.
     const current=Number(DATA.netWorth);
     if(Number.isFinite(current)){
-      if(dates[dates.length-1]==="Heute"){
+      if(dates.length && pts.length && dates[dates.length-1]==="Heute"){
         pts[pts.length-1]=current/1000;
       } else {
         pts.push(current/1000);
         dates.push("Heute");
       }
     }
-    return {pts,dates:dates.length?dates:null,intraday:true};
+    return {pts,dates:dates.length?dates:null,intraday:false};
   }
 }
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
@@ -4070,7 +4070,7 @@ function chartValueDomain(range, rangeData){
   const pts=rangeData.pts, dataMin=Math.min(...pts), dataMax=Math.max(...pts);
   const anchor=Number(pts[0]), rawSpan=dataMax-dataMin;
   const padding=range==="1T"
-    ? Math.max(rawSpan*.2,Math.abs(anchor)*.05,.5)
+    ? Math.max(rawSpan*.2,Math.abs(anchor)*.001,.05)
     : Math.max(rawSpan*.08,Math.abs(anchor)*.005,.25);
   const dates=rangeData.dates||[];
   const key=`${pts.length}:${anchor}:${dates[0]||""}`;

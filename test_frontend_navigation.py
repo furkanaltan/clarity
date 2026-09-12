@@ -52,7 +52,7 @@ const PROFILE_META = {{netHistory:[
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
-    def test_chart_adapter_overlays_local_today_without_mutating_server_state(self):
+    def test_chart_adapter_keeps_long_ranges_server_based_without_mutating_state(self):
         result = self.run_chart_adapter("""
 const before = JSON.stringify(DATA);
 const oneDay = chartDataForRange("1T");
@@ -77,6 +77,18 @@ console.log(JSON.stringify(chartDataForRange("1T")));
 """)
         self.assertEqual(result["pts"], [32.00049, 32.00051])
         self.assertAlmostEqual((result["pts"][1]-result["pts"][0])*1000, 0.02)
+
+    def test_chart_adapter_keeps_seventeen_euro_day_delta_exact(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory = [
+  {d:todayKey,v:35000,t:today.getTime()+3600000},
+  {d:todayKey,v:34983,t:today.getTime()+7200000}
+];
+const data = chartDataForRange("1T");
+console.log(JSON.stringify({data,delta:(data.pts.at(-1)-data.pts[0])*1000}));
+        """)
+        self.assertEqual(result["data"]["pts"], [35, 34.983])
+        self.assertAlmostEqual(result["delta"], -17, places=9)
 
     def test_chart_adapter_appends_only_one_today_without_local_history(self):
         result = self.run_chart_adapter("""
