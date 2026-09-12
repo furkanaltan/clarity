@@ -33,11 +33,13 @@ const DATA = {{
   series: {{"1W":[30,31,32],"1M":[10,11],"6M":[1,2],"1J":[3,4]}},
   histDates: {{"1W":["8. Sep","9. Sep","Heute"],"1M":["8. Aug","Heute"],"6M":["Apr. 2026","Heute"],"1J":["Sept. 2025","Heute"]}}
 }};
+const APP_MODE = "bridge";
+function saveBridgeLocal() {{}}
 const today = new Date();
 const todayKey = today.getFullYear()+"-"+String(today.getMonth()+1).padStart(2,"0")+"-"+String(today.getDate()).padStart(2,"0");
-const PROFILE_META = {{netHistory:[
-  {{d:todayKey,v:32000,t:today.getTime()+3600000}},
-  {{d:todayKey,v:31000,t:today.getTime()+7200000}}
+const PROFILE_META = {{netHistorySchemaVersion:2,netHistory:[
+  {{d:todayKey,v:32000,t:today.getTime()+3600000,source:"system",event_id:null,version:2}},
+  {{d:todayKey,v:31000,t:today.getTime()+7200000,source:"expense",event_id:"seed",version:2}}
 ]}};
 {self.chart_adapter}
 {script}
@@ -89,6 +91,31 @@ console.log(JSON.stringify({data,delta:(data.pts.at(-1)-data.pts[0])*1000}));
         """)
         self.assertEqual(result["data"]["pts"], [35, 34.983])
         self.assertAlmostEqual(result["delta"], -17, places=9)
+
+    def test_legacy_net_history_migrates_to_current_v2_baseline(self):
+        result = self.run_chart_adapter("""
+DATA.netWorth = 34000;
+PROFILE_META.netHistorySchemaVersion = 1;
+PROFILE_META.netHistory = [{d:todayKey,v:35000,t:1000}];
+const data = chartDataForRange("1T");
+console.log(JSON.stringify({data,history:PROFILE_META.netHistory}));
+""")
+        self.assertEqual(result["data"]["pts"], [34])
+        self.assertEqual(len(result["history"]), 1)
+        self.assertEqual(result["history"][0]["version"], 2)
+        self.assertEqual(result["history"][0]["source"], "system")
+
+    def test_deleted_expense_provenance_is_reconciled_without_removing_other_events(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory = [
+  {d:todayKey,v:35000,t:1000,source:"system",event_id:null,version:2},
+  {d:todayKey,v:34983,t:2000,source:"expense",event_id:"a",version:2},
+  {d:todayKey,v:34800,t:3000,source:"expense",event_id:"b",version:2}
+];
+reconcileDeletedExpenseHistory("a");
+console.log(JSON.stringify(PROFILE_META.netHistory));
+""")
+        self.assertEqual([point["event_id"] for point in result], [None, "b"])
 
     def test_chart_adapter_appends_only_one_today_without_local_history(self):
         result = self.run_chart_adapter("""
@@ -196,6 +223,7 @@ console.log(JSON.stringify(chartDataForRange("1T")));
         self.assertIn('const stamp=Number(point.t);', self.frontend)
         self.assertIn('if(last && last.d===dk){', self.frontend)
         self.assertIn('if(Math.abs(Number(last.v)-value)>0.005) h.push({d:dk,v:value,t:now});', self.frontend)
+        self.assertIn('source:"system",event_id:null,version:2', self.frontend)
         self.assertNotIn('const dayStart=source.length>1 ? Number(source[source.length-2]) : null;', self.frontend)
         self.assertIn('const neutralDay=range==="1T"&&!rangeData.intraday&&!rangeData.dayDeltaAvailable;', self.frontend)
         self.assertIn('const neutralLine=`M ${padX} ${last[1].toFixed(1)} L ${W-padX} ${last[1].toFixed(1)}`;', self.frontend)
@@ -222,6 +250,7 @@ console.log(JSON.stringify(chartDataForRange("1T")));
 
     def test_one_day_chart_reuses_user_scoped_local_history(self):
         self.assertIn('netHistory:Array.isArray(PROFILE_META.netHistory)?PROFILE_META.netHistory.slice(-760):[]', self.frontend)
+        self.assertIn('netHistorySchemaVersion:PROFILE_META.netHistorySchemaVersion||2', self.frontend)
         self.assertIn('PROFILE_META.netHistory=snapshot.netHistory.filter', self.frontend)
         self.assertIn('if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;', self.frontend)
         self.assertIn('syncNetHistory();\n    rebuildSeriesFromHistory();\n    saveBridgeLocal();', self.frontend)
@@ -230,6 +259,17 @@ console.log(JSON.stringify(chartDataForRange("1T")));
         self.assertIn('Die lokale History wird ausschliesslich vom Chart-Adapter gelesen.', self.frontend)
         self.assertNotIn('DATA.histDates["1T"]=', self.frontend)
         self.assertNotIn('DATA.series[range]=win.map(s=>Math.round(s.v)/1000);', self.frontend)
+
+    def test_expenses_use_existing_server_id_for_history_provenance(self):
+        create_start = self.frontend.index("async function syncExpenseToServer(e, raw){")
+        create_end = self.frontend.index("// Gegenstück zu syncExpenseToServer", create_start)
+        create_source = self.frontend[create_start:create_end]
+        delete_start = self.frontend.index("async function syncExpenseDeleteToServer(sid){")
+        delete_end = self.frontend.index("async function syncExpenseCategoryToServer", delete_start)
+        delete_source = self.frontend[delete_start:delete_end]
+        self.assertIn("e.sid=data.id;", create_source)
+        self.assertIn('tagLatestNetHistoryPoint("expense",e.sid);', create_source)
+        self.assertIn("reconcileDeletedExpenseHistory(sid);", delete_source)
 
     def test_expense_delete_reconciles_full_state_for_single_cash(self):
         start = self.frontend.index("async function syncExpenseDeleteToServer(sid){")

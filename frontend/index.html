@@ -3247,6 +3247,7 @@ function saveBridgeLocal(){
       goals:localGoals,
       budgets:DATA.budgets||[],
       netHistory:Array.isArray(PROFILE_META.netHistory)?PROFILE_META.netHistory.slice(-760):[],
+      netHistorySchemaVersion:PROFILE_META.netHistorySchemaVersion||2,
       savedAt:Date.now()
     }));
   }catch(e){ console.warn("Lokale App-Ergaenzungen konnten nicht gesichert werden:",e); }
@@ -3278,6 +3279,7 @@ function restoreBridgeLocal(snapshot,userId){
   if(Array.isArray(snapshot.netHistory) && snapshot.netHistory.length){
     PROFILE_META.netHistory=snapshot.netHistory.filter(point=>point&&typeof point.d==="string"&&Number.isFinite(Number(point.v)));
   }
+  if(snapshot.netHistorySchemaVersion===2) PROFILE_META.netHistorySchemaVersion=2;
 }
 const PAIR_API_BASE_URL = "https://getrove.de/app-api";
 let EMAIL_AUTH_PENDING = {email:"",mode:"login"};
@@ -3955,10 +3957,24 @@ function seriesDates(range){
   return out;
 }
 function chartTodayPoints(){
+  migrateNetHistoryV2();
   const today=dayKey(new Date());
   const h=Array.isArray(PROFILE_META.netHistory) ? PROFILE_META.netHistory : [];
   return h.filter(point=>point&&point.d===today&&Number.isFinite(Number(point.v)))
     .slice().sort((a,b)=>Number(a.t||0)-Number(b.t||0));
+}
+function migrateNetHistoryV2(){
+  if(PROFILE_META.netHistorySchemaVersion===2) return;
+  const existing=Array.isArray(PROFILE_META.netHistory) ? PROFILE_META.netHistory : [];
+  if(existing.length && existing.every(point=>point&&Number(point.version)===2)){
+    PROFILE_META.netHistorySchemaVersion=2;
+    return;
+  }
+  const current=Number(DATA.netWorth);
+  PROFILE_META.netHistory=Number.isFinite(current)
+    ? [{d:dayKey(new Date()),v:current,t:Date.now(),source:"system",event_id:null,version:2}]
+    : [];
+  PROFILE_META.netHistorySchemaVersion=2;
 }
 function chartTodayPointLabel(point,index,points){
   const stamp=Number(point.t);
@@ -3991,6 +4007,26 @@ function chartDataForRange(range){
     return {pts,dates:dates.length?dates:null,intraday:false};
   }
 }
+function tagLatestNetHistoryPoint(source,eventId){
+  migrateNetHistoryV2();
+  const h=PROFILE_META.netHistory;
+  const current=Number(DATA.netWorth), last=h?.[h.length-1];
+  if(!Array.isArray(h)||!Number.isFinite(current)||eventId==null) return;
+  if(last&&last.d===dayKey(new Date())&&Math.abs(Number(last.v)-current)<=0.005
+     && !last.source&&!last.event_id){
+    last.source=source; last.event_id=String(eventId); last.version=2;
+  }else if(!last||Math.abs(Number(last.v)-current)>0.005){
+    h.push({d:dayKey(new Date()),v:current,t:Date.now(),source,event_id:String(eventId),version:2});
+  }
+  if(APP_MODE==="bridge") saveBridgeLocal();
+}
+function reconcileDeletedExpenseHistory(eventId){
+  migrateNetHistoryV2();
+  const h=PROFILE_META.netHistory;
+  if(!Array.isArray(h)||eventId==null) return;
+  PROFILE_META.netHistory=h.filter(point=>!(point.source==="expense"&&String(point.event_id)===String(eventId)));
+  if(APP_MODE==="bridge") saveBridgeLocal();
+}
 // ===================== ECHTE VERMÖGENS-HISTORIE (Tages-Snapshots) =====================
 // Der Chart soll die ECHTE Bewegung des Vermögens zeigen: Gehalt kommt → hoch, Ausgabe → Tick
 // runter. Jede Buchung ändert über applyKontoDelta() das Girokonto und damit DATA.netWorth —
@@ -4008,11 +4044,13 @@ function seedNetHistoryIfEmpty(){
   let h=PROFILE_META.netHistory;
   if(Array.isArray(h)) h=PROFILE_META.netHistory=h.filter(s=>s&&typeof s.d==="string"&&typeof s.v==="number");
   if(!Array.isArray(h) || !h.length){
-    PROFILE_META.netHistory=[{ d:dayKey(new Date()), v:DATA.netWorth||0, t:Date.now() }];   // keine Rück-Erfindung
+    PROFILE_META.netHistory=[{d:dayKey(new Date()),v:DATA.netWorth||0,t:Date.now(),source:"system",event_id:null,version:2}];
   }
+  PROFILE_META.netHistorySchemaVersion=2;
 }
 function syncNetHistory(){
   if(APP_MODE!=="profile" && APP_MODE!=="bridge") return;
+  migrateNetHistoryV2();
   const h=PROFILE_META.netHistory; if(!Array.isArray(h)) return;
   const now=Date.now(), dk=dayKey(new Date(now)), value=Number(DATA.netWorth);
   if(!Number.isFinite(value)) return;
@@ -7628,6 +7666,7 @@ async function syncExpenseToServer(e, raw){
     if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
     e.sid=data.id;   // Server-ID merken, damit dieselbe Buchung ohne Reload löschbar ist
     await refreshAppDataFromServer();
+    tagLatestNetHistoryPoint("expense",e.sid);
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
@@ -7667,12 +7706,17 @@ async function syncExpenseDeleteToServer(sid){
       method:"DELETE",
       headers:{}
     });
-    if(res.status===404) return true;   // schon weg (Doppelklick/Bot /undo) — Ziel ist erreicht
+    if(res.status===404){
+      await refreshAppDataFromServer();
+      reconcileDeletedExpenseHistory(sid);
+      return true;   // schon weg (Doppelklick/Bot /undo) — Ziel ist erreicht
+    }
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
     // Auch im Single-Cash-Pfad muss der vollstaendige State-Refresh laufen:
     // nur Konten zu setzen laesst die lokale 1T-History hinter dem Serverstand zurueck.
     await refreshAppDataFromServer();
+    reconcileDeletedExpenseHistory(sid);
     if(data.available!=null){
       DATA.sts.available=data.available;
       DATA.sts.free_month_remaining=data.available;
