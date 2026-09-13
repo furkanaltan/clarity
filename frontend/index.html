@@ -4049,25 +4049,28 @@ function normalizeChartSeriesV2(input){
 function buildRangeSeriesV2(input,range,coverageEquityAtStart=0){
   const data=normalizeChartSeriesV2(input), rawRows=data.ranges[range]||[];
   const coverage=String(input?.coverageStartedAt||"").slice(0,10);
-  const canNormalize=range!=="1T"&&/^\d{4}-\d{2}-\d{2}$/.test(coverage)&&Number.isFinite(coverageEquityAtStart)&&coverageEquityAtStart>0;
+  const canNormalize=/^\d{4}-\d{2}-\d{2}$/.test(coverage)&&Number.isFinite(coverageEquityAtStart)&&coverageEquityAtStart>0;
   const rows=rawRows.map(point=>{
+    const sourceValue=Number(point.value);
     const afterCoverage=canNormalize&&String(point.at).slice(0,10)>=coverage;
-    if(!afterCoverage||point.scope==="full") return point;
-    if(point.scope!=="base") return point;
-    return {...point,value:point.value+coverageEquityAtStart,scope:"full"};
+    const fullCoverage=point.scope!=="base";
+    const coverageOffset=afterCoverage&&fullCoverage?coverageEquityAtStart:0;
+    // Keep every server value as raw financial truth. Only full-coverage points
+    // receive the immutable offset in the comparison series; base points are
+    // already on the pre-coverage basis and must not be rewritten.
+    const rawNetWorth=sourceValue;
+    return {...point,rawNetWorth,coverageOffset,displayValue:rawNetWorth-coverageOffset};
   });
-  const breaks=[], segments=[];
-  let segment=[], deltaCents=0;
-  rows.forEach((point,index)=>{
-    if(index){
-      if(point.scope!==rows[index-1].scope){breaks.push(index);segments.push(segment);segment=[];}
-      else deltaCents+=Math.round(point.value*100)-Math.round(rows[index-1].value*100);
-    }
-    segment.push(index);
-  });
-  if(segment.length)segments.push(segment);
-  return {pts:rows.map(point=>point.value/1000),dates:rows.map(point=>point.label),
-    rawPoints:rows,segments,breaks,deltaEuro:rows.length>1?deltaCents/100:null,
+  const displayPoints=rows.map(point=>point.displayValue);
+  const segments=rows.length?[rows.map((_,index)=>index)]:[], breaks=[];
+  const deltaEuro=rows.length>1
+    ? rows[rows.length-1].displayValue-rows[0].displayValue : null;
+  const rawNetWorth=Number(input?.netWorth);
+  const displayNetWorth=Number.isFinite(rawNetWorth)
+    ? rawNetWorth-(canNormalize?coverageEquityAtStart:0) : null;
+  return {pts:displayPoints.map(value=>value/1000),rawPts:rows.map(point=>point.rawNetWorth/1000),
+    dates:rows.map(point=>point.label),rawPoints:rows,segments,breaks,deltaEuro,
+    netWorth:displayNetWorth,rawNetWorth,
     intraday:range==="1T"&&rows.length>1,dayDeltaAvailable:range==="1T"&&rows.length>1,v2:true};
 }
 function validatedNetHistory(history){
@@ -4289,7 +4292,7 @@ function drawChart(range, scrubIdx, animate=true){
       + endMarker;
   }
   document.getElementById("chart").innerHTML = body;
-  CHART.xy=xy; CHART.pts=pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
+  CHART.xy=xy; CHART.pts=pts; CHART.rawPts=rangeData.rawPts||pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
   CHART.v2=rangeData.v2===true;
   CHART.dayDeltaAvailable=rangeData.dayDeltaAvailable===true;
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
@@ -4339,9 +4342,10 @@ drawChart("1T");
     const px=(rect.left-wrapRect.left)+(point.x/W)*rect.width, py=(rect.top-wrapRect.top)+(point.y/150)*rect.height;
     dot.style.left=px+"px"; dot.style.top=py+"px";   // runder Knopf sitzt am Übergang
     nwEl.dataset.lock="1";                       // Zahlen-Ticker nicht dazwischenfunken
-    nwEl.textContent=eur2(CHART.pts[idx]*1000);
+    const rawValue=(CHART.rawPts||CHART.pts)[idx];
+    nwEl.textContent=eur2(rawValue*1000);
     nwEl.classList.add("scrubbing");
-    deltaEl.textContent=`${CHART.dates[idx]} · ${eur2(CHART.pts[idx]*1000)}`; deltaEl.classList.add("scrub-date");
+    deltaEl.textContent=`${CHART.dates[idx]} · ${eur2(rawValue*1000)}`; deltaEl.classList.add("scrub-date");
     if(chip) chip.style.opacity="0";             // Monats-Delta passt nicht zum historischen Wert
   }
   // Finger-Events koennen schneller eintreffen als der SVG-Neuaufbau. Ein Frame-Puffer verhindert,

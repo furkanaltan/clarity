@@ -102,12 +102,13 @@ console.log(JSON.stringify({same:JSON.stringify(a)===JSON.stringify(b),pure:befo
             if name=='1T': continue
             self.assertEqual(data['deltaEuro'],0)
             if name=='1J':
-                self.assertEqual(data['breaks'],[4])
+                self.assertEqual(data['breaks'],[])
                 self.assertEqual(data['rawPoints'][0]['value'],before['netWorth'])
-                self.assertEqual(data['rawPoints'][4]['value'],before['netWorth']+11000)
+                self.assertEqual(data['rawPoints'][4]['rawNetWorth'],before['netWorth'])
             else:
                 self.assertEqual(data['breaks'],[])
-                self.assertEqual(data['rawPoints'][0]['value'],before['netWorth']+11000)
+                self.assertEqual(data['rawPoints'][0]['rawNetWorth'],before['netWorth'])
+            self.assertAlmostEqual(data['rawPoints'][-1]['displayValue'],before['netWorth'],places=6)
         with sqlite3.connect(self.path) as conn:
             conn.execute('DELETE FROM app_properties WHERE user_id=1')
         self.assertEqual(self.ranges(self.live()),self.ranges(before))
@@ -221,7 +222,7 @@ console.log(JSON.stringify({
   unchanged:JSON.stringify(first)===JSON.stringify(second)
 }));
 """)
-        self.assertEqual(result["first"], [31000, 40000, 41000])
+        self.assertEqual(result["first"], [31000, 31000, 41000])
         self.assertEqual(result["second"], result["first"])
         self.assertTrue(result["unchanged"])
 
@@ -242,10 +243,46 @@ console.log(JSON.stringify({
 const output=buildRangeSeriesV2(input,'1W',9000);
 console.log(JSON.stringify(output));
 """)
-        self.assertEqual(result['breaks'], [2])
-        self.assertEqual(result['segments'], [[0, 1], [2, 3, 4, 5]])
-        self.assertEqual([p['value'] for p in result['rawPoints']], [29000, 29100, 40100, 40100, 40100, 40127])
-        self.assertEqual(result['deltaEuro'], 127)
+        self.assertEqual(result['breaks'], [])
+        self.assertEqual(result['segments'], [[0, 1, 2, 3, 4, 5]])
+        self.assertEqual([p['rawNetWorth'] for p in result['rawPoints']], [29000, 29100, 31100, 31100, 31100, 40127])
+        self.assertEqual([p['coverageOffset'] for p in result['rawPoints']], [0, 0, 0, 0, 0, 9000])
+        self.assertEqual([p['displayValue'] for p in result['rawPoints']], [29000, 29100, 31100, 31100, 31100, 31127])
+        self.assertEqual(result['deltaEuro'], 2127)
+
+    def test_coverage_display_series_neutralizes_property_without_losing_expense(self):
+        input_data = {
+            "version": 2,
+            "coverageStartedAt": "2026-09-12 09:47:13",
+            "netWorth": 40067,
+            "ranges": {"1W": [
+                {"id": "before", "at": "2026-09-11", "value": 31127, "label": "Fr", "scope": "base"},
+                {"id": "covered", "at": "2026-09-12", "value": 31127, "label": "Sa", "scope": "base"},
+                {"id": "start", "at": "2026-09-13", "value": 40127, "label": "So", "scope": "full"},
+                {"id": "expense", "at": "2026-09-13 14:00:00", "value": 40067, "label": "Heute", "scope": "full"},
+            ]},
+        }
+        result = node(self.engine + "\nconst input=" + json.dumps(input_data) + """;
+const output=buildRangeSeriesV2(input,'1W',9000);
+console.log(JSON.stringify({
+  raw:output.rawPoints.map(point=>point.rawNetWorth),
+  display:output.rawPoints.map(point=>point.displayValue),
+  pts:output.pts,
+  delta:output.deltaEuro,
+  segments:output.segments,
+  canonical:input.ranges['1W'].map(point=>point.value)
+}));
+""")
+        self.assertEqual(result["raw"], [31127, 31127, 40127, 40067])
+        self.assertEqual(result["display"], [31127, 31127, 31127, 31067])
+        self.assertEqual(result["delta"], -60)
+        self.assertEqual(result["segments"], [[0, 1, 2, 3]])
+        self.assertEqual(result["canonical"], [31127, 31127, 40127, 40067])
+
+    def test_scrub_uses_raw_values_while_chart_uses_display_values(self):
+        self.assertIn('CHART.rawPts=rangeData.rawPts||pts;', self.html)
+        self.assertIn('const rawValue=(CHART.rawPts||CHART.pts)[idx];', self.html)
+        self.assertIn('eur2(rawValue*1000)', self.html)
 
     def test_raw_series_preserves_cents_and_user_isolation(self):
         with sqlite3.connect(self.path) as conn:
