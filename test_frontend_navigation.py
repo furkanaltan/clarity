@@ -292,7 +292,7 @@ console.log(JSON.stringify([
         self.assertIn('@keyframes chartActivityRoveHover', self.frontend)
         self.assertIn('@keyframes chartActivityRoveBlink', self.frontend)
         self.assertIn('M60 6 C 84 6 95 30 93 60', self.frontend)
-        self.assertIn('y="82" width="84" height="91"', self.frontend)
+        self.assertIn('x="${width/2-45}" y="78" width="90" height="98"', self.frontend)
         self.assertIn('y="194" text-anchor="middle">Noch keine Aktivität heute.', self.frontend)
         self.assertIn('baseline=160, barGap=4, barBottom=baseline-barGap, labelY=179, amountY=198', self.frontend)
         self.assertIn('chartActivityBarHeight(event.amount,maxAmount,108,18)', self.frontend)
