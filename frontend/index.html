@@ -784,17 +784,26 @@
   .chart-viewport{width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
   .chart{width:100%;height:150px;display:block;touch-action:none;cursor:crosshair}
   .chart.activity-view{cursor:default;touch-action:pan-x}
-  .chart-activity-bar{stroke:rgba(245,247,248,.28);stroke-width:.7}
+  .chart-activity-bar{stroke:rgba(245,247,248,.28);stroke-width:.7;shape-rendering:geometricPrecision;filter:drop-shadow(0 3px 5px rgba(0,0,0,.16))}
   .chart-activity-bar-expense{fill:url(#chartActivityExpense)}
   .chart-activity-bar-income{fill:url(#chartActivityIncome);stroke:rgba(53,208,127,.48)}
   .chart-activity-baseline{stroke:var(--grid2);stroke-width:1.15}
   .chart-activity-label{fill:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:-.08px}
   .chart-activity-amount{fill:var(--ink);font-size:11.5px;font-weight:720;font-variant-numeric:tabular-nums}
   .chart-activity-amount-income{fill:var(--green)}
-  .chart-activity-empty-face{fill:none;stroke:#F5F7F8;stroke-width:1.5;opacity:.9}
-  .chart-activity-empty-eye{fill:#F5F7F8;stroke:none}
+  .chart-activity-empty-mascot{display:block;overflow:visible}
+  .chart-activity-empty-mascot .chart-activity-rove-inner{transform-origin:center;animation:chartActivityRoveHover 3.4s ease-in-out infinite}
+  @keyframes chartActivityRoveHover{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  .chart-activity-empty-mascot .chart-activity-rove-glow{animation:chartActivityRoveGlowPulse 2.6s ease-in-out infinite}
+  @keyframes chartActivityRoveGlowPulse{0%,100%{opacity:.4}50%{opacity:.85}}
+  .chart-activity-empty-mascot .chart-activity-rove-fin-l{transform-origin:19px 62px;animation:chartActivityRoveFinL 3.4s ease-in-out infinite}
+  .chart-activity-empty-mascot .chart-activity-rove-fin-r{transform-origin:101px 62px;animation:chartActivityRoveFinR 3.4s ease-in-out infinite}
+  @keyframes chartActivityRoveFinL{0%,100%{transform:rotate(0deg) translateY(0)}50%{transform:rotate(-7deg) translateY(-3px)}}
+  @keyframes chartActivityRoveFinR{0%,100%{transform:rotate(0deg) translateY(0)}50%{transform:rotate(7deg) translateY(-3px)}}
+  .chart-activity-empty-mascot .chart-activity-rove-eye{transform-origin:center;transform-box:fill-box;animation:chartActivityRoveBlink 5s ease-in-out infinite}
+  @keyframes chartActivityRoveBlink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.12)}}
+  @media (prefers-reduced-motion:reduce){.chart-activity-empty-mascot *{animation:none!important}}
   .chart-activity-empty-title{fill:var(--ink);font-size:12.5px;font-weight:700}
-  .chart-activity-empty-copy{fill:var(--muted);font-size:11px;font-weight:550}
   /* Scrubbing — Kurve mit dem Finger abfahren (Trade-Republic-Stil) */
   .scrub-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:#F5F7F8;border:2px solid var(--bg);
     transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 0 0 5px rgba(245,247,248,.14)}
@@ -4296,26 +4305,45 @@ function drawDayActivityChart(events){
   chart.style.width=width>360?`${width}px`:"100%";
   chart.style.height=`${height}px`;
   viewport?.classList.add("activity-view");
-  const emptyFace=`<g transform="translate(${width/2-22} 25)" aria-hidden="true">
-    <circle class="chart-activity-empty-face" cx="22" cy="22" r="18"/>
-    <rect class="chart-activity-empty-eye" x="15" y="18" width="3" height="6" rx="1.5"/>
-    <rect class="chart-activity-empty-eye" x="26" y="18" width="3" height="6" rx="1.5"/>
-  </g>`;
+  const emptyMascot=`<svg class="chart-activity-empty-mascot" x="${width/2-42}" y="3" width="84" height="91" viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <radialGradient id="chartActivityRoveBody" cx="38%" cy="25%" r="85%">
+        <stop offset="0%" stop-color="#ffffff"/><stop offset="65%" stop-color="#f3f5f8"/><stop offset="100%" stop-color="#d9dfe7"/>
+      </radialGradient>
+      <linearGradient id="chartActivityRoveVisor" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#12161c"/><stop offset="100%" stop-color="#05070a"/>
+      </linearGradient>
+      <filter id="chartActivityRoveBlur" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="4.5"/></filter>
+    </defs>
+    <g class="chart-activity-rove-inner">
+      <ellipse class="chart-activity-rove-glow" cx="60" cy="122" rx="26" ry="6" fill="#2AABEE" filter="url(#chartActivityRoveBlur)"/>
+      <g class="chart-activity-rove-fin-l"><path d="M19 45 C 25 53 25 72 19 80 C 13 72 13 53 19 45 Z" fill="url(#chartActivityRoveBody)" transform="rotate(16 19 62)"/></g>
+      <g class="chart-activity-rove-fin-r"><path d="M101 45 C 107 53 107 72 101 80 C 95 72 95 53 101 45 Z" fill="url(#chartActivityRoveBody)" transform="rotate(-16 101 62)"/></g>
+      <path d="M60 6 C 84 6 95 30 93 60 C 91 90 77 114 60 114 C 43 114 29 90 27 60 C 25 30 36 6 60 6 Z" fill="url(#chartActivityRoveBody)"/>
+      <path d="M60 16 C 80 16 89 27 89 40 C 89 53 78 61 60 61 C 42 61 31 53 31 40 C 31 27 40 16 60 16 Z" fill="url(#chartActivityRoveVisor)"/>
+      <path d="M44 23 Q 60 18 76 23" stroke="#ffffff" stroke-width="2" fill="none" opacity=".13" stroke-linecap="round"/>
+      <ellipse cx="49" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity=".4" filter="url(#chartActivityRoveBlur)"/>
+      <ellipse cx="71" cy="40" rx="8" ry="6.5" fill="#2AABEE" opacity=".4" filter="url(#chartActivityRoveBlur)"/>
+      <ellipse class="chart-activity-rove-eye" cx="49" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
+      <ellipse class="chart-activity-rove-eye" cx="71" cy="40" rx="6.6" ry="4.8" fill="#2AABEE"/>
+      <path d="M46 100 Q 60 110 74 100" stroke="#2AABEE" stroke-width="2" fill="none" opacity=".35" stroke-linecap="round"/>
+    </g>
+  </svg>`;
   let body;
   if(!count){
-    body=`${emptyFace}<text class="chart-activity-empty-title" x="${width/2}" y="78" text-anchor="middle">Noch keine Aktivität heute.</text>
-      <text class="chart-activity-empty-copy" x="${width/2}" y="98" text-anchor="middle">Deine heutigen Buchungen erscheinen hier.</text>`;
+    body=`${emptyMascot}<text class="chart-activity-empty-title" x="${width/2}" y="116" text-anchor="middle">Noch keine Aktivität heute.</text>`;
   } else {
-    const baseline=91, labelY=111, amountY=132, slot=(width-36)/count;
+    const baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139, leftInset=36;
+    const slot=count>1?(width-leftInset*2)/(count-1):44;
     const maxAmount=Math.max(...events.map(event=>Math.abs(event.amount)),0);
     const bars=events.map((event,index)=>{
-      const centerX=18+slot*(index+.5), barWidth=Math.min(52,slot*.56);
-      const barHeight=chartActivityBarHeight(event.amount,maxAmount), top=baseline-barHeight;
+      const centerX=count>1?leftInset+slot*index:leftInset+slot/2, barWidth=Math.min(44, count>1?slot*.52:30);
+      const barHeight=chartActivityBarHeight(event.amount,maxAmount), top=barBottom-barHeight;
       const safeName=escapeAccountHtml(chartActivityLabel(event.name));
       const safeAmount=escapeAccountHtml(`${event.amount>=0?"+":"-"}${eur2(Math.abs(event.amount))}`);
       const cls=event.type==="income"?"chart-activity-bar-income":"chart-activity-bar-expense";
       return `<g class="chart-activity-event" data-event-id="${escapeAccountHtml(event.id)}" data-at="${escapeAccountHtml(event.at)}" aria-label="${safeName} ${safeAmount}">
-        <rect class="chart-activity-bar ${cls}" x="${(centerX-barWidth/2).toFixed(1)}" y="${top.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="10" ry="10"/>
+        <rect class="chart-activity-bar ${cls}" x="${(centerX-barWidth/2).toFixed(1)}" y="${top.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="7" ry="7"/>
         <text class="chart-activity-label" x="${centerX.toFixed(1)}" y="${labelY}" text-anchor="middle">${safeName}</text>
         <text class="chart-activity-amount${event.type==="income"?" chart-activity-amount-income":""}" x="${centerX.toFixed(1)}" y="${amountY}" text-anchor="middle">${safeAmount}</text>
       </g>`;

@@ -269,8 +269,18 @@ console.log(JSON.stringify([chartActivityWidth(4), chartActivityWidth(10)]));
     def test_one_day_renderer_is_activity_view_without_touching_long_ranges(self):
         self.assertIn('id="chartViewport"', self.frontend)
         self.assertIn('.chart-activity-bar-expense{fill:url(#chartActivityExpense)}', self.frontend)
+        self.assertIn('filter:drop-shadow(0 3px 5px rgba(0,0,0,.16))', self.frontend)
         self.assertIn('function chartActivityWidth(count)', self.frontend)
         self.assertIn("Noch keine Aktivität heute.", self.frontend)
+        self.assertNotIn("Deine heutigen Buchungen erscheinen hier.", self.frontend)
+        self.assertIn('class="chart-activity-empty-mascot"', self.frontend)
+        self.assertIn('@keyframes chartActivityRoveHover', self.frontend)
+        self.assertIn('@keyframes chartActivityRoveBlink', self.frontend)
+        self.assertIn('M60 6 C 84 6 95 30 93 60', self.frontend)
+        self.assertIn('baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139, leftInset=36', self.frontend)
+        self.assertIn('const slot=count>1?(width-leftInset*2)/(count-1):44', self.frontend)
+        self.assertIn('Math.min(44, count>1?slot*.52:30)', self.frontend)
+        self.assertIn('rx="7" ry="7"', self.frontend)
         self.assertIn(
             'if(range==="1T"){\n    drawDayActivityChart(chartActivityEvents());\n    return;\n  }',
             self.frontend,
