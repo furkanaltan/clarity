@@ -25,6 +25,11 @@ class FrontendNavigationTests(unittest.TestCase):
         chart_start = cls.frontend.index("function chartTodayPoints()")
         chart_end = cls.frontend.index("function straightPath", chart_start)
         cls.chart_adapter = cls.frontend[day_start:day_end] + cls.frontend[chart_start:chart_end]
+        timestamp_start = cls.frontend.index("function chartPointTimestamp")
+        activity_start = cls.frontend.index("function chartActivityEvents")
+        activity_end = cls.frontend.index("function chartValueDomain", activity_start)
+        cls.chart_adapter += cls.frontend[timestamp_start:activity_start]
+        cls.chart_adapter += cls.frontend[activity_start:activity_end]
         restore_start = cls.frontend.index("function restoreBridgeLocal(")
         restore_end = cls.frontend.index("const PAIR_API_BASE_URL", restore_start)
         cls.chart_adapter += cls.frontend[restore_start:restore_end]
@@ -204,6 +209,74 @@ console.log(JSON.stringify(chartDataForRange("1T")));
         self.assertEqual(result["dates"], [])
         self.assertFalse(result["intraday"])
         self.assertFalse(result["dayDeltaAvailable"])
+
+    def test_one_day_activity_uses_canonical_events_and_preserves_order(self):
+        result = self.run_chart_adapter("""
+DATA.chartV2 = {version:2, ranges:{"1T":[
+  {id:"day-start:today",at:"2026-09-13 08:00:00",value:40000,label:"08:00",scope:"day",source:"reconstructed"},
+  {id:"expense:11",at:"2026-09-13 12:00:00",value:39983,label:"12:00",scope:"day",source:"reconstructed_event"},
+  {id:"cash:12",at:"2026-09-13 13:00:00",value:40483,label:"13:00",scope:"day",source:"reconstructed_event"},
+  {id:"expense:13",at:"2026-09-13 14:00:00",value:40473,label:"14:00",scope:"day",source:"reconstructed_event"}
+]}};
+DATA.tx = [{d:"Heute",items:[
+  {sid:11,n:"Supermarkt",a:-17,desc:"Wocheneinkauf"},
+  {csid:12,n:"Gehalt",a:500,desc:"Monatliches Einkommen"},
+  {sid:13,n:"Tankstelle",a:-10}
+]}];
+PROFILE_META.netHistory = [{d:todayKey,v:1,t:1,source:"expense",event_id:"fake",version:2}];
+console.log(JSON.stringify(chartActivityEvents().map(({id,name,amount,type,description})=>({id,name,amount,type,description}))));
+""")
+        self.assertEqual(
+            result,
+            [
+                {"id": "expense:11", "name": "Supermarkt", "amount": -17, "type": "expense", "description": "Wocheneinkauf"},
+                {"id": "cash:12", "name": "Gehalt", "amount": 500, "type": "income", "description": "Monatliches Einkommen"},
+                {"id": "expense:13", "name": "Tankstelle", "amount": -10, "type": "expense", "description": ""},
+            ],
+        )
+
+    def test_one_day_activity_legacy_fallback_sorts_real_timestamps(self):
+        result = self.run_chart_adapter("""
+PROFILE_META.netHistory = [
+  {d:todayKey,v:40000,t:1000,source:"system",event_id:null,version:2},
+  {d:todayKey,v:39990,t:9000,source:"expense",event_id:"2",version:2},
+  {d:todayKey,v:39980,t:2000,source:"expense",event_id:"1",version:2}
+];
+DATA.tx = [{d:"Heute",items:[{id:1,n:"Frühstück",a:-20},{id:2,n:"Brot",a:-10}]}];
+console.log(JSON.stringify(chartActivityEvents().map(({id,name})=>({id,name}))));
+""")
+        self.assertEqual(
+            result,
+            [{"id": "expense:1", "name": "Frühstück"}, {"id": "expense:2", "name": "Brot"}],
+        )
+
+    def test_one_day_activity_bar_scale_keeps_small_values_visible(self):
+        result = self.run_chart_adapter("""
+console.log(JSON.stringify([
+  chartActivityBarHeight(-10,100),
+  chartActivityBarHeight(-100,100),
+  chartActivityBarHeight(50,100)
+]));
+""")
+        self.assertEqual(result, [14, 66, 33])
+
+    def test_one_day_activity_width_keeps_many_events_scrollable(self):
+        result = self.run_chart_adapter("""
+console.log(JSON.stringify([chartActivityWidth(4), chartActivityWidth(10)]));
+""")
+        self.assertEqual(result, [360, 876])
+
+    def test_one_day_renderer_is_activity_view_without_touching_long_ranges(self):
+        self.assertIn('id="chartViewport"', self.frontend)
+        self.assertIn('.chart-activity-bar-expense{fill:url(#chartActivityExpense)}', self.frontend)
+        self.assertIn('function chartActivityWidth(count)', self.frontend)
+        self.assertIn("Noch keine Aktivität heute.", self.frontend)
+        self.assertIn(
+            'if(range==="1T"){\n    drawDayActivityChart(chartActivityEvents());\n    return;\n  }',
+            self.frontend,
+        )
+        self.assertIn('resetChartActivityView();\n  const rangeData=chartDataForRange(range)', self.frontend)
+        self.assertIn('data-event-id="${escapeAccountHtml(event.id)}"', self.frontend)
 
     def test_property_coverage_break_neutralizes_long_range_delta(self):
         result = self.run_chart_adapter("""

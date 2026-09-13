@@ -781,7 +781,20 @@
 
   /* Chart */
   .chart-wrap{margin:20px 0 6px;position:relative}
+  .chart-viewport{width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
   .chart{width:100%;height:150px;display:block;touch-action:none;cursor:crosshair}
+  .chart.activity-view{cursor:default;touch-action:pan-x}
+  .chart-activity-bar{stroke:rgba(245,247,248,.28);stroke-width:.7}
+  .chart-activity-bar-expense{fill:url(#chartActivityExpense)}
+  .chart-activity-bar-income{fill:url(#chartActivityIncome);stroke:rgba(53,208,127,.48)}
+  .chart-activity-baseline{stroke:var(--grid2);stroke-width:1.15}
+  .chart-activity-label{fill:var(--muted);font-size:10.5px;font-weight:650;letter-spacing:-.08px}
+  .chart-activity-amount{fill:var(--ink);font-size:11.5px;font-weight:720;font-variant-numeric:tabular-nums}
+  .chart-activity-amount-income{fill:var(--green)}
+  .chart-activity-empty-face{fill:none;stroke:#F5F7F8;stroke-width:1.5;opacity:.9}
+  .chart-activity-empty-eye{fill:#F5F7F8;stroke:none}
+  .chart-activity-empty-title{fill:var(--ink);font-size:12.5px;font-weight:700}
+  .chart-activity-empty-copy{fill:var(--muted);font-size:11px;font-weight:550}
   /* Scrubbing — Kurve mit dem Finger abfahren (Trade-Republic-Stil) */
   .scrub-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:#F5F7F8;border:2px solid var(--bg);
     transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 0 0 5px rgba(245,247,248,.14)}
@@ -2419,7 +2432,9 @@
     </div>
 
     <div class="chart-wrap">
-      <svg class="chart" id="chart" viewBox="0 0 360 150" preserveAspectRatio="none"></svg>
+      <div class="chart-viewport" id="chartViewport">
+        <svg class="chart" id="chart" viewBox="0 0 360 150" preserveAspectRatio="none"></svg>
+      </div>
       <div class="scrub" id="scrub"><div class="scrub-dot"></div></div>
       <div class="chart-context" id="chartContext" aria-live="polite"><span>—</span><span>—</span></div>
       <div class="delta" id="chartDelta"></div>
@@ -4224,6 +4239,110 @@ function chartXPositions(range,rangeData,n,W,padX){
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start) return linear;
   return times.map(time=>padX+(time-start)/(end-start)*(W-2*padX));
 }
+function chartActivityEvents(){
+  const metadata=new Map(), add=(key,item)=>{
+    if(key!=null&&String(key).trim()&&item) metadata.set(String(key),item);
+  };
+  (DATA.tx||[]).forEach(day=>(day.items||[]).forEach(item=>{
+    if(item?.transfer===true&&item?.csid!=null&&item?.targetAccountId!=null) return;
+    if(item?.sid!=null) add(`expense:${item.sid}`,item);
+    if(item?.csid!=null) add(`cash:${item.csid}`,item);
+    if(item?.id!=null){
+      add(item.id,item);
+      // Profile mode predates server IDs; its local history keeps the source next to the local ID.
+      if(item.sid==null&&item.csid==null){ add(`expense:${item.id}`,item); add(`cash:${item.id}`,item); }
+    }
+  }));
+  let rows=[];
+  if(APP_MODE==="bridge"&&Array.isArray(DATA.chartV2?.ranges?.["1T"])){
+    rows=DATA.chartV2.ranges["1T"].map(point=>({...point}));
+  } else {
+    rows=chartTodayPoints().map(point=>({
+      ...point,
+      id:point.event_id==null?"":`${point.source}:${point.event_id}`,
+      at:Number(point.t),
+      value:Number(point.v)
+    }));
+  }
+  const seen=new Set();
+  return rows.sort((a,b)=>chartPointTimestamp(a,0)-chartPointTimestamp(b,0)||String(a.id).localeCompare(String(b.id)))
+    .map(point=>{
+      const id=String(point?.id||"");
+      const item=metadata.get(id), amount=Number(item?.a);
+      const timestamp=chartPointTimestamp(point,0);
+      if(!id||id.startsWith("day-start:")||seen.has(id)||!item||!Number.isFinite(amount)
+        ||Math.abs(amount)<0.005||!Number.isFinite(timestamp)) return null;
+      seen.add(id);
+      const name=String(item.n||item.merchant||item.desc||"Buchung").trim()||"Buchung";
+      return {id,timestamp,at:String(point.at||""),name,description:String(item.desc||""),amount,
+        type:amount>=0?"income":"expense"};
+    }).filter(Boolean);
+}
+function chartActivityBarHeight(amount,maxAmount,plotHeight=66,minHeight=14){
+  const ratio=maxAmount>0?Math.min(1,Math.abs(Number(amount)||0)/maxAmount):0;
+  return Math.max(minHeight,plotHeight*ratio);
+}
+function chartActivityWidth(count){ return count>4?36+count*84:360; }
+function chartActivityLabel(value,maxLength=16){
+  const text=String(value||"Buchung").trim()||"Buchung";
+  return text.length>maxLength?`${text.slice(0,maxLength-3)}...`:text;
+}
+function drawDayActivityChart(events){
+  const chart=document.getElementById("chart"), viewport=document.getElementById("chartViewport");
+  if(!chart) return;
+  const count=events.length, width=chartActivityWidth(count), height=150;
+  chart.classList.add("activity-view");
+  chart.setAttribute("viewBox",`0 0 ${width} ${height}`);
+  chart.style.width=width>360?`${width}px`:"100%";
+  chart.style.height=`${height}px`;
+  viewport?.classList.add("activity-view");
+  const emptyFace=`<g transform="translate(${width/2-22} 25)" aria-hidden="true">
+    <circle class="chart-activity-empty-face" cx="22" cy="22" r="18"/>
+    <rect class="chart-activity-empty-eye" x="15" y="18" width="3" height="6" rx="1.5"/>
+    <rect class="chart-activity-empty-eye" x="26" y="18" width="3" height="6" rx="1.5"/>
+  </g>`;
+  let body;
+  if(!count){
+    body=`${emptyFace}<text class="chart-activity-empty-title" x="${width/2}" y="78" text-anchor="middle">Noch keine Aktivität heute.</text>
+      <text class="chart-activity-empty-copy" x="${width/2}" y="98" text-anchor="middle">Deine heutigen Buchungen erscheinen hier.</text>`;
+  } else {
+    const baseline=91, labelY=111, amountY=132, slot=(width-36)/count;
+    const maxAmount=Math.max(...events.map(event=>Math.abs(event.amount)),0);
+    const bars=events.map((event,index)=>{
+      const centerX=18+slot*(index+.5), barWidth=Math.min(52,slot*.56);
+      const barHeight=chartActivityBarHeight(event.amount,maxAmount), top=baseline-barHeight;
+      const safeName=escapeAccountHtml(chartActivityLabel(event.name));
+      const safeAmount=escapeAccountHtml(`${event.amount>=0?"+":"-"}${eur2(Math.abs(event.amount))}`);
+      const cls=event.type==="income"?"chart-activity-bar-income":"chart-activity-bar-expense";
+      return `<g class="chart-activity-event" data-event-id="${escapeAccountHtml(event.id)}" data-at="${escapeAccountHtml(event.at)}" aria-label="${safeName} ${safeAmount}">
+        <rect class="chart-activity-bar ${cls}" x="${(centerX-barWidth/2).toFixed(1)}" y="${top.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="10" ry="10"/>
+        <text class="chart-activity-label" x="${centerX.toFixed(1)}" y="${labelY}" text-anchor="middle">${safeName}</text>
+        <text class="chart-activity-amount${event.type==="income"?" chart-activity-amount-income":""}" x="${centerX.toFixed(1)}" y="${amountY}" text-anchor="middle">${safeAmount}</text>
+      </g>`;
+    }).join("");
+    body=`<defs>
+      <linearGradient id="chartActivityExpense" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#F5F7F8" stop-opacity=".92"/><stop offset="1" stop-color="#AEBBC5" stop-opacity=".56"/>
+      </linearGradient>
+      <linearGradient id="chartActivityIncome" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#65E7A0" stop-opacity=".95"/><stop offset="1" stop-color="#35D07F" stop-opacity=".55"/>
+      </linearGradient>
+    </defs><line class="chart-activity-baseline" x1="18" y1="${baseline}" x2="${width-18}" y2="${baseline}"/>${bars}`;
+  }
+  chart.innerHTML=body;
+  Object.assign(CHART,{range:"1T",pts:[],rawPts:[],xy:[],xs:[],dates:[],dayHasIntraday:false,
+    dayDeltaAvailable:false,v2:false,activityView:true,scrubClip:null,scrubPath:null});
+  const context=document.getElementById("chartContext"), delta=document.getElementById("chartDelta");
+  if(context) context.hidden=true;
+  if(delta){ delta.hidden=true; delta.textContent=""; delta.classList.remove("scrub-date"); }
+}
+function resetChartActivityView(){
+  const chart=document.getElementById("chart"), viewport=document.getElementById("chartViewport");
+  chart?.classList.remove("activity-view");
+  if(chart){ chart.setAttribute("viewBox","0 0 360 150"); chart.style.width=""; chart.style.height=""; }
+  viewport?.classList.remove("activity-view");
+  const delta=document.getElementById("chartDelta"); if(delta) delta.hidden=false;
+}
 function chartValueDomain(range, rangeData){
   if(rangeData.v2){
     const pts=rangeData.pts;
@@ -4264,6 +4383,11 @@ function chartValueDomain(range, rangeData){
   return {min,max};
 }
 function drawChart(range, scrubIdx, animate=true){
+  if(range==="1T"){
+    drawDayActivityChart(chartActivityEvents());
+    return;
+  }
+  resetChartActivityView();
   const rangeData=chartDataForRange(range), pts=rangeData.pts;
   if(!pts.length){
     document.getElementById("chart").innerHTML="";
