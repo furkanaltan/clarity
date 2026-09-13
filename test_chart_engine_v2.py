@@ -317,9 +317,21 @@ console.log(JSON.stringify({low:y(Math.min(...data.pts)),high:y(Math.max(...data
         self.assertLess(result['high'], 111)
 
     def test_end_marker_uses_the_rendered_last_point(self):
-        self.assertIn('const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];', self.html)
+        self.assertIn('const fullLine = n>1 ? linePoints.map(points=>chartPathForRange(points,range)).join(" ") : "", last = xy[n-1];', self.html)
         self.assertIn('cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}"', self.html)
         self.assertIn('const domain=chartValueDomain(range,rangeData);', self.html)
+
+    def test_one_day_two_points_use_a_smooth_exact_endpoint_path(self):
+        path='function oneDayPath'+self.html.split('function oneDayPath',1)[1].split('function chartPath',1)[0]
+        result=node(path+"""
+const output=oneDayPath([[14,110],[346,74]]);
+console.log(JSON.stringify({output,hasCurve:output.includes(' C '),hasLine:output.includes(' L '),start:output.startsWith('M 14.0 110.0'),end:output.endsWith('346.0 74.0')}));
+""")
+        self.assertTrue(result['hasCurve'])
+        self.assertFalse(result['hasLine'])
+        self.assertTrue(result['start'])
+        self.assertTrue(result['end'])
+        self.assertIn('chartPathForRange(points,range)', self.html)
 
     def test_singleton_current_v2_segment_keeps_endpoint_without_cross_scope_line(self):
         start = self.html.index('function drawChart(range, scrubIdx, animate=true){')

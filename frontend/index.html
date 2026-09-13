@@ -4195,7 +4195,15 @@ function monotonePath(xy){
   }
   return d;
 }
+// A two-point day still has only two facts. Ease the visual connection without
+// inventing a value: both real endpoints remain exact and the curve cannot overshoot.
+function oneDayPath(xy){
+  if(xy.length!==2) return straightPath(xy);
+  const [p1,p2]=xy, dx=(p2[0]-p1[0])*.38;
+  return `M ${p1[0].toFixed(1)} ${p1[1].toFixed(1)} C ${(p1[0]+dx).toFixed(1)} ${p1[1].toFixed(1)}, ${(p2[0]-dx).toFixed(1)} ${p2[1].toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+}
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
+function chartPathForRange(xy,range){ return range==="1T"&&xy.length===2 ? oneDayPath(xy) : chartPath(xy); }
 function chartValueDomain(range, rangeData){
   if(rangeData.v2){
     const pts=rangeData.pts;
@@ -4256,7 +4264,7 @@ function drawChart(range, scrubIdx, animate=true){
   const linePoints=rangeData.v2 ? rangeData.segments.map(indices=>indices.map(i=>xy[i])).filter(segment=>segment.length>1) : rangeData.breakBefore!=null
     ? [xy.slice(0,rangeData.breakBefore),xy.slice(rangeData.breakBefore)].filter(segment=>segment.length>1)
     : [xy];
-  const fullLine = n>1 ? linePoints.map(chartPath).join(" ") : "", last = xy[n-1];
+  const fullLine = n>1 ? linePoints.map(points=>chartPathForRange(points,range)).join(" ") : "", last = xy[n-1];
   const currentIsV2Singleton=rangeData.v2===true
     && Array.isArray(rangeData.segments)
     && rangeData.segments.some(segment=>segment.length===1&&segment[0]===n-1);

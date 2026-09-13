@@ -322,6 +322,8 @@ console.log(JSON.stringify(PROFILE_META.coverageBoundaries));
         self.assertIn('function straightPath(xy)', self.frontend)
         self.assertIn('function monotonePath(xy)', self.frontend)
         self.assertIn('function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }', self.frontend)
+        self.assertIn('function oneDayPath(xy)', self.frontend)
+        self.assertIn('function chartPathForRange(xy,range)', self.frontend)
         self.assertNotIn('function catmullPath(', self.frontend)
         self.assertNotIn('if(win.length<2) win=[h[0], h[h.length-1]];', self.frontend)
         self.assertIn('id="chartContext"', self.frontend)
