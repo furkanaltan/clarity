@@ -266,20 +266,33 @@ console.log(JSON.stringify([chartActivityWidth(4), chartActivityWidth(10)]));
 """)
         self.assertEqual(result, [360, 876])
 
+    def test_one_day_activity_positions_are_left_aligned_and_evenly_spaced(self):
+        result = self.run_chart_adapter("""
+console.log(JSON.stringify([
+  chartActivityX(2,0),
+  chartActivityX(2,1),
+  chartActivityX(4,0),
+  chartActivityX(4,3)
+]));
+""")
+        self.assertEqual(result, [36, 120, 36, 288])
+
     def test_one_day_renderer_is_activity_view_without_touching_long_ranges(self):
         self.assertIn('id="chartViewport"', self.frontend)
         self.assertIn('.chart-activity-bar-expense{fill:url(#chartActivityExpense)}', self.frontend)
         self.assertIn('filter:drop-shadow(0 3px 5px rgba(0,0,0,.16))', self.frontend)
         self.assertIn('function chartActivityWidth(count)', self.frontend)
+        self.assertIn('function chartActivityX(count,index,width=360)', self.frontend)
         self.assertIn("Noch keine Aktivität heute.", self.frontend)
         self.assertNotIn("Deine heutigen Buchungen erscheinen hier.", self.frontend)
         self.assertIn('class="chart-activity-empty-mascot"', self.frontend)
         self.assertIn('@keyframes chartActivityRoveHover', self.frontend)
         self.assertIn('@keyframes chartActivityRoveBlink', self.frontend)
         self.assertIn('M60 6 C 84 6 95 30 93 60', self.frontend)
-        self.assertIn('baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139, leftInset=36', self.frontend)
-        self.assertIn('const slot=count>1?(width-leftInset*2)/(count-1):44', self.frontend)
-        self.assertIn('Math.min(44, count>1?slot*.52:30)', self.frontend)
+        self.assertIn('y="12" width="84" height="91"', self.frontend)
+        self.assertIn('baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139', self.frontend)
+        self.assertIn('Math.min(84,(width-leftInset*2)/(count-1))', self.frontend)
+        self.assertIn('const centerX=chartActivityX(count,index,width), barWidth=Math.min(44, count>1?36:30);', self.frontend)
         self.assertIn('rx="7" ry="7"', self.frontend)
         self.assertIn(
             'if(range==="1T"){\n    drawDayActivityChart(chartActivityEvents());\n    return;\n  }',

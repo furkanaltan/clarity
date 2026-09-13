@@ -4292,6 +4292,11 @@ function chartActivityBarHeight(amount,maxAmount,plotHeight=66,minHeight=14){
   return Math.max(minHeight,plotHeight*ratio);
 }
 function chartActivityWidth(count){ return count>4?36+count*84:360; }
+function chartActivityX(count,index,width=360){
+  const leftInset=36;
+  const slot=count>1?Math.min(84,(width-leftInset*2)/(count-1)):84;
+  return leftInset+slot*index;
+}
 function chartActivityLabel(value,maxLength=16){
   const text=String(value||"Buchung").trim()||"Buchung";
   return text.length>maxLength?`${text.slice(0,maxLength-3)}...`:text;
@@ -4305,7 +4310,7 @@ function drawDayActivityChart(events){
   chart.style.width=width>360?`${width}px`:"100%";
   chart.style.height=`${height}px`;
   viewport?.classList.add("activity-view");
-  const emptyMascot=`<svg class="chart-activity-empty-mascot" x="${width/2-42}" y="3" width="84" height="91" viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  const emptyMascot=`<svg class="chart-activity-empty-mascot" x="${width/2-42}" y="12" width="84" height="91" viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <defs>
       <radialGradient id="chartActivityRoveBody" cx="38%" cy="25%" r="85%">
         <stop offset="0%" stop-color="#ffffff"/><stop offset="65%" stop-color="#f3f5f8"/><stop offset="100%" stop-color="#d9dfe7"/>
@@ -4333,11 +4338,10 @@ function drawDayActivityChart(events){
   if(!count){
     body=`${emptyMascot}<text class="chart-activity-empty-title" x="${width/2}" y="116" text-anchor="middle">Noch keine Aktivität heute.</text>`;
   } else {
-    const baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139, leftInset=36;
-    const slot=count>1?(width-leftInset*2)/(count-1):44;
+    const baseline=100, barGap=3, barBottom=baseline-barGap, labelY=119, amountY=139;
     const maxAmount=Math.max(...events.map(event=>Math.abs(event.amount)),0);
     const bars=events.map((event,index)=>{
-      const centerX=count>1?leftInset+slot*index:leftInset+slot/2, barWidth=Math.min(44, count>1?slot*.52:30);
+      const centerX=chartActivityX(count,index,width), barWidth=Math.min(44, count>1?36:30);
       const barHeight=chartActivityBarHeight(event.amount,maxAmount), top=barBottom-barHeight;
       const safeName=escapeAccountHtml(chartActivityLabel(event.name));
       const safeAmount=escapeAccountHtml(`${event.amount>=0?"+":"-"}${eur2(Math.abs(event.amount))}`);
