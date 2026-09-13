@@ -4204,6 +4204,20 @@ function oneDayPath(xy){
 }
 function chartPath(xy){ return xy.length<=3 ? straightPath(xy) : monotonePath(xy); }
 function chartPathForRange(xy,range){ return range==="1T"&&xy.length===2 ? oneDayPath(xy) : chartPath(xy); }
+function chartPointTimestamp(point,index){
+  const stamp=Number(point?.t);
+  if(Number.isFinite(stamp)) return stamp;
+  const at=String(point?.at||"").trim().replace(" ","T");
+  const parsed=Date.parse(at);
+  return Number.isFinite(parsed) ? parsed : index;
+}
+function chartXPositions(range,rangeData,n,W,padX){
+  const linear=Array.from({length:n},(_,i)=>n===1?W/2:padX+i/(n-1)*(W-2*padX));
+  if(range!=="1T"||!rangeData.v2||n<2||!Array.isArray(rangeData.rawPoints)||rangeData.rawPoints.length!==n) return linear;
+  const times=rangeData.rawPoints.map(chartPointTimestamp), start=times[0], end=times[times.length-1];
+  if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start) return linear;
+  return times.map(time=>padX+(time-start)/(end-start)*(W-2*padX));
+}
 function chartValueDomain(range, rangeData){
   if(rangeData.v2){
     const pts=rangeData.pts;
@@ -4257,8 +4271,9 @@ function drawChart(range, scrubIdx, animate=true){
   const W=360,H=150,padX=14,padT=18,padB=24;
   const domain=chartValueDomain(range,rangeData);
   const min=domain.min, max=domain.max, rawSpan=max-min, span=rawSpan||1, n=pts.length;
+  const xs=chartXPositions(range,rangeData,n,W,padX);
   const xy = pts.map((v,i)=>[
-    n===1 ? W/2 : padX + i/(n-1)*(W-2*padX),
+    xs[i],
     rawSpan ? (H-padB) - (v-min)/span*(H-padT-padB) : (padT+H-padB)/2
   ]);
   const linePoints=rangeData.v2 ? rangeData.segments.map(indices=>indices.map(i=>xy[i])).filter(segment=>segment.length>1) : rangeData.breakBefore!=null
@@ -4300,7 +4315,7 @@ function drawChart(range, scrubIdx, animate=true){
       + endMarker;
   }
   document.getElementById("chart").innerHTML = body;
-  CHART.xy=xy; CHART.pts=pts; CHART.rawPts=rangeData.rawPts||pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
+  CHART.xy=xy; CHART.xs=xs; CHART.pts=pts; CHART.rawPts=rangeData.rawPts||pts; CHART.range=range; CHART.dayHasIntraday=rangeData.intraday;
   CHART.v2=rangeData.v2===true;
   CHART.dayDeltaAvailable=rangeData.dayDeltaAvailable===true;
   CHART.scrubClip=scrubIdx!=null ? document.getElementById("chartScrubClipRect") : null;
@@ -4325,12 +4340,19 @@ drawChart("1T");
   const nwEl=document.getElementById("networth"), deltaEl=document.getElementById("chartDelta");
   const chip=document.querySelector("#tab-home .net .chip");
   let scrubbing=false, scrubRaf=0, pendingClientX=null;
+  function nearestChartIndex(xs,x){
+    let lo=0,hi=xs.length-1;
+    while(lo<hi){const mid=Math.floor((lo+hi)/2);if(xs[mid]<x)lo=mid+1;else hi=mid;}
+    return lo>0&&Math.abs(xs[lo-1]-x)<=Math.abs(xs[lo]-x)?lo-1:lo;
+  }
   function renderScrub(clientX){
     if(!CHART.pts||!CHART.pts.length) return;
     const rect=chartEl.getBoundingClientRect(), W=360, padX=14, n=CHART.pts.length;
-    const plotL=rect.left+(padX/W)*rect.width, plotR=rect.left+((W-padX)/W)*rect.width;
-    let frac=(clientX-plotL)/(plotR-plotL); frac=Math.max(0,Math.min(1,frac));
-    const idx=Math.round(frac*(n-1));
+    const xs=CHART.xs||CHART.pts.map((_,i)=>n===1?W/2:padX+i/(n-1)*(W-2*padX));
+    const plotL=rect.left+(xs[0]/W)*rect.width, plotR=rect.left+(xs[n-1]/W)*rect.width;
+    const span=plotR-plotL, targetX=span>0 ? Math.max(xs[0],Math.min(xs[n-1],xs[0]+(clientX-plotL)/span*(xs[n-1]-xs[0]))) : xs[0];
+    const frac=span>0 ? (targetX-xs[0])/(xs[n-1]-xs[0]) : 0;
+    const idx=nearestChartIndex(xs,targetX);
     if(n>1 && (!CHART.scrubClip || !CHART.scrubPath)) drawChart(CHART.range, idx);
     // Die Maske und der Punkt folgen der echten Kurven-Geometrie kontinuierlich.
     // Der angezeigte Wert bleibt auf dem naechsten vorhandenen Datenpunkt stabil.

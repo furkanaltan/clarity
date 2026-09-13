@@ -333,6 +333,24 @@ console.log(JSON.stringify({output,hasCurve:output.includes(' C '),hasLine:outpu
         self.assertTrue(result['end'])
         self.assertIn('chartPathForRange(points,range)', self.html)
 
+    def test_one_day_x_positions_follow_real_timestamps(self):
+        helpers='function chartPointTimestamp'+self.html.split('function chartPointTimestamp',1)[1].split('function chartValueDomain',1)[0]
+        result=node(helpers+"""
+const day={v2:true,rawPoints:[
+  {at:'2026-09-13T00:00:00'},
+  {at:'2026-09-13T07:55:00'},
+  {at:'2026-09-13T08:02:00'}
+]};
+const xs=chartXPositions('1T',day,3,360,14);
+const weekly=chartXPositions('1W',day,3,360,14);
+console.log(JSON.stringify({xs,weekly}));
+""")
+        self.assertEqual(result['xs'][0], 14)
+        self.assertGreater(result['xs'][1], 300)
+        self.assertAlmostEqual(result['xs'][2], 346, places=6)
+        self.assertLess(result['xs'][2]-result['xs'][1], 6)
+        self.assertEqual(result['weekly'], [14, 180, 346])
+
     def test_singleton_current_v2_segment_keeps_endpoint_without_cross_scope_line(self):
         start = self.html.index('function drawChart(range, scrubIdx, animate=true){')
         end = self.html.index('\ndrawChart("1T");', start)
