@@ -325,13 +325,23 @@ console.log(JSON.stringify({low:y(Math.min(...data.pts)),high:y(Math.max(...data
         path='function oneDayPath'+self.html.split('function oneDayPath',1)[1].split('function chartPath',1)[0]
         result=node(path+"""
 const output=oneDayPath([[14,110],[346,74]]);
-console.log(JSON.stringify({output,hasCurve:output.includes(' C '),hasLine:output.includes(' L '),start:output.startsWith('M 14.0 110.0'),end:output.endsWith('346.0 74.0')}));
+console.log(JSON.stringify({output,hasCurve:output.includes(' C '),hasStep:output.includes(' L '),start:output.startsWith('M 14.0 110.0'),end:output.endsWith('346.0 74.0')}));
 """)
         self.assertTrue(result['hasCurve'])
-        self.assertFalse(result['hasLine'])
+        self.assertTrue(result['hasStep'])
         self.assertTrue(result['start'])
         self.assertTrue(result['end'])
         self.assertIn('chartPathForRange(points,range)', self.html)
+
+    def test_one_day_multiple_events_keep_horizontal_levels_between_steps(self):
+        path='function oneDayPath'+self.html.split('function oneDayPath',1)[1].split('function chartPath',1)[0]
+        result=node(path+"""
+const output=oneDayPath([[14,110],[200,80],[346,96]]);
+console.log(JSON.stringify({curves:(output.match(/ C /g)||[]).length,starts:output.startsWith('M 14.0 110.0 L '),end:output.endsWith('346.0 96.0')}));
+""")
+        self.assertEqual(result['curves'], 2)
+        self.assertTrue(result['starts'])
+        self.assertTrue(result['end'])
 
     def test_one_day_x_positions_follow_real_timestamps(self):
         helpers='function chartPointTimestamp'+self.html.split('function chartPointTimestamp',1)[1].split('function chartValueDomain',1)[0]
