@@ -94,11 +94,12 @@ def july_truth_payload() -> dict:
     }
     truth["score"] = {
         "clarity_score": 64,
-        "parts": {"total": 64, "factors": [
-            {"key": "budget", "n": "Budget Control", "points": 6, "max": 25},
-            {"key": "savings", "n": "Savings Execution", "points": 25, "max": 25},
-            {"key": "consistency", "n": "Tracking Consistency", "points": 16, "max": 25},
-            {"key": "structure", "n": "Financial Structure", "points": 25, "max": 25},
+        "parts": {"total": 64, "score_version": 2, "factors": [
+            {"key": "budget", "n": "Budget / Cashflow", "points": 6, "max": 20},
+            {"key": "savings", "n": "Savings Rate", "points": 20, "max": 20},
+            {"key": "liquidity", "n": "Liquidity", "points": 13, "max": 20},
+            {"key": "debt", "n": "Debt Structure", "points": 15, "max": 30},
+            {"key": "tracking", "n": "Tracking / Data Quality", "points": 10, "max": 10},
         ]},
     }
     data["report_story_v2"] = build_report_story_v2(data)
@@ -455,7 +456,7 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn("533 € über deinem gesetzten Budget von 200 €", context["recap_attention_text"])
         self.assertEqual(context["freedom_step_text"], "Kein neuer Beitrag")
         self.assertIn("kein neuer Investment- oder Sparbeitrag", context["build_summary_text"])
-        self.assertIn("Spar-Teilscore liegt bei 25/25", context["rank_blurb"])
+        self.assertIn("Spar-Teilscore liegt bei 20/20", context["rank_blurb"])
         self.assertEqual(context["goal_title_text"], "Dein Ziel: Dubai Urlaub.")
         self.assertEqual(html.count("Dubai Urlaub"), 1)
         self.assertNotIn("Dein Ziel: Dubai Urlaub.", html)
@@ -549,11 +550,11 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn("20.849 €", html)
         self.assertIn("9.000 €", html)
         self.assertIn("Controller", html)
-        self.assertIn("Budget Control", html)
+        self.assertIn("Budget / Cashflow", html)
         self.assertIn(">6<span", html)
-        self.assertIn(">/25</span>", html)
-        self.assertIn("Savings Execution", html)
-        self.assertIn(">25<span", html)
+        self.assertIn(">/20</span>", html)
+        self.assertIn("Savings Rate", html)
+        self.assertIn(">20<span", html)
         self.assertIn("Dubai Urlaub", html)
         self.assertIn("51 €", html)
         self.assertIn("3.949 €", html)

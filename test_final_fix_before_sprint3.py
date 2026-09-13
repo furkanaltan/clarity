@@ -155,8 +155,8 @@ class FinalFixServerTests(unittest.TestCase):
         expected_spend = 1000 * 11 / 30
         baseline_other_components = None
         for pace, points in (
-            (0.90, 25), (1.10, 22), (1.20, 18), (1.40, 14),
-            (1.58, 10), (1.90, 6),
+            (0.90, 20), (1.10, 17), (1.20, 14), (1.40, 11),
+            (1.58, 7), (1.90, 4),
         ):
             with self.subTest(pace=pace):
                 total = expected_spend * pace
@@ -191,7 +191,7 @@ class FinalFixServerTests(unittest.TestCase):
         )
         self.assertAlmostEqual(live["spendable_budget"], 842.38, places=2)
         self.assertAlmostEqual(live["spendable_budget"] - 489.0, 353.38, places=2)
-        self.assertAlmostEqual(live["budget"], 10, places=0)
+        self.assertAlmostEqual(live["budget"], 7, places=0)
 
     def test_opened_is_not_prominent_but_remains_in_archive(self):
         with closing(sqlite3.connect(":memory:")) as conn:

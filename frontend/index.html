@@ -2139,6 +2139,38 @@
   #setsheet .seg{border-color:rgba(211,221,229,.16);border-radius:17px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018));box-shadow:inset 0 1px 0 rgba(255,255,255,.065)}
   #setsheet .seg-opt.on{background:linear-gradient(145deg,rgba(93,150,177,.25),rgba(33,78,100,.16));color:#d9edf6;box-shadow:inset 0 1px 0 rgba(221,242,250,.15)}
   #setsheet .set-row .sv{color:#bdcbd2}
+  #setsheet .debt-heading{margin:2px 2px 12px}
+  #setsheet .debt-heading .eyebrow{color:#9fc6d7;font-size:11px;letter-spacing:.12em}
+  #setsheet .debt-heading .title{margin-top:5px;font-size:22px;font-weight:780;letter-spacing:-.35px}
+  #setsheet .debt-heading .copy{margin-top:6px;color:rgba(205,216,225,.68);font-size:13px;line-height:1.48}
+  #setsheet .debt-list{display:grid;gap:8px;margin:0 0 14px}
+  #setsheet .debt-entry{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:12px 13px;border:1px solid rgba(211,221,229,.14);border-radius:16px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018));color:var(--ink);text-align:left;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.055)}
+  #setsheet .debt-entry:active{transform:scale(.985);border-color:rgba(159,198,216,.35)}
+  #setsheet .debt-entry .name{flex:1;min-width:0;font-size:14px;font-weight:720}
+  #setsheet .debt-entry .meta{display:block;margin-top:3px;color:rgba(205,216,225,.56);font-size:11.5px;font-weight:550}
+  #setsheet .debt-entry .amount{font-size:15px;font-weight:780;font-variant-numeric:tabular-nums;white-space:nowrap}
+  #setsheet .debt-entry .chevron{color:rgba(205,216,225,.52);font-size:20px;line-height:1}
+  #setsheet .debt-status-card{display:flex;align-items:center;gap:12px;margin:0 0 16px;padding:13px;border:1px solid rgba(159,198,216,.2);border-radius:16px;background:linear-gradient(145deg,rgba(96,157,183,.13),rgba(255,255,255,.025))}
+  #setsheet .debt-status-card .copy{flex:1;min-width:0}
+  #setsheet .debt-status-card .title{font-size:13.5px;font-weight:750}
+  #setsheet .debt-status-card .sub{margin-top:3px;color:rgba(205,216,225,.62);font-size:11.5px;line-height:1.35}
+  #setsheet .debt-status-card .debt-status-btn{width:auto;min-width:104px;margin:0;padding:10px 12px;border-radius:12px;font-size:12px;white-space:nowrap}
+  #setsheet .debt-form{display:grid;gap:12px;margin-top:8px}
+  #setsheet .debt-form>label{display:grid;gap:7px;color:rgba(222,231,235,.82);font-size:12px;font-weight:680}
+  #setsheet .debt-field{position:relative;border:1px solid rgba(211,221,229,.18);border-radius:14px;background:linear-gradient(145deg,rgba(255,255,255,.065),rgba(255,255,255,.018));box-shadow:inset 0 1px 0 rgba(255,255,255,.06);overflow:hidden}
+  #setsheet .debt-field input,#setsheet .debt-field select{display:block;width:100%;height:46px;border:0;background:transparent;color:var(--ink);padding:0 13px;font:inherit;font-size:15px;outline:none}
+  #setsheet .debt-select-wrap:after{content:"⌄";position:absolute;right:14px;top:50%;color:rgba(205,216,225,.68);font-size:18px;line-height:1;pointer-events:none;transform:translateY(-55%)}
+  #setsheet .debt-field .debt-select{appearance:none;-webkit-appearance:none;padding-right:42px}
+  #setsheet .debt-check{display:flex!important;align-items:center;gap:9px!important;color:rgba(205,216,225,.7)!important;font-size:12px!important;font-weight:550!important}
+  #setsheet .debt-check input{accent-color:var(--blue);width:17px;height:17px;margin:0}
+  :root[data-theme="light"] #setsheet .debt-heading .eyebrow{color:#39718a}
+  :root[data-theme="light"] #setsheet .debt-heading .copy,
+  :root[data-theme="light"] #setsheet .debt-entry .meta,
+  :root[data-theme="light"] #setsheet .debt-status-card .sub,
+  :root[data-theme="light"] #setsheet .debt-check{color:var(--muted)!important}
+  :root[data-theme="light"] #setsheet .debt-entry,
+  :root[data-theme="light"] #setsheet .debt-field{background:linear-gradient(145deg,#fff,#f3f7fb);border-color:var(--line);box-shadow:none}
+  :root[data-theme="light"] #setsheet .debt-status-card{background:linear-gradient(145deg,#f1f9fc,#fff);border-color:rgba(54,143,184,.25)}
 
   #repsheet .rep{margin:0 0 10px;padding:14px;border:1px solid rgba(211,221,229,.16);border-radius:18px;background:radial-gradient(115% 80% at 0% 0%,rgba(231,238,244,.06),transparent 46%),linear-gradient(145deg,rgba(30,40,51,.88),rgba(10,17,25,.78));box-shadow:inset 0 1px 0 rgba(255,255,255,.075),0 10px 22px rgba(0,0,0,.1)}
   #repsheet .ric{color:#edf2f5;background:linear-gradient(145deg,rgba(93,108,121,.62),rgba(20,28,38,.95));border:1px solid rgba(220,229,235,.45);box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 5px 12px rgba(0,0,0,.16)}
@@ -2975,6 +3007,7 @@ const DATA = {
   financialAccounts:[],
   consumerDebts:[],
   consumerDebtTotal:0,
+  debtStatus:"unknown",
   vehicleFinancings:[],
   netWorthAvailable:true,
   netWorth: 42850,
@@ -8158,6 +8191,7 @@ async function fetchCanonicalAppState(){
     if(Array.isArray(data.financialAccounts)) DATA.financialAccounts=data.financialAccounts;
     if(Array.isArray(data.consumerDebts)) DATA.consumerDebts=data.consumerDebts;
     if(Number.isFinite(data.consumerDebtTotal)) DATA.consumerDebtTotal=data.consumerDebtTotal;
+    if(["unknown","none","present"].includes(data.debtStatus)) DATA.debtStatus=data.debtStatus;
     if(Array.isArray(data.vehicleFinancings)) DATA.vehicleFinancings=data.vehicleFinancings.map(normalizeVehicleFinancing);
     if(Object.prototype.hasOwnProperty.call(data,"netWorth")) DATA.netWorthAvailable=data.netWorth!=null;
     if(Array.isArray(data.assets)){
@@ -9127,13 +9161,14 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
 
 // ===================== PROFIL (Avatar) — Score · Reports · Sprechen · Premium · Einstellungen =====================
 DATA.score = {
-  value:0, label:"Noch offen",
+  value:0, label:"Noch offen", score_version:2,
   desc:"Sobald deine ersten echten Daten vorliegen, ordnet Rov.E deinen aktuellen Stand ein.",
   factors:[
-    {n:"Budget-Kontrolle", v:"—", p:0, tint:"#35D07F"},
-    {n:"Sparrate", v:"—", p:0, tint:"#D8B66A"},
-    {n:"Tracking-Konstanz", v:"—", p:0, tint:"#2AABEE"},
-    {n:"Finanzielle Struktur", v:"—", p:0, tint:"#8B7DF5"},
+    {key:"budget", n:"Budget-Kontrolle", v:"—", p:0, max:20, tint:"#35D07F"},
+    {key:"savings", n:"Sparrate", v:"—", p:0, max:20, tint:"#D8B66A"},
+    {key:"liquidity", n:"Notgroschen / Liquidität", v:"—", p:0, max:20, tint:"#2AABEE"},
+    {key:"debt", n:"Schuldenstruktur", v:"—", p:0, max:30, tint:"#D66B6B"},
+    {key:"tracking", n:"Tracking / Datenqualität", v:"—", p:0, max:10, tint:"#8B7DF5"},
   ]
 };
 const REPORT_MONTHS_DE=["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
@@ -9296,6 +9331,17 @@ function renderScore(){
   const trackingBasis=platformDays
     ? `<span class="score-basis-value">${platformDays}</span> ${dayWord} aktiv bei Rov.E <span class="score-basis-sep">·</span> Trackingtage <span class="score-basis-value">${trackingDays}/${trackingWindow}</span>`
     : "Noch keine Trackingtage";
+  const scoreDisplayText=value=>String(value??"")
+    .replaceAll("Liquiditaet","Liquidität")
+    .replaceAll("Datenqualitaet","Datenqualität")
+    .replaceAll("ausdruecklich","ausdrücklich")
+    .replaceAll("bestaetigt","bestätigt")
+    .replaceAll("bestaetige","bestätige")
+    .replaceAll("vollstaendig","vollständig")
+    .replaceAll("waechst","wächst")
+    .replaceAll("staerken","stärken")
+    .replaceAll("Fuer","Für")
+    .replaceAll("fuer","für");
   const progress=Number(points.to_next||0)>0
     ? `Noch ${points.to_next} RP bis ${points.next_rank||"zum nächsten Rang"}.`
     : points.rank_name ? `${points.rank_name} · höchster Fortschrittsrang erreicht.` : "Tracking-Tage bringen dir Rov.E Punkte.";
@@ -9307,7 +9353,7 @@ function renderScore(){
     : trackingDays<30
       ? `<div class="set-card" style="margin:0 0 14px;padding:14px 16px">
           <div class="sl">Gute Grundlage im Aufbau</div>
-          <div class="ss">Rov.E erkennt schon Muster. Je vollständiger dein Monat wird, desto fairer bewertet der Score Budget, Sparrate und Konstanz.</div>
+          <div class="ss">Rov.E erkennt schon Muster. Je vollständiger dein Monat wird, desto fairer bewertet der Score Budget, Sparrate und Datenqualität.</div>
         </div>`
       : "";
   document.getElementById("scorebody").innerHTML = `
@@ -9345,9 +9391,9 @@ function renderScore(){
       Score teilen
     </button>
     <div class="fbar">
-      ${factors.map((f,i)=>{const d={why:f.why||"Dieser Faktor wird mit deinen echten Monatsdaten eingeordnet.",lever:f.lever||"Tracke weiter, damit Rov.E deinen nächsten Hebel klarer zeigen kann."};return `
+      ${factors.map((f,i)=>{const d={why:scoreDisplayText(f.why||"Dieser Faktor wird mit deinen echten Monatsdaten eingeordnet."),lever:scoreDisplayText(f.lever||"Tracke weiter, damit Rov.E deinen nächsten Hebel klarer zeigen kann.")};return `
       <div class="frow" data-fx="${i}" style="--factor-tint:${f.tint}">
-        <div class="fh"><span class="fn">${f.n}</span><span class="fv" style="color:${f.tint}">${f.v}</span></div>
+        <div class="fh"><span class="fn">${scoreDisplayText(f.n)}</span><span class="fv" style="color:${f.tint}">${f.v}</span></div>
         <div class="fl"><span style="width:${Math.max(0,Math.min(100,Number(f.p)||0))}%;background:${f.tint}"></span></div>
         <div class="fexp">
           <p class="fwhy">${d.why}</p>
@@ -9641,19 +9687,37 @@ function renderConsumerDebts(editId=null){
   const debt=(DATA.consumerDebts||[]).find(row=>row.id===editId);
   if(debt) CONSUMER_DEBT_CREATE_REQUEST_ID=null;
   else if(!CONSUMER_DEBT_CREATE_REQUEST_ID) CONSUMER_DEBT_CREATE_REQUEST_ID=newConsumerDebtRequestId();
-  document.getElementById("setbody").innerHTML=`<div class="set-sec">Konsumschulden</div>
-    <p class="hint">Nur Restschulden ohne separat erfassten Vermögenswert. Keine Hypotheken, Fahrzeugfinanzierungen oder bereits im Giro enthaltenen Dispos. Monatsraten bleiben bei deinen Verträgen.</p>
-    <div class="set-card">${(DATA.consumerDebts||[]).map(row=>`<button type="button" class="set-row" data-debt-edit="${Number(row.id)}" style="width:100%;text-align:left;color:var(--ink);background:none"><span>${escapeAccountHtml(row.name)}${row.active?"":" · inaktiv"}</span><span>${eur2(row.outstanding_balance)}</span></button>`).join("")||'<div class="set-row">Noch keine Konsumschulden erfasst.</div>'}</div>
-    <form id="consumerDebtForm" data-debt-id="${debt?debt.id:""}" style="display:grid;gap:12px;margin-top:18px">
-      <label>Name<div class="field"><input name="name" required maxlength="120" value="${escapeAccountHtml(debt?.name||"")}" autocomplete="off"></div></label>
-      <label>Art<div class="field"><select name="debt_type">${Object.entries(CONSUMER_DEBT_TYPES).map(([key,label])=>`<option value="${key}" ${debt?.debt_type===key?"selected":""}>${label}</option>`).join("")}</select></div></label>
-      <label>Aktuelle Restschuld in Euro<div class="field"><input name="outstanding_balance" required inputmode="decimal" value="${debt?escapeAccountHtml(debt.outstanding_balance):""}" autocomplete="off"></div></label>
-      <label><input name="active" type="checkbox" ${!debt||debt.active?"checked":""}> Aktiv im Nettovermögen berücksichtigen</label>
+  document.getElementById("setbody").innerHTML=`<div class="debt-heading">
+      <div class="eyebrow">Finanzprofil</div>
+      <div class="title">Konsumschulden</div>
+      <div class="copy">Hier erfasst du nur echte Konsumschulden. Eine Hypothek wird separat und moderat im Score bewertet.</div>
+    </div>
+    <div class="debt-list">${(DATA.consumerDebts||[]).map(row=>`<button type="button" class="debt-entry" data-debt-edit="${Number(row.id)}"><span class="name">${escapeAccountHtml(row.name)}<span class="meta">${row.active?"Aktiv im Nettovermögen":"Inaktiv"}</span></span><span class="amount">${eur2(row.outstanding_balance)}</span><span class="chevron" aria-hidden="true">›</span></button>`).join("")||'<div class="debt-entry"><span class="name">Noch keine Konsumschulden erfasst.<span class="meta">Hypotheken gehören nicht in diesen Bereich.</span></span></div>'}</div>
+    ${!debt && !(DATA.consumerDebts||[]).some(row=>row.active) ? `<div class="debt-status-card"><div class="copy"><div class="title">Keine Konsumschulden?</div><div class="sub">Bestätige das ausdrücklich. Eine vorhandene Hypothek bleibt davon getrennt.</div></div><button type="button" class="vd-btn debt-status-btn" data-debt-status="none" ${DATA.debtStatus==="none"?"disabled":""}>${DATA.debtStatus==="none"?"Bestätigt":"Bestätigen"}</button></div>` : ""}
+    <form id="consumerDebtForm" class="debt-form" data-debt-id="${debt?debt.id:""}">
+      <label>Name<div class="debt-field"><input name="name" required maxlength="120" value="${escapeAccountHtml(debt?.name||"")}" autocomplete="off"></div></label>
+      <label>Schuldenart<div class="debt-field debt-select-wrap"><select class="debt-select" name="debt_type">${Object.entries(CONSUMER_DEBT_TYPES).map(([key,label])=>`<option value="${key}" ${debt?.debt_type===key?"selected":""}>${label}</option>`).join("")}</select></div></label>
+      <label>Aktuelle Restschuld<div class="debt-field"><input name="outstanding_balance" required inputmode="decimal" value="${debt?escapeAccountHtml(debt.outstanding_balance):""}" autocomplete="off"></div></label>
+      <label class="debt-check"><input name="active" type="checkbox" ${!debt||debt.active?"checked":""}> <span>Aktiv im Nettovermögen berücksichtigen</span></label>
       <div id="consumerDebtError" role="status" class="hint"></div>
       <button class="vd-btn" type="submit">${debt?"Änderungen speichern":"Schuld hinzufügen"}</button>
       ${debt?`<button type="button" class="txd-del" data-debt-delete="${debt.id}">Eintrag löschen</button><button type="button" class="vd-btn" data-debt-new>Neuer Eintrag</button>`:""}
-      <button type="button" class="vd-btn" data-debt-back>Zurück zu Einstellungen</button>
     </form>`;
+}
+async function setDebtStatus(status){
+  if(CONSUMER_DEBT_BUSY||APP_MODE!=="bridge"||!apiReady()) return;
+  CONSUMER_DEBT_BUSY=true;
+  try{
+    const res=await apiFetch("/v1/profile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({debt_status:status})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||!data.ok) throw new Error(data.error||"debt_status_save_failed");
+    DATA.debtStatus=status;
+    if(data.score) DATA.score={...DATA.score,...data.score};
+    await refreshAppDataFromServer();
+    renderConsumerDebts();
+  }catch(error){
+    showToast(error.message==="debt_status_conflicts_with_active_debt" ? "Aktive Konsumschulden zuerst deaktivieren" : "Schuldenstatus konnte nicht gespeichert werden");
+  }finally{ CONSUMER_DEBT_BUSY=false; }
 }
 async function writeConsumerDebt(method,id,payload){
   if(CONSUMER_DEBT_BUSY||APP_MODE!=="bridge") return;
@@ -9693,8 +9757,9 @@ document.getElementById("setbody").addEventListener("click",event=>{
   const edit=event.target.closest("[data-debt-edit]"), del=event.target.closest("[data-debt-delete]");
   if(edit) renderConsumerDebts(Number(edit.dataset.debtEdit));
   if(del&&confirm("Diesen Schuldeneintrag löschen?")) writeConsumerDebt("DELETE",del.dataset.debtDelete);
+  const status=event.target.closest("[data-debt-status]");
+  if(status) setDebtStatus(status.dataset.debtStatus);
   if(event.target.closest("[data-debt-new]")) renderConsumerDebts();
-  if(event.target.closest("[data-debt-back]")) renderSettings();
 });
 
 async function logoutCurrentUser(){
@@ -11217,8 +11282,9 @@ function ans_scoreinfo(){
   return `Der Rov.E Score bewertet deinen aktuellen Finanzstand von 0 bis 100.<br><br>`+
     `• <b>Budget-Kontrolle:</b> Konsum nach Fixkosten und Sparrate.<br>`+
     `• <b>Sparrate:</b> ETF- und Cash-Anteil wie geplant umgesetzt.<br>`+
-    `• <b>Konstanz:</b> Genug echte Trackingtage für ein klares Bild.<br>`+
-    `• <b>Struktur:</b> Cash-Puffer, Ziele und Basisdaten.`;
+    `• <b>Notgroschen / Liquidität:</b> Cash-Puffer für notwendige Monatsausgaben.<br>`+
+    `• <b>Schuldenstruktur:</b> Konsumschulden und Hypothek getrennt bewertet.<br>`+
+    `• <b>Tracking / Datenqualität:</b> Genug echte Trackingtage für ein klares Bild.`;
 }
 // „Was kann ich hier machen?" (Bot: build_help_answer) — erklärt kurz die App, nicht nur Beispielfragen
 function ans_help(){
@@ -12322,6 +12388,7 @@ async function loadBridgeState(){
     DATA.financialAccounts = Array.isArray(b.financialAccounts) ? b.financialAccounts : [];
     DATA.consumerDebts = Array.isArray(b.consumerDebts) ? b.consumerDebts : [];
     DATA.consumerDebtTotal = Number(b.consumerDebtTotal||0);
+    DATA.debtStatus = ["unknown","none","present"].includes(b.debtStatus) ? b.debtStatus : "unknown";
     DATA.netWorthAvailable = b.netWorth != null;
     DATA.assets = DATA.features.multi_cash_accounts_v1
       ? (Array.isArray(b.assets)?b.assets:[])
@@ -13638,13 +13705,14 @@ async function finishOnboarding(){
       // bietet stattdessen drei explizite Wege an (siehe renderBudgets()-Leerzustand).
       budgets:[], vertraege,
       score: (()=>{
-        return { value:0, label:"Startklar",
+        return { value:0, label:"Startklar", score_version:2,
           desc:"Datengrundlage: 0 Tage. Rov.E lernt deinen Alltag mit den ersten echten Buchungen kennen.",
           factors:[
-            {n:"Budget-Kontrolle", v:"—", p:0, tint:"#35D07F"},
-            {n:"Sparrate", v:"—", p:0, tint:"#D8B66A"},
-            {n:"Tracking-Konstanz", v:"—", p:0, tint:"#2AABEE"},
-            {n:"Finanzielle Struktur", v:"—", p:0, tint:"#8B7DF5"},
+            {key:"budget", n:"Budget-Kontrolle", v:"—", p:0, max:20, tint:"#35D07F"},
+            {key:"savings", n:"Sparrate", v:"—", p:0, max:20, tint:"#D8B66A"},
+            {key:"liquidity", n:"Notgroschen / Liquidität", v:"—", p:0, max:20, tint:"#2AABEE"},
+            {key:"debt", n:"Schuldenstruktur", v:"—", p:0, max:30, tint:"#D66B6B"},
+            {key:"tracking", n:"Tracking / Datenqualität", v:"—", p:0, max:10, tint:"#8B7DF5"},
           ]};
       })(),
       activity:[],   // flaches Zeitstempel-Modell (siehe renderActivity)

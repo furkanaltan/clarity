@@ -578,6 +578,25 @@ for (const [range, initial, updated, intraday] of [
         self.assertIn('#gsheet.goal-detail-sheet #gDel', self.frontend)
         self.assertIn('#sheet #scanOpen,#importsheet #scanPick', self.frontend)
 
+    def test_consumer_debt_screen_uses_current_finance_profile_ui(self):
+        debt_screen = self.frontend.split("function renderConsumerDebts", 1)[1].split(
+            "async function setDebtStatus", 1
+        )[0]
+        self.assertIn('class="debt-heading"', debt_screen)
+        self.assertIn('class="debt-select"', debt_screen)
+        self.assertIn("Eine Hypothek wird separat", debt_screen)
+        self.assertNotIn("data-debt-back", debt_screen)
+        self.assertIn('"setsheet"', self.frontend.split("const SWIPE_DISMISS_SHEET_IDS=", 1)[1].split("];", 1)[0])
+
+    def test_score_explanation_localizes_transliterated_german_copy(self):
+        score = self.frontend.split("function renderScore(){", 1)[1].split(
+            "// Faktor antippen", 1
+        )[0]
+        self.assertIn("const scoreDisplayText=value=>", score)
+        self.assertIn("scoreDisplayText(f.n)", score)
+        self.assertIn("scoreDisplayText(f.why", score)
+        self.assertIn("scoreDisplayText(f.lever", score)
+
     def test_tabbar_waits_for_stable_initial_measurement_before_reveal(self):
         self.assertIn('class="tabbar tabbar-layout-pending"', self.frontend)
         self.assertIn('.tabbar.tabbar-layout-pending{visibility:hidden!important}', self.frontend)

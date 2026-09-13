@@ -5,6 +5,7 @@ state. This module keeps the calculation independent from Flask and bot handlers
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from calendar import monthrange
 from datetime import date, timedelta
@@ -29,6 +30,15 @@ POINT_RANKS = [
     (2500, "Kapitalist", "🏛️"),
     (5000, "Rov.E Elite", "💎"),
 ]
+
+SCORE_VERSION = 2
+DEBT_STATUS_UNKNOWN = "unknown"
+DEBT_STATUS_NONE = "none"
+DEBT_STATUS_PRESENT = "present"
+DEBT_STATUSES = frozenset({DEBT_STATUS_UNKNOWN, DEBT_STATUS_NONE, DEBT_STATUS_PRESENT})
+CONSUMER_DEBT_TYPES = frozenset({
+    "personal_loan", "installment_loan", "credit_card", "bnpl", "other_consumer_debt",
+})
 
 
 def _value(row, key: str, default=0):
@@ -84,6 +94,207 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
     ).fetchone() is not None
+
+
+def normalize_debt_status(value: object) -> str:
+    status = str(value or "").strip().casefold()
+    return status if status in DEBT_STATUSES else DEBT_STATUS_UNKNOWN
+
+
+def ensure_debt_status_column(conn: sqlite3.Connection) -> None:
+    """Persist the user's explicit consumer-debt verification state on users."""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(users)")}
+    if "debt_status" not in columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN debt_status TEXT NOT NULL DEFAULT 'unknown'"
+        )
+    conn.execute(
+        """UPDATE users SET debt_status = ?
+           WHERE debt_status IS NULL OR LOWER(TRIM(debt_status)) NOT IN ('unknown', 'none', 'present')""",
+        (DEBT_STATUS_UNKNOWN,),
+    )
+
+
+def reconcile_debt_status(conn: sqlite3.Connection, user_id: int) -> str:
+    """Keep the explicit status aligned with the existing active debt rows."""
+    ensure_debt_status_column(conn)
+    active = bool(_consumer_debt_snapshot(conn, user_id)[0])
+    status = DEBT_STATUS_PRESENT if active else DEBT_STATUS_UNKNOWN
+    conn.execute("UPDATE users SET debt_status = ? WHERE user_id = ?", (status, user_id))
+    return status
+
+
+def _consumer_debt_snapshot(conn: sqlite3.Connection, user_id: int) -> tuple[list, float]:
+    if not _table_exists(conn, "app_consumer_debts"):
+        return [], 0.0
+    rows = conn.execute(
+        "SELECT * FROM app_consumer_debts WHERE user_id = ? AND COALESCE(active, 0) = 1 ORDER BY id",
+        (user_id,),
+    ).fetchall()
+    total = 0.0
+    for row in rows:
+        total += max(0.0, _number(row, "outstanding_balance"))
+    return rows, round(total, 2)
+
+
+def _property_debt_snapshot(conn: sqlite3.Connection, user_id: int) -> dict:
+    if not _table_exists(conn, "app_properties"):
+        return {}
+    row = conn.execute(
+        """SELECT market_value, remaining_debt, monthly_rate
+             FROM app_properties WHERE user_id = ? LIMIT 1""",
+        (user_id,),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def _mortgage_rate_in_fixed_costs(
+    conn: sqlite3.Connection, user_id: int, user, mortgage_rate: float
+) -> bool:
+    """Confirm the property rate is represented by the canonical fixed-cost record."""
+    fixed_costs = _number(user, "fixed_costs")
+    if mortgage_rate <= 0 or fixed_costs + 0.01 < mortgage_rate:
+        return False
+
+    if _table_exists(conn, "app_contracts"):
+        try:
+            row = conn.execute(
+                """SELECT amount FROM app_contracts
+                   WHERE user_id = ?
+                     AND (legacy_ref = 'app_property:monthly_rate'
+                          OR detail_key = 'property_monthly_rate')
+                   LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if row is not None and abs(_number(row, "amount") - mortgage_rate) <= 0.01:
+            return True
+
+    raw_details = _value(user, "fixed_costs_details", "")
+    if not raw_details and _table_exists(conn, "users"):
+        try:
+            row = conn.execute(
+                "SELECT fixed_costs_details FROM users WHERE user_id = ? LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        raw_details = _value(row, "fixed_costs_details", "") if row else ""
+    try:
+        details = json.loads(raw_details or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        details = {}
+    if not isinstance(details, dict):
+        return False
+
+    for section, key in (("app_vertraege", "property_monthly_rate"), ("kredite", "immobilie")):
+        values = details.get(section)
+        if isinstance(values, dict):
+            try:
+                amount = float(values.get(key) or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if abs(amount - mortgage_rate) <= 0.01:
+                return True
+    return False
+
+
+def _mortgage_structure_penalty(property_data: dict) -> float:
+    """Use bounded loan-to-value structure once rate affordability is in fixed costs."""
+    mortgage_debt = max(0.0, _number(property_data, "remaining_debt"))
+    market_value = max(0.0, _number(property_data, "market_value"))
+    if mortgage_debt <= 0:
+        return 0.0
+    if market_value <= 0:
+        return 3.0
+    loan_to_value = mortgage_debt / market_value
+    return min(8.0, max(1.0, (loan_to_value - 0.50) * 20.0))
+
+
+def _linear_points(value: float, stops: tuple[tuple[float, float], ...]) -> int:
+    value = max(0.0, float(value or 0))
+    if value <= stops[0][0]:
+        return round(stops[0][1])
+    for (low_value, low_points), (high_value, high_points) in zip(stops, stops[1:]):
+        if value <= high_value:
+            fraction = (value - low_value) / (high_value - low_value)
+            return round(low_points + fraction * (high_points - low_points))
+    return round(stops[-1][1])
+
+
+def _liquidity_points(cash: float, fixed_costs: float) -> tuple[int, float | None, str]:
+    if fixed_costs <= 0:
+        return (0 if cash <= 0 else 8), None, "not_available" if cash <= 0 else "no_expense_basis"
+    months = max(0.0, cash / fixed_costs)
+    return _linear_points(months, ((0, 0), (0.5, 4), (1, 8), (2, 13), (3, 17), (6, 20))), months, "fixed_costs_proxy"
+
+
+def _debt_points(conn: sqlite3.Connection, user_id: int, user, income: float) -> dict:
+    status = normalize_debt_status(_value(user, "debt_status", DEBT_STATUS_UNKNOWN))
+    rows, consumer_total = _consumer_debt_snapshot(conn, user_id)
+    property_data = _property_debt_snapshot(conn, user_id)
+    active_rows = bool(rows)
+    known_types = active_rows and all(str(_value(row, "debt_type", "")).strip() in CONSUMER_DEBT_TYPES for row in rows)
+
+    if active_rows and known_types:
+        balance_penalty = min(15.0, consumer_total / (income * 12) * 30 if income > 0 else 0.0)
+        count_penalty = min(5.0, max(0, len(rows) - 1) * 2.0)
+        type_penalty = min(4.0, sum(2.0 if _value(row, "debt_type") in {"credit_card", "bnpl"} else 1.0 for row in rows))
+        consumer_penalty = balance_penalty + count_penalty + type_penalty
+        consumer_points = max(0.0, 30.0 - consumer_penalty)
+        # The current canonical table has no monthly-rate field, so this is deliberately partial.
+        consumer_points = min(25.0, consumer_points)
+        debt_confidence = "partial"
+    elif active_rows:
+        consumer_penalty = 0.0
+        consumer_points = 20.0
+        debt_confidence = "unknown"
+    elif status == DEBT_STATUS_NONE:
+        consumer_penalty = 0.0
+        consumer_points = 30.0
+        debt_confidence = "declared_none"
+    else:
+        consumer_penalty = 0.0
+        consumer_points = 15.0
+        debt_confidence = "unknown"
+
+    mortgage_debt = max(0.0, _number(property_data, "remaining_debt"))
+    mortgage_rate = max(0.0, _number(property_data, "monthly_rate"))
+    mortgage_rate_in_fixed_costs = _mortgage_rate_in_fixed_costs(
+        conn, user_id, user, mortgage_rate
+    )
+    if mortgage_debt <= 0:
+        mortgage_penalty = 0.0
+        mortgage_confidence = "not_applicable"
+    elif mortgage_rate_in_fixed_costs:
+        # Budget and liquidity already assess the real monthly burden. Keep only a
+        # bounded structural LTV signal here instead of charging the rate twice.
+        mortgage_penalty = _mortgage_structure_penalty(property_data)
+        mortgage_confidence = "structure_only_rate_in_fixed_costs"
+    elif mortgage_rate > 0 and income > 0:
+        mortgage_penalty = min(10.0, mortgage_rate / income * 30.0)
+        mortgage_confidence = "rate_known"
+    else:
+        # Do not punish the nominal mortgage balance like consumer debt; only mark the
+        # missing affordability input with a small bounded uncertainty deduction.
+        mortgage_penalty = 3.0
+        mortgage_confidence = "rate_unknown"
+
+    points = max(0.0, consumer_points - mortgage_penalty)
+    return {
+        "points": round(points),
+        "status": status,
+        "effective_status": DEBT_STATUS_PRESENT if active_rows else status,
+        "confidence": debt_confidence,
+        "penalty": round(consumer_penalty + mortgage_penalty, 2),
+        "consumer_penalty": round(consumer_penalty, 2),
+        "consumer_total": round(consumer_total, 2),
+        "consumer_count": len(rows),
+        "mortgage_penalty": round(mortgage_penalty, 2),
+        "mortgage_confidence": mortgage_confidence,
+        "mortgage_rate_in_fixed_costs": mortgage_rate_in_fixed_costs,
+    }
 
 
 def score_rank(score: int) -> tuple[str, str]:
@@ -169,16 +380,8 @@ def actual_savings_for_month(
 
 
 def score_cap(days: int) -> tuple[int, int, int]:
-    if days < 30:
-        return 59, max(0, 30 - days), 60
-    if days < 60:
-        return 69, 60 - days, 70
-    if days < 90:
-        return 79, 90 - days, 80
-    if days < 180:
-        return 85, 180 - days, 86
-    if days < 365:
-        return 92, 365 - days, 93
+    # Financial health is not gated by platform age. The tracking factor remains
+    # deliberately small while its evidence grows through real tracking days.
     return 100, 0, 100
 
 
@@ -228,19 +431,16 @@ def start_score(user, cash_override: float | None = None) -> int:
 
 
 def savings_points(savings_ratio: float, confirmed: bool) -> int:
-    if confirmed and savings_ratio >= 0.20:
-        return 25
-    if confirmed and savings_ratio >= 0.15:
-        return 18
-    if confirmed and savings_ratio >= 0.10:
-        return 12
-    if savings_ratio >= 0.20:
-        return 10
-    if savings_ratio >= 0.15:
-        return 6
-    if savings_ratio >= 0.10:
-        return 3
-    return 0
+    stops = (
+        (0.00, 0),
+        (0.05, 5),
+        (0.10, 10),
+        (0.15, 14),
+        (0.20, 17),
+        (0.25, 20),
+    )
+    points = _linear_points(savings_ratio, stops)
+    return min(20, points + (2 if confirmed and points > 0 else 0))
 
 
 def data_confidence(days: int, tracked_days: int) -> tuple[str, str]:
@@ -254,14 +454,14 @@ def data_confidence(days: int, tracked_days: int) -> tuple[str, str]:
     return "Belastbar", "Dein Score basiert auf einer laengerfristigen Finanzroutine."
 
 
-def _factor(key: str, name: str, points: int, tint: str, why: str, lever: str) -> dict:
+def _factor(key: str, name: str, points: int, maximum: int, tint: str, why: str, lever: str) -> dict:
     return {
         "key": key,
         "n": name,
         "points": points,
-        "max": 25,
-        "p": round(points / 25 * 100),
-        "v": f"{points}/25",
+        "max": maximum,
+        "p": round(points / maximum * 100) if maximum else 0,
+        "v": f"{points}/{maximum}",
         "tint": tint,
         "why": why,
         "lever": lever,
@@ -276,7 +476,22 @@ def calculate_score(
     report_month: str | None = None,
     today: date | None = None,
 ) -> dict:
-    """Calculate the Rov.E Score from one DB connection and return UI-safe factors."""
+    """Calculate the single canonical Rov.E Score V2 from one DB connection."""
+    if _table_exists(conn, "users"):
+        ensure_debt_status_column(conn)
+        try:
+            user_keys = set(user.keys())
+        except AttributeError:
+            user_keys = set()
+        if "debt_status" not in user_keys:
+            refreshed = conn.execute(
+                "SELECT debt_status FROM users WHERE user_id = ? LIMIT 1", (user_id,)
+            ).fetchone()
+            if refreshed is not None:
+                # Preserve the caller's canonical profile values; only hydrate
+                # the additive status field when older callers omit it.
+                user = dict(user)
+                user["debt_status"] = refreshed["debt_status"]
     today = today or date.today()
     report_month = report_month or today.strftime("%Y-%m")
     if total_expenses is None:
@@ -318,51 +533,33 @@ def calculate_score(
             if remaining < 0:
                 budget = 0
             elif pace_ratio <= 1.00:
-                budget = 25
+                budget = 20
             elif pace_ratio <= 1.15:
-                budget = 22
+                budget = 17
             elif pace_ratio <= 1.30:
-                budget = 18
-            elif pace_ratio <= 1.50:
                 budget = 14
+            elif pace_ratio <= 1.50:
+                budget = 11
             elif pace_ratio <= 1.75:
-                budget = 10
+                budget = 7
             else:
-                budget = 6
+                budget = 4
         elif pace_ratio <= 1.0:
-            budget = 25
-        elif pace_ratio <= 1.10:
             budget = 20
+        elif pace_ratio <= 1.10:
+            budget = 16
         elif pace_ratio <= 1.25:
-            budget = 12
+            budget = 10
         elif pace_ratio <= 1.50:
-            budget = 6
+            budget = 5
 
     savings = savings_points(savings_ratio, confirmed)
-    consistency_target = 30
-    consistency_age_cap = 8 if days < 30 else 16 if days < 60 else 22 if days < 90 else 25
-    consistency = min(
-        consistency_age_cap,
-        round(25 * min(tracked_days, consistency_target) / consistency_target),
-    )
+    liquidity, buffer_months, liquidity_basis = _liquidity_points(cash, fixed)
+    debt = _debt_points(conn, user_id, user, income)
+    tracking_target = 30
+    tracking = round(10 * min(tracked_days, tracking_target) / tracking_target)
 
-    structure = 0
-    if fixed > 0:
-        buffer_months = cash / fixed
-        if buffer_months >= 3:
-            structure += 15
-        elif buffer_months >= 2:
-            structure += 12
-        elif buffer_months >= 1:
-            structure += 8
-        elif cash > 0:
-            structure += 3
-    if income > 0 and _int(user, "onboarding_step") >= 10:
-        structure += 5
-    if spendable_budget > 0:
-        structure += 5
-
-    raw_total = min(100, max(0, budget + savings + consistency + structure))
+    raw_total = min(100, max(0, budget + savings + liquidity + debt["points"] + tracking))
     # A critical monthly shortfall must stay visible in the overall result. Strong
     # structure or tracking cannot turn an overspent month into a Manager score.
     if spendable_budget <= 0:
@@ -401,33 +598,36 @@ def calculate_score(
     )
     tracking_text = tracking_label(days, tracked_days)
     if days < 90:
-        consistency_why = (
-            f"Du hast {tracking_text}. Nach {days} Tagen kann Rov.E "
-            f"deine Konstanz aktuell bis {consistency_age_cap}/25 bewerten."
-        )
-        consistency_lever = (
-            f"Volle 25 Punkte gibt es ab 90 Tagen und {consistency_target} aktiven Tracking-Tagen."
-        )
+        tracking_why = f"Du hast {tracking_text}. Der Faktor waechst nur mit echten Tracking-Tagen."
+        tracking_lever = f"Bis zu {tracking_target} echte Tracking-Tage im 90-Tage-Fenster staerken die Datenqualitaet."
     else:
-        consistency_why = f"Du hast {tracking_text}."
-        consistency_lever = (
-            f"Für volle 25 Punkte zählen {consistency_target} echte Tracking-Tage innerhalb von 90 Tagen."
-        )
-    if fixed > 0 and cash >= fixed * 3:
-        structure_why = "Dein Cash-Puffer deckt mindestens drei Monate Fixkosten."
-    elif fixed > 0 and cash >= fixed:
-        structure_why = "Dein Cash-Puffer deckt mindestens einen Monat Fixkosten."
+        tracking_why = f"Du hast {tracking_text}."
+        tracking_lever = f"Fuer volle {tracking_target} Tracking-Punkte zaehlen {tracking_target} echte Tage innerhalb von 90 Tagen."
+    if buffer_months is None:
+        liquidity_why = "Fuer Monatsausgaben fehlt noch eine belastbare Ausgabenbasis."
+    elif buffer_months >= 3:
+        liquidity_why = "Dein Cash-Puffer deckt mindestens drei Monate der notwendigen Monatsausgaben."
+    elif buffer_months >= 1:
+        liquidity_why = "Dein Cash-Puffer deckt mindestens einen Monat der notwendigen Monatsausgaben."
     else:
-        structure_why = "Dein Cash-Puffer liegt noch unter einem Monat Fixkosten."
-    structure_lever = "Ein verlässlicher Cash-Puffer und vollständige Basisdaten stärken diesen Bereich."
+        liquidity_why = "Dein Cash-Puffer liegt noch unter einem Monat der notwendigen Monatsausgaben."
+    liquidity_lever = "Eine belastbare Reserve fuer notwendige Monatsausgaben staerkt diesen Faktor."
+    if debt["effective_status"] == DEBT_STATUS_NONE:
+        debt_why = "Keine Konsumschulden sind ausdruecklich bestaetigt; eine Hypothek wird separat und moderat bewertet."
+    elif debt["consumer_count"]:
+        debt_why = f"{debt['consumer_count']} aktive Konsumschuld(en) mit {debt['consumer_total']:.0f} € Restschuld; Monatsraten werden nicht erfunden."
+    else:
+        debt_why = "Konsumschulden sind noch nicht ausdruecklich bestaetigt oder ausgeschlossen."
+    debt_lever = "Konsumschulden vollstaendig erfassen oder schuldenfrei ausdruecklich bestaetigen."
 
     factors = [
-        _factor("budget", "Budget-Kontrolle", budget, "#35D07F", budget_why, budget_lever),
-        _factor("savings", "Sparrate", savings, "#D8B66A", savings_why, savings_lever),
-        _factor("consistency", "Tracking-Konstanz", consistency, "#2AABEE", consistency_why, consistency_lever),
-        _factor("structure", "Finanzielle Struktur", structure, "#8B7DF5", structure_why, structure_lever),
+        _factor("budget", "Budget-Kontrolle", budget, 20, "#35D07F", budget_why, budget_lever),
+        _factor("savings", "Sparrate", savings, 20, "#D8B66A", savings_why, savings_lever),
+        _factor("liquidity", "Notgroschen / Liquiditaet", liquidity, 20, "#2AABEE", liquidity_why, liquidity_lever),
+        _factor("debt", "Schuldenstruktur", debt["points"], 30, "#D66B6B", debt_why, debt_lever),
+        _factor("tracking", "Tracking / Datenqualitaet", tracking, 10, "#8B7DF5", tracking_why, tracking_lever),
     ]
-    weakest = min(factors, key=lambda factor: factor["points"])
+    weakest = min(factors, key=lambda factor: factor["p"])
     confidence, confidence_note = data_confidence(days, tracked_days)
     phase = confidence
     description = f"Datengrundlage: {days} Tage, davon {tracking_text}. {confidence_note}"
@@ -446,21 +646,38 @@ def calculate_score(
         "platform_days": days,
         "proof_days": days,
         "tracking_days_90": tracked_days,
+        "score_version": SCORE_VERSION,
         "savings_confirmed": confirmed,
         "savings_ratio": savings_ratio,
         "planned_savings": planned_savings,
         "actual_savings": actual_savings,
         "budget": budget,
         "savings": savings,
-        "consistency": consistency,
-        "structure": structure,
+        "liquidity": liquidity,
+        "debt": debt["points"],
+        "tracking": tracking,
+        # Compatibility aliases for older report readers. The canonical factors above
+        # are the only values used for the V2 total.
+        "consistency": tracking,
+        "structure": liquidity,
+        "debt_status": debt["status"],
+        "debt_status_effective": debt["effective_status"],
+        "debt_confidence": debt["confidence"],
+        "debt_penalty": debt["penalty"],
+        "consumer_debt_total": debt["consumer_total"],
+        "consumer_debt_count": debt["consumer_count"],
+        "mortgage_penalty": debt["mortgage_penalty"],
+        "mortgage_confidence": debt["mortgage_confidence"],
+        "mortgage_rate_in_fixed_costs": debt["mortgage_rate_in_fixed_costs"],
+        "liquidity_basis": liquidity_basis,
+        "liquidity_months": buffer_months,
         "start_score": start_score(user, cash_override=cash),
         "days_to_unlock": days_to_unlock,
         "next_unlock_level": next_unlock_level,
         "tracking_label": tracking_text,
         "data_confidence": confidence,
-        "consistency_target": consistency_target,
-        "consistency_age_cap": consistency_age_cap,
+        "consistency_target": tracking_target,
+        "consistency_age_cap": 10,
         "spendable_budget": spendable_budget,
         "desc": description,
         "next_lever": weakest["n"],

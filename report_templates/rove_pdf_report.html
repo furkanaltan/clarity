@@ -347,22 +347,12 @@ html,body { margin:0; padding:0; }
       </div>
 
       <div style="background:#FFFFFF; border:1px solid #E8E6E1; border-radius:20px; padding:10px 32px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 0; border-bottom:1px solid #EFEDE8;">
-          <div style="font-size:15px; font-weight:500;">Budget Control</div>
-          <div style="font-family:'Newsreader',serif; font-size:24px; color:#155681; font-variant-numeric:tabular-nums; width:74px; text-align:right;">{{ score_parts[0].value }}<span style="color:#C9C7C2; font-size:15px;">/25</span></div>
+        {% for part in score_parts %}
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 0;{% if not loop.last %} border-bottom:1px solid #EFEDE8;{% endif %}">
+          <div style="font-size:15px; font-weight:500;">{{ part.label }}</div>
+          <div style="font-family:'Newsreader',serif; font-size:24px; color:{% if part.key == 'tracking' %}#B07D35{% else %}#155681{% endif %}; font-variant-numeric:tabular-nums; width:74px; text-align:right;">{{ part.value if part.value is not none else '—' }}<span style="color:#C9C7C2; font-size:15px;">{% if part.max is not none %}/{{ part.max }}{% endif %}</span></div>
         </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 0; border-bottom:1px solid #EFEDE8;">
-          <div style="font-size:15px; font-weight:500;">Savings Execution</div>
-          <div style="font-family:'Newsreader',serif; font-size:24px; color:#155681; font-variant-numeric:tabular-nums; width:74px; text-align:right;">{{ score_parts[1].value }}<span style="color:#C9C7C2; font-size:15px;">/25</span></div>
-        </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 0; border-bottom:1px solid #EFEDE8;">
-          <div style="font-size:15px; font-weight:500;">Tracking Consistency</div>
-          <div style="font-family:'Newsreader',serif; font-size:24px; color:#B07D35; font-variant-numeric:tabular-nums; width:74px; text-align:right;">{{ score_parts[2].value }}<span style="color:#C9C7C2; font-size:15px;">/25</span></div>
-        </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 0;">
-          <div style="font-size:15px; font-weight:500;">Financial Structure</div>
-          <div style="font-family:'Newsreader',serif; font-size:24px; color:#155681; font-variant-numeric:tabular-nums; width:74px; text-align:right;">{{ score_parts[3].value }}<span style="color:#C9C7C2; font-size:15px;">/25</span></div>
-        </div>
+        {% endfor %}
         <div style="padding:16px 0 20px; border-top:1px solid #EFEDE8; display:flex; justify-content:space-between; align-items:baseline;">
           <div style="font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:#8A8A90;">Rov.E Points gesamt</div>
           <div style="font-family:'Newsreader',serif; font-size:24px; color:#16161A; font-variant-numeric:tabular-nums;">{{ score_value }}<span style="color:#C9C7C2; font-size:15px;">/100</span></div>

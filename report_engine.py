@@ -2260,11 +2260,20 @@ def draw_score_page(c, data):
         unlock = f"Noch {score['days_to_unlock']} Tage bis {score['next_unlock_level']}+ freigeschaltet wird."
         c.drawCentredString(PAGE_W / 2, PAGE_H - 360, unlock)
 
+    factors = parts.get("factors") or []
+    factor_keys = {str(factor.get("key") or "") for factor in factors}
+    if not {"budget", "savings", "liquidity", "debt", "tracking"}.issubset(factor_keys):
+        factors = [
+        {"n": "Budget / Cashflow", "points": None, "max": 20},
+        {"n": "Savings Rate", "points": None, "max": 20},
+        {"n": "Liquidity", "points": None, "max": 20},
+        {"n": "Debt Structure", "points": None, "max": 30},
+        {"n": "Tracking / Data Quality", "points": None, "max": 10},
+        ]
     rows = [
-        ("Budget Control", f"{parts.get('budget', 0)}/25"),
-        ("Savings Execution", f"{parts.get('savings', 0)}/25"),
-        ("Tracking Consistency", f"{parts.get('consistency', 0)}/25"),
-        ("Financial Structure", f"{parts.get('structure', 0)}/25"),
+        (str(factor.get("n") or factor.get("label") or "Factor"),
+         f"{factor.get('points')}/{factor.get('max')}" if factor.get("points") is not None else "—")
+        for factor in factors
     ]
     draw_section_rows(c, MARGIN_X, PAGE_H - 410, rows)
     c.setFont("Helvetica", 10)

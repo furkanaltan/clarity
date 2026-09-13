@@ -132,6 +132,9 @@ def save_consumer_debt(conn: sqlite3.Connection, user_id: int, payload: dict, de
     except (KeyError, ValueError, InvalidOperation):
         raise ValueError("invalid_consumer_debt_balance") from None
     ensure_consumer_debt_schema(conn)
+    from rove_score import reconcile_debt_status
+
+    reconcile_debt_status(conn, user_id)
     request_id = str(request_id or "").strip()[:128] or None
     fingerprint = _fingerprint(name.strip(), debt_type, balance, active)
     if debt_id is None and request_id:
@@ -154,6 +157,7 @@ def save_consumer_debt(conn: sqlite3.Connection, user_id: int, payload: dict, de
         ).fetchone()
         _record_consumer_debt_event(conn, user_id, row, float(balance), active, "created",
                                     created[0] if created else None)
+        reconcile_debt_status(conn, user_id)
         return row
     result = conn.execute("""UPDATE app_consumer_debts SET name=?,debt_type=?,
         outstanding_balance=?,active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?""",
@@ -167,6 +171,7 @@ def save_consumer_debt(conn: sqlite3.Connection, user_id: int, payload: dict, de
     _record_consumer_debt_event(conn, user_id, debt_id, float(balance), active,
                                 "updated" if active else "deactivated",
                                 updated[0] if updated else None)
+    reconcile_debt_status(conn, user_id)
     return debt_id
 
 
@@ -180,3 +185,6 @@ def delete_consumer_debt(conn: sqlite3.Connection, user_id: int, debt_id: int) -
         raise LookupError("consumer_debt_not_found")
     _record_consumer_debt_event(conn, user_id, debt_id, float(row[0]), False, "deleted")
     conn.execute("DELETE FROM app_consumer_debts WHERE id=? AND user_id=?", (debt_id, user_id))
+    from rove_score import reconcile_debt_status
+
+    reconcile_debt_status(conn, user_id)

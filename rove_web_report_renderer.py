@@ -170,11 +170,11 @@ def data_count_span(value, decimals: int = 0) -> str:
 RANK_BLURBS = {
     "Rookie": "Du baust gerade die Grundlage auf. Jede getrackte Ausgabe macht das Bild klarer.",
     "Stratege": "Die ersten Muster stehen. Jetzt geht es darum, sie zur Gewohnheit zu machen.",
-    "Controller": "Budget und Struktur stimmen, Sparen läuft. Der nächste Hebel ist Konstanz.",
+    "Controller": "Budget und Sparen stimmen. Der nächste Hebel ist Datenqualität.",
     "Investor": "Du sparst nicht nur, du baust Vermögen auf. Bleib bei der Konsequenz.",
-    "Manager": "Struktur, Sparen und Tracking greifen ineinander. Das ist kein Zufall mehr.",
+    "Manager": "Struktur, Sparen und Datenqualität greifen ineinander. Das ist kein Zufall mehr.",
     "Kapitalist": "Dein System läuft nahezu rund. Feinschliff bringt dich in die Spitze.",
-    "Rov.E Elite": "Budget, Sparen, Tracking und Struktur sind auf Top-Niveau. Halte das Tempo.",
+    "Rov.E Elite": "Budget, Sparen, Datenqualität und Schuldenstruktur sind auf Top-Niveau. Halte das Tempo.",
 }
 
 
@@ -964,7 +964,13 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     wealth = get_report_wealth(data)
     expenses = truth.get("expenses") or {}
     score_truth = truth.get("score") or {}
-    score_parts_raw = (score_truth.get("parts") or {}).get("factors") or []
+    score_parts = score_truth.get("parts") or {}
+    score_parts_raw = score_parts.get("factors") or []
+    factor_keys = {str(item.get("key") or "") for item in score_parts_raw}
+    if not {
+        "budget", "savings", "liquidity", "debt", "tracking"
+    }.issubset(factor_keys):
+        score_parts_raw = []
     score_value = int(report["score"] or 0)
     score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1)
     band = rank_band(score_value)
@@ -1072,7 +1078,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
             "key": str(item.get("key") or ""),
             "label": str(item.get("n") or item.get("label") or item.get("key") or "Faktor"),
             "value": int(item.get("points") or 0),
-            "max": int(item.get("max") or 25),
+            "max": int(item.get("max") or {"budget": 20, "savings": 20, "liquidity": 20, "debt": 30, "tracking": 10}.get(str(item.get("key") or ""), 10)),
             "warn": False,
         })
     if score_parts:
@@ -1082,6 +1088,9 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     score_names = {
         "budget": "Budget",
         "savings": "Sparausführung",
+        "liquidity": "Liquidität",
+        "debt": "Schuldenstruktur",
+        "tracking": "Tracking",
         "consistency": "Tracking",
         "structure": "Struktur",
     }
@@ -1097,8 +1106,9 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     ]
     weakest_name = score_names.get((weakest_part or {}).get("key"), (weakest_part or {}).get("label", "deinem nächsten Teilbereich"))
     if contribution_total_raw <= 0 and any(item.get("key") == "savings" and item["value"] >= item["max"] for item in score_parts):
+        savings_part = next(item for item in score_parts if item.get("key") == "savings")
         rank_blurb = (
-            "Der Spar-Teilscore liegt bei 25/25; in diesem Monat ist jedoch kein neuer "
+            f"Der Spar-Teilscore liegt bei {savings_part['value']}/{savings_part['max']}; in diesem Monat ist jedoch kein neuer "
             f"Investment- oder Sparbeitrag hinzugekommen. Bei {weakest_name} liegt dein nächster Prüfpunkt."
         )
     elif strong_parts:
@@ -1518,23 +1528,27 @@ def build_render_context(data: dict) -> dict:
     )
     rank_blurb = h(RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"]))
 
-    lowest_key, lowest_label = min(
-        [("consistency", "Tracking Consistency"), ("budget", "Budget Control"),
-         ("savings", "Savings Execution"), ("structure", "Financial Structure")],
-        key=lambda pair: parts.get(pair[0], 0),
-    )
-    score_parts = [
-        {"label": "Budget Control", "value": parts.get("budget", 0), "max": 25, "warn": lowest_key == "budget"},
-        {"label": "Savings Execution", "value": parts.get("savings", 0), "max": 25, "warn": lowest_key == "savings"},
-        {"label": "Tracking Consistency", "value": parts.get("consistency", 0), "max": 25, "warn": lowest_key == "consistency"},
-        {"label": "Financial Structure", "value": parts.get("structure", 0), "max": 25, "warn": lowest_key == "structure"},
+    v2_specs = [
+        ("budget", "Budget / Cashflow", 20), ("savings", "Savings Rate", 20),
+        ("liquidity", "Liquidity", 20), ("debt", "Debt Structure", 30),
+        ("tracking", "Tracking / Data Quality", 10),
     ]
-    if lowest_key == "consistency":
+    specs = v2_specs
+    lowest_key, lowest_label = min(specs, key=lambda pair: parts.get(pair[0], 0))
+    score_parts = [
+        {"label": label, "value": parts.get(key, 0), "max": maximum, "warn": lowest_key == key}
+        for key, label, maximum in specs
+    ]
+    if lowest_key == "tracking":
         next_step_headline = f"Tracke an mindestens 10 Tagen im {h(next_month_name)}."
     elif lowest_key == "budget":
         next_step_headline = "Halte dein Budget diesen Monat konsequent ein."
     elif lowest_key == "savings":
         next_step_headline = "Setze deine Sparrate diesen Monat verlässlich um."
+    elif lowest_key == "liquidity":
+        next_step_headline = "Baue deinen Cash-Puffer für notwendige Monatsausgaben weiter aus."
+    elif lowest_key == "debt":
+        next_step_headline = "Schaffe Klarheit über deine Konsumschulden und halte ihre Belastung klein."
     else:
         next_step_headline = "Baue deinen Cash-Puffer und deine Sparquote weiter aus."
     next_step_sub = (

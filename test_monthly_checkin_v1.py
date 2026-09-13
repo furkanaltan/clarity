@@ -233,12 +233,12 @@ class MonthlyCheckinTests(unittest.TestCase):
     def test_closed_month_uses_actual_savings_not_plan(self):
         score = self.score(500)
         self.assertAlmostEqual(score["savings_ratio"], 500 / 4430, places=6)
-        self.assertEqual(score["savings"], 12)
+        self.assertEqual(score["savings"], 13)
 
     def test_actual_savings_can_exceed_plan_without_exceeding_score_cap(self):
         score = self.score(1500)
         self.assertAlmostEqual(score["savings_ratio"], 1500 / 4430, places=6)
-        self.assertEqual(score["savings"], 25)
+        self.assertEqual(score["savings"], 20)
 
     def test_negative_actual_savings_cannot_earn_savings_points(self):
         score = self.score(-100)
@@ -250,7 +250,7 @@ class MonthlyCheckinTests(unittest.TestCase):
         score = self.score(actual_savings=None, report_month="2026-09")
         self.assertIsNone(score["actual_savings"])
         self.assertAlmostEqual(score["savings_ratio"], 1000 / 4430, places=6)
-        self.assertEqual(score["savings"], 10)
+        self.assertEqual(score["savings"], 19)
 
 
 if __name__ == "__main__":

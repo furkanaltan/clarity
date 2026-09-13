@@ -32,7 +32,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from rove_score import calculate_score
+from rove_score import calculate_score, ensure_debt_status_column, normalize_debt_status
 from rove_consumer_debt import list_consumer_debt_events, list_consumer_debts, total_consumer_debt, net_worth_total
 from rove_market_data import (
     cached_crypto_metadata,
@@ -1969,6 +1969,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     Monatsbuchungen.
     """
     ensure_app_properties_table(conn)
+    ensure_debt_status_column(conn)
     # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
     # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
     apply_due_scheduled_savings(conn, user_id)
@@ -2123,6 +2124,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "netWorth": round(net_worth, 2) if net_worth is not None else None,
         "consumerDebtTotal": consumer_debt,
         "consumerDebts": list_consumer_debts(conn, user_id),
+        "debtStatus": normalize_debt_status(u.get("debt_status")),
         "vehicleFinancings": vehicle_financings,
         "series": net_series,
         "histDates": net_hist_dates,

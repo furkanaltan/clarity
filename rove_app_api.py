@@ -65,7 +65,15 @@ from rove_app_state import (
     ensure_app_primary_goal_progress_table,
     ensure_app_properties_table,
 )
-from rove_score import award_tracking_points, calculate_score, reverse_tracking_points_for_deleted_expense
+from rove_score import (
+    DEBT_STATUS_NONE,
+    DEBT_STATUS_PRESENT,
+    DEBT_STATUS_UNKNOWN,
+    award_tracking_points,
+    calculate_score,
+    ensure_debt_status_column,
+    reverse_tracking_points_for_deleted_expense,
+)
 from rove_market_data import (
     apply_market_quote,
     canonical_market_instrument,
@@ -4503,6 +4511,23 @@ def update_profile():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         ensure_auth_tables(conn)
+        ensure_debt_status_column(conn)
+
+        if "debt_status" in payload:
+            debt_status = payload.get("debt_status")
+            if debt_status not in {DEBT_STATUS_UNKNOWN, DEBT_STATUS_NONE, DEBT_STATUS_PRESENT}:
+                return jsonify({"ok": False, "error": "invalid_debt_status"}), 400
+            active_debt = conn.execute(
+                """SELECT 1 FROM app_consumer_debts
+                     WHERE user_id = ? AND COALESCE(active, 0) = 1
+                     LIMIT 1""",
+                (user_id,),
+            ).fetchone() if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_consumer_debts'"
+            ).fetchone() else None
+            if debt_status == DEBT_STATUS_NONE and active_debt:
+                return jsonify({"ok": False, "error": "debt_status_conflicts_with_active_debt"}), 409
+            conn.execute("UPDATE users SET debt_status = ? WHERE user_id = ?", (debt_status, user_id))
 
         # Nur senden, was sich aendern soll — sonst wuerde ein Namens-Update den Zahltag loeschen.
         if "name" in payload:

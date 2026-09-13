@@ -227,7 +227,9 @@ def recap_lists(data: dict) -> dict:
         lever.append(
             f"Dein Ziel ist bei Konstanz in rund {data['pages']['goal']['months_to_goal']} Monaten erreichbar."
         )
-    if score["parts"]["consistency"] < 25:
+    tracking_points = score["parts"].get("tracking", score["parts"].get("consistency", 0))
+    tracking_max = 10 if "tracking" in score["parts"] else 25
+    if tracking_points < tracking_max:
         lever.append("Mehr regelmäßiges Tracking stärkt deinen Score sichtbar.")
 
     def unique(items: list[str]) -> list[str]:
@@ -504,15 +506,38 @@ def render_month(page_html: str, data: dict) -> str:
     return page_html
 
 
+def score_dimensions(parts: dict) -> list[dict]:
+    factors = parts.get("factors") or []
+    factor_keys = {str(factor.get("key") or "") for factor in factors}
+    if factors and {
+        "budget", "savings", "liquidity", "debt", "tracking"
+    }.issubset(factor_keys):
+        return [
+            {
+                "key": str(factor.get("key") or ""),
+                "label": str(factor.get("n") or factor.get("label") or "Faktor"),
+                "value": factor.get("points"),
+                "max": factor.get("max"),
+            }
+            for factor in factors
+        ]
+    return [
+        {"key": "budget", "label": "Budget / Cashflow", "value": None, "max": 20},
+        {"key": "savings", "label": "Savings Rate", "value": None, "max": 20},
+        {"key": "liquidity", "label": "Liquidity", "value": None, "max": 20},
+        {"key": "debt", "label": "Debt Structure", "value": None, "max": 30},
+        {"key": "tracking", "label": "Tracking / Data Quality", "value": None, "max": 10},
+    ]
+
+
 def render_score(page_html: str, data: dict) -> str:
     score = data["pages"]["score"]
     parts = score["parts"]
     score_available = score.get("clarity_score") is not None
+    dimensions = score_dimensions(parts)
     values = [
-        f'{parts.get("budget", 0)}/25' if score_available else "—",
-        f'{parts.get("savings", 0)}/25' if score_available else "—",
-        f'{parts.get("consistency", 0)}/25' if score_available else "—",
-        f'{parts.get("structure", 0)}/25' if score_available else "—",
+        f'{item["value"]}/{item["max"]}' if score_available and item["value"] is not None else "—"
+        for item in dimensions
     ]
     score_text = score.get("clarity_score") if score_available else "—"
     rank_text = score.get("rank_name") or "Nicht verfügbar"
@@ -522,10 +547,8 @@ def render_score(page_html: str, data: dict) -> str:
         page_html,
         r'<div class="score-val-(?:green|gold)">.*?</div>',
         [
-            f'<div class="score-val-green">{h(values[0])}</div>',
-            f'<div class="score-val-green">{h(values[1])}</div>',
-            f'<div class="score-val-gold">{h(values[2])}</div>',
-            f'<div class="score-val-green">{h(values[3])}</div>',
+            *[f'<div class="score-val-{"gold" if index == 2 else "green"}">{h(value)}</div>'
+              for index, value in enumerate(values)],
         ],
         flags=re.S,
     )
@@ -823,10 +846,11 @@ def has_strong_behavior_data(data: dict) -> bool:
 
 
 def score_summary(score: dict) -> str:
-    consistency = score["parts"].get("consistency", 0)
+    parts = score["parts"]
+    consistency = parts.get("tracking", parts.get("consistency", 0))
     budget = score["parts"].get("budget", 0)
     if consistency < 10:
-        return "Budget und Struktur sind sichtbar. Was noch fehlt, ist Konstanz beim Tracking."
+        return "Budget, Liquidität und Schuldenstruktur sind sichtbar. Was noch fehlt, ist Datenqualität durch regelmäßiges Tracking."
     if budget < 15:
         return "Deine Datenbasis wächst. Der stärkste Hebel liegt aktuell bei der Budgetkontrolle."
     return "Du steuerst dein Geld bereits bewusst. Jetzt geht es darum, diese Struktur zu halten."
@@ -836,15 +860,11 @@ def score_next_step(score: dict) -> str:
     if score.get("days_to_unlock", 0) > 0:
         return f"Noch {score['days_to_unlock']} Tage bis Score-Level {score['next_unlock_level']}+ freigeschaltet wird."
     parts = score["parts"]
+    dimensions = score_dimensions(parts)
     weakest = min(
-        [
-            ("Budget Control", parts.get("budget", 0)),
-            ("Savings Execution", parts.get("savings", 0)),
-            ("Tracking Consistency", parts.get("consistency", 0)),
-            ("Financial Structure", parts.get("structure", 0)),
-        ],
-        key=lambda item: item[1],
-    )[0]
+        dimensions,
+        key=lambda item: (float(item["value"] or 0) / max(1, float(item["max"] or 1))),
+    )["label"]
     return f"Dein nächster Hebel: {weakest} stärken."
 
 
@@ -1135,6 +1155,12 @@ def render_777_score(_page_html: str, data: dict) -> str:
     offset = circumference - (max(0, min(100, value)) / 100 * circumference)
     rank_width = max(3, min(100, value))
     rank_text = h(score.get("rank_name") or "Nicht verfügbar")
+    score_rows = "\n".join(
+        f'<div class="score-row"><div class="score-name">{h(item["label"])}</div>'
+        f'<div class="score-value">{h(item["value"] if available and item["value"] is not None else "—")} '
+        f'<span style="color:#c7c7cc;font-size:16px;">/{h(item["max"])}</span></div></div>'
+        for item in score_dimensions(parts)
+    )
     return f"""
   <section class="page">
     <div class="topline">Rov.E Score · Wie bewusst du steuerst</div>
@@ -1145,12 +1171,7 @@ def render_777_score(_page_html: str, data: dict) -> str:
         <div class="score-ring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="86" fill="none" stroke="#ececee" stroke-width="13"></circle><circle cx="100" cy="100" r="86" fill="none" stroke="#3d8b5b" stroke-width="13" stroke-linecap="round" stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}" transform="rotate(-90 100 100)"></circle></svg><div class="score-center"><div class="score-number">{value_text}</div><div class="score-rank">{rank_text}</div></div></div>
         <div class="rank-strip"><div class="rank-labels"><span>Rookie</span><span>Controller</span><span>Manager</span><span>Elite</span></div><div class="rank-line"><div class="rank-fill" style="width:{rank_width}%"></div></div><div class="tile-sub" style="text-align:center;">{h(score["proof_days"])}d verified</div></div>
       </div>
-      <div class="card score-parts">
-        <div class="score-row"><div class="score-name">{icon("calendar", "square-icon")}Budget Control</div><div class="score-value">{h(parts.get("budget", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
-        <div class="score-row"><div class="score-name">{icon("clock", "square-icon")}Savings Execution</div><div class="score-value">{h(parts.get("savings", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
-        <div class="score-row"><div class="score-name">{icon("target", "square-icon gold")}Tracking Consistency</div><div class="score-value gold">{h(parts.get("consistency", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
-        <div class="score-row"><div class="score-name">{icon("trend", "square-icon")}Financial Structure</div><div class="score-value">{h(parts.get("structure", 0))}<span style="color:#c7c7cc;font-size:16px;">/25</span></div></div>
-      </div>
+      <div class="card score-parts">{score_rows}</div>
     </div>
     <div class="card score-note"><div><div class="score-note-title">Was {h(score["rank_name"])} bedeutet</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>Später kannst du deinen Score teilen, ohne echte Geldbeträge zu zeigen.</p></div></div>
 {footer(6)}

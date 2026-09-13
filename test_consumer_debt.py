@@ -50,7 +50,8 @@ class ConsumerDebtTests(unittest.TestCase):
         self.assertEqual(after["netWorth"], -5000)
         self.assertEqual(after["consumerDebtTotal"], 20000)
         self.assertEqual(after["sts"], before["sts"])
-        self.assertEqual(after["score"], before["score"])
+        self.assertEqual(after["score"]["budget"], before["score"]["budget"])
+        self.assertLess(after["score"]["debt"], before["score"]["debt"])
 
     def test_net_worth_series_keeps_existing_history_without_consumer_debt(self):
         series, labels = state._net_worth_series(self.conn, 1, 15000)

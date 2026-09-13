@@ -378,24 +378,34 @@ def draw_score(c, data):
     c.setFont(font("RoveSans-Bold"), 7.5)
     c.drawCentredString(265, 244, "SCORE TEILEN")
     draw_card(c, 485, 470, 500, 280, "Breakdown", "", value_size=10)
+    factors = parts.get("factors") or []
+    factor_keys = {str(factor.get("key") or "") for factor in factors}
+    if not {"budget", "savings", "liquidity", "debt", "tracking"}.issubset(factor_keys):
+        factors = [
+        {"n": "Budget / Cashflow", "points": None, "max": 20},
+        {"n": "Savings Rate", "points": None, "max": 20},
+        {"n": "Liquidity", "points": None, "max": 20},
+        {"n": "Debt Structure", "points": None, "max": 30},
+        {"n": "Tracking / Data Quality", "points": None, "max": 10},
+        ]
     rows = [
-        ("Budget Control", parts.get("budget", 0), BLUE),
-        ("Savings Execution", parts.get("savings", 0), BLUE),
-        ("Tracking Consistency", parts.get("consistency", 0), GOLD),
-        ("Financial Structure", parts.get("structure", 0), BLUE),
+        (str(factor.get("n") or factor.get("label") or "Factor"),
+         factor.get("points", 0), GOLD if factor.get("key") == "tracking" else BLUE,
+         factor.get("max"))
+        for factor in factors
     ]
     y = 414
-    for label, val, col in rows:
+    for label, val, col, maximum in rows:
         c.setFont(font("RoveSans-Medium"), 12)
         c.setFillColor(TEXT if col == BLUE else GOLD)
         c.drawString(520, y, label)
         c.setFont("Times-Roman", 20)
         c.setFillColor(col)
-        c.drawRightString(920, y - 2, f"{int(val)}/25")
+        c.drawRightString(920, y - 2, f"{int(val)}/{int(maximum)}" if val is not None else "—")
         c.setStrokeColor(colors.Color(1, 1, 1, alpha=0.08))
         c.line(520, y - 24, 920, y - 24)
         y -= 55
-    draw_card(c, 85, 152, 900, 92, f"Was {score.get('rank_name', 'Rookie')} bedeutet", "Budget und Struktur stehen. Der nächste Hebel ist Konstanz.", value_size=18)
+    draw_card(c, 85, 152, 900, 92, f"Was {score.get('rank_name', 'Rookie')} bedeutet", "Budget, Liquidität und Schuldenstruktur stehen. Der nächste Hebel ist Datenqualität.", value_size=18)
     end_page(c, 6)
 
 

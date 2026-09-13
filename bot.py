@@ -491,9 +491,18 @@ def init_db():
             current_investments REAL    DEFAULT 0.0,
             current_cash        REAL    DEFAULT 0.0,
             portfolio_balance   REAL    DEFAULT 0.0,
+            debt_status         TEXT    NOT NULL DEFAULT 'unknown',
             streak_days         INTEGER DEFAULT 0,
             current_month       TEXT    DEFAULT ''
         )''')
+
+        user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "debt_status" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN debt_status TEXT NOT NULL DEFAULT 'unknown'")
+        conn.execute(
+            """UPDATE users SET debt_status = 'unknown'
+               WHERE debt_status IS NULL OR LOWER(TRIM(debt_status)) NOT IN ('unknown', 'none', 'present')"""
+        )
 
         conn.execute('''CREATE TABLE IF NOT EXISTS expenses (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3583,11 +3592,12 @@ def is_score_info_question(text_lower: str) -> bool:
 def build_score_info_answer() -> str:
     return (
         "Der *Rov.E Score* zeigt, wie stabil dein finanzielles Verhalten gerade ist.\n\n"
-        "*Er besteht aus 4 Bereichen:*\n"
-        "1. Budget Control - wie viel freies Monatsbudget übrig bleibt.\n"
-        "2. Savings Execution - ob du deine Sparrate wirklich umsetzt.\n"
-        "3. Tracking Consistency - wie verlässlich deine Datenbasis ist.\n"
-        "4. Financial Structure - Notgroschen, Sparquote und positives Budget.\n\n"
+        "*Er besteht aus 5 Bereichen:*\n"
+        "1. Budget / Cashflow - wie viel freies Monatsbudget übrig bleibt.\n"
+        "2. Sparrate - ob du deine Sparrate wirklich umsetzt.\n"
+        "3. Liquidität - wie lange dein Cash-Puffer notwendige Monatsausgaben deckt.\n"
+        "4. Schuldenstruktur - Konsumschulden und Hypothek getrennt bewertet.\n"
+        "5. Tracking / Datenqualität - wie belastbar deine Finanzdaten sind.\n\n"
         "Hohe Scores entstehen nicht über Nacht. Sie werden über Zeit freigeschaltet, damit der Score wertvoll bleibt.\n\n"
         "Wichtig: Der Score ist kein Urteil. Er zeigt dir deinen nächsten klaren Hebel."
     )
@@ -5337,10 +5347,11 @@ def handle_commands(message):
             f"Status: {score_data['phase']} · {score_data['tracking_label']}"
             f"{unlock_line}\n\n"
             f"*Breakdown*\n"
-            f"├ Budget Control:       {score_data['budget']}/25\n"
-            f"├ Savings Execution:    {score_data['savings']}/25\n"
-            f"├ Tracking Consistency: {score_data['tracking_days_90']} aktive Tage · {score_data['consistency']}/25\n"
-            f"└ Financial Structure:  {score_data['structure']}/25\n\n"
+            f"├ Budget / Cashflow:       {score_data['budget']}/20\n"
+            f"├ Sparrate:                {score_data['savings']}/20\n"
+            f"├ Liquidität:              {score_data['liquidity']}/20\n"
+            f"├ Schuldenstruktur:        {score_data['debt']}/30\n"
+            f"└ Tracking / Datenqualität: {score_data['tracking']}/10\n\n"
             f"*Nächster Hebel:*\n{confirm_hint}\n\n"
             f"{cp_rank_emoji} RP-Level: *{cp_rank_name}* · {cp} RP\n"
             f"{cp_rank_line}"
