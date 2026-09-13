@@ -4206,7 +4206,10 @@ def complete_app_onboarding():
     wealth = payload.get("wealth") if isinstance(payload.get("wealth"), dict) else {}
     amounts = {
         key: onboarding_amount(wealth.get(key))
-        for key in ("giro", "tagesgeld", "bargeld", "etf", "krypto", "property_value", "property_debt")
+        for key in (
+            "giro", "tagesgeld", "bargeld", "etf", "krypto",
+            "property_value", "property_debt", "property_monthly_rate",
+        )
     }
     try:
         payday = int(payload.get("payday") or 0)
@@ -4261,6 +4264,18 @@ def complete_app_onboarding():
             "tint": normalize_contract_tint(contract.get("tint")),
             "cancelable": 1 if bool(contract.get("cancelable", True)) else 0,
         })
+
+    if amounts["property_value"] > 0 and amounts["property_monthly_rate"] > 0:
+        generic_property_credit = any(
+            contract["category"] == "Kredite"
+            and contract["name"].strip().casefold() == "kredit"
+            for contract in cleaned_contracts
+        )
+        if generic_property_credit:
+            return jsonify({
+                "ok": False,
+                "error": "onboarding_property_rate_conflicts_with_generic_credit",
+            }), 409
 
     cleaned_goals = []
     for index, goal in enumerate(goals):
@@ -4410,16 +4425,39 @@ def complete_app_onboarding():
             if amounts["property_value"] > 0:
                 conn.execute(
                     """INSERT INTO app_properties
-                       (user_id, market_value, remaining_debt, coverage_started_at,
+                       (user_id, market_value, remaining_debt, monthly_rate, coverage_started_at,
                         coverage_equity_at_start, updated_at)
-                       VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
                        ON CONFLICT(user_id) DO UPDATE SET
                          market_value = excluded.market_value,
                          remaining_debt = excluded.remaining_debt,
+                         monthly_rate = excluded.monthly_rate,
                          updated_at = CURRENT_TIMESTAMP""",
                     (user_id, amounts["property_value"], amounts["property_debt"],
+                     amounts["property_monthly_rate"],
                      round(amounts["property_value"] - amounts["property_debt"], 2)),
                 )
+                if amounts["property_monthly_rate"] > 0:
+                    conn.execute(
+                        """INSERT INTO app_contracts
+                           (user_id, contract_id, detail_key, name, category, amount,
+                            icon, tint, cancelable, source, legacy_ref)
+                           VALUES (?, ?, 'property_monthly_rate', 'Immobilienkredit',
+                                   'Kredite', ?, 'house', '#D8B66A', 0,
+                                   'property', 'app_property:monthly_rate')
+                           ON CONFLICT(user_id, detail_key) DO UPDATE SET
+                             name = excluded.name,
+                             category = excluded.category,
+                             amount = excluded.amount,
+                             icon = excluded.icon,
+                             tint = excluded.tint,
+                             cancelable = excluded.cancelable,
+                             source = excluded.source,
+                             legacy_ref = excluded.legacy_ref,
+                             updated_at = CURRENT_TIMESTAMP""",
+                        (user_id, secrets.token_urlsafe(9), amounts["property_monthly_rate"]),
+                    )
+                    sync_app_contract_details(conn, user_id)
 
             for asset_type, amount, label in (
                 ("etf", amounts["etf"], "ETF & Investments"),
@@ -5362,6 +5400,7 @@ def update_property():
     monthly_rate = money("monthly_rate")
     house_fee = money("house_fee")
     management_fee = money("management_fee")
+    link_existing_contract_id = clean_text(payload.get("link_existing_contract_id"))
     if market_value <= 0 or market_value > 100_000_000 or remaining_debt > 100_000_000:
         return jsonify({"ok": False, "error": "valid_property_values_required"}), 400
 
@@ -5373,6 +5412,42 @@ def update_property():
 
         ensure_app_properties_table(conn)
         ensure_app_contracts_table(conn)
+        if link_existing_contract_id:
+            if monthly_rate <= 0:
+                return jsonify({"ok": False, "error": "property_rate_required_for_contract_link"}), 400
+            generic_credit = conn.execute(
+                """SELECT contract_id FROM app_contracts
+                     WHERE user_id = ? AND contract_id = ?
+                       AND category = 'Kredite'
+                       AND LOWER(TRIM(name)) = 'kredit'
+                       AND COALESCE(TRIM(legacy_ref), '') = ''""",
+                (user_id, link_existing_contract_id),
+            ).fetchone()
+            if not generic_credit:
+                return jsonify({"ok": False, "error": "generic_credit_link_not_found"}), 400
+            existing_property_rate = conn.execute(
+                """SELECT contract_id FROM app_contracts
+                     WHERE user_id = ? AND legacy_ref = 'app_property:monthly_rate'
+                     LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+            if existing_property_rate and existing_property_rate["contract_id"] != link_existing_contract_id:
+                # A prior canonical property contract wins; the explicitly confirmed generic
+                # row is removed rather than allowing two representations of one rate.
+                conn.execute(
+                    "DELETE FROM app_contracts WHERE user_id = ? AND contract_id = ?",
+                    (user_id, link_existing_contract_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE app_contracts
+                          SET detail_key = 'property_monthly_rate', name = 'Immobilienkredit',
+                              amount = ?, icon = 'house', tint = '#D8B66A', cancelable = 0,
+                              source = 'property', legacy_ref = 'app_property:monthly_rate',
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND contract_id = ?""",
+                    (monthly_rate, user_id, link_existing_contract_id),
+                )
         conn.execute(
             """INSERT INTO app_properties
                (user_id, market_value, remaining_debt, monthly_rate, house_fee,

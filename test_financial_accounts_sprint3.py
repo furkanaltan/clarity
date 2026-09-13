@@ -711,6 +711,36 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
                 "SELECT fixed_costs FROM users WHERE user_id=1"
             ).fetchone()[0]), 1300.0)
 
+    def test_existing_generic_credit_can_be_explicitly_linked_to_property(self):
+        with closing(self.connect()) as conn:
+            api.ensure_app_contracts_table(conn)
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, source)
+                   VALUES (1, 'generic-credit', 'app_generic_credit', 'Kredit', 'Kredite', 900, 'app')"""
+            )
+            conn.commit()
+
+        response = self.request("POST", "/v1/property", json={
+            "market_value": 300000, "remaining_debt": 240000, "monthly_rate": 900,
+            "house_fee": 0, "management_fee": 0,
+            "link_existing_contract_id": "generic-credit",
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                """SELECT contract_id, detail_key, name, amount, source, legacy_ref
+                     FROM app_contracts WHERE user_id=1"""
+            ).fetchone()
+            self.assertEqual(
+                tuple(row),
+                ("generic-credit", "property_monthly_rate", "Immobilienkredit", 900.0,
+                 "property", "app_property:monthly_rate"),
+            )
+            self.assertEqual(float(conn.execute(
+                "SELECT fixed_costs FROM users WHERE user_id=1"
+            ).fetchone()[0]), 900.0)
+
     def test_normalized_legacy_property_contract_is_updated_without_legacy_duplicate(self):
         with closing(self.connect()) as conn:
             api.ensure_app_contracts_table(conn)
@@ -757,6 +787,7 @@ class OnboardingAtomicityTests(unittest.TestCase):
         self.patchers = [
             patch.object(api, "DB_PATH", self.db_path),
             patch.object(api, "user_from_token", lambda _conn, token: {"pilot-token": 1}.get(token)),
+            patch.object(api, "build_live_app_data", lambda _c, _u: {"sts": {"available": 0}}),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -793,7 +824,10 @@ class OnboardingAtomicityTests(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         return conn
 
-    def payload(self, *, giro=2000, tagesgeld=5000, etf_savings=300, execution_day=1, source="giro"):
+    def payload(
+        self, *, giro=2000, tagesgeld=5000, etf_savings=300, execution_day=1,
+        source="giro", property_value=0, property_debt=0, property_monthly_rate=0,
+    ):
         return {
             "name": "Onboarding Test",
             "income": 4430,
@@ -807,8 +841,9 @@ class OnboardingAtomicityTests(unittest.TestCase):
                 "bargeld": 0,
                 "etf": 0,
                 "krypto": 0,
-                "property_value": 0,
-                "property_debt": 0,
+                "property_value": property_value,
+                "property_debt": property_debt,
+                "property_monthly_rate": property_monthly_rate,
             },
             "contracts": [{"name": "Miete", "category": "Wohnen", "amount": 900}],
             "goals": [],
@@ -881,6 +916,141 @@ class OnboardingAtomicityTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute("SELECT onboarding_step FROM users WHERE user_id = 1").fetchone()[0], 10)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_etf_savings_plan WHERE user_id = 1").fetchone()[0], 0)
+
+    def test_onboarding_without_property_keeps_property_table_empty(self):
+        response = self.submit(self.payload())
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_properties WHERE user_id = 1").fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id = 1 AND legacy_ref = 'app_property:monthly_rate'"
+            ).fetchone()[0], 0)
+
+    def test_onboarding_property_without_debt_has_no_mortgage_contract(self):
+        payload = self.payload(property_value=300000)
+        payload["contracts"] = []
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            property_row = conn.execute(
+                "SELECT market_value, remaining_debt, monthly_rate FROM app_properties WHERE user_id = 1"
+            ).fetchone()
+            self.assertEqual(tuple(property_row), (300000.0, 0.0, 0.0))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id = 1 AND legacy_ref = 'app_property:monthly_rate'"
+            ).fetchone()[0], 0)
+
+    def test_onboarding_property_rate_is_stored_and_counted_once(self):
+        payload = self.payload(property_value=300000, property_debt=240000, property_monthly_rate=900)
+        payload["contracts"] = []
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            property_row = conn.execute(
+                "SELECT market_value, remaining_debt, monthly_rate FROM app_properties WHERE user_id = 1"
+            ).fetchone()
+            self.assertEqual(tuple(property_row), (300000.0, 240000.0, 900.0))
+            contract = conn.execute(
+                "SELECT name, amount, source, legacy_ref FROM app_contracts WHERE user_id = 1"
+            ).fetchone()
+            self.assertEqual(tuple(contract), ("Immobilienkredit", 900.0, "property", "app_property:monthly_rate"))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id = 1").fetchone()[0], 1)
+            self.assertEqual(float(conn.execute("SELECT fixed_costs FROM users WHERE user_id = 1").fetchone()[0]), 900.0)
+
+    def test_onboarding_consumer_credit_remains_separate_from_property_rate(self):
+        payload = self.payload(property_value=300000, property_debt=240000, property_monthly_rate=900)
+        payload["contracts"] = [{"name": "Konsumkredit", "category": "Kredite", "amount": 300}]
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                "SELECT name, amount, legacy_ref FROM app_contracts WHERE user_id = 1 ORDER BY name"
+            ).fetchall()
+            self.assertEqual(
+                [(row["name"], float(row["amount"]), row["legacy_ref"]) for row in rows],
+                [("Immobilienkredit", 900.0, "app_property:monthly_rate"), ("Konsumkredit", 300.0, None)],
+            )
+            self.assertEqual(float(conn.execute("SELECT fixed_costs FROM users WHERE user_id = 1").fetchone()[0]), 1200.0)
+
+    def test_onboarding_rejects_ambiguous_generic_credit_with_property_rate(self):
+        payload = self.payload(property_value=300000, property_debt=240000, property_monthly_rate=900)
+        payload["contracts"] = [{"name": "Kredit", "category": "Kredite", "amount": 900}]
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "onboarding_property_rate_conflicts_with_generic_credit")
+        self.assert_not_onboarded()
+
+    def test_existing_generic_credit_is_not_heuristically_reclassified(self):
+        with closing(self.connect()) as conn:
+            api.ensure_app_contracts_table(conn)
+            conn.execute(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, source)
+                   VALUES (1, 'generic-credit', 'app_generic_credit', 'Kredit', 'Kredite', 900, 'app')"""
+            )
+            conn.commit()
+
+        with api.app.test_client() as client:
+            response = client.post(
+                "/v1/property",
+                json={
+                    "market_value": 300000, "remaining_debt": 240000, "monthly_rate": 900,
+                    "house_fee": 0, "management_fee": 0,
+                },
+                headers={"Authorization": "Bearer pilot-token", "Origin": "https://getrove.de"},
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            generic = conn.execute(
+                "SELECT name, amount, legacy_ref FROM app_contracts WHERE contract_id = 'generic-credit'"
+            ).fetchone()
+            self.assertEqual(tuple(generic), ("Kredit", 900.0, None))
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id = 1 AND legacy_ref = 'app_property:monthly_rate'"
+            ).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id = 1"
+            ).fetchone()[0], 2)
+            self.assertEqual(float(conn.execute(
+                "SELECT fixed_costs FROM users WHERE user_id=1"
+            ).fetchone()[0]), 1800.0)
+
+    def test_multiple_generic_credits_are_not_auto_selected(self):
+        with closing(self.connect()) as conn:
+            api.ensure_app_contracts_table(conn)
+            conn.executemany(
+                """INSERT INTO app_contracts
+                   (user_id, contract_id, detail_key, name, category, amount, source)
+                   VALUES (1, ?, ?, 'Kredit', 'Kredite', ?, 'app')""",
+                [
+                    ("generic-credit-a", "app_generic_credit_a", 900),
+                    ("generic-credit-b", "app_generic_credit_b", 300),
+                ],
+            )
+            conn.commit()
+
+        with api.app.test_client() as client:
+            response = client.post(
+                "/v1/property",
+                json={
+                    "market_value": 300000, "remaining_debt": 240000, "monthly_rate": 900,
+                    "house_fee": 0, "management_fee": 0,
+                },
+                headers={"Authorization": "Bearer pilot-token", "Origin": "https://getrove.de"},
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            generic_count = conn.execute(
+                """SELECT COUNT(*) FROM app_contracts
+                     WHERE user_id=1 AND name='Kredit' AND legacy_ref IS NULL"""
+            ).fetchone()[0]
+            self.assertEqual(generic_count, 2)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_contracts WHERE user_id=1 AND legacy_ref='app_property:monthly_rate'"
+            ).fetchone()[0], 1)
+            self.assertEqual(float(conn.execute(
+                "SELECT fixed_costs FROM users WHERE user_id=1"
+            ).fetchone()[0]), 2100.0)
 
     def test_existing_financial_accounts_are_not_overwritten_or_duplicated(self):
         with closing(self.connect()) as conn:

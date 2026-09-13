@@ -588,6 +588,34 @@ for (const [range, initial, updated, intraday] of [
         self.assertNotIn("data-debt-back", debt_screen)
         self.assertIn('"setsheet"', self.frontend.split("const SWIPE_DISMISS_SHEET_IDS=", 1)[1].split("];", 1)[0])
 
+    def test_onboarding_keeps_mortgage_rate_property_bound(self):
+        assets = self.frontend.split("function obBuildAssets", 1)[1].split(
+            "// Budget-Vorschlag", 1
+        )[0]
+        finish = self.frontend.split("async function finishOnboarding", 1)[1].split(
+            "// Der eingegebene Kontostand", 1
+        )[0]
+        self.assertIn('data-win="immo_rate"', self.frontend)
+        self.assertIn("Die Hypothekenrate wird hier separat gespeichert", self.frontend)
+        self.assertIn('rate:w.immo_rate||0', assets)
+        self.assertIn("property_monthly_rate:OB.wealth.immo_rate||0", finish)
+        self.assertNotIn("rate:OB.contracts.kredit||0", finish)
+
+    def test_property_edit_requires_explicit_generic_credit_link_choice(self):
+        property_flow = self.frontend.split("function ambiguousPropertyCreditContracts", 1)[1].split(
+            "function saveImmoSheet", 1
+        )[0]
+        save = self.frontend.split("async function saveImmoSheet", 1)[1].split(
+            "const CONTRACT_CATS", 1
+        )[0]
+        self.assertIn("window.confirm", property_flow)
+        self.assertIn("window.prompt", property_flow)
+        self.assertIn("0: keiner, separat anlegen", property_flow)
+        self.assertIn("link_existing_contract_id", save)
+        self.assertIn("if(!propertyCredit.decided) return;", save)
+        self.assertIn("!serverContractLegacyRef(item)", property_flow)
+        self.assertIn('String(item.n||"").trim().toLowerCase()==="kredit"', property_flow)
+
     def test_score_explanation_localizes_transliterated_german_copy(self):
         score = self.frontend.split("function renderScore(){", 1)[1].split(
             "// Faktor antippen", 1

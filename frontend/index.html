@@ -5643,6 +5643,32 @@ function openImmoSheet(){
   rovePushState("immosheet");
   requestAnimationFrame(()=>liftTabbar(document.getElementById("immosheet")));
 }
+function ambiguousPropertyCreditContracts(){
+  return (DATA.vertraege||[]).flatMap(group=>(group.items||[]).map(item=>({group,item})))
+    .filter(({group,item})=>group.cat==="Kredite"
+      && String(item.n||"").trim().toLowerCase()==="kredit"
+      && !serverContractLegacyRef(item)
+      && !!serverContractId(item))
+    .map(({item})=>item);
+}
+function resolvePropertyCreditLink(){
+  const candidates=ambiguousPropertyCreditContracts();
+  if(!candidates.length) return {decided:true,contractId:null};
+  if(candidates.length===1){
+    const item=candidates[0];
+    const yes=window.confirm(`Ist der bestehende Kredit über ${eur2(item.a)} / Monat deine Immobilienfinanzierung?\n\nJa verknüpft ihn mit der Immobilie. Nein legt die Property-Rate separat an.`);
+    return {decided:true,contractId:yes?serverContractId(item):null};
+  }
+  const options=candidates.map((item,index)=>`${index+1}: ${eur2(item.a)} / Monat`).join("\n");
+  const answer=window.prompt(`Welcher bestehende Kredit ist deine Immobilienfinanzierung?\n${options}\n0: keiner, separat anlegen`);
+  if(answer===null) return {decided:false,contractId:null};
+  const choice=Number.parseInt(String(answer).trim(),10);
+  if(!Number.isInteger(choice)||choice<0||choice>candidates.length){
+    showToast("Bitte eine gültige Kreditnummer oder 0 eingeben");
+    return {decided:false,contractId:null};
+  }
+  return {decided:true,contractId:choice===0?null:serverContractId(candidates[choice-1])};
+}
 async function saveImmoSheet(){
   const marktwert=appMoney(document.getElementById("immoWert").value);
   const restschuld=appMoney(document.getElementById("immoSchuld").value);
@@ -5651,9 +5677,12 @@ async function saveImmoSheet(){
   const verwaltung=appMoney(document.getElementById("immoVerwaltung").value);
   if(!marktwert){ document.getElementById("immoWert").focus(); return; }
   if(APP_MODE==="bridge"){
+    const propertyCredit=rate>0 ? resolvePropertyCreditLink() : {decided:true,contractId:null};
+    if(!propertyCredit.decided) return;
     const ok=await syncProperty({
       market_value:marktwert, remaining_debt:restschuld, monthly_rate:rate,
-      house_fee:hausgeld, management_fee:verwaltung
+      house_fee:hausgeld, management_fee:verwaltung,
+      ...(propertyCredit.contractId ? {link_existing_contract_id:propertyCredit.contractId} : {})
     });
     if(!ok) return;
     closeSheet(); showToast("Immobilie dauerhaft gespeichert");
@@ -10140,6 +10169,7 @@ function prefillOnboardingFromState(){
     else if(asset.name==="Immobilie" && asset.real){
       OB.wealth.immo_wert=Number(asset.real.marktwert||0);
       OB.wealth.immo_schuld=Number(asset.real.restschuld||0);
+      OB.wealth.immo_rate=Number(asset.real.rate||0);
     }
   });
   (DATA.vertraege||[]).forEach(group=>{
@@ -13476,6 +13506,9 @@ function obRender(){
             value="${w.immo_wert??""}" ${w.immo_wert?'':'tabindex="-1"'}>
           <input type="text" inputmode="decimal" placeholder="Restschuld in € (falls Kredit läuft)" data-win="immo_schuld"
             value="${w.immo_schuld??""}" ${w.immo_wert?'':'tabindex="-1"'}>
+          <input type="text" inputmode="decimal" placeholder="Monatliche Hypothekenrate in € (optional)" data-win="immo_rate"
+            value="${w.immo_rate??""}" ${w.immo_wert?'':'tabindex="-1"'}>
+          <div class="ob-sub">Die Hypothekenrate wird hier separat gespeichert. „Kredit“ oben nutzt du nur für einen anderen Kredit.</div>
         </div>
       </div>
       <div class="ob-count">Vermögen bisher: <b id="obWealthSum">${eur2(obWealthSum())}</b></div>`;
@@ -13579,7 +13612,7 @@ function obBuildVertraege(){
 }
 
 // Vermögens-Kacheln → DATA.assets: nur was eingetragen wurde. Immobilie mit real{}-Struktur
-// (Eigenkapital = Marktwert − Restschuld, Rate aus dem Kredit-Posten des Fixkosten-Pickers).
+// (Eigenkapital = Marktwert − Restschuld, Hypothekenrate aus dem Property-Feld).
 // Bargeld/Sachwerte kommen als leere Töpfe dazu, sobald IRGENDEIN Vermögen da ist (Tag-1-Prinzip:
 // bei komplett leerem Start bleibt assets=[] → sauberer Leerzustand statt 0,00-€-Wüste).
 function obBuildAssets(){
@@ -13593,7 +13626,7 @@ function obBuildAssets(){
     const ek=Math.max(0, w.immo_wert-(w.immo_schuld||0));
     out.push({name:"Immobilie", icon:"house", tint:"#D8B66A", value:ek, sub:"Eigenkapital",
       real:{marktwert:w.immo_wert, restschuld:w.immo_schuld||0, eigenkapital:ek,
-            rate:OB.contracts.kredit||0, wert:"—"}});
+            rate:w.immo_rate||0, wert:"—"}});
   }
   if(out.length){
     if(!w.bar) out.push({name:"Bargeld", icon:"wallet", tint:"#B08D57", value:0, sub:"im Portemonnaie"});
@@ -13653,7 +13686,8 @@ async function finishOnboarding(){
           wealth:{
             giro:OB.wealth.giro||0,tagesgeld:OB.wealth.tages||0,bargeld:OB.wealth.bar||0,
             etf:OB.wealth.etf||0,krypto:OB.wealth.krypto||0,
-            property_value:OB.wealth.immo_wert||0,property_debt:OB.wealth.immo_schuld||0
+            property_value:OB.wealth.immo_wert||0,property_debt:OB.wealth.immo_schuld||0,
+            property_monthly_rate:OB.wealth.immo_rate||0
           },
           contracts,goals:serverGoals,
           etf_plan:OB.etfRate>0?{
