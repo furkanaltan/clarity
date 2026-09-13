@@ -872,7 +872,7 @@
   #tab-home .chart-wrap{padding:14px 12px 16px;margin-left:-4px;margin-right:-4px;border:1px solid rgba(196,205,214,.12);border-radius:22px;background:linear-gradient(145deg,rgba(30,40,51,.72),rgba(10,17,25,.38));box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 16px 34px rgba(0,0,0,.12);backdrop-filter:blur(16px) saturate(118%);-webkit-backdrop-filter:blur(16px) saturate(118%)}
   #tab-home .chart{filter:drop-shadow(0 3px 8px rgba(190,202,212,.12))}
   #tab-home .ranges{padding-top:2px;border-top:1px solid rgba(196,205,214,.1)}
-  #tab-home .chart-wrap.activity-view .ranges{margin-top:63px}
+  #tab-home .chart-wrap.activity-view .ranges{margin-top:8px}
   #tab-home .range{color:rgba(214,222,229,.62)}
   #tab-home .range.on{color:var(--ink);background:linear-gradient(180deg,rgba(214,222,229,.18),rgba(214,222,229,.08));box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
   #tab-home .home-assets-card{padding:4px 14px;background:linear-gradient(145deg,rgba(28,38,49,.88),rgba(9,16,24,.76));border-color:rgba(196,205,214,.16);box-shadow:0 18px 38px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.055);backdrop-filter:blur(18px) saturate(120%);-webkit-backdrop-filter:blur(18px) saturate(120%)}
@@ -4305,14 +4305,14 @@ function chartActivityLabel(value,maxLength=16){
 function drawDayActivityChart(events){
   const chart=document.getElementById("chart"), viewport=document.getElementById("chartViewport"), wrap=chart?.closest(".chart-wrap");
   if(!chart) return;
-  const count=events.length, width=chartActivityWidth(count), height=150;
+  const count=events.length, width=chartActivityWidth(count), height=205;
   chart.classList.add("activity-view");
   chart.setAttribute("viewBox",`0 0 ${width} ${height}`);
   chart.style.width=width>360?`${width}px`:"100%";
   chart.style.height=`${height}px`;
   viewport?.classList.add("activity-view");
   wrap?.classList.add("activity-view");
-  const emptyMascot=`<svg class="chart-activity-empty-mascot" x="${width/2-42}" y="17" width="84" height="91" viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  const emptyMascot=`<svg class="chart-activity-empty-mascot" x="${width/2-42}" y="82" width="84" height="91" viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <defs>
       <radialGradient id="chartActivityRoveBody" cx="38%" cy="25%" r="85%">
         <stop offset="0%" stop-color="#ffffff"/><stop offset="65%" stop-color="#f3f5f8"/><stop offset="100%" stop-color="#d9dfe7"/>
@@ -4338,13 +4338,13 @@ function drawDayActivityChart(events){
   </svg>`;
   let body;
   if(!count){
-    body=`${emptyMascot}<text class="chart-activity-empty-title" x="${width/2}" y="126" text-anchor="middle">Noch keine Aktivität heute.</text>`;
+    body=`${emptyMascot}<text class="chart-activity-empty-title" x="${width/2}" y="194" text-anchor="middle">Noch keine Aktivität heute.</text>`;
   } else {
-    const baseline=108, barGap=3, barBottom=baseline-barGap, labelY=126, amountY=145;
+    const baseline=160, barGap=4, barBottom=baseline-barGap, labelY=179, amountY=198;
     const maxAmount=Math.max(...events.map(event=>Math.abs(event.amount)),0);
     const bars=events.map((event,index)=>{
       const centerX=chartActivityX(count,index,width), barWidth=Math.min(34, count>1?30:26);
-      const barHeight=chartActivityBarHeight(event.amount,maxAmount,76,16), top=barBottom-barHeight;
+      const barHeight=chartActivityBarHeight(event.amount,maxAmount,108,18), top=barBottom-barHeight;
       const safeName=escapeAccountHtml(chartActivityLabel(event.name));
       const safeAmount=escapeAccountHtml(`${event.amount>=0?"+":"-"}${eur2(Math.abs(event.amount))}`);
       const cls=event.type==="income"?"chart-activity-bar-income":"chart-activity-bar-expense";
