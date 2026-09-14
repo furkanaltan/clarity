@@ -3002,6 +3002,7 @@ function computeFixRest(){
 // ===================== MOCK-DATEN (Struktur spiegelt späteres Rov.E-Datenmodell) =====================
 const DATA = {
   chartV2:null,
+  mentorCandidate:null,
   features:{},
   featureAnnouncements:{unseen_count:0,eligible:[],archive:[]},
   financialAccounts:[],
@@ -3566,6 +3567,11 @@ function writeActivitySeenTs(ts){
 function announcementEscape(value){
   return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 }
+function mentorFactorLabel(value){
+  return String(value??"")
+    .replaceAll("Liquiditaet","Liquidität")
+    .replaceAll("Datenqualitaet","Datenqualität");
+}
 function normalizeFeatureAnnouncements(value){
   const source=value&&typeof value==="object"?value:{};
   const clean=item=>item&&typeof item==="object"&&typeof item.feature_id==="string"
@@ -3850,9 +3856,22 @@ function mentorLine(){
   const el=document.getElementById("mentorSay");
   const mentor=document.querySelector(".mentor");
   const dueActions=(DATA.monthlyCheckinActions||[]).filter(action=>action?.due&&!action?.completed);
-  mentor?.classList.toggle("monthly-due",dueActions.length>0);
   mentor?.classList.remove("feature-announcement");
-  if(mentor) delete mentor.dataset.featureId;
+  if(mentor){
+    delete mentor.dataset.featureId;
+    delete mentor.dataset.mentorDeepLink;
+  }
+  const serverCandidate=APP_MODE==="bridge" && DATA.mentorCandidate;
+  if(serverCandidate){
+    mentor?.classList.remove("monthly-due");
+    const deepLink=String(serverCandidate.deep_link||"");
+    if(mentor && deepLink) mentor.dataset.mentorDeepLink=deepLink;
+    el.innerHTML=`<div class="m-free" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.title)}</b></div>`+
+      `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
+    return;
+  }
+  mentor?.classList.remove("monthly-due");
+  mentor?.classList.toggle("monthly-due",dueActions.length>0);
   if(dueActions.length){
     const action=dueActions[0];
     el.innerHTML=dueActions.length===1
@@ -3860,7 +3879,6 @@ function mentorLine(){
       : `<div class="m-free" data-mentoract="monthly"><b>${dueActions.length} Dinge für deinen Monat sind bereit</b></div><div class="m-note">Öffne deinen Monatscheck.</div>`;
     return;
   }
-  mentor?.classList.remove("monthly-due");
   const coachAnnouncement=DATA.featureAnnouncements?.coach;
   if(coachAnnouncement){
     const label=coachAnnouncement.priority==="security"?"Wichtige Information":"Neu in Rov.E";
@@ -3952,7 +3970,7 @@ function mentorLine(){
   const savingsAwaitingClose = score.next_lever==="Sparrate" &&
     !score.savings_confirmed && Number(score.savings_ratio||0)>=0.20;
   if(score.value!=null && score.next_lever && !savingsAwaitingClose){
-    candidates.push(`<div class="m-free">Dein Rov.E Score: <b>${score.value} von 100</b>.</div><div class="m-note">Nächster Hebel: ${score.next_lever}</div>`);
+    candidates.push(`<div class="m-free">Dein Rov.E Score: <b>${score.value} von 100</b>.</div><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`);
   }
   if(Number(points.value||0)>0){
     const rpNext=Number(points.to_next||0)>0?`Noch <b>${points.to_next} RP</b> bis ${points.next_rank||"zum nächsten Rang"}.`:`<b>${points.rank_name||"Rov.E Fortschritt"}</b> ist dein aktueller Fortschrittsrang.`;
@@ -3993,6 +4011,7 @@ document.querySelector(".mentor").addEventListener("click",e=>{
   else if(a==="budget"){ go("tx"); document.querySelector('#txPills [data-f="budget"]')?.click(); }
   else if(a==="monthly") openMonthlyPlan();
   else if(a==="feature") openFeatureAnnouncement(r.dataset.featureId);
+  else if(a==="candidate") openFeatureDeepLink(mentorCard?.dataset.mentorDeepLink||"");
 });
 // Chart-Zustand für Scrubbing (Punkt-Positionen, Werte, Datums-Labels)
 const CHART={};
@@ -8208,6 +8227,7 @@ async function fetchCanonicalAppState(){
 
     if(appDataRefreshQueued) return true;
     DATA.chartV2=data.chartV2||null;
+    DATA.mentorCandidate=data.mentor_candidate||null;
     if(Array.isArray(data.tx)){
       DATA.tx=data.tx.length?data.tx:[{d:"Heute",items:[]}];
       TXID=DATA.tx.flatMap(d=>d.items).length+1000;
@@ -11565,7 +11585,8 @@ talkIn.addEventListener("keydown",e=>{ if(e.key==="Enter"){ askRove(talkIn.value
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
 if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>{
-  if((DATA.monthlyCheckinActions||[]).some(action=>action?.due&&!action?.completed)) openMonthlyPlan();
+  if(mentorCard.dataset.mentorDeepLink) openFeatureDeepLink(mentorCard.dataset.mentorDeepLink);
+  else if((DATA.monthlyCheckinActions||[]).some(action=>action?.due&&!action?.completed)) openMonthlyPlan();
   else if(mentorCard.dataset.featureId) openFeatureAnnouncement(mentorCard.dataset.featureId);
   else openTalk();
 }); }

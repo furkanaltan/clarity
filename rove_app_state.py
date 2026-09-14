@@ -474,6 +474,157 @@ def _monthly_budget_truth(
     }
 
 
+def build_mentor_candidate(
+    *,
+    score: dict,
+    budget_truth: dict,
+    monthly_actions: list[dict],
+    goals: list[dict],
+    contracts: list[dict],
+    reports: list[dict],
+    income: float,
+    fixed_costs: float,
+    debt_status: str = "unknown",
+) -> dict | None:
+    """Choose one deterministic next step from already-canonical app state.
+
+    This is prioritization only. It deliberately does not calculate a second score or
+    change any financial truth; the existing score, budget and state builders remain the
+    sources of truth.
+    """
+    def amount(value: object) -> str:
+        try:
+            number = float(value or 0)
+        except (TypeError, ValueError):
+            number = 0.0
+        formatted = f"{abs(number):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{formatted} €"
+
+    def candidate(
+        item_id: str,
+        priority: int,
+        item_type: str,
+        title: str,
+        message: str,
+        action_label: str,
+        deep_link: str,
+        reason: str,
+    ) -> dict:
+        return {
+            "id": item_id,
+            "priority": priority,
+            "type": item_type,
+            "title": title,
+            "message": message,
+            "action_label": action_label,
+            "deep_link": deep_link,
+            "reason": reason,
+        }
+
+    free_remaining = float(budget_truth.get("free_month_remaining") or 0)
+    category_remaining = float(budget_truth.get("category_remaining") or 0)
+    if free_remaining < 0 or category_remaining < 0:
+        shortfall = max(abs(free_remaining) if free_remaining < 0 else 0, abs(category_remaining))
+        return candidate(
+            "budget-overrun", 100, "budget_overrun",
+            "Dein Budget braucht Aufmerksamkeit",
+            f"In deinem Monatsplan fehlen aktuell {amount(shortfall)}.",
+            "Budget prüfen", "analysis", "negative_or_overrun_budget",
+        )
+
+    consumer_debt = float(score.get("consumer_debt_total") or 0)
+    debt_points = float(score.get("debt") or 0)
+    if consumer_debt > 0 and debt_points < 25:
+        return candidate(
+            "consumer-debt", 95, "consumer_debt",
+            "Konsumschulden zuerst ordnen",
+            f"Rov.E kennt {amount(consumer_debt)} an Konsumschulden. Eine Hypothek wird davon getrennt betrachtet.",
+            "Schulden prüfen", "settings", "consumer_debt",
+        )
+
+    liquidity_months = score.get("liquidity_months")
+    try:
+        weak_liquidity = liquidity_months is not None and float(liquidity_months) < 1
+    except (TypeError, ValueError):
+        weak_liquidity = False
+    if weak_liquidity or float(score.get("liquidity") or 0) <= 4:
+        return candidate(
+            "liquidity", 90, "liquidity",
+            "Dein Notgroschen ist noch knapp",
+            "Deine verfügbare Rücklage reicht aktuell noch nicht für einen stabilen Puffer.",
+            "Liquidität prüfen", "score", "weak_liquidity",
+        )
+
+    savings_ratio = float(score.get("savings_ratio") or 0)
+    if savings_ratio < 0.10 or float(score.get("savings") or 0) <= 10:
+        return candidate(
+            "savings-rate", 70, "savings",
+            "Deine Sparrate ist der nächste Hebel",
+            "Schon ein kleiner regelmäßiger Schritt kann deine finanzielle Stabilität stärken.",
+            "Sparrate prüfen", "score", "weak_savings_rate",
+        )
+
+    if debt_status == "unknown":
+        return candidate(
+            "debt-status", 65, "debt_unknown",
+            "Schuldenstatus vervollständigen",
+            "Rov.E kennt deinen Konsumschuldenstatus noch nicht. Eine Hypothek wird getrennt bewertet.",
+            "Schuldenstatus prüfen", "settings", "debt_status_unknown",
+        )
+
+    due = next((action for action in monthly_actions if action.get("due") and not action.get("completed")), None)
+    if due:
+        return candidate(
+            f"monthly-action:{due.get('kind', 'checkin')}", 50, "monthly_action",
+            str(due.get("title") or "Dein Monatscheck ist bereit"),
+            str(due.get("detail") or "Öffne deinen Monatscheck."),
+            "Monatscheck öffnen", "monthly-checkin", "monthly_action_due",
+        )
+
+    tracking_days = int(score.get("tracking_days_90") or 0)
+    if tracking_days < 4:
+        return candidate(
+            "tracking", 45, "tracking",
+            "Deine Datenbasis darf noch wachsen",
+            "Mit regelmäßig erfassten Buchungen wird dein Finanzbild belastbarer.",
+            "Ausgaben erfassen", "analysis", "weak_tracking",
+        )
+
+    ready_report = next((report for report in reports if report.get("status") == "ready"), None)
+    if ready_report:
+        return candidate(
+            f"report:{ready_report.get('month', 'latest')}", 30, "report",
+            "Dein Monatsreport ist bereit",
+            "Schau dir die Entwicklung deines letzten abgeschlossenen Monats an.",
+            "Report öffnen", "reports", "report_ready",
+        )
+
+    if contracts:
+        return candidate(
+            "contracts", 25, "contracts",
+            "Prüfe deine laufenden Verträge",
+            "Ein klarer Überblick über wiederkehrende Kosten schafft zusätzlichen Spielraum.",
+            "Verträge öffnen", "contracts", "contracts_present",
+        )
+
+    if not goals:
+        return candidate(
+            "goal", 20, "goal",
+            "Setze dir ein konkretes Ziel",
+            "Ein klares Ziel macht deinen nächsten finanziellen Schritt sichtbar.",
+            "Ziel anlegen", "goals", "no_goal",
+        )
+
+    if float(score.get("value") or 0) >= 75:
+        return candidate(
+            "motivation", 10, "motivation",
+            "Deine finanzielle Basis ist stabil",
+            "Bleib bei den Gewohnheiten, die deinen Fortschritt tragen.",
+            "Score ansehen", "score", "stable_finances",
+        )
+    return None
+
+
 def _previous_month_keys(count: int = 3) -> list[str]:
     """Liefert die letzten abgeschlossenen Monats-Schluessel, neuester zuerst."""
     cursor = date.today().replace(day=1)
@@ -2106,6 +2257,34 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         {"assetKey": "cash:bargeld", "name": "Bargeld", "source": "bot", "icon": "wallet", "tint": "#B08D57",
          "value": cash_accounts["bargeld"], "sub": "im Portemonnaie"} if (cash_accounts["bargeld"] or has_cash_accounts) else None,
     ) if a]
+    budgets = _build_budgets(conn, user_id)
+    reports = _build_reports(conn, user_id)
+    contracts = build_app_contract_groups(conn, user_id, details)
+    goals = ([{
+        "id": "primary",
+        "t": u.get("goal_description"),
+        "icon": "coins", "tint": "#2AABEE",
+        "cur": get_app_primary_goal_progress(conn, user_id, float(u.get("goal_amount") or 0)),
+        "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
+        "rate": get_app_primary_goal_rate(conn, user_id),
+        # Wird weiterhin als Bot-Hauptziel markiert, damit lokale Snapshots es niemals
+        # wiederbeleben. Bearbeiten und Löschen übernimmt jetzt trotzdem die App-API.
+        "source": "bot",
+    }] if (u.get("goal_description") or "").strip() else []) + [
+        goal for goal in get_app_goals(conn, user_id)
+        if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
+    ]
+    mentor_candidate = build_mentor_candidate(
+        score=score,
+        budget_truth=budget_truth,
+        monthly_actions=monthly_checkin_actions,
+        goals=goals,
+        contracts=contracts,
+        reports=reports,
+        income=income,
+        fixed_costs=fixed_costs,
+        debt_status=normalize_debt_status(u.get("debt_status")),
+    )
     onboarding_step = int(u.get("onboarding_step") or 0)
     onboarding_required = onboarding_step < 10
     onboarding_status = (
@@ -2163,8 +2342,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "tx": tx,
         "txHistory": tx_history,
         "budgetHistory": budget_history,
-        "budgets": _build_budgets(conn, user_id),
-        "reports": _build_reports(conn, user_id),
+        "budgets": budgets,
+        "reports": reports,
         "monthlyPlan": monthly_plan,
         "monthlyCheckinActions": monthly_checkin_actions,
         "monthlyCheckinDueCount": len(monthly_checkin_actions),
@@ -2190,21 +2369,9 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
             "monthExpenses": round(monthly_expenses, 2),
             "variableMonthExpenses": budget_truth["variable_expenses"],
         },
-        "vertraege": build_app_contract_groups(conn, user_id, details),
-        "goals": ([{
-            "id": "primary",
-            "t": u.get("goal_description"),
-            "icon": "coins", "tint": "#2AABEE",
-            "cur": get_app_primary_goal_progress(conn, user_id, float(u.get("goal_amount") or 0)),
-            "tar": round(float(u.get("goal_amount") or 0), 2) or 1,
-            "rate": get_app_primary_goal_rate(conn, user_id),
-            # Wird weiterhin als Bot-Hauptziel markiert, damit lokale Snapshots es niemals
-            # wiederbeleben. Bearbeiten und Löschen übernimmt jetzt trotzdem die App-API.
-            "source": "bot",
-        }] if (u.get("goal_description") or "").strip() else []) + [
-            goal for goal in get_app_goals(conn, user_id)
-            if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
-        ],
+        "vertraege": contracts,
+        "goals": goals,
+        "mentor_candidate": mentor_candidate,
     }
 
 
