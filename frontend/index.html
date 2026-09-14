@@ -3992,6 +3992,33 @@ function mentorLine(){
   const dailyIndex=[...todayKey].reduce((sum,char)=>sum+char.charCodeAt(0),0)%candidates.length;
   el.innerHTML=candidates[dailyIndex];
 }
+let reportOpenInFlight=null;
+async function markReportOpened(reportMonth){
+  const month=String(reportMonth||"").trim();
+  if(!month||APP_MODE!=="bridge"||!apiReady()) return false;
+  if(reportOpenInFlight) return reportOpenInFlight;
+  reportOpenInFlight=(async()=>{
+    try{
+      const response=await apiFetch(`/v1/reports/${encodeURIComponent(month)}/opened`,{method:"POST"});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||!data.ok) throw new Error(data.error||`HTTP ${response.status}`);
+      if(Array.isArray(data.reports)) DATA.reports=data.reports;
+      DATA.mentorCandidate=Object.prototype.hasOwnProperty.call(data,"mentor_candidate")
+        ? data.mentor_candidate : null;
+      mentorLine();
+      return true;
+    }catch(error){
+      console.warn("Report-Status konnte nicht gespeichert werden:",error);
+      return false;
+    }finally{ reportOpenInFlight=null; }
+  })();
+  return reportOpenInFlight;
+}
+async function openMentorCandidate(candidate,route){
+  if(!openFeatureDeepLink(route)) return false;
+  if(candidate?.type==="report") await markReportOpened(String(candidate.id||"").replace(/^report:/,""));
+  return true;
+}
 mentorLine();
 // Mentor-Aufforderungen antippbar machen (Runde 37, 18.07.) — leitet direkt in die passende Aktion,
 // statt nur Text zu zeigen (sonst wäre "mach deine erste Buchung" ein Lippenbekenntnis).
@@ -4011,7 +4038,7 @@ document.querySelector(".mentor").addEventListener("click",e=>{
   else if(a==="budget"){ go("tx"); document.querySelector('#txPills [data-f="budget"]')?.click(); }
   else if(a==="monthly") openMonthlyPlan();
   else if(a==="feature") openFeatureAnnouncement(r.dataset.featureId);
-  else if(a==="candidate") openFeatureDeepLink(mentorCard?.dataset.mentorDeepLink||"");
+  else if(a==="candidate") openMentorCandidate(DATA.mentorCandidate,mentorCard?.dataset.mentorDeepLink||"");
 });
 // Chart-Zustand für Scrubbing (Punkt-Positionen, Werte, Datums-Labels)
 const CHART={};
@@ -9578,7 +9605,11 @@ function formatReportExpiry(value){
   const parsed=new Date(String(value).replace(" ","T"));
   return Number.isNaN(parsed.getTime()) ? String(value).slice(0,10) : parsed.toLocaleDateString("de-DE");
 }
-function openReportDetail(i){ renderReportDetail(i); openOnly("repdetailsheet"); }
+function openReportDetail(i){
+  const report=DATA.reports?.[i];
+  renderReportDetail(i); openOnly("repdetailsheet");
+  if(report?.status==="ready") markReportOpened(report.month);
+}
 // Sheet-Wechsel: alle Sheets schließen, Hintergrund bleibt
 function closeAllSheetsSoft(){
   ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
@@ -11604,7 +11635,7 @@ talkIn.addEventListener("keydown",e=>{ if(e.key==="Enter"){ askRove(talkIn.value
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
 if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>{
-  if(mentorCard.dataset.mentorDeepLink) openFeatureDeepLink(mentorCard.dataset.mentorDeepLink);
+  if(mentorCard.dataset.mentorDeepLink) openMentorCandidate(DATA.mentorCandidate,mentorCard.dataset.mentorDeepLink);
   else if((DATA.monthlyCheckinActions||[]).some(action=>action?.due&&!action?.completed)) openMonthlyPlan();
   else if(mentorCard.dataset.featureId) openFeatureAnnouncement(mentorCard.dataset.featureId);
   else openTalk();
@@ -13078,6 +13109,12 @@ function loadProfileState(){
       queueInitialReveal(measured);
     });
   }
+  function syncAfterAppReveal(){
+    if(!bar.offsetHeight) return;
+    pruefe();
+    setzePosition();
+    queueInitialReveal(bar.offsetHeight);
+  }
   function pruefe(){
     // Die Tastatur macht innerHeight nur KLEINER, nie grösser. Das Maximum ist damit die echte
     // Fensterhöhe — auch dann, wenn iOS sich danach nie wieder auf sie zurückstellt.
@@ -13093,6 +13130,10 @@ function loadProfileState(){
   window.addEventListener("resize", pruefe);
   if(window.visualViewport) visualViewport.addEventListener("resize", pruefe);
   window.addEventListener("orientationchange", ()=>{ H=0; lies(); setTimeout(()=>{ pruefe(); setzePosition(); },300); });
+  const app=document.getElementById("app");
+  if(app&&window.MutationObserver){
+    new MutationObserver(syncAfterAppReveal).observe(app,{attributes:true,attributeFilter:["hidden"]});
+  }
 })();
 
 // ===================== SERVICE WORKER (27.07.) =====================

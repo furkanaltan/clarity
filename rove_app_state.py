@@ -590,7 +590,11 @@ def build_mentor_candidate(
             "Ausgaben erfassen", "analysis", "weak_tracking",
         )
 
-    ready_report = next((report for report in reports if report.get("status") == "ready"), None)
+    ready_report = next(
+        (report for report in reports
+         if report.get("status") == "ready" and not report.get("opened")),
+        None,
+    )
     if ready_report:
         return candidate(
             f"report:{ready_report.get('month', 'latest')}", 30, "report",
@@ -661,15 +665,27 @@ def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
     }]
     try:
         jobs = conn.execute(
-            """SELECT report_month
+            """SELECT report_month, opened_at
                  FROM report_jobs
                 WHERE user_id = ? AND status = 'sent' AND report_month < ?
-                GROUP BY report_month
-                ORDER BY report_month DESC""",
+                 GROUP BY report_month
+                 ORDER BY report_month DESC""",
             (user_id, current_month),
         ).fetchall()
     except sqlite3.OperationalError:
-        return reports
+        # Older installations do not have the additive report-read marker yet.
+        # They remain fully readable; the marker is added on the first explicit open.
+        try:
+            jobs = conn.execute(
+                """SELECT report_month, NULL AS opened_at
+                     FROM report_jobs
+                    WHERE user_id = ? AND status = 'sent' AND report_month < ?
+                    GROUP BY report_month
+                    ORDER BY report_month DESC""",
+                (user_id, current_month),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return reports
 
     for job in jobs:
         month_key = str(job["report_month"] or "").strip()
@@ -710,6 +726,7 @@ def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
             "month": month_key,
             "m": _report_month_label(month_key),
             "status": "ready",
+            "opened": bool(job["opened_at"]),
             "pdfAvailable": bool(pdf_available),
             "webUrl": web_url,
             "webExpiresAt": web_expires_at,

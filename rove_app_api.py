@@ -533,6 +533,11 @@ def report_pdf_options(report_month: str):
     return ("", 204)
 
 
+@app.route("/v1/reports/<report_month>/opened", methods=["OPTIONS"])
+def report_opened_options(report_month: str):
+    return ("", 204)
+
+
 @app.route("/v1/data-export", methods=["OPTIONS"])
 def data_export_options():
     return ("", 204)
@@ -7103,6 +7108,45 @@ def serve_public_report(token: str, relative_path: str):
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
     return response
+
+
+def ensure_report_opened_at_column(conn: sqlite3.Connection) -> None:
+    """Add the per-report read marker without changing report delivery state."""
+    if not table_exists(conn, "report_jobs"):
+        return
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(report_jobs)")}
+    if "opened_at" not in columns:
+        conn.execute("ALTER TABLE report_jobs ADD COLUMN opened_at TEXT")
+
+
+@app.route("/v1/reports/<report_month>/opened", methods=["POST"])
+def mark_report_opened(report_month: str):
+    """Persist that the authenticated user opened a sent report."""
+    if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", report_month or ""):
+        return jsonify({"ok": False, "error": "invalid_report_month"}), 400
+
+    token = token_from_request()
+    with db() as conn:
+        begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if not table_exists(conn, "report_jobs"):
+            return jsonify({"ok": False, "error": "report_not_available"}), 404
+        ensure_report_opened_at_column(conn)
+        updated = conn.execute(
+            """UPDATE report_jobs
+                  SET opened_at = COALESCE(opened_at, CURRENT_TIMESTAMP)
+                WHERE user_id = ? AND report_month = ? AND status = 'sent'""",
+            (user_id, report_month),
+        ).rowcount
+        if not updated:
+            return jsonify({"ok": False, "error": "report_not_available"}), 404
+        live_data = build_live_app_data(conn, user_id)
+        conn.commit()
+
+    hydrate_crypto_logos(live_data)
+    return jsonify({"ok": True, **live_data})
 
 
 @app.route("/v1/reports/<report_month>/pdf", methods=["GET"])

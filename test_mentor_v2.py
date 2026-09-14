@@ -120,6 +120,12 @@ class MentorV2Tests(unittest.TestCase):
         )
         self.assertEqual(contracts["type"], "contracts")
 
+    def test_opened_report_no_longer_blocks_the_next_mentor_candidate(self):
+        report = self.candidate(
+            reports=[{"month": "2026-08", "status": "ready", "opened": True}],
+        )
+        self.assertNotEqual(report["type"], "report")
+
     def test_all_candidate_links_are_existing_safe_routes(self):
         allowed = {"analysis", "score", "settings", "monthly-checkin", "reports", "contracts", "goals"}
         cases = [
@@ -150,7 +156,7 @@ class MentorV2Tests(unittest.TestCase):
         candidate_branch = frontend.index('const serverCandidate=APP_MODE==="bridge" && DATA.mentorCandidate;')
         due_branch = frontend.index("if(dueActions.length)", candidate_branch)
         self.assertLess(candidate_branch, due_branch)
-        self.assertIn('else if(a==="candidate") openFeatureDeepLink', frontend)
+        self.assertIn('else if(a==="candidate") openMentorCandidate', frontend)
         self.assertIn("mentorFactorLabel", frontend)
 
     def test_visible_mentor_text_uses_german_umlauts(self):

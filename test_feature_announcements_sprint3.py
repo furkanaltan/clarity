@@ -158,6 +158,18 @@ class FeatureAnnouncementSprintThreeServerTests(unittest.TestCase):
         self.assertIn('finance_action_due=bool(state.get("monthlyCheckinDueCount", 0))', source)
         self.assertLess(source.index("build_live_app_data"), source.index("claim_coach_announcement"))
 
+    def test_report_open_marker_is_additive_and_rerunnable(self):
+        self.conn.execute("INSERT INTO report_jobs (user_id, status) VALUES (1, 'sent')")
+        api.ensure_report_opened_at_column(self.conn)
+        api.ensure_report_opened_at_column(self.conn)
+        self.conn.execute(
+            "UPDATE report_jobs SET opened_at = COALESCE(opened_at, CURRENT_TIMESTAMP)"
+        )
+        self.conn.commit()
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(report_jobs)")}
+        self.assertIn("opened_at", columns)
+        self.assertTrue(self.conn.execute("SELECT opened_at FROM report_jobs").fetchone()[0])
+
 
 class FeatureAnnouncementSprintThreeFrontendTests(unittest.TestCase):
     @classmethod
@@ -214,6 +226,18 @@ class FeatureAnnouncementSprintThreeFrontendTests(unittest.TestCase):
         self.assertIn("coach?.feature_id===featureId", local_state)
         self.assertIn('DATA.featureAnnouncements.coach=null', local_state)
         self.assertNotIn("clearAnnouncements", local_state)
+
+    def test_report_opening_persists_and_refreshes_the_server_candidate(self):
+        self.assertIn('`/v1/reports/${encodeURIComponent(month)}/opened`', self.frontend)
+        self.assertIn("DATA.mentorCandidate=Object.prototype.hasOwnProperty.call(data,\"mentor_candidate\")", self.frontend)
+        self.assertIn("mentorLine();", self.frontend[self.frontend.index("async function markReportOpened"):])
+        self.assertIn("if(report?.status===\"ready\") markReportOpened(report.month);", self.frontend)
+
+    def test_desktop_tabbar_retries_measurement_after_hidden_app_reveals(self):
+        anchor = self.frontend[self.frontend.index("// ===================== LEISTEN-ANKER"):]
+        self.assertIn("function syncAfterAppReveal()", anchor)
+        self.assertIn('new MutationObserver(syncAfterAppReveal).observe(app,{attributes:true,attributeFilter:["hidden"]})', anchor)
+        self.assertIn("if(!bar.offsetHeight) return;", anchor)
 
     def test_feature_pulse_is_once_and_respects_reduced_motion(self):
         self.assertIn(".mentor.feature-announcement", self.frontend)
