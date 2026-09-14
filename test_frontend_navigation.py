@@ -250,6 +250,36 @@ console.log(JSON.stringify(chartActivityEvents().map(({id,name})=>({id,name}))))
             [{"id": "expense:1", "name": "Frühstück"}, {"id": "expense:2", "name": "Brot"}],
         )
 
+    def test_mentor_priority_questions_bypass_legacy_local_score_answer(self):
+        start = self.frontend.index("function isMentorPriorityQuestion(")
+        end = self.frontend.index("// Dispatcher: Thema", start)
+        helper = self.frontend[start:end]
+        script = f"""
+{helper}
+const questions = [
+  "Was ist aktuell mein größter finanzieller Schwachpunkt?",
+  "Was ist mein wichtigster finanzieller Hebel?",
+  "Was bremst meinen Score aktuell?",
+  "Was soll ich als Nächstes verbessern?",
+  "Woran soll ich zuerst arbeiten?",
+  "Wie kann ich meine finanzielle Situation sinnvoll verbessern?"
+];
+console.log(JSON.stringify(questions.map(q => isMentorPriorityQuestion(q.toLowerCase()))));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [True] * 6)
+        self.assertLess(
+            self.frontend.index("if(isMentorPriorityQuestion(t)) return null;"),
+            self.frontend.index("if(/score|controller|stratege|rang|einstufung|verfassung|punkte/.test(t)) return ans_score(t);")
+        )
+
     def test_one_day_activity_bar_scale_keeps_small_values_visible(self):
         result = self.run_chart_adapter("""
 console.log(JSON.stringify([

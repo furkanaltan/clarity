@@ -11346,6 +11346,13 @@ function ans_help(){
 function isGeneralFinanceKnowledgeQuestion(t){ return /\b(etfs?|aktien?|fonds?|ter|kgv|börse|boerse|broker|depot)\b/.test(t) && /\b(was (ist|bedeutet)|wie funktioniert|wie funktionieren|was macht|wo kann .* kaufen)\b/.test(t) && !/\b(mein|meine|meiner|bei mir|habe ich|hab ich|ich habe|ich hab|zeig mir|zeige mir)\b/.test(t); }
 function isPersonalInvestmentQuestion(t){ return /\b(etfs?|aktien?|fonds?|depot|portfolio|investments?)\b/.test(t) && (/\b(mein|meine|meiner|bei mir|habe ich|hab ich|ich habe|ich hab|zeig mir|zeige mir)\b/.test(t) || /\b(etfs?|aktien?|depot|portfolio|investments?)\b.{0,18}\b(prüf|pruef|status|performance)\b/.test(t)); }
 function isAmbiguousInvestmentQuestion(t){ return /^was ist mein(?:e|er)?\s+(etf|depot|portfolio|aktie)[?!.,\s]*$/.test(t); }
+function isMentorPriorityQuestion(t){
+  return /größter finanzieller schwachpunkt|groesster finanzieller schwachpunkt|wichtigster finanzieller hebel|wichtigste finanzielle hebel|woran soll ich zuerst arbeiten|was bremst meinen score/.test(t)
+    || /\bwas soll ich\b.{0,48}\b(verbesser\w*|optimier\w*|änder\w*|aender\w*|tun)\b/.test(t)
+    || /\bals nächstes\b.{0,48}\b(verbesser\w*|optimier\w*|tun|arbeiten)\b/.test(t)
+    || /\bfinanzielle situation\b.{0,48}\b(verbesser\w*|optimier\w*)\b/.test(t)
+    || /\bwas ist (?:aktuell )?mein\b.{0,48}\b(schwachpunkt|hebel)\w*\b/.test(t);
+}
 // Dispatcher: Thema + konkrete Entität aus dem Text erkennen
 async function roveAnswer(raw){
   const t=(raw||"").toLowerCase();
@@ -11400,6 +11407,9 @@ async function roveAnswer(raw){
   const addContract=await addContractFromText(t); if(addContract) return addContract;
   // Tages-/Wochenbudget VOR dem Budgets-Check („wochenbudget" enthält „budget")
   if(/tagesbudget|tageslimit|wochenbudget|wochenlimit|pro tag|pro woche|am tag ausgeben|diese woche ausgeben|(heute|heut).{0,32}(ausgeben|drin|verfügbar|uebrig|übrig|leisten)|was.*heute.*drin/.test(t)) return ans_daybudget(t);
+  // Priorisierungsfragen müssen den serverseitigen Mentor-V2-Kandidaten verwenden,
+  // nicht den älteren lokalen Score-Fallback.
+  if(isMentorPriorityQuestion(t)) return null;
   if(/score/.test(t) && /was ist|was bedeutet|erklär|erklaer|wie funktioniert|wie wird|wofür|wofuer|was sagt/.test(t)) return ans_scoreinfo();
   if(/score|controller|stratege|rang|einstufung|verfassung|punkte/.test(t)) return ans_score(t);
   if(/abo(s|nnement)/.test(t) && /wie viel|wieviel|zahle|kosten|liste|zeig|übersicht/.test(t)) return ans_abos();
