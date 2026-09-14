@@ -22,6 +22,7 @@ class AiChatPhaseOneTests(unittest.TestCase):
                     current_investments REAL DEFAULT 0
                 );
                 CREATE TABLE user_access (user_id INTEGER PRIMARY KEY, status TEXT NOT NULL);
+                CREATE TABLE app_user_features (user_id INTEGER, feature_key TEXT, enabled INTEGER);
                 CREATE TABLE expenses (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT, created_at TEXT);
                 CREATE TABLE portfolio_holdings (
                     id INTEGER PRIMARY KEY, user_id INTEGER, instrument_label TEXT, instrument_type TEXT,
@@ -30,14 +31,14 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 );
                 CREATE TABLE investment_events (
                     id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, direction TEXT,
-                    asset_type TEXT, asset_name TEXT
+                    asset_type TEXT, asset_name TEXT, created_at TEXT
                 );
                 INSERT INTO users (user_id, income, fixed_costs, current_investments) VALUES (1, 3000, 800, 2100);
                 INSERT INTO users (user_id, income, fixed_costs) VALUES (2, 2500, 500);
                 INSERT INTO user_access VALUES (1, 'approved');
                 INSERT INTO user_access VALUES (2, 'approved');
                 INSERT INTO portfolio_holdings VALUES (1, 1, 'Test ETF', 'etf', 10, 1000, 1100, 1, 'TEST', 'EUR');
-                INSERT INTO investment_events VALUES (1, 1, 1000, 'in', 'stock', 'X-Peng');
+                INSERT INTO investment_events VALUES (1, 1, 1000, 'in', 'stock', 'X-Peng', CURRENT_TIMESTAMP);
             """)
             api.ensure_auth_tables(conn)
             conn.execute("INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES ('one@example.test', 1, CURRENT_TIMESTAMP, 'app')")
@@ -143,6 +144,72 @@ class AiChatPhaseOneTests(unittest.TestCase):
     def test_system_prompt_requires_plain_text_without_markdown(self):
         self.assertIn("keine Sternchen", api.AI_CHAT_SYSTEM_PROMPT)
         self.assertIn("keine Markdown-Syntax", api.AI_CHAT_SYSTEM_PROMPT)
+
+    def test_mentor_priority_questions_use_personal_v2_context(self):
+        questions = (
+            "Was ist aktuell mein größter finanzieller Schwachpunkt?",
+            "Was soll ich als Nächstes verbessern?",
+            "Was ist mein wichtigster finanzieller Hebel?",
+            "Woran soll ich zuerst arbeiten?",
+            "Was bremst meinen Score aktuell?",
+            "Wie kann ich meine finanzielle Situation am sinnvollsten verbessern?",
+        )
+        for index, question in enumerate(questions):
+            self.assertEqual(api.ai_chat_intent(question), "mentor_priority", question)
+            seen = []
+            with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Priorität erkannt.", 8, 4))):
+                response = self.post(self.client_for(token=f"mentor-intent-{index}"), question)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            prompt = seen[-1]["content"]
+            self.assertIn('"context_type": "mentor_priority"', prompt)
+            self.assertIn('"mentor_priority_item":', prompt)
+            self.assertNotIn('"personal_data": false', prompt)
+
+    def test_mentor_candidate_is_authoritative_in_chat_context(self):
+        candidate = {
+            "id": "budget-overrun", "priority": 100, "type": "budget_overrun",
+            "title": "Dein Budget braucht Aufmerksamkeit", "message": "Budget zuerst prüfen.",
+            "action_label": "Budget prüfen", "deep_link": "analysis",
+            "reason": "negative_or_overrun_budget",
+        }
+        score = {
+            "score_version": 2, "total": 67,
+            "factors": [
+                {"key": "budget", "n": "Budget-Kontrolle", "points": 11, "max": 20},
+                {"key": "savings", "n": "Sparrate", "points": 19, "max": 20},
+                {"key": "liquidity", "n": "Notgroschen / Liquiditaet", "points": 15, "max": 20},
+                {"key": "debt", "n": "Schuldenstruktur", "points": 22, "max": 30},
+                {"key": "tracking", "n": "Tracking / Datenqualitaet", "points": 0, "max": 10},
+            ],
+        }
+        seen = []
+        with patch.object(api, "calculate_score", return_value=score), \
+             patch.object(api, "build_mentor_candidate", return_value=candidate), \
+             patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Budget ist dein wichtigster Hebel.", 8, 4))):
+            response = self.post(self.client_for(token="mentor-authority"), "Was soll ich verbessern?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        prompt = seen[-1]["content"]
+        self.assertIn('"priority": 100', prompt)
+        self.assertIn('"type": "budget_overrun"', prompt)
+        self.assertIn('"key": "budget"', prompt)
+        self.assertIn('"points": 11', prompt)
+        self.assertIn('"max": 20', prompt)
+        self.assertIn("autoritative", api.AI_CHAT_SYSTEM_PROMPT)
+
+    def test_mentor_priority_without_candidate_has_explicit_fallback(self):
+        seen = []
+        with patch.object(api, "build_mentor_candidate", return_value=None), \
+             patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Aktuell ist kein klarer Hebel erkennbar.", 8, 4))):
+            response = self.post(self.client_for(token="mentor-fallback"), "Was soll ich verbessern?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        prompt = seen[-1]["content"]
+        self.assertIn('"mentor_priority_item": null', prompt)
+        self.assertIn("Kein klarer priorisierter Hebel erkannt", prompt)
+
+    def test_mentor_prompt_preserves_debt_status_and_mortgage_rules(self):
+        self.assertIn('"unknown"', api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("nicht Schuldenfreiheit", api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("Hypothek ist nicht als problematische Konsumschuld", api.AI_CHAT_SYSTEM_PROMPT)
 
     def test_action_is_never_sent_to_ai_or_written_as_finance_data(self):
         with closing(sqlite3.connect(self.db_path)) as conn:
