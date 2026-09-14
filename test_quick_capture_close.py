@@ -29,6 +29,30 @@ class QuickCaptureCloseTests(unittest.TestCase):
         self.assertIn('function closeSheet(', self.frontend)
         self.assertIn('if(sheet.classList.contains("on"))closeSheet()', self.frontend)
 
+    def test_mobile_input_sheet_owns_keyboard_viewport_without_hiding_native_ui(self):
+        self.assertIn('MOBILE_INPUT_REGRESSION_GUARD', self.frontend)
+        self.assertIn('#sheet.keyboard-open{bottom:var(--keyboard-cover,0px)', self.frontend)
+        self.assertIn('document.body.classList.toggle("quick-input-keyboard-open",!!keyboardOpen)', self.frontend)
+        self.assertIn('body.quick-input-keyboard-open .screen{visibility:hidden}', self.frontend)
+        self.assertNotIn('keyboard-accessory', self.frontend.lower())
+
+    def test_closed_sheets_are_not_focusable_and_quick_form_has_one_input(self):
+        self.assertIn('el.toggleAttribute("inert",!active)', self.frontend)
+        self.assertIn('el.setAttribute("aria-hidden",active?"false":"true")', self.frontend)
+        self.assertIn('new MutationObserver(syncSheetInteractivity)', self.frontend)
+        start = self.frontend.index('<div class="sheet" id="sheet">')
+        end = self.frontend.index('<div class="sheet tall" id="importsheet">', start)
+        quick_sheet = self.frontend[start:end]
+        self.assertEqual(quick_sheet.count('<input '), 1)
+        self.assertIn('id="quickIn"', quick_sheet)
+        self.assertIn('id="quickSend" type="submit"', quick_sheet)
+        self.assertIn('enterkeyhint="done"', quick_sheet)
+
+    def test_keyboard_state_is_cleared_on_close(self):
+        self.assertIn('document.body.classList.remove("quick-input-keyboard-open")', self.frontend)
+        self.assertIn('sheet.classList.remove("keyboard-open")', self.frontend)
+        self.assertIn('sheet.style.removeProperty("--sheet-viewport-height")', self.frontend)
+
 
 if __name__ == "__main__":
     unittest.main()

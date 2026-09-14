@@ -1893,9 +1893,16 @@
     border-radius:26px 26px 0 0;border-top:1px solid var(--line2);
     padding:10px 20px calc(22px + var(--safe-bot));transform:translateY(115%);
     transition:transform .36s cubic-bezier(.22,1,.36,1);z-index:52;box-shadow:none}
+  /* MOBILE_INPUT_REGRESSION_GUARD: the active input sheet owns the viewport while the keyboard
+     is open; closed sheets remain inert so hidden form controls never enter focus navigation. */
+  #sheet{max-height:calc(100svh - var(--safe-top));overflow-y:auto;overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch}
+  #sheet.keyboard-open{bottom:var(--keyboard-cover,0px);max-height:calc(var(--sheet-viewport-height,100svh) - var(--safe-top))}
   /* iOS keeps a small strip of the layout viewport visible above its native keyboard. */
   .sheet::after{content:"";position:absolute;left:0;right:0;bottom:calc(-1 * var(--keyboard-cover,0px));height:var(--keyboard-cover,0px);background:var(--bg2);pointer-events:none}
   .sheet.on{transform:none;box-shadow:0 -12px 40px rgba(0,0,0,.4)}
+  body.quick-input-keyboard-open .screen{visibility:hidden}
+  body.quick-input-keyboard-open .sheet-bg.on{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
   .sheet-dismiss{position:absolute;top:10px;right:14px;width:34px;height:34px;border:0;border-radius:50%;
     background:transparent;color:var(--muted);font-size:27px;line-height:1;cursor:pointer}
   .sheet-dismiss:active{transform:scale(.92);color:var(--ink)}
@@ -7715,6 +7722,18 @@ const sheet=document.getElementById("sheet"), sheetBg=document.getElementById("s
 const quickForm=document.getElementById("quickForm");
 const quickError=document.getElementById("quickError");
 const gsheet=document.getElementById("gsheet");
+function syncSheetInteractivity(){
+  document.querySelectorAll(".sheet").forEach(el=>{
+    const active=el.classList.contains("on");
+    el.toggleAttribute("inert",!active);
+    el.setAttribute("aria-hidden",active?"false":"true");
+  });
+}
+syncSheetInteractivity();
+if(window.MutationObserver){
+  document.querySelectorAll(".sheet").forEach(el=>new MutationObserver(syncSheetInteractivity)
+    .observe(el,{attributes:true,attributeFilter:["class"]}));
+}
 // Nutzer-Präferenzen (persistiert)
 const PREFS = (()=>{ try{ return Object.assign({haptik:true,notif:true}, JSON.parse(localStorage.getItem('rove-prefs')||"{}")); }catch(e){ return {haptik:true,notif:true}; } })();
 function savePrefs(){ try{ localStorage.setItem('rove-prefs', JSON.stringify(PREFS)); }catch(e){} }
@@ -7724,9 +7743,13 @@ function syncSheetKeyboardCover(){
   if(!sheet) return;
   const vv=window.visualViewport;
   const layoutHeight=Math.max(document.documentElement.clientHeight||0,window.innerHeight||0);
-  const keyboardOpen=document.activeElement===quickIn && vv && vv.height < layoutHeight-80;
+  const keyboardOpen=sheet.classList.contains("on") && document.activeElement===quickIn && vv && vv.height < layoutHeight-80;
   const cover=keyboardOpen ? Math.max(0,Math.ceil(layoutHeight-vv.height-vv.offsetTop)) : 0;
+  sheet.classList.toggle("keyboard-open",!!keyboardOpen);
+  document.body.classList.toggle("quick-input-keyboard-open",!!keyboardOpen);
   sheet.style.setProperty("--keyboard-cover",cover+"px");
+  if(keyboardOpen) sheet.style.setProperty("--sheet-viewport-height",Math.ceil(vv.height)+"px");
+  else sheet.style.removeProperty("--sheet-viewport-height");
 }
 quickIn.addEventListener("focus",syncSheetKeyboardCover);
 quickIn.addEventListener("blur",()=>requestAnimationFrame(syncSheetKeyboardCover));
@@ -7734,7 +7757,7 @@ window.addEventListener("resize",syncSheetKeyboardCover);
 if(window.visualViewport){ visualViewport.addEventListener("resize",syncSheetKeyboardCover); visualViewport.addEventListener("scroll",syncSheetKeyboardCover); }
 // Tab-Leiste bleibt fix — Sheets liegen darüber, der Dimm-Layer deckt sie zu (kein Hochschieben mehr)
 function liftTabbar(){ tabbar.style.transform=""; tabbar.classList.remove("lift"); }
-function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>{ quickIn.focus(); syncSheetKeyboardCover(); },340); }
+function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); syncSheetInteractivity(); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>{ quickIn.focus(); syncSheetKeyboardCover(); },340); }
 function setQuickError(message){
   if(!quickError) return;
   quickError.textContent=message||"";
@@ -7754,7 +7777,9 @@ function dismissKeyboard(){
 }
 function closeSheet(options={}){
   const shouldRestore=!options.fromHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
-  sheetBg.classList.remove("on"); closeAllSheetsSoft(); liftTabbar(); dismissKeyboard(); setQuickError("");
+  sheetBg.classList.remove("on"); closeAllSheetsSoft(); document.body.classList.remove("quick-input-keyboard-open");
+  sheet.classList.remove("keyboard-open"); sheet.style.removeProperty("--keyboard-cover");
+  sheet.style.removeProperty("--sheet-viewport-height"); liftTabbar(); dismissKeyboard(); setQuickError("");
   if(shouldRestore) history.back();
 }
 
@@ -8558,7 +8583,7 @@ function openGoalSheet(i){
   document.getElementById("gChips").innerHTML=["50","100","250","500"].map(v=>`<span class="chip-q">+ ${v} €</span>`).join("");
   const del=document.getElementById("gDel");
   del.textContent="Ziel löschen"; delete del.dataset.arm;
-  sheetBg.classList.add("on"); gsheet.classList.add("on");
+  sheetBg.classList.add("on"); gsheet.classList.add("on"); syncSheetInteractivity();
   rovePushState("gsheet");
   requestAnimationFrame(()=>liftTabbar(gsheet));
   setTimeout(()=>gIn.focus(),340);
@@ -9618,12 +9643,13 @@ function closeAllSheetsSoft(){
       resetSheetSwipeStyles(element);
       element?.classList.remove("on");
     });
+  syncSheetInteractivity();
 }
 initSheetSwipeDismiss();
 function openOnly(id, render){
   closeAllSheetsSoft(); if(render) render();
   sheetBg.classList.add("on");
-  const el=document.getElementById(id); el.classList.add("on");
+  const el=document.getElementById(id); el.classList.add("on"); syncSheetInteractivity();
   rovePushState(id);
   requestAnimationFrame(()=>liftTabbar(el));
 }
