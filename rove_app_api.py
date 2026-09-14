@@ -1682,7 +1682,7 @@ def ai_mentor_question_mode(message: str) -> str | None:
     asks_action = (
         "was muss ich diesen monat priorisieren" in text
         or re.search(r"\bwas soll ich\b.{0,64}\bkonkret\b.{0,32}\b(als nächstes|als naechstes|tun|schritt)\b", text)
-        or re.search(r"\b(?:was ist|was wäre|was waere)\b.{0,32}\bmein nächster schritt\b", text)
+        or re.search(r"\b(?:was ist|was wäre|was waere)\b.{0,48}\bmein nächster (?:finanzieller )?schritt\b", text)
         or re.search(r"\bals nächstes\b.{0,48}\b(tun|schritt|priorisieren)\b", text)
     )
     if asks_weakness and asks_action:
@@ -1939,6 +1939,48 @@ def _ai_safe_text(value: object) -> str:
     return text[:AI_CHAT_MAX_OUTPUT_CHARS]
 
 
+def _ai_deterministic_mentor_answer(context: dict) -> str:
+    """Render the existing Mentor V2 result without invoking a language model."""
+    mode = str(context.get("mentor_mode") or "")
+    weakness = context.get("mentor_weakest_factor")
+    candidate = context.get("mentor_priority_item")
+
+    weakness_text = ""
+    if isinstance(weakness, dict):
+        label = str(weakness.get("label") or "").strip()
+        try:
+            points = int(weakness.get("points"))
+            maximum = int(weakness.get("max"))
+        except (TypeError, ValueError):
+            points = maximum = 0
+        if label and maximum > 0:
+            weakness_text = f"Dein aktuell größter finanzieller Hebel ist {label} mit {points}/{maximum} Punkten."
+
+    action_text = ""
+    if isinstance(candidate, dict):
+        title = str(candidate.get("title") or "").strip()
+        message = str(candidate.get("message") or "").strip()
+        action_label = str(candidate.get("action_label") or "").strip()
+        if title and message:
+            action_text = f"Als nächsten konkreten Schritt solltest du: {title}. {message}"
+        elif title:
+            action_text = f"Als nächsten konkreten Schritt solltest du: {title}."
+        elif message:
+            action_text = f"Als nächsten konkreten Schritt: {message}"
+        if action_label:
+            action_text += f" Öffne dazu: {action_label}."
+
+    if mode == "combined":
+        answer = " ".join(part for part in (weakness_text, action_text) if part)
+    elif mode == "action":
+        answer = action_text
+    else:
+        answer = weakness_text
+    if not answer:
+        answer = "Aktuell ist kein klarer priorisierter Hebel erkannt. Ich kann dir deshalb keinen einzelnen ersten Schritt aus deinen Daten nennen."
+    return _ai_safe_text(answer)
+
+
 @app.route("/v1/ai/chat", methods=["POST"])
 def ai_chat():
     payload = request.get_json(silent=True)
@@ -1959,6 +2001,15 @@ def ai_chat():
         intent = ai_chat_intent(message)
         if intent == "action":
             return jsonify({"ok": True, "kind": "rove", "answer": "Dafür nutzt du bitte die normale Rov.E-Funktion. Ich kann deine Finanzdaten nicht verändern."})
+        if intent == "mentor_priority":
+            _intent, context = build_ai_chat_context(conn, user_id, message)
+            return jsonify({
+                "ok": True,
+                "kind": "rove",
+                "deterministic": True,
+                "intent": intent,
+                "answer": _ai_deterministic_mentor_answer(context),
+            })
         ensure_ai_chat_tables(conn)
         cleanup_ai_chat_data(conn)
         requested_id = str(payload.get("conversation_id") or "").strip()

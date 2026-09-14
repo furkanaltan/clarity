@@ -157,15 +157,47 @@ class AiChatPhaseOneTests(unittest.TestCase):
         for index, (question, mode) in enumerate(questions):
             self.assertEqual(api.ai_chat_intent(question), "mentor_priority", question)
             self.assertEqual(api.ai_mentor_question_mode(question), mode, question)
-            seen = []
-            with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Priorität erkannt.", 8, 4))):
+            with patch.object(api, "ai_chat_provider", side_effect=AssertionError("deterministic mentor question must not call provider")):
                 response = self.post(self.client_for(token=f"mentor-intent-{index}"), question)
             self.assertEqual(response.status_code, 200, response.get_json())
-            prompt = seen[-1]["content"]
-            self.assertIn('"context_type": "mentor_priority"', prompt)
-            self.assertIn(f'"mentor_mode": "{mode}"', prompt)
-            self.assertIn('"mentor_priority_item":', prompt)
-            self.assertNotIn('"personal_data": false', prompt)
+            payload = response.get_json()
+            self.assertEqual(payload["kind"], "rove")
+            self.assertTrue(payload["deterministic"])
+            self.assertEqual(payload["intent"], "mentor_priority")
+            self.assertTrue(payload["answer"])
+
+    def test_next_financial_step_is_deterministic(self):
+        question = "Was ist mein nächster finanzieller Schritt?"
+        self.assertEqual(api.ai_mentor_question_mode(question), "action")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("deterministic mentor question must not call provider")):
+            response = self.post(self.client_for(token="mentor-next-step"), question)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertTrue(response.get_json()["deterministic"])
+
+    def test_deterministic_weakness_answer_uses_score_v2_factor(self):
+        answer = api._ai_deterministic_mentor_answer({
+            "mentor_mode": "weakness",
+            "mentor_weakest_factor": {
+                "label": "Budget-Kontrolle", "points": 11, "max": 20,
+            },
+            "mentor_priority_item": None,
+        })
+        self.assertIn("Budget-Kontrolle", answer)
+        self.assertIn("11/20", answer)
+
+    def test_deterministic_combined_answer_keeps_weakness_before_action(self):
+        answer = api._ai_deterministic_mentor_answer({
+            "mentor_mode": "combined",
+            "mentor_weakest_factor": {
+                "label": "Budget-Kontrolle", "points": 11, "max": 20,
+            },
+            "mentor_priority_item": {
+                "title": "Deinen Monatsreport prüfen",
+                "message": "Erkenne die größten Abweichungen.",
+                "action_label": "Report öffnen",
+            },
+        })
+        self.assertLess(answer.index("Budget-Kontrolle"), answer.index("Monatsreport"))
 
     def test_mentor_candidate_is_authoritative_in_chat_context(self):
         candidate = {
@@ -184,31 +216,43 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 {"key": "tracking", "n": "Tracking / Datenqualitaet", "points": 0, "max": 10},
             ],
         }
-        seen = []
         with patch.object(api, "calculate_score", return_value=score), \
              patch.object(api, "build_mentor_candidate", return_value=candidate), \
-             patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Budget ist dein wichtigster Hebel.", 8, 4))):
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("deterministic mentor question must not call provider")):
             response = self.post(self.client_for(token="mentor-authority"), "Was soll ich konkret als Nächstes tun?")
         self.assertEqual(response.status_code, 200, response.get_json())
-        prompt = seen[-1]["content"]
-        self.assertIn('"mentor_mode": "action"', prompt)
-        self.assertIn('"priority": 100', prompt)
-        self.assertIn('"type": "budget_overrun"', prompt)
-        self.assertIn('"key": "budget"', prompt)
-        self.assertIn('"points": 11', prompt)
-        self.assertIn('"max": 20', prompt)
+        payload = response.get_json()
+        self.assertEqual(payload["kind"], "rove")
+        self.assertIn("Budget braucht Aufmerksamkeit", payload["answer"])
+        self.assertIn("Budget prüfen", payload["answer"])
+        self.assertTrue(payload["deterministic"])
         self.assertIn("autoritative", api.AI_CHAT_SYSTEM_PROMPT)
 
     def test_mentor_priority_without_candidate_has_explicit_fallback(self):
-        seen = []
         with patch.object(api, "build_mentor_candidate", return_value=None), \
-             patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Aktuell ist kein klarer Hebel erkennbar.", 8, 4))):
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("deterministic mentor question must not call provider")):
             response = self.post(self.client_for(token="mentor-fallback"), "Was soll ich konkret als Nächstes tun?")
         self.assertEqual(response.status_code, 200, response.get_json())
-        prompt = seen[-1]["content"]
-        self.assertIn('"mentor_mode": "action"', prompt)
-        self.assertIn('"mentor_priority_item": null', prompt)
-        self.assertIn("Kein klarer priorisierter Hebel erkannt", prompt)
+        payload = response.get_json()
+        self.assertEqual(payload["kind"], "rove")
+        self.assertTrue(payload["deterministic"])
+        self.assertIn("kein klarer priorisierter hebel", payload["answer"].casefold())
+
+    def test_explanation_question_still_uses_provider(self):
+        seen = []
+        with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Erklärung.", 8, 4))):
+            response = self.post(self.client_for(token="mentor-why"), "Warum ist Budget mein größter Hebel?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["kind"], "ai")
+        self.assertTrue(seen)
+
+    def test_how_question_still_uses_provider(self):
+        seen = []
+        with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Vorschlag.", 8, 4))):
+            response = self.post(self.client_for(token="mentor-how"), "Wie kann ich Budget verbessern?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["kind"], "ai")
+        self.assertTrue(seen)
 
     def test_mentor_prompt_preserves_debt_status_and_mortgage_rules(self):
         self.assertIn('"unknown"', api.AI_CHAT_SYSTEM_PROMPT)

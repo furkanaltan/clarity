@@ -95,6 +95,13 @@ halten.
 - Telegram: Bot-Kommunikation
 - Web Push: Push-Nachrichten an registrierte Browser
 
+### DETERMINISTIC FIRST
+
+Wenn eine Antwort aus kanonischen Rov.E-Daten eindeutig bestimmbar ist, wird sie
+ohne LLM erzeugt. AI ist nur für Interpretation, Erklärung, Synthese oder offene
+Analyse vorgesehen; Prioritäten und Fakten dürfen nicht aus Convenience-Gründen
+an einen externen Provider delegiert werden.
+
 API-Keys und Provider-Secrets werden ausschliesslich serverseitig aus
 Environment-Dateien gelesen und niemals an das Frontend ausgeliefert.
 
