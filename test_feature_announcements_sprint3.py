@@ -239,6 +239,12 @@ class FeatureAnnouncementSprintThreeFrontendTests(unittest.TestCase):
         self.assertIn('new MutationObserver(syncAfterAppReveal).observe(app,{attributes:true,attributeFilter:["hidden"]})', anchor)
         self.assertIn("if(!bar.offsetHeight) return;", anchor)
 
+    def test_desktop_tabbar_ignores_mobile_viewport_visibility_guard(self):
+        anchor = self.frontend[self.frontend.index("// ===================== LEISTEN-ANKER"):]
+        self.assertIn('const desktopLayout=()=> window.matchMedia?.("(min-width:700px)").matches || window.innerWidth>=700;', anchor)
+        self.assertIn('if(desktopLayout()){\n      bar.style.top="";\n      bar.style.bottom="0";\n      return;\n    }', anchor)
+        self.assertIn('if(desktopLayout()){\n      bar.style.visibility="";\n      return;\n    }', anchor)
+
     def test_feature_pulse_is_once_and_respects_reduced_motion(self):
         self.assertIn(".mentor.feature-announcement", self.frontend)
         self.assertIn("animation:mentorFeatureIn 1.6s ease-out 1", self.frontend)

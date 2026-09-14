@@ -13072,6 +13072,7 @@ function loadProfileState(){
 (function(){
   const bar=document.querySelector(".tabbar"); if(!bar) return;
   const KEY="rove-vh";
+  const desktopLayout=()=> window.matchMedia?.("(min-width:700px)").matches || window.innerWidth>=700;
   const lage=()=> window.innerWidth>window.innerHeight ? "quer" : "hoch";
   let H=0;
   let initialBarHeight=0;
@@ -13087,6 +13088,11 @@ function loadProfileState(){
   }
   function setzePosition(){
     const h=bar.offsetHeight;
+    if(desktopLayout()){
+      bar.style.top="";
+      bar.style.bottom="0";
+      return;
+    }
     if(!H) return;
     // Rahmenhöhe aus derselben Quelle wie die Leiste — sonst folgt #app über 100dvh weiter dem
     // pendelnden innerHeight und der Inhalt atmet, obwohl die Leiste stillsteht.
@@ -13116,6 +13122,10 @@ function loadProfileState(){
     queueInitialReveal(bar.offsetHeight);
   }
   function pruefe(){
+    if(desktopLayout()){
+      bar.style.visibility="";
+      return;
+    }
     // Die Tastatur macht innerHeight nur KLEINER, nie grösser. Das Maximum ist damit die echte
     // Fensterhöhe — auch dann, wenn iOS sich danach nie wieder auf sie zurückstellt.
     if(window.innerHeight>H){ H=window.innerHeight; merke(); setzePosition(); }
