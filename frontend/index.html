@@ -11353,9 +11353,21 @@ function isMentorPriorityQuestion(t){
     || /\bfinanzielle situation\b.{0,48}\b(verbesser\w*|optimier\w*)\b/.test(t)
     || /\bwas ist (?:aktuell )?mein\b.{0,48}\b(schwachpunkt|hebel)\w*\b/.test(t);
 }
+function isMentorExplanationQuestion(t){
+  return /\b(?:warum|wieso|weshalb)\b.{0,96}\b(?:hebel|schwachpunkt|priorität|prioritaet|zuerst|wichtig|arbeiten|budget|sparrate|liquidität|liquiditaet|schulden)\b/.test(t);
+}
+function isMentorImprovementQuestion(t){
+  return /\bwie\b.{0,96}\b(?:verbesser\w*|optimier\w*|stärk\w*|staerk\w*|reduzier\w*|erhöh\w*|erhoeh\w*)\b/.test(t);
+}
+function isMentorAnalysisQuestion(t){
+  return isMentorPriorityQuestion(t) || isMentorExplanationQuestion(t) || isMentorImprovementQuestion(t);
+}
 // Dispatcher: Thema + konkrete Entität aus dem Text erkennen
 async function roveAnswer(raw){
   const t=(raw||"").toLowerCase();
+  // Mentor-Fakten, Erklärungen und Verbesserungsfragen müssen vor lokalen Budget-/Score-Fallbacks
+  // zur API gelangen, damit dort dieselben kanonischen Mentor-/Score-Daten verwendet werden.
+  if(isMentorAnalysisQuestion(t)) return null;
   // Hilfe zuerst — „was kannst du" soll nie im Fallback landen
   if(/was kannst du|was kann ich dich|was kann (ich|man) (hier|damit|in der app|alles)|was kann ich (machen|tun)|was geht (hier|in der app)|was kann die app|wozu (ist|dient|brauche|nutzt|hilft)|was bringt (mir|das)|hilfe|wie funktionierst du|anleitung|was ist (das hier|rov)/.test(t)
      || (/wie (benutz|nutz)|was mache? ich hier|wie funktioniert|erklär|erklaer|wie geht das/.test(t) && /rov\.?e|rove|clarity|\bbot\b|\bapp\b|\bhier\b|\bdas\b/.test(t))) return ans_help();
@@ -11407,9 +11419,6 @@ async function roveAnswer(raw){
   const addContract=await addContractFromText(t); if(addContract) return addContract;
   // Tages-/Wochenbudget VOR dem Budgets-Check („wochenbudget" enthält „budget")
   if(/tagesbudget|tageslimit|wochenbudget|wochenlimit|pro tag|pro woche|am tag ausgeben|diese woche ausgeben|(heute|heut).{0,32}(ausgeben|drin|verfügbar|uebrig|übrig|leisten)|was.*heute.*drin/.test(t)) return ans_daybudget(t);
-  // Priorisierungsfragen müssen den serverseitigen Mentor-V2-Kandidaten verwenden,
-  // nicht den älteren lokalen Score-Fallback.
-  if(isMentorPriorityQuestion(t)) return null;
   if(/score/.test(t) && /was ist|was bedeutet|erklär|erklaer|wie funktioniert|wie wird|wofür|wofuer|was sagt/.test(t)) return ans_scoreinfo();
   if(/score|controller|stratege|rang|einstufung|verfassung|punkte/.test(t)) return ans_score(t);
   if(/abo(s|nnement)/.test(t) && /wie viel|wieviel|zahle|kosten|liste|zeig|übersicht/.test(t)) return ans_abos();

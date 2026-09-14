@@ -262,9 +262,19 @@ const questions = [
   "Was bremst meinen Score aktuell?",
   "Was soll ich als Nächstes verbessern?",
   "Woran soll ich zuerst arbeiten?",
-  "Wie kann ich meine finanzielle Situation sinnvoll verbessern?"
+  "Wie kann ich meine finanzielle Situation sinnvoll verbessern?",
+  "Warum ist Budget mein größter Hebel?",
+  "Warum ist Budget mein Schwachpunkt?",
+  "Wie kann ich meine Budgetkontrolle verbessern?"
 ];
-console.log(JSON.stringify(questions.map(q => isMentorPriorityQuestion(q.toLowerCase()))));
+const localBudgetQuestions = [
+  "Wie läuft mein Budget?",
+  "Welche Kategorie ist über Plan?"
+];
+console.log(JSON.stringify({{
+  mentor: questions.map(q => isMentorAnalysisQuestion(q.toLowerCase())),
+  localBudget: localBudgetQuestions.map(q => isMentorAnalysisQuestion(q.toLowerCase()))
+}}));
 """
         result = subprocess.run(
             ["node", "--input-type=commonjs"],
@@ -274,10 +284,17 @@ console.log(JSON.stringify(questions.map(q => isMentorPriorityQuestion(q.toLower
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), [True] * 6)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"mentor": [True] * 9, "localBudget": [False, False]},
+        )
         self.assertLess(
-            self.frontend.index("if(isMentorPriorityQuestion(t)) return null;"),
+            self.frontend.index("if(isMentorAnalysisQuestion(t)) return null;"),
             self.frontend.index("if(/score|controller|stratege|rang|einstufung|verfassung|punkte/.test(t)) return ans_score(t);")
+        )
+        self.assertLess(
+            self.frontend.index("if(isMentorAnalysisQuestion(t)) return null;"),
+            self.frontend.index("const cs=ans_catSpent(t);")
         )
 
     def test_one_day_activity_bar_scale_keeps_small_values_visible(self):

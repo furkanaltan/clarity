@@ -238,21 +238,35 @@ class AiChatPhaseOneTests(unittest.TestCase):
         self.assertTrue(payload["deterministic"])
         self.assertIn("kein klarer priorisierter hebel", payload["answer"].casefold())
 
-    def test_explanation_question_still_uses_provider(self):
-        seen = []
-        with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Erklärung.", 8, 4))):
-            response = self.post(self.client_for(token="mentor-why"), "Warum ist Budget mein größter Hebel?")
-        self.assertEqual(response.status_code, 200, response.get_json())
-        self.assertEqual(response.get_json()["kind"], "ai")
-        self.assertTrue(seen)
+    def test_explanation_and_improvement_questions_use_mentor_context_with_provider(self):
+        questions = (
+            ("Warum ist Budget mein größter Hebel?", "explanation"),
+            ("Warum ist Budget mein Schwachpunkt?", "explanation"),
+            ("Wie kann ich meine Budgetkontrolle verbessern?", "improvement"),
+        )
+        for index, (question, mode) in enumerate(questions):
+            seen = []
 
-    def test_how_question_still_uses_provider(self):
-        seen = []
-        with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Vorschlag.", 8, 4))):
-            response = self.post(self.client_for(token="mentor-how"), "Wie kann ich Budget verbessern?")
-        self.assertEqual(response.status_code, 200, response.get_json())
-        self.assertEqual(response.get_json()["kind"], "ai")
-        self.assertTrue(seen)
+            def provider(messages):
+                seen.extend(messages)
+                return "Erklärung.", 8, 4
+
+            self.assertEqual(api.ai_chat_intent(question), "mentor_priority", question)
+            self.assertEqual(api.ai_mentor_question_mode(question), mode, question)
+            with patch.object(api, "ai_chat_provider", provider):
+                response = self.post(self.client_for(token=f"mentor-analysis-{index}"), question)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()["kind"], "ai")
+            prompt = seen[-1]["content"]
+            self.assertIn('"context_type": "mentor_priority"', prompt)
+            self.assertIn(f'"mentor_mode": "{mode}"', prompt)
+            self.assertIn('"mentor_weakest_factor"', prompt)
+            self.assertIn('"score_v2"', prompt)
+
+    def test_budget_status_questions_do_not_match_mentor_analysis(self):
+        for question in ("Wie läuft mein Budget?", "Welche Kategorie ist über Plan?"):
+            self.assertIsNone(api.ai_mentor_question_mode(question), question)
+            self.assertEqual(api.ai_chat_intent(question), "spending", question)
 
     def test_mentor_prompt_preserves_debt_status_and_mortgage_rules(self):
         self.assertIn('"unknown"', api.AI_CHAT_SYSTEM_PROMPT)

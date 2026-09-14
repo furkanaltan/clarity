@@ -1597,6 +1597,8 @@ aus "mentor_priority_item". Wähle keinen anderen Faktor, lasse ein Nutzerziel k
 Handlungsbedarf verdrängen und erfinde keine Priorität. "unknown" bei den Schuldendaten bedeutet fehlende Information,
 nicht Schuldenfreiheit; eine Hypothek ist nicht als problematische Konsumschuld zu formulieren. Wenn kein Kandidat
 oder kein autoritativer Schwachpunkt vorhanden ist, sage das ehrlich und gib erst danach allgemeine Hilfestellung.
+Bei "mentor_mode" = "explanation" oder "improvement" erkläre beziehungsweise analysiere ausschließlich den
+bereitgestellten "mentor_weakest_factor" und die Score-V2-Daten; erfinde keinen anderen wichtigsten Hebel.
 Du darfst allgemeine Finanzbildung und vorhandene Portfolio-Strukturen erklären, aber keine individuellen Kauf-/Verkaufsempfehlungen,
 Kursprognosen oder garantierten Renditen geben. Bleibe bei Finanzen und Rov.E. Bei anderen Themen erkläre kurz und freundlich,
 dass du auf Finanzen und die Rov.E-Daten spezialisiert bist. Antworte ausschließlich als schlichter Text ohne HTML oder Markdown.
@@ -1685,12 +1687,24 @@ def ai_mentor_question_mode(message: str) -> str | None:
         or re.search(r"\b(?:was ist|was wäre|was waere)\b.{0,48}\bmein nächster (?:finanzieller )?schritt\b", text)
         or re.search(r"\bals nächstes\b.{0,48}\b(tun|schritt|priorisieren)\b", text)
     )
+    asks_explanation = bool(re.search(
+        r"\b(?:warum|wieso|weshalb)\b.{0,96}\b(?:hebel|schwachpunkt|priorität|prioritaet|zuerst|wichtig|arbeiten|budget|sparrate|liquidität|liquiditaet|schulden)\b",
+        text,
+    ))
+    asks_improvement = bool(re.search(
+        r"\bwie\b.{0,96}\b(?:verbesser\w*|optimier\w*|stärk\w*|staerk\w*|reduzier\w*|erhöh\w*|erhoeh\w*)\b",
+        text,
+    ))
     if asks_weakness and asks_action:
         return "combined"
     if asks_weakness:
         return "weakness"
     if asks_action:
         return "action"
+    if asks_explanation:
+        return "explanation"
+    if asks_improvement:
+        return "improvement"
     return None
 
 
@@ -1773,7 +1787,7 @@ def _ai_mentor_priority_context(conn: sqlite3.Connection, user_id: int, user, me
     reports = _build_reports(conn, user_id)
     debt_status = normalize_debt_status(values.get("debt_status"))
     candidate = None
-    if mode in {"action", "combined"}:
+    if mode in {"action", "combined", "explanation", "improvement"}:
         candidate = build_mentor_candidate(
             score=score,
             budget_truth=budget_truth,
@@ -1802,8 +1816,8 @@ def _ai_mentor_priority_context(conn: sqlite3.Connection, user_id: int, user, me
             factors,
             key=lambda factor: (factor["points"] / factor["max"]) if factor["max"] else 1,
         )
-    weakness_context = weakest_factor if mode in {"weakness", "combined"} else None
-    action_context = candidate if mode in {"action", "combined"} else None
+    weakness_context = weakest_factor if mode in {"weakness", "combined", "explanation", "improvement"} else None
+    action_context = candidate if mode in {"action", "combined", "explanation", "improvement"} else None
     missing_priority = (
         weakness_context is None if mode == "weakness"
         else action_context is None if mode == "action"
@@ -2001,7 +2015,7 @@ def ai_chat():
         intent = ai_chat_intent(message)
         if intent == "action":
             return jsonify({"ok": True, "kind": "rove", "answer": "Dafür nutzt du bitte die normale Rov.E-Funktion. Ich kann deine Finanzdaten nicht verändern."})
-        if intent == "mentor_priority":
+        if intent == "mentor_priority" and ai_mentor_question_mode(message) in {"weakness", "action", "combined"}:
             _intent, context = build_ai_chat_context(conn, user_id, message)
             return jsonify({
                 "ok": True,
