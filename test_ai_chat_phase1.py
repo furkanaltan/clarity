@@ -147,21 +147,23 @@ class AiChatPhaseOneTests(unittest.TestCase):
 
     def test_mentor_priority_questions_use_personal_v2_context(self):
         questions = (
-            "Was ist aktuell mein größter finanzieller Schwachpunkt?",
-            "Was soll ich als Nächstes verbessern?",
-            "Was ist mein wichtigster finanzieller Hebel?",
-            "Woran soll ich zuerst arbeiten?",
-            "Was bremst meinen Score aktuell?",
-            "Wie kann ich meine finanzielle Situation am sinnvollsten verbessern?",
+            ("Was ist aktuell mein größter finanzieller Schwachpunkt?", "weakness"),
+            ("Was soll ich als Nächstes verbessern?", "weakness"),
+            ("Was ist mein wichtigster finanzieller Hebel?", "weakness"),
+            ("Woran soll ich zuerst arbeiten?", "weakness"),
+            ("Was muss ich diesen Monat priorisieren?", "action"),
+            ("Was ist aktuell mein größter finanzieller Schwachpunkt und was soll ich konkret als Nächstes tun?", "combined"),
         )
-        for index, question in enumerate(questions):
+        for index, (question, mode) in enumerate(questions):
             self.assertEqual(api.ai_chat_intent(question), "mentor_priority", question)
+            self.assertEqual(api.ai_mentor_question_mode(question), mode, question)
             seen = []
             with patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Priorität erkannt.", 8, 4))):
                 response = self.post(self.client_for(token=f"mentor-intent-{index}"), question)
             self.assertEqual(response.status_code, 200, response.get_json())
             prompt = seen[-1]["content"]
             self.assertIn('"context_type": "mentor_priority"', prompt)
+            self.assertIn(f'"mentor_mode": "{mode}"', prompt)
             self.assertIn('"mentor_priority_item":', prompt)
             self.assertNotIn('"personal_data": false', prompt)
 
@@ -186,9 +188,10 @@ class AiChatPhaseOneTests(unittest.TestCase):
         with patch.object(api, "calculate_score", return_value=score), \
              patch.object(api, "build_mentor_candidate", return_value=candidate), \
              patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Budget ist dein wichtigster Hebel.", 8, 4))):
-            response = self.post(self.client_for(token="mentor-authority"), "Was soll ich verbessern?")
+            response = self.post(self.client_for(token="mentor-authority"), "Was soll ich konkret als Nächstes tun?")
         self.assertEqual(response.status_code, 200, response.get_json())
         prompt = seen[-1]["content"]
+        self.assertIn('"mentor_mode": "action"', prompt)
         self.assertIn('"priority": 100', prompt)
         self.assertIn('"type": "budget_overrun"', prompt)
         self.assertIn('"key": "budget"', prompt)
@@ -200,9 +203,10 @@ class AiChatPhaseOneTests(unittest.TestCase):
         seen = []
         with patch.object(api, "build_mentor_candidate", return_value=None), \
              patch.object(api, "ai_chat_provider", lambda messages: (seen.extend(messages) or ("Aktuell ist kein klarer Hebel erkennbar.", 8, 4))):
-            response = self.post(self.client_for(token="mentor-fallback"), "Was soll ich verbessern?")
+            response = self.post(self.client_for(token="mentor-fallback"), "Was soll ich konkret als Nächstes tun?")
         self.assertEqual(response.status_code, 200, response.get_json())
         prompt = seen[-1]["content"]
+        self.assertIn('"mentor_mode": "action"', prompt)
         self.assertIn('"mentor_priority_item": null', prompt)
         self.assertIn("Kein klarer priorisierter Hebel erkannt", prompt)
 
