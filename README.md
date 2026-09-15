@@ -27,6 +27,7 @@ Systemd-Pfade davon abhaengen.
 - [RUNBOOK.md](RUNBOOK.md): Deploy, Diagnose, Backup und Restore
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): reproduzierbarer Serveraufbau und Runtime-Inventar
 - [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md): Variablen-, Secret- und Default-Inventar
+- [docs/PRIVACY_PROVIDER_INVENTORY.md](docs/PRIVACY_PROVIDER_INVENTORY.md): technisches Provider- und Privacy-Update-Delta
 - [CHANGELOG.md](CHANGELOG.md): kanonisch gepflegte Aenderungen
 - [docs/TESTING.md](docs/TESTING.md): Tests, Teilmengen und bekannte Baseline
 - [docs/SCRIPTS.md](docs/SCRIPTS.md): Runtime-, Operations- und Legacy-Inventar
