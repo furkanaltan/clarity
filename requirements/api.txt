@@ -1,0 +1,8 @@
+-r base.txt
+
+# Imported by rove_app_api.py. Production API-venv versions are UNKNOWN because
+# the read-only SSH account cannot execute or inspect /root/rove-app-api-venv.
+Flask
+argon2-cffi
+openai
+pywebpush

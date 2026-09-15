@@ -1,0 +1,19 @@
+{
+  "name": "Rov.E",
+  "short_name": "Rov.E",
+  "description": "Dein ruhiger Finanzbegleiter fuer Budget, Ziele, Vertrage und Reports.",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#0A0F16",
+  "theme_color": "#0A0F16",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
