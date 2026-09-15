@@ -6230,31 +6230,63 @@ function merchantDomain(name){
 function transactionLogo(t){
   const fallback=String(t?.i||t?.n||"?").trim().slice(0,1).toUpperCase();
   const domain=merchantDomain(t?.n);
-  if(!domain) return `<div class="logo" style="background:${t.c}">${fallback}</div>`;
+  const color=String(t?.c||"");
+  const safeColor=/^#[0-9a-f]{6}$/i.test(color)?color:"";
+  if(!domain) return `<div class="logo"${safeColor?` style="background:${safeColor}"`:""}>${announcementEscape(fallback)}</div>`;
   const source=`https://cdn.brandfetch.io/domain/${encodeURIComponent(domain)}/h/96/w/96/icon.png?c=${BRANDFETCH_CLIENT_ID}`;
-  return `<div class="logo merchant"><span class="merchant-letter">${fallback}</span><img class="merchant-logo" src="${source}" alt="" loading="lazy" onerror="this.style.display='none'" /></div>`;
+  return `<div class="logo merchant"><span class="merchant-letter">${announcementEscape(fallback)}</span><img class="merchant-logo" src="${source}" alt="" loading="lazy" onerror="this.style.display='none'" /></div>`;
 }
 function transactionDetailLogo(t){
   if(merchantDomain(t?.n)) return transactionLogo(t);
   const fallback=String(t?.i||t?.n||"?").trim().slice(0,1).toUpperCase();
-  return `<div class="logo rov-icon rov-icon--regular detail-expense-icon">${fallback}</div>`;
+  return `<div class="logo rov-icon rov-icon--regular detail-expense-icon">${announcementEscape(fallback)}</div>`;
 }
 // Kein Kategorie-Badge in der Liste (Furkan 25.07.: „jeder weiß, dass Lidl Lebensmittel sind").
 // Die Kategorie bleibt vollständig erhalten — sie steht im Buchungsdetail (openTxSheet zeigt
 // „Tag · Kategorie" plus die Chips zum Ändern), Rov.E ordnet weiter automatisch ein, die Suche
 // filtert weiter nach Kategorie und der Report rechnet unverändert damit. Nur die Optik ist ruhiger.
-const txRow = t=>`<div class="tx" data-txid="${t.id}">
-  ${transactionLogo(t)}
-  <div class="mid"><div class="nm">${t.n}</div></div>
-  <div class="amt ${t.a<0?'neg':'pos'}">${t.a<0?'−':'+'}${eur2(Math.abs(t.a))}</div>
-</div>`;
-// Historische Monate sind reine Ansicht — kein data-txid, kein :active-Feedback (Council-Prinzip
-// „keine Affordance-Lüge": was nicht antippbar ist, darf sich auch nicht so anfühlen).
-const histRow = t=>`<div class="tx hist">
-  ${transactionLogo(t)}
-  <div class="mid"><div class="nm">${t.n}</div></div>
-  <div class="amt ${t.a<0?'neg':'pos'}">${t.a<0?'−':'+'}${eur2(Math.abs(t.a))}</div>
-</div>`;
+function transactionLogoElement(t){
+  const logo=document.createElement("div");
+  const fallback=String(t?.i||t?.n||"?").trim().slice(0,1).toUpperCase();
+  const domain=merchantDomain(t?.n);
+  logo.className=domain?"logo merchant":"logo";
+  if(!domain){
+    const color=String(t?.c||"");
+    if(/^#[0-9a-f]{6}$/i.test(color)) logo.style.background=color;
+    logo.textContent=fallback;
+    return logo;
+  }
+  const letter=document.createElement("span");
+  letter.className="merchant-letter";
+  letter.textContent=fallback;
+  const image=document.createElement("img");
+  image.className="merchant-logo";
+  image.src=`https://cdn.brandfetch.io/domain/${encodeURIComponent(domain)}/h/96/w/96/icon.png?c=${BRANDFETCH_CLIENT_ID}`;
+  image.alt="";
+  image.loading="lazy";
+  image.addEventListener("error",()=>{ image.style.display="none"; },{once:true});
+  logo.append(letter,image);
+  return logo;
+}
+
+// Transaction labels are untrusted data. Build these rows with textContent so they can
+// never become markup, while the surrounding list remains the existing static structure.
+function transactionRowElement(t,isCurrent){
+  const row=document.createElement("div");
+  row.className=isCurrent?"tx":"tx hist";
+  if(isCurrent) row.dataset.txid=String(t?.id??"");
+  const middle=document.createElement("div");
+  middle.className="mid";
+  const name=document.createElement("div");
+  name.className="nm";
+  name.textContent=String(t?.n??"");
+  middle.append(name);
+  const amount=document.createElement("div");
+  amount.className=`amt ${Number(t?.a)<0?"neg":"pos"}`;
+  amount.textContent=`${Number(t?.a)<0?"−":"+"}${eur2(Math.abs(Number(t?.a)||0))}`;
+  row.append(transactionLogoElement(t),middle,amount);
+  return row;
+}
 let txFilter="all", txQuery="", txSearchOpen=false, monthOffset=0;   // 0 = aktueller (echt editierbarer) Monat
 function monthAt(offset){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset); return d; }
 function monthKey(offset){ const d=monthAt(offset); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
@@ -6343,22 +6375,36 @@ function renderTx(){
       .filter(t=>txMatchesSearch(t,q,aliasCats))}))
     .filter(d=>d.items.length);
   syncTxSearchUi(hasAny);  // Tag-1/leerer Monat: nichts zu suchen
-  const row = isCurrent ? txRow : histRow;
-  document.getElementById("tx-list").innerHTML = days.length? days.map(d=>`
-    <div class="day"><span>${d.d}</span></div>
-    <div class="card" style="padding:4px 16px">${d.items.map(row).join("")}</div>`).join("")
-    : !hasAny
-      ? (isCurrent
-          ? emptyCard({icon:"euro", title:"Dein Cashflow startet hier",
-              sub:"Erfasse deine erste Buchung über das „+“ — Rov.E sortiert sie automatisch ein.",
-              cta:"Buchung erfassen", action:"add"})
-          : emptyCard({icon:"euro", title:`Noch keine Buchungen im ${monthLabel(monthOffset)}`,
-              sub:"Für diesen Monat ist noch nichts erfasst.", cta:"", action:""}))
-      : q
-        ? emptyCard({icon:"euro", title:"Keine passenden Buchungen gefunden",
-            sub:"Versuche einen anderen Händler, Betrag oder eine Kategorie.", cta:"", action:""})
-        : emptyCard({icon:"euro", title:"Nichts in diesem Filter",
-            sub:"In diesem Filter gibt es gerade keine Buchungen. Wähle oben einen anderen Filter.", cta:"", action:""});
+  const list=document.getElementById("tx-list");
+  list.replaceChildren();
+  if(days.length){
+    days.forEach(day=>{
+      const dayElement=document.createElement("div");
+      dayElement.className="day";
+      const dayLabel=document.createElement("span");
+      dayLabel.textContent=String(day.d??"");
+      dayElement.append(dayLabel);
+      const card=document.createElement("div");
+      card.className="card";
+      card.style.padding="4px 16px";
+      day.items.forEach(item=>card.append(transactionRowElement(item,isCurrent)));
+      list.append(dayElement,card);
+    });
+    return;
+  }
+  const emptyMarkup=!hasAny
+    ? (isCurrent
+        ? emptyCard({icon:"euro", title:"Dein Cashflow startet hier",
+            sub:"Erfasse deine erste Buchung über das „+“ — Rov.E sortiert sie automatisch ein.",
+            cta:"Buchung erfassen", action:"add"})
+        : emptyCard({icon:"euro", title:`Noch keine Buchungen im ${monthLabel(monthOffset)}`,
+            sub:"Für diesen Monat ist noch nichts erfasst.", cta:"", action:""}))
+    : q
+      ? emptyCard({icon:"euro", title:"Keine passenden Buchungen gefunden",
+          sub:"Versuche einen anderen Händler, Betrag oder eine Kategorie.", cta:"", action:""})
+      : emptyCard({icon:"euro", title:"Nichts in diesem Filter",
+          sub:"In diesem Filter gibt es gerade keine Buchungen. Wähle oben einen anderen Filter.", cta:"", action:""});
+  list.innerHTML=emptyMarkup;
 }
 renderTx();
 document.getElementById("txSearch").addEventListener("input",e=>{ txQuery=e.target.value; renderTx(); });
