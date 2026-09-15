@@ -23,6 +23,7 @@ from reportlab.pdfgen import canvas
 from rove_score import calculate_score as calculate_live_score
 from rove_app_state import get_monthly_financial_snapshot, _monthly_budget_truth
 from rove_consumer_debt import total_consumer_debt, net_worth_total
+from rove_log_safety import safe_exception_summary
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -1186,7 +1187,7 @@ def get_budget_frame(user_id: int, report_month: str) -> dict:
                     "over": used > limit,
                 })
     except Exception as e:
-        logger.warning("Budget-Frame konnte nicht geladen werden: %s", e)
+        logger.warning("Budget-Frame konnte nicht geladen werden (error=%s)", safe_exception_summary(e))
         return empty
 
     return {
@@ -1541,7 +1542,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         from report_ai_text import generate_ai_narratives
         ai = generate_ai_narratives(data)
     except Exception as e:
-        logger.warning("KI-Report-Texte konnten nicht erzeugt werden: %s", e)
+        logger.warning("KI-Report-Texte konnten nicht erzeugt werden (error=%s)", safe_exception_summary(e))
         ai = {}
 
     data["ai_narratives"] = ai
@@ -2396,8 +2397,11 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     try:
         from report_html_renderer import build_pdf_report
         build_pdf_report(user_id, report_month, file_path, report_data=report_data)
-    except Exception:
-        logger.exception("Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer")
+    except Exception as exc:
+        logger.warning(
+            "Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer (error=%s)",
+            safe_exception_summary(exc),
+        )
         from rove_pdf_report_renderer import build_pdf_report as build_pdf_legacy
         build_pdf_legacy(user_id, report_month, file_path, report_data=report_data)
     return file_path, report_data["meta"]["tracked_days"]
@@ -2474,9 +2478,9 @@ def send_report_push(user_id: int, report_month: str) -> None:
         if result.get("ok"):
             logger.info("Report-Push fuer User %s an %s Geraet(e) uebergeben.", user_id, result.get("sent", 0))
         else:
-            logger.warning("Report-Push fuer User %s abgelehnt: %s", user_id, result)
+            logger.warning("Report-Push fuer User %s abgelehnt (provider_response=unavailable)", user_id)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
-        logger.warning("Report-Push fuer User %s fehlgeschlagen: %s", user_id, exc)
+        logger.warning("Report-Push fuer User %s fehlgeschlagen (error=%s)", user_id, safe_exception_summary(exc))
 
 
 def has_verified_app_account(user_id: int) -> bool:
@@ -2508,7 +2512,7 @@ def send_report_to_user(user_id: int, report_month: str, bot=None):
             report_data=report_data,
         )
     except Exception as e:
-        logger.warning("Rov.E Web-Report konnte nicht erzeugt werden: %s", e)
+        logger.warning("Rov.E Web-Report konnte nicht erzeugt werden (error=%s)", safe_exception_summary(e))
 
     app_only = has_verified_app_account(user_id)
 

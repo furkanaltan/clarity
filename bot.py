@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
 from rove_expense_domain import begin_expense_write, create_expense_for_user
 from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, is_feature_enabled
+from rove_log_safety import safe_exception_summary
 
 # ====================== KONFIGURATION ======================
 load_dotenv()
@@ -749,7 +750,7 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
             except Exception as e:
-                logger.error(f"Migration-Fehler '{col_name}': {e}")
+                logger.error("Migration-Fehler '%s' (error=%s)", col_name, safe_exception_summary(e))
 
         try:
             conn.execute("ALTER TABLE monthly_snapshots ADD COLUMN net_worth REAL DEFAULT 0.0")
@@ -757,7 +758,7 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         except Exception as e:
-            logger.error(f"Migration-Fehler 'monthly_snapshots.net_worth': {e}")
+            logger.error("Migration-Fehler 'monthly_snapshots.net_worth' (error=%s)", safe_exception_summary(e))
 
         conn.commit()
     logger.info("✅ Datenbank initialisiert.")
@@ -2010,7 +2011,7 @@ def notify_admins(text: str, reply_markup=None):
         try:
             bot.send_message(admin_id, text, reply_markup=reply_markup)
         except Exception as e:
-            logger.warning(f"Admin-Benachrichtigung an {admin_id} fehlgeschlagen: {e}")
+            logger.warning("Admin-Benachrichtigung an %s fehlgeschlagen (error=%s)", admin_id, safe_exception_summary(e))
 
 
 def get_access_status(user_id: int) -> str:
@@ -3913,7 +3914,7 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
             )
             conn.commit()
         except Exception as e:
-            logger.error(f"Snapshot-Fehler User {user_id}: {e}")
+            logger.error("Snapshot-Fehler User %s (error=%s)", user_id, safe_exception_summary(e))
 
     update_user_field(user_id, "current_month", current_month)
     rank_name, rank_emoji = score_data["rank_name"], score_data["rank_emoji"]
@@ -3975,7 +3976,7 @@ def setup_bot_menu():
                 scope=telebot.types.BotCommandScopeChat(admin_id)
             )
         except Exception as e:
-            logger.warning(f"Admin-Menü für {admin_id} konnte nicht gesetzt werden: {e}")
+            logger.warning("Admin-Menü für %s konnte nicht gesetzt werden (error=%s)", admin_id, safe_exception_summary(e))
 
     logger.info("✅ Telegram Menü eingerichtet.")
 
@@ -4159,7 +4160,7 @@ def fetch_price_quote(symbol: str):
             return None
         return {"close": float(close), "percent_change": float(data.get("percent_change") or 0.0)}
     except Exception as e:
-        logger.warning(f"Twelve-Data-Abfrage fehlgeschlagen fuer {symbol}: {e}")
+        logger.warning("Twelve-Data-Abfrage fehlgeschlagen fuer %s (error=%s)", symbol, safe_exception_summary(e))
         return None
 
 
@@ -4668,11 +4669,11 @@ def handle_callbacks(call):
     data = call.data
     actor_id = call.from_user.id if getattr(call, "from_user", None) else uid
 
-    logger.info(f"Callback erhalten: user={uid}, actor={actor_id}, data={data}")
+    logger.info("Callback erhalten: user=%s, actor=%s, action=%s", uid, actor_id, str(data).split(":", 1)[0])
     try:
         bot.answer_callback_query(call.id)
     except Exception as e:
-        logger.warning(f"Callback konnte nicht sofort bestaetigt werden: {e}")
+        logger.warning("Callback konnte nicht sofort bestaetigt werden (error=%s)", safe_exception_summary(e))
 
     if data.startswith("admin_approve:") or data.startswith("admin_revoke:"):
         if not is_admin_id(actor_id):
@@ -4707,7 +4708,7 @@ def handle_callbacks(call):
         try:
             bot.send_message(target_id, user_text)
         except Exception as e:
-            logger.info(f"Zugangs-Nachricht an {target_id} nicht gesendet: {e}")
+            logger.info("Zugangs-Nachricht an %s nicht gesendet (error=%s)", target_id, safe_exception_summary(e))
 
         try:
             bot.answer_callback_query(call.id, callback_text)
@@ -4736,7 +4737,7 @@ def handle_callbacks(call):
             )
             logger.info(f"User {uid} hat alle Daten gelöscht.")
         except Exception as e:
-            logger.error(f"Reset fehlgeschlagen für User {uid}: {e}", exc_info=True)
+            logger.error("Reset fehlgeschlagen für User %s (error=%s)", uid, safe_exception_summary(e))
             try:
                 bot.edit_message_text(
                     "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal oder nutze /reset_confirm.",
@@ -4989,7 +4990,7 @@ def handle_admin_command(message, cmd: str) -> bool:
         try:
             bot.send_message(target_id, "Du bist für Rov.E freigeschaltet. Sende /start und leg los.")
         except Exception as e:
-            logger.info(f"Freigabe-Nachricht an {target_id} nicht gesendet: {e}")
+            logger.info("Freigabe-Nachricht an %s nicht gesendet (error=%s)", target_id, safe_exception_summary(e))
         return True
 
     if cmd == "/revoke":
@@ -5059,7 +5060,7 @@ def handle_admin_command(message, cmd: str) -> bool:
                 sent += 1
             except Exception as e:
                 failed += 1
-                logger.info(f"Beta-Nudge an {row['user_id']} nicht gesendet: {e}")
+                logger.info("Beta-Nudge an %s nicht gesendet (error=%s)", row["user_id"], safe_exception_summary(e))
 
         bot.send_message(
             uid,
@@ -5088,7 +5089,7 @@ def handle_admin_command(message, cmd: str) -> bool:
                 sent += 1
             except Exception as e:
                 failed += 1
-                logger.info(f"Rename-Ankündigung an {row['user_id']} nicht gesendet: {e}")
+                logger.info("Rename-Ankündigung an %s nicht gesendet (error=%s)", row["user_id"], safe_exception_summary(e))
 
         bot.send_message(
             uid,
@@ -5121,7 +5122,7 @@ def handle_admin_command(message, cmd: str) -> bool:
                 sent += 1
             except Exception as e:
                 failed += 1
-                logger.info("App-Migration an %s nicht gesendet: %s", row["user_id"], e)
+                logger.info("App-Migration an %s nicht gesendet (error=%s)", row["user_id"], safe_exception_summary(e))
 
         bot.send_message(
             uid,
@@ -5450,7 +5451,7 @@ def handle_commands(message):
         try:
             import report_engine
         except Exception as e:
-            logger.error(f"report_engine Import fehlgeschlagen: {e}", exc_info=True)
+            logger.error("report_engine Import fehlgeschlagen (error=%s)", safe_exception_summary(e))
             bot.send_message(uid, "report_engine.py konnte nicht geladen werden. Die Datei muss im gleichen Ordner wie der Bot liegen.")
             return
 
@@ -5464,7 +5465,7 @@ def handle_commands(message):
             else:
                 bot.send_message(uid, "Testreport konnte nicht generiert werden. Bitte prüfe die Logs.")
         except Exception as e:
-            logger.error(f"Testreport-Fehler User {uid}: {e}", exc_info=True)
+            logger.error("Testreport-Fehler User %s (error=%s)", uid, safe_exception_summary(e))
             bot.send_message(uid, f"Testreport fehlgeschlagen: {type(e).__name__}")
         finally:
             report_engine.MIN_TRACKING_DAYS = old_min_days
@@ -5583,7 +5584,7 @@ def handle_msg(message):
                     bot.send_message(uid, "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.")
                     logger.info(f"User {uid} hat alle Daten per /reset_confirm gelöscht.")
                 except Exception as e:
-                    logger.error(f"Reset per /reset_confirm fehlgeschlagen für User {uid}: {e}", exc_info=True)
+                    logger.error("Reset per /reset_confirm fehlgeschlagen für User %s (error=%s)", uid, safe_exception_summary(e))
                     bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
                 return
             if time.time() - user_reset_pending[uid] > 300:
@@ -5597,7 +5598,7 @@ def handle_msg(message):
                     bot.send_message(uid, "Alles klar.\n\nIch habe deine Daten gelöscht.\nWenn du wieder starten willst, bin ich hier.")
                     logger.info(f"User {uid} hat alle Daten per Text-Bestätigung gelöscht.")
                 except Exception as e:
-                    logger.error(f"Reset per Text fehlgeschlagen für User {uid}: {e}", exc_info=True)
+                    logger.error("Reset per Text fehlgeschlagen für User %s (error=%s)", uid, safe_exception_summary(e))
                     bot.send_message(uid, "Reset konnte gerade nicht abgeschlossen werden. Bitte versuche es nochmal.")
                 return
             if text_lower in {"abbrechen", "stop", "cancel", "nein"}:
@@ -6336,7 +6337,7 @@ Nutzereingabe: {text_input}"""
                         "merchant": result["merchant"],
                     })
             except (ValueError, TypeError) as e:
-                logger.warning(f"KI-Ausgabe konnte nicht verbucht werden: {e}")
+                logger.warning("KI-Ausgabe konnte nicht verbucht werden (error=%s)", safe_exception_summary(e))
 
         reply = ""
         if booked > 0:
@@ -6357,12 +6358,12 @@ Nutzereingabe: {text_input}"""
         bot.send_message(uid, reply.strip(), parse_mode="Markdown")
 
     except json.JSONDecodeError as e:
-        logger.error(f"KI JSON-Fehler User {uid}: {e}")
+        logger.error("KI JSON-Fehler User %s (error=%s)", uid, safe_exception_summary(e))
         bot.send_message(uid, build_not_understood_answer(), parse_mode="Markdown")
     except openai.RateLimitError:
         bot.send_message(uid, "Kurz warten – bitte in 10 Sekunden nochmal versuchen.")
     except Exception as e:
-        logger.error(f"KI-Fehler User {uid}: {e}", exc_info=True)
+        logger.error("KI-Fehler User %s (error=%s)", uid, safe_exception_summary(e))
         bot.send_message(uid, build_not_understood_answer(), parse_mode="Markdown")
 
 
@@ -6407,4 +6408,4 @@ if __name__ == "__main__":
                 "Stoppe die andere Instanz auf Mac, VS Code oder Server und starte dann neu."
             )
         else:
-            logger.error(f"Polling-Fehler: {e}", exc_info=True)
+            logger.error("Polling-Fehler (error=%s)", safe_exception_summary(e))

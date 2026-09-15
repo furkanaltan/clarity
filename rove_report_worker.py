@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import rove_account_delete_cleanup as account_delete_cleanup
+from rove_log_safety import safe_exception_summary
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -235,11 +236,15 @@ def process_due_jobs() -> dict:
                 final = mark_failed(job, "send_report_to_user returned False")
                 result["failed" if final else "retry"] += 1
         except report_engine.ReportSkipped as exc:
-            mark_skipped(job["id"], str(exc))
+            mark_skipped(job["id"], safe_exception_summary(exc))
             result["skipped"] += 1
         except Exception as exc:
-            logger.exception("Report-Job %s fehlgeschlagen", job.get("id"))
-            final = mark_failed(job, f"{type(exc).__name__}: {exc}")
+            logger.warning(
+                "Report-Job %s fehlgeschlagen (error=%s)",
+                job.get("id"),
+                safe_exception_summary(exc),
+            )
+            final = mark_failed(job, safe_exception_summary(exc))
             result["failed" if final else "retry"] += 1
     logger.info("Report-Worker: %s", result)
     return result

@@ -35,6 +35,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type
 import rove_account_delete_cleanup as account_delete_cleanup
+from rove_log_safety import safe_exception_summary
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -1430,8 +1431,7 @@ def send_login_email(email: str, code: str) -> None:
             if response.status >= 300:
                 raise RuntimeError(f"brevo_status_{response.status}")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "ignore")[:300]
-        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+        raise RuntimeError(f"brevo_status_{exc.code}") from exc
 
 
 def send_password_reset_email(email: str, code: str) -> None:
@@ -1468,8 +1468,7 @@ def send_password_reset_email(email: str, code: str) -> None:
             if response.status >= 300:
                 raise RuntimeError(f"brevo_status_{response.status}")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "ignore")[:300]
-        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+        raise RuntimeError(f"brevo_status_{exc.code}") from exc
 
 
 def send_account_delete_email(email: str, code: str) -> None:
@@ -1509,8 +1508,7 @@ def send_account_delete_email(email: str, code: str) -> None:
             if response.status >= 300:
                 raise RuntimeError(f"brevo_status_{response.status}")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "ignore")[:300]
-        raise RuntimeError(f"brevo_status_{exc.code}:{body}") from exc
+        raise RuntimeError(f"brevo_status_{exc.code}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError("brevo_unavailable") from exc
 
@@ -4225,9 +4223,9 @@ def send_push_to_user(conn: sqlite3.Connection, user_id: int, title: str, body: 
             if status in (404, 410):
                 conn.execute("DELETE FROM app_push_subscriptions WHERE id = ?", (row["id"],))
             else:
-                app.logger.warning("Push fehlgeschlagen (%s): %s", status, exc)
+                app.logger.warning("Push fehlgeschlagen (status=%s, error=%s)", status, safe_exception_summary(exc))
         except Exception as exc:
-            app.logger.warning("Push fehlgeschlagen: %s", exc)
+            app.logger.warning("Push fehlgeschlagen (error=%s)", safe_exception_summary(exc))
     return zugestellt
 
 
@@ -6957,7 +6955,7 @@ def analyze_screenshot_import():
             result = request_screenshot_analysis(image_bytes, mime_type)
         except RuntimeError as exc:
             error = str(exc)
-            logger.warning("Screenshot-Import fehlgeschlagen: %s", error)
+            logger.warning("Screenshot-Import fehlgeschlagen (error=%s)", safe_exception_summary(exc))
             status = 503
             if error == "screenshot_rate_limited":
                 status = 429
@@ -7439,7 +7437,7 @@ def request_account_delete_code():
                 (delete_code_id,),
             )
             conn.commit()
-        app.logger.warning("Kontoloeschcode konnte nicht gesendet werden: %s", exc)
+        app.logger.warning("Kontoloeschcode konnte nicht gesendet werden (error=%s)", safe_exception_summary(exc))
         return jsonify({"ok": False, "error": "delete_code_delivery_failed"}), 502
     return jsonify({"ok": True, "sent": True})
 
