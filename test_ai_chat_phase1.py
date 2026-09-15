@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import rove_app_api as api
+import report_ai_text
 
 
 class AiChatPhaseOneTests(unittest.TestCase):
@@ -297,7 +299,7 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 response = self.post(self.client_for(token=f"token-history-{index}"), f"Folgefrage {index}", conversation_id=conversation_id)
                 self.assertEqual(response.status_code, 200)
         with closing(sqlite3.connect(self.db_path)) as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversation_messages WHERE conversation_id = ?", (conversation_id,)).fetchone()[0], 12)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversation_messages WHERE conversation_id = ?", (conversation_id,)).fetchone()[0], 6)
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("UPDATE app_ai_conversations SET expires_at = datetime('now', '-1 hour') WHERE conversation_id = ?", (conversation_id,))
             conn.commit()
@@ -369,6 +371,88 @@ class AiChatPhaseOneTests(unittest.TestCase):
             conn.execute("UPDATE app_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?", (api.keyed_hash("revoked"),))
             conn.commit()
         self.assertEqual(self.post(client, "Was ist TER?").status_code, 401)
+
+    def test_budget_context_contains_only_aggregate_budget_data(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE category_budgets (user_id INTEGER, active_month TEXT, category TEXT, monthly_limit REAL, source TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO category_budgets VALUES (1, ?, 'Mobilität', 250, 'manual')",
+                (datetime.now().strftime("%Y-%m"),),
+            )
+            conn.commit()
+            conn.row_factory = sqlite3.Row
+            user = conn.execute("SELECT * FROM users WHERE user_id = 1").fetchone()
+            intent, context = api.build_ai_chat_context(conn, 1, "Wie läuft mein Budget?")
+        self.assertEqual(intent, "spending")
+        self.assertEqual(context["context_type"], "spending_current_month")
+        self.assertIn("budget", context)
+        self.assertIn("Mobilität", str(context["budget"]))
+        self.assertNotIn("Test ETF", str(context))
+        self.assertNotIn("X-Peng", str(context))
+        self.assertNotIn("one@example.test", str(context))
+
+    def test_report_signals_omit_merchant_and_goal_description(self):
+        signals = report_ai_text._build_signals({
+            "meta": {"month_label": "September", "tracked_days": 4},
+            "profile": {"income_total": 3000, "fixed_costs": 800, "savings_plan": 500, "savings_rate": 16.7, "net_worth": 40000},
+            "pages": {
+                "month": {
+                    "total_expenses": 700, "remaining_budget": 150,
+                    "strongest_category": {"category": "Mobilität", "total": 228},
+                    "biggest_expense": {"merchant": "Private Händlerdaten", "amount": 228},
+                },
+                "score": {"clarity_score": 70, "parts": {"budget": 14}},
+                "goal": {"description": "Private Zielbeschreibung", "target_amount": 10000, "progress_percent": 10, "current_amount": 1000},
+                "financial_story": {"delta": 100},
+                "wealth_journey": {"investment_summary": {"net_contributions": 250}, "monthly_execution": {}},
+            },
+        })
+        self.assertIn("Mobilität", signals)
+        self.assertNotIn("Private Händlerdaten", signals)
+        self.assertNotIn("Private Zielbeschreibung", signals)
+
+    def test_obvious_secret_is_rejected_before_provider_or_persistence(self):
+        messages = (
+            "Meine IBAN ist DE89370400440532013000",
+            "Passwort: geheim-123",
+            "api_key=sk-abcdefghijklmnopqrstuvwxyz",
+            "token=ghp_abcdefghijklmnopqrstuvwxyz",
+        )
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("secret must not reach provider")):
+            for index, message in enumerate(messages):
+                response = self.post(self.client_for(token=f"secret-{index}"), message)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["error"], "sensitive_input_not_accepted")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertFalse(api._ai_table_exists(conn, "app_ai_conversation_messages"))
+
+    def test_screenshot_payload_contains_only_image_and_extraction_prompt(self):
+        seen = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{\\"transactions\\": []}"}}]}'
+
+        def urlopen(request, timeout):
+            seen.append((json.loads(request.data.decode("utf-8")), timeout))
+            return Response()
+
+        with patch.object(api, "OPENAI_API_KEY", "test-key"), patch.object(api.urllib.request, "urlopen", urlopen):
+            api.request_screenshot_analysis(b"image-bytes", "image/png")
+        body, timeout = seen[0]
+        self.assertEqual(timeout, 40)
+        content = body["messages"][0]["content"]
+        self.assertEqual({item["type"] for item in content}, {"text", "image_url"})
+        self.assertNotIn("current_cash", json.dumps(body))
+        self.assertNotIn("one@example.test", json.dumps(body))
 
 
 if __name__ == "__main__":

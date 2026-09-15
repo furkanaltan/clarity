@@ -194,9 +194,16 @@ AI_CHAT_MAX_INPUT_CHARS = int(os.getenv("ROVE_AI_CHAT_MAX_INPUT_CHARS", "2000"))
 AI_CHAT_MAX_OUTPUT_CHARS = int(os.getenv("ROVE_AI_CHAT_MAX_OUTPUT_CHARS", "1200"))
 AI_CHAT_RATE_WINDOW_SECONDS = 15 * 60
 AI_CHAT_RATE_LIMIT = int(os.getenv("ROVE_AI_CHAT_RATE_LIMIT", "20"))
-AI_CHAT_HISTORY_MAX_MESSAGES = 12
+AI_CHAT_HISTORY_MAX_MESSAGES = 6
 AI_CHAT_HISTORY_TTL_HOURS = 24
 _ai_chat_attempts: dict[int, list[float]] = {}
+
+_OBVIOUS_SECRET_PATTERNS = (
+    re.compile(r"\b[A-Z]{2}\d{2}(?:[ -]?[A-Z0-9]){11,30}\b", re.IGNORECASE),
+    re.compile(r"\b(?:sk|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:passwort|password|kennwort)\s*[:=]\s*\S+", re.IGNORECASE),
+    re.compile(r"\b(?:api[_ -]?key|token|secret)\s*[:=]\s*\S+", re.IGNORECASE),
+)
 SCREENSHOT_MAX_BYTES = int(os.getenv("ROVE_SCREENSHOT_MAX_BYTES", str(5 * 1024 * 1024)))
 SCREENSHOT_MAX_ROWS = int(os.getenv("ROVE_SCREENSHOT_MAX_ROWS", "20"))
 ADMIN_USER_IDS = frozenset(
@@ -1674,6 +1681,11 @@ def ai_chat_allowed(user_id: int) -> bool:
     return True
 
 
+def ai_chat_contains_obvious_secret(message: str) -> bool:
+    """Block only high-confidence credentials before persistence or provider access."""
+    return any(pattern.search(message or "") for pattern in _OBVIOUS_SECRET_PATTERNS)
+
+
 def ai_mentor_question_mode(message: str) -> str | None:
     """Classify mentor questions without creating a second financial priority engine."""
     text = message.casefold()
@@ -1864,7 +1876,7 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
                 "level": str(score.get("rank_name") or ""), "platform_days": int(score.get("platform_days") or 0),
                 "tracking_days": int(score.get("tracking_days_90") or 0), "tracking_label": str(score.get("tracking_label") or ""),
                 "parts": score.get("parts") or {}, "next_lever": str(score.get("next_lever") or ""),
-            }}
+            }, "debt_status": normalize_debt_status(user["debt_status"] if "debt_status" in user.keys() else None)}
         except (sqlite3.Error, KeyError, TypeError, ValueError):
             return intent, {"context_type": "score", "available": False}
     if intent == "fixed_costs":
@@ -1877,7 +1889,36 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
                WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
                GROUP BY category ORDER BY amount_eur DESC LIMIT 8""", (user_id,)
         ).fetchall() if _ai_table_exists(conn, "expenses") else []
-        return intent, {"context_type": "spending_current_month", "categories": [dict(row) for row in rows]}
+        income = float(user["income"] or 0) + float(user["other_income"] or 0)
+        fixed_costs = float(user["fixed_costs"] or 0)
+        savings = float(user["etf_savings"] or 0) + float(user["cash_savings"] or 0)
+        budget_truth = _monthly_budget_truth(
+            conn, user_id, income=income, fixed_costs=fixed_costs, savings=savings,
+        )
+        budgets = []
+        if _ai_table_exists(conn, "category_budgets"):
+            budget_rows = conn.execute(
+                """SELECT category, monthly_limit, source FROM category_budgets
+                   WHERE user_id = ? AND active_month = ? ORDER BY category LIMIT 20""",
+                (user_id, datetime.now().strftime("%Y-%m")),
+            ).fetchall()
+            budgets = [
+                {
+                    "category": str(row["category"] or ""),
+                    "limit_eur": round(float(row["monthly_limit"] or 0), 2),
+                    "source": "USER_SET_BUDGET" if str(row["source"] or "manual") == "manual" else "SUGGESTION",
+                }
+                for row in budget_rows
+            ]
+        return intent, {
+            "context_type": "spending_current_month",
+            "categories": [dict(row) for row in rows],
+            "budget": {
+                "free_month_remaining_eur": round(float(budget_truth["free_month_remaining"]), 2),
+                "financial_month_budget_eur": round(float(budget_truth["financial_month_budget"]), 2),
+                "active_budgets": budgets,
+            },
+        }
     if intent == "goals":
         goals = get_app_goals(conn, user_id) if _ai_table_exists(conn, "app_goals") else []
         requested_rate = _ai_requested_goal_rate(message)
@@ -2008,6 +2049,12 @@ def ai_chat():
     message = " ".join(payload["message"].split())
     if not message or len(message) > AI_CHAT_MAX_INPUT_CHARS:
         return jsonify({"ok": False, "error": "invalid_ai_request"}), 400
+    if ai_chat_contains_obvious_secret(message):
+        return jsonify({
+            "ok": False,
+            "error": "sensitive_input_not_accepted",
+            "answer": "Teile bitte keine IBAN, Passwörter, API-Schlüssel oder Tokens im Chat.",
+        }), 400
     # Keep the write phase limited to local preparation. The provider request below
     # may take seconds and must not hold SQLite's exclusive writer lock.
     with db() as conn:

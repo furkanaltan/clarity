@@ -80,7 +80,6 @@ def _build_signals(data: dict) -> str:
     wealth = pages.get("wealth_journey", {})
 
     strongest = month.get("strongest_category") or {}
-    biggest = month.get("biggest_expense") or {}
     inv_summary = wealth.get("investment_summary") or {}
     execution = wealth.get("monthly_execution") or {}
 
@@ -127,8 +126,8 @@ def _build_signals(data: dict) -> str:
         f"Rov.E Score: {score.get('clarity_score', 0)}/100, Rang {score.get('rank_name', '-')}",
         f"Schwaechster Score-Baustein: {weakest or 'unklar'}",
         f"Groesste Ausgabenkategorie: {strongest.get('category', 'keine')} ({_eur(strongest.get('total'))})",
-        f"Groesste Einzelbuchung: {biggest.get('merchant', 'keine')} ({_eur(biggest.get('amount'))})",
-        f"Ziel: {goal.get('description', 'kein Ziel')} ueber {_eur(goal.get('target_amount'))}, "
+        "Ziel: vorhanden" if goal.get("target_amount") is not None else "Ziel: kein Ziel hinterlegt",
+        f"Zielbetrag: {_eur(goal.get('target_amount'))}, "
         f"{round(goal.get('progress_percent') or 0)}% erreicht, {goal_eta}",
         f"Zieltopf: {_eur(goal.get('current_amount'))} direkt diesem Ziel zugewiesen. "
         "Nur dieser Betrag ist Ziel-Fortschritt, niemals das gesamte Nettovermoegen.",

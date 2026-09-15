@@ -3309,22 +3309,17 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
             for row in rows
         }
         try:
-            rows = conn.execute(
-                """SELECT goal_id, name, target_amount, current_amount, goal_monthly_rate
+            row = conn.execute(
+                """SELECT COUNT(*) AS count, COALESCE(SUM(target_amount), 0) AS target_total,
+                          COALESCE(SUM(current_amount), 0) AS current_total
                    FROM app_goals WHERE user_id = ?""",
                 (user_id,),
-            ).fetchall()
-            truth_facts["goals"] = [
-                {
-                    "id": str(row["goal_id"]),
-                    "name": str(row["name"] or ""),
-                    "target": float(row["target_amount"] or 0),
-                    "current": float(row["current_amount"] or 0),
-                    "goal_monthly_rate": float(row["goal_monthly_rate"])
-                    if row["goal_monthly_rate"] is not None else None,
-                }
-                for row in rows
-            ]
+            ).fetchone()
+            truth_facts["goals"] = {
+                "count": int(row["count"] or 0),
+                "target_total": round(float(row["target_total"] or 0), 2),
+                "current_total": round(float(row["current_total"] or 0), 2),
+            }
         except sqlite3.OperationalError:
             pass
         score_row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -3346,8 +3341,6 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
         f"- Monatliches Nettoeinkommen: {eur(u.get('income'))}",
         f"- Weitere monatliche Einkommen: {eur(u.get('other_income'))}",
         f"- Monatliche Fixkosten gesamt: {eur(u.get('fixed_costs'))}",
-        f"- Sparziel: {u.get('goal_description') or 'nicht hinterlegt'}",
-        f"- Zielbetrag: {eur(u.get('goal_amount'))}",
         f"- Aktuelle Investments: {eur(investments)}",
         f"- Aktuelle Cash-Reserven: {eur(cash)}",
         f"- ETF-Sparrate: {eur(etf_savings)}",
@@ -3361,85 +3354,10 @@ def build_ai_user_context(user_id: int, u: dict) -> str:
         f"  - Aktuelle Cash-Wahrheit: {eur(cash)}",
         f"  - Budgets (USER_SET_BUDGET oder SUGGESTION): {json.dumps(truth_facts['budgets'], ensure_ascii=False)}",
         f"  - Beobachtete Ausgaben je Kategorie: {json.dumps(truth_facts['actuals'], ensure_ascii=False)}",
-        f"  - Ziele inklusive goal_monthly_rate: {json.dumps(truth_facts['goals'], ensure_ascii=False)}",
+        f"  - Ziele als aggregierter Status: {json.dumps(truth_facts['goals'], ensure_ascii=False)}",
         f"  - Score und Teilwerte: {json.dumps(truth_facts['score'], ensure_ascii=False, default=str)}",
         f"  - Investment-Beiträge im aktuellen Monat: {eur(truth_facts['contributions'])}",
     ]
-
-    details = u.get("details", {})
-    if isinstance(details, dict) and details:
-        lines.append("- Verfeinertes Profil:")
-        for section, values in details.items():
-            if isinstance(values, dict):
-                clean_values = ", ".join(f"{key}: {eur(value)}" for key, value in values.items())
-                lines.append(f"  - {section}: {clean_values}")
-
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT merchant, category, amount, created_at
-               FROM expenses
-               WHERE user_id = ?
-               ORDER BY created_at DESC, id DESC
-               LIMIT 5""",
-            (user_id,)
-        )
-        latest_expenses = cursor.fetchall()
-
-        cursor.execute(
-            """SELECT category, SUM(amount) AS total
-               FROM expenses
-               WHERE user_id = ?
-               AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
-               GROUP BY category
-               ORDER BY total DESC
-               LIMIT 5""",
-            (user_id,)
-        )
-        top_categories = cursor.fetchall()
-
-        cursor.execute(
-            """SELECT amount, direction, asset_type, asset_name, event_type, source, created_at
-               FROM investment_events
-               WHERE user_id = ?
-               ORDER BY created_at DESC, id DESC
-               LIMIT 5""",
-            (user_id,)
-        )
-        latest_investments = cursor.fetchall()
-
-        cursor.execute(
-            """SELECT amount, scope, source, created_at
-               FROM portfolio_snapshots
-               WHERE user_id = ?
-               ORDER BY created_at DESC, id DESC
-               LIMIT 3""",
-            (user_id,)
-        )
-        latest_snapshots = cursor.fetchall()
-
-    if latest_expenses:
-        lines.append("- Letzte Ausgaben:")
-        for row in latest_expenses:
-            lines.append(f"  - {row['merchant']} ({row['category']}): {eur(row['amount'])}")
-
-    if top_categories:
-        lines.append("- Top-Kategorien diesen Monat:")
-        for row in top_categories:
-            lines.append(f"  - {row['category']}: {eur(row['total'])}")
-
-    if latest_investments:
-        lines.append("- Letzte Investment-Ereignisse:")
-        for row in latest_investments:
-            name = row["asset_name"] or row["asset_type"]
-            lines.append(
-                f"  - {row['event_type']} / {name}: {row['direction']} {eur(row['amount'])} ({row['source']})"
-            )
-
-    if latest_snapshots:
-        lines.append("- Letzte Portfolio-Stände:")
-        for row in latest_snapshots:
-            lines.append(f"  - {row['scope']}: {eur(row['amount'])} ({row['source']})")
 
     return "\n".join(lines)
 
