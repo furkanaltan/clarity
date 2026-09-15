@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Iterable
 
 
+class TombstoneLedgerError(RuntimeError):
+    """The deletion ledger cannot be trusted for a restore operation."""
+
+
 def configured_roots(app_dir: Path) -> tuple[Path, Path, Path, Path]:
     reports_dir = Path(os.getenv("CLARITY_REPORTS_DIR", str(app_dir / "reports")))
     return (
@@ -44,15 +48,26 @@ def record_delete_tombstone(user_id: int, path: Path | None = None) -> None:
 def read_delete_tombstones(path: Path | None = None) -> set[int]:
     target = path or tombstone_path()
     if not target.is_file():
-        return set()
+        raise TombstoneLedgerError("ledger_missing")
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise TombstoneLedgerError("ledger_unreadable") from exc
     result: set[int] = set()
-    for line in target.read_text(encoding="utf-8").splitlines():
-        try:
-            value = json.loads(line).get("user_id")
-            if value is not None:
-                result.add(int(value))
-        except (ValueError, TypeError, json.JSONDecodeError):
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
             continue
+        try:
+            payload = json.loads(line)
+            value = payload.get("user_id") if isinstance(payload, dict) else None
+            if value is None or isinstance(value, bool):
+                raise ValueError("missing_user_id")
+            user_id = int(value)
+            if user_id <= 0:
+                raise ValueError("invalid_user_id")
+            result.add(user_id)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise TombstoneLedgerError(f"ledger_invalid_line:{line_number}") from exc
     return result
 
 

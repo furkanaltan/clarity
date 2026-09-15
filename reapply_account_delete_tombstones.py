@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
 import rove_account_delete_cleanup as cleanup
@@ -16,7 +17,11 @@ def main() -> int:
     parser.add_argument("--db", required=True, type=Path)
     parser.add_argument("--ledger", type=Path, default=None)
     args = parser.parse_args()
-    user_ids = cleanup.read_delete_tombstones(args.ledger)
+    try:
+        user_ids = cleanup.read_delete_tombstones(args.ledger)
+    except cleanup.TombstoneLedgerError as exc:
+        print(f"Tombstone-Ledger nicht verfuegbar: {exc}", file=sys.stderr)
+        return 2
     with sqlite3.connect(args.db, timeout=30.0) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")

@@ -7417,6 +7417,72 @@ def queue_account_cleanup_failures(paths: list[Path]) -> None:
     account_delete_cleanup.queue_paths(DB_PATH, account_delete_cleanup_roots(), paths)
 
 
+def anonymize_admin_events_for_deleted_account(
+    conn: sqlite3.Connection, user_id: int, emails: list[str]
+) -> None:
+    """Keep only non-personal audit facts after an account is deleted."""
+    if not table_exists(conn, "app_admin_events"):
+        return
+    normalized_emails = sorted({normalize_email(email) for email in emails if normalize_email(email)})
+    conditions = ["admin_user_id = ?", "target_user_id = ?"]
+    params: list[object] = [user_id, user_id]
+    if normalized_emails:
+        placeholders = ",".join("?" for _ in normalized_emails)
+        conditions.append(f"lower(COALESCE(target_email, '')) IN ({placeholders})")
+        params.extend(normalized_emails)
+        for email in normalized_emails:
+            conditions.append("instr(lower(COALESCE(details, '')), ?) > 0")
+            params.append(email)
+    rows = conn.execute(
+        "SELECT id, admin_user_id, target_user_id, target_email FROM app_admin_events WHERE "
+        + " OR ".join(conditions),
+        tuple(params),
+    ).fetchall()
+    for row in rows:
+        target_email = str(row[3] or "")
+        if normalize_email(target_email) in normalized_emails:
+            target_email = ""
+        conn.execute(
+            """UPDATE app_admin_events
+                  SET admin_user_id = ?,
+                      target_user_id = ?,
+                      target_email = ?,
+                      details = ''
+                WHERE id = ?""",
+            (
+                0 if int(row[1]) == user_id else int(row[1]),
+                None if row[2] is not None and int(row[2]) == user_id else row[2],
+                target_email,
+                row[0],
+            ),
+        )
+
+
+def delete_account_scoped_artifacts(
+    conn: sqlite3.Connection, user_id: int, emails: list[str]
+) -> None:
+    """Delete email/hash keyed artifacts and minimize account-linked audit rows."""
+    for email in emails:
+        if table_exists(conn, "app_login_codes"):
+            conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
+        if table_exists(conn, "app_invitations"):
+            conn.execute("DELETE FROM app_invitations WHERE email = ?", (email,))
+        try:
+            account_subject = login_account_subject(email)
+        except RuntimeError:
+            account_subject = ""
+        if account_subject and table_exists(conn, "app_auth_login_limits"):
+            conn.execute(
+                "DELETE FROM app_auth_login_limits WHERE subject_hash = ?",
+                (account_subject,),
+            )
+        if account_subject:
+            for key in list(LOGIN_FAILURE_BUCKETS):
+                if key.startswith("combination:") and key.endswith(f":{account_subject}"):
+                    LOGIN_FAILURE_BUCKETS.pop(key, None)
+    anonymize_admin_events_for_deleted_account(conn, user_id, emails)
+
+
 def delete_user_rows_for_tombstone(conn: sqlite3.Connection, user_id: int) -> None:
     """Reapply an external deletion tombstone to a restored database, idempotently."""
     account_exists = conn.execute(
@@ -7438,9 +7504,7 @@ def delete_user_rows_for_tombstone(conn: sqlite3.Connection, user_id: int) -> No
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_session_pins'").fetchone():
                 conn.execute(f"DELETE FROM app_session_pins WHERE session_id IN (SELECT id FROM app_sessions WHERE account_id IN ({placeholders}))", account_ids)
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
-    if emails and conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_login_codes'").fetchone():
-        placeholders = ",".join("?" for _ in emails)
-        conn.execute(f"DELETE FROM app_login_codes WHERE email IN ({placeholders})", emails)
+    delete_account_scoped_artifacts(conn, user_id, emails)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_financial_accounts'").fetchone():
         delete_financial_account_data(conn, user_id)
     tables = [str(row[0]) for row in conn.execute(
@@ -7601,14 +7665,7 @@ def delete_account():
                 account_ids,
             )
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
-        for email in emails:
-            conn.execute("DELETE FROM app_login_codes WHERE email = ?", (email,))
-            # app_invitations is email-scoped, so only the normalized email owned by
-            # this account may be removed. Invitations for other addresses remain intact.
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_invitations'"
-            ).fetchone():
-                conn.execute("DELETE FROM app_invitations WHERE email = ?", (email,))
+        delete_account_scoped_artifacts(conn, token_user_id, emails)
 
         # Diese Kindtabelle muss vor portfolio_holdings weg; danach entfernt die dynamische
         # user_id-Schleife auch neue, spaeter hinzukommende Rov.E-Tabellen automatisch.

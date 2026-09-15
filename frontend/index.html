@@ -3273,6 +3273,50 @@ function clearAmbiguousBridgeStorage(){
   // Old global entries have no reliable owner. Never assign them to the next login.
   ["rove-cat-rules", "rove-reminders"].forEach(key=>localStorage.removeItem(key));
 }
+async function clearRoveBrowserData(userId=null){
+  const uid=userId==null ? "" : String(userId);
+  const exact=new Set([
+    "rove-theme", "rove-safe", "rove-diag", "rove-diag-log", "rove-prefs",
+    "rove-profile", BRIDGE_LOCAL_KEY, "rove-cat-rules", "rove-reminders", "rove-payday-hist", "rove-vh"
+  ]);
+  const userPrefixes=uid ? [
+    `rove:${uid}:`,
+    `rove-activity-seen:bridge:${uid}`,
+    `rove-budget-alerts-v2:bridge:${uid}:`,
+    `rove-monthly-plan-seen:${uid}:`,
+    `rove-monthly-plan-opened:${uid}:`
+  ] : [];
+  try{
+    for(let i=localStorage.length-1;i>=0;i--){
+      const key=localStorage.key(i);
+      if(key && (exact.has(key) || userPrefixes.some(prefix=>key.startsWith(prefix)))){
+        try{ localStorage.removeItem(key); }catch(_){ }
+      }
+    }
+  }catch(_){ }
+  try{
+    for(let i=sessionStorage.length-1;i>=0;i--){
+      const key=sessionStorage.key(i);
+      if(key && (key.startsWith("rove-") || key.startsWith("rove:"))){
+        try{ sessionStorage.removeItem(key); }catch(_){ }
+      }
+    }
+  }catch(_){ }
+  try{
+    if("caches" in window){
+      const names=await caches.keys();
+      await Promise.all(names.filter(name=>/^rove[-:]/i.test(name)).map(name=>caches.delete(name)));
+    }
+    if(navigator.serviceWorker?.getRegistrations){
+      const appPath=new URL("./",location.href).pathname;
+      const registrations=await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.filter(reg=>{
+        try{ const scope=new URL(reg.scope); return scope.origin===location.origin && scope.pathname.startsWith(appPath); }
+        catch(_){ return false; }
+      }).map(reg=>reg.unregister()));
+    }
+  }catch(_){ }
+}
 const BRIDGE_BOT_ASSET_NAMES = new Set(["Girokonto", "Tagesgeld", "Bargeld", "ETF & Investments", "Krypto"]);
 const BRIDGE_SERVER_ASSET_NAMES = new Set([...BRIDGE_BOT_ASSET_NAMES, "Immobilie"]);
 function readBridgeLocal(){
@@ -10454,12 +10498,7 @@ async function confirmAccountDelete(){
         "Das Konto konnte gerade nicht gelöscht werden.";
       throw new Error(message);
     }
-    try{      clearPaydayHistory(BRIDGE_USER_ID);
-      localStorage.removeItem(BRIDGE_LOCAL_KEY);
-      localStorage.removeItem("rove-cat-rules");
-      localStorage.removeItem("rove-reminders");
-      sessionStorage.removeItem("rove-demo");
-    }catch(_){}
+    await clearRoveBrowserData(BRIDGE_USER_ID);
     location.href=location.pathname;
   }catch(err){ accountDeleteMessage(err.message||"Das Konto konnte gerade nicht gelöscht werden."); }
   finally{ ACCOUNT_DELETE_FLOW.busy=false; }
