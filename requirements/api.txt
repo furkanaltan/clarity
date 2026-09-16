@@ -4,5 +4,6 @@
 # the read-only SSH account cannot execute or inspect /root/rove-app-api-venv.
 Flask
 argon2-cffi
+cryptography==45.0.7
 openai
 pywebpush

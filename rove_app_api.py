@@ -125,6 +125,7 @@ from rove_financial_accounts import (
     transfer_financial_account_balance,
     update_financial_account_balance,
 )
+from rove_provider_data import delete_provider_data_for_user
 from rove_vehicle_financing import (
     VehicleFinancingConflictError,
     create_vehicle_financing,
@@ -7552,6 +7553,7 @@ def delete_user_rows_for_tombstone(conn: sqlite3.Connection, user_id: int) -> No
     delete_account_scoped_artifacts(conn, user_id, emails)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_financial_accounts'").fetchone():
         delete_financial_account_data(conn, user_id)
+    delete_provider_data_for_user(conn, user_id)
     tables = [str(row[0]) for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     )]
@@ -7722,6 +7724,7 @@ def delete_account():
         # Rollen zuerst entfernen. Damit bleibt die Loeschung auch dann korrekt, wenn
         # Foreign Keys fuer diese Verbindung spaeter global aktiviert werden.
         delete_financial_account_data(conn, token_user_id)
+        delete_provider_data_for_user(conn, token_user_id)
 
         tables = [str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
