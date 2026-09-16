@@ -43,6 +43,18 @@ class FrontendTransferVisibilityTests(unittest.TestCase):
         self.assertIn("request_id:transferId", self.frontend)
         self.assertIn("PENDING_TRANSFER_REQUEST=null", self.frontend)
 
+    def test_transfer_source_is_resolved_by_stable_account_identity(self):
+        self.assertIn("function cashAssetForTransferButton(button){", self.frontend)
+        self.assertIn("financialAccountAsset(financialAccountById(sourceId))", self.frontend)
+        self.assertIn('data-cash-source-id="${cashMeta.dynamic?cashMeta.id:\"\"}"', self.frontend)
+        self.assertIn('data-cash-source-key="${cashMeta.dynamic?\"\":cashMeta.key}"', self.frontend)
+        self.assertIn("const a=cashAssetForTransferButton(cashMove)", self.frontend)
+
+    def test_transfer_button_is_explicitly_non_submit_and_rejects_missing_target(self):
+        self.assertIn('type="button" class="vd-btn" id="cashMoveSend"', self.frontend)
+        self.assertIn('if(!direction){ showToast("Kein Zielkonto verfügbar"); return; }', self.frontend)
+        self.assertIn('if(meta.dynamic && !Number.isSafeInteger(targetId))', self.frontend)
+
     def test_booking_failure_does_not_restore_a_stale_account_snapshot(self):
         rollback = re.search(
             r"function rollbackFailedBooking\(e\)\{(?P<body>.*?)\n\}",

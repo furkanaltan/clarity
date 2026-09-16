@@ -172,6 +172,91 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assert_invariants()
 
+    def test_income_on_giro_then_transfer_to_tagesgeld_is_single_internal_transfer(self):
+        with closing(self.connect()) as conn:
+            source = int(get_legacy_financial_account(conn, 1, "giro")["id"])
+            target = int(get_legacy_financial_account(conn, 1, "tagesgeld")["id"])
+            before = {
+                int(row["id"]): float(row["balance"])
+                for row in conn.execute(
+                    "SELECT id,balance FROM app_financial_accounts WHERE id IN (?,?)",
+                    (source, target),
+                )
+            }
+            expense_count = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+
+        income = self.request("POST", "/v1/income", json={
+            "amount": 900, "label": "Gehalt", "request_id": "salary-before-transfer",
+        })
+        self.assertEqual(income.status_code, 200, income.get_json())
+        transfer = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 250,
+            "request_id": "giro-to-tagesgeld-after-salary",
+        })
+        self.assertEqual(transfer.status_code, 200, transfer.get_json())
+
+        with closing(self.connect()) as conn:
+            balances = {
+                int(row["id"]): float(row["balance"])
+                for row in conn.execute(
+                    "SELECT id,balance FROM app_financial_accounts WHERE id IN (?,?)",
+                    (source, target),
+                )
+            }
+            movement = conn.execute(
+                """SELECT kind,source_account_id,target_account_id,amount
+                   FROM app_cash_movements
+                   WHERE kind='transfer' ORDER BY id DESC LIMIT 1"""
+            ).fetchone()
+            transfer_count = conn.execute(
+                "SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'"
+            ).fetchone()[0]
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0], expense_count)
+
+        self.assertEqual(balances[source], before[source] + 900 - 250)
+        self.assertEqual(balances[target], before[target] + 250)
+        self.assertEqual(
+            (movement["kind"], movement["source_account_id"], movement["target_account_id"], float(movement["amount"])),
+            ("transfer", source, target, 250.0),
+        )
+        self.assertEqual(transfer_count, 1)
+        self.assert_invariants()
+
+    def test_transfer_can_return_from_tagesgeld_to_giro_without_expense_row(self):
+        source = int(self.create("savings", "Tagesgeld", 300))
+        target = int(self.create("checking", "Giro", 0))
+        with closing(self.connect()) as conn:
+            before_expenses = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+        response = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": target, "amount": 125,
+            "request_id": "tagesgeld-to-giro",
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0], before_expenses)
+            movement = conn.execute(
+                "SELECT source_account_id,target_account_id FROM app_cash_movements WHERE kind='transfer' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual((movement["source_account_id"], movement["target_account_id"]), (source, target))
+
+    def test_transfer_rejects_same_source_and_target_and_missing_target(self):
+        source = self.create("checking", "Giro", 100)
+        same = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": source, "amount": 10,
+            "request_id": "transfer-same-account",
+        })
+        self.assertEqual(same.status_code, 400, same.get_json())
+        missing = self.request("POST", "/v1/financial-accounts/transfer", json={
+            "sourceAccountId": source, "targetAccountId": 999999, "amount": 10,
+            "request_id": "transfer-missing-target",
+        })
+        self.assertEqual(missing.status_code, 404, missing.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM app_cash_movements WHERE kind='transfer'").fetchone()[0],
+                0,
+            )
+
     def test_parallel_transfers_do_not_lose_updates(self):
         source = self.create("checking", "Quelle", 300)
         target = self.create("savings", "Ziel", 0)

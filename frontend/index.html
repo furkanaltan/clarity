@@ -4963,6 +4963,12 @@ function cashAccountMeta(asset){
   }
   return CASH_ACCOUNT_META[asset?.name] || null;
 }
+function cashAssetForTransferButton(button){
+  const sourceId=Number(button?.dataset.cashSourceId||0);
+  if(sourceId>0) return financialAccountAsset(financialAccountById(sourceId));
+  const sourceKey=String(button?.dataset.cashSourceKey||"");
+  return sourceKey ? legacyCashAsset(sourceKey) : DATA.assets[dIdx]||null;
+}
 function assetIndexByName(name){ return DATA.assets.findIndex(asset=>asset.name===name); }
 function assetIndexByKey(key){ return DATA.assets.findIndex(asset=>assetOrderKey(asset)===key); }
 
@@ -5485,7 +5491,7 @@ function openAssetDetail(i){
          <div class="field" style="margin-top:10px">
            <input id="cashMoveAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Betrag, z. B. 500">
          </div>
-         <button class="vd-btn" id="cashMoveSend" style="margin-top:10px">Umbuchen</button>
+         <button type="button" class="vd-btn" id="cashMoveSend" data-cash-source-id="${cashMeta.dynamic?cashMeta.id:""}" data-cash-source-key="${cashMeta.dynamic?"":cashMeta.key}" style="margin-top:10px">Umbuchen</button>
          <div class="asset-note">Dein Gesamtvermögen bleibt dabei gleich.</div>
          </div>`:""}
          <div class="detail-action-card">
@@ -6078,10 +6084,15 @@ document.getElementById("dbody").addEventListener("click",e=>{
   }
   const cashMove=e.target.closest("#cashMoveSend");
   if(cashMove){
-    const a=DATA.assets[dIdx], meta=cashAccountMeta(a), amount=appMoney(document.getElementById("cashMoveAmt").value);
-    if(!meta || !amount){ document.getElementById("cashMoveAmt").focus(); return; }
-    const selection=document.getElementById("cashMoveDirection").value;
+    // The detail list can be refreshed after income arrives. Resolve the source by its
+    // stable account identity instead of the stale array index kept in dIdx.
+    const a=cashAssetForTransferButton(cashMove), meta=cashAccountMeta(a), amount=appMoney(document.getElementById("cashMoveAmt")?.value);
+    if(!meta || !amount){ document.getElementById("cashMoveAmt")?.focus(); return; }
+    const direction=document.getElementById("cashMoveDirection");
+    if(!direction){ showToast("Kein Zielkonto verfügbar"); return; }
+    const selection=direction.value;
     const targetId=Number(selection);
+    if(meta.dynamic && !Number.isSafeInteger(targetId)){ showToast("Bitte ein Zielkonto auswählen"); return; }
     const samePending=PENDING_TRANSFER_REQUEST
       && PENDING_TRANSFER_REQUEST.sourceId===meta.id
       && PENDING_TRANSFER_REQUEST.targetId===targetId
