@@ -1699,6 +1699,12 @@ def ai_mentor_question_mode(message: str) -> str | None:
     )
     asks_action = (
         "was muss ich diesen monat priorisieren" in text
+        or "was braucht diesen monat aufmerksamkeit" in text
+        or "worauf soll ich diesen monat achten" in text
+        or "was ist gerade wichtig" in text
+        or re.search(r"\bwas soll ich\b.{0,64}\bals nächstes angehen\b", text)
+        or re.search(r"\bwas ist diesen monat\b.{0,48}\bauffällig\w*\b", text)
+        or re.search(r"\bwo habe ich\b.{0,48}\bhandlungsbedarf\b", text)
         or re.search(r"\bwas soll ich\b.{0,64}\bkonkret\b.{0,32}\b(als nächstes|als naechstes|tun|schritt)\b", text)
         or re.search(r"\b(?:was ist|was wäre|was waere)\b.{0,48}\bmein nächster (?:finanzieller )?schritt\b", text)
         or re.search(r"\bals nächstes\b.{0,48}\b(tun|schritt|priorisieren)\b", text)

@@ -11543,6 +11543,11 @@ function isAmbiguousInvestmentQuestion(t){ return /^was ist mein(?:e|er)?\s+(etf
 function isMentorPriorityQuestion(t){
   return /größter finanzieller schwachpunkt|groesster finanzieller schwachpunkt|wichtigster finanzieller hebel|wichtigste finanzielle hebel|woran soll ich zuerst arbeiten|was bremst meinen score/.test(t)
     || /\bwas soll ich\b.{0,48}\b(verbesser\w*|optimier\w*|änder\w*|aender\w*|tun)\b/.test(t)
+    || /\bwas (braucht|ist) diesen monat\b.{0,48}\b(aufmerksamkeit|auffällig\w*)\b/.test(t)
+    || /\bworauf soll ich diesen monat achten\b/.test(t)
+    || /\bwas ist gerade wichtig\b/.test(t)
+    || /\bwas soll ich\b.{0,48}\bals nächstes angehen\b/.test(t)
+    || /\bwo habe ich\b.{0,48}\bhandlungsbedarf\b/.test(t)
     || /\bals nächstes\b.{0,48}\b(verbesser\w*|optimier\w*|tun|arbeiten)\b/.test(t)
     || /\bfinanzielle situation\b.{0,48}\b(verbesser\w*|optimier\w*)\b/.test(t)
     || /\bwas ist (?:aktuell )?mein\b.{0,48}\b(schwachpunkt|hebel)\w*\b/.test(t);

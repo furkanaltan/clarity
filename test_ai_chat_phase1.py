@@ -176,6 +176,35 @@ class AiChatPhaseOneTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         self.assertTrue(response.get_json()["deterministic"])
 
+    def test_attention_questions_use_deterministic_mentor_path(self):
+        questions = (
+            "Was braucht diesen Monat Aufmerksamkeit?",
+            "Worauf soll ich diesen Monat achten?",
+            "Was ist gerade wichtig?",
+            "Was soll ich als Nächstes angehen?",
+            "Wo habe ich aktuell Handlungsbedarf?",
+            "Was ist diesen Monat auffällig?",
+        )
+        for index, question in enumerate(questions):
+            self.assertEqual(api.ai_chat_intent(question), "mentor_priority", question)
+            self.assertEqual(api.ai_mentor_question_mode(question), "action", question)
+            with patch.object(api, "ai_chat_provider", side_effect=AssertionError("attention question must not call provider")):
+                response = self.post(self.client_for(token=f"mentor-attention-{index}"), question)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            payload = response.get_json()
+            self.assertEqual(payload["kind"], "rove")
+            self.assertTrue(payload["deterministic"])
+
+    def test_attention_question_returns_explicit_fallback_without_candidate(self):
+        with patch.object(api, "build_mentor_candidate", return_value=None), \
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("attention question must not call provider")):
+            response = self.post(self.client_for(token="mentor-attention-fallback"), "Was braucht diesen Monat Aufmerksamkeit?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["kind"], "rove")
+        self.assertTrue(payload["deterministic"])
+        self.assertIn("kein klarer priorisierter hebel", payload["answer"].casefold())
+
     def test_deterministic_weakness_answer_uses_score_v2_factor(self):
         answer = api._ai_deterministic_mentor_answer({
             "mentor_mode": "weakness",

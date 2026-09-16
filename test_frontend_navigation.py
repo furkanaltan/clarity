@@ -297,6 +297,32 @@ console.log(JSON.stringify({{
             self.frontend.index("const cs=ans_catSpent(t);")
         )
 
+    def test_attention_questions_bypass_legacy_local_answer(self):
+        start = self.frontend.index("function isMentorPriorityQuestion(")
+        end = self.frontend.index("// Dispatcher: Thema", start)
+        helper = self.frontend[start:end]
+        script = f"""
+{helper}
+const questions = [
+  "Was braucht diesen Monat Aufmerksamkeit?",
+  "Worauf soll ich diesen Monat achten?",
+  "Was ist gerade wichtig?",
+  "Was soll ich als Nächstes angehen?",
+  "Wo habe ich aktuell Handlungsbedarf?",
+  "Was ist diesen Monat auffällig?"
+];
+console.log(JSON.stringify(questions.map(q => isMentorAnalysisQuestion(q.toLowerCase()))));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [True] * 6)
+
     def test_one_day_activity_bar_scale_keeps_small_values_visible(self):
         result = self.run_chart_adapter("""
 console.log(JSON.stringify([
