@@ -24,6 +24,15 @@ class FrontendSupportOfferTests(unittest.TestCase):
         self.assertIn('function renderSupportDetail(key)', self.frontend)
         self.assertIn('function openAccess()', self.frontend)
 
+    def test_access_offer_is_rendered_before_paid_offers(self):
+        render_start = self.frontend.index("function renderSupportList()")
+        render_end = self.frontend.index("function renderSupportDetail(key)", render_start)
+        render_list = self.frontend[render_start:render_end]
+        self.assertLess(
+            render_list.index('data-support-access'),
+            render_list.index('data-support="${key}"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
