@@ -48,6 +48,7 @@ case "$SUITE" in
       test_feature_announcements_sprint2.py \
       test_final_fix_before_sprint3.py \
       test_frontend_cookie_auth_9_1b.py \
+      test_frontend_etf_review.py \
       test_frontend_pin_sprint9_phase2.py \
       test_quick_capture_close.py
     ;;

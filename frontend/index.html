@@ -11498,6 +11498,47 @@ function ans_help(){
 }
 function isGeneralFinanceKnowledgeQuestion(t){ return /\b(etfs?|aktien?|fonds?|ter|kgv|börse|boerse|broker|depot)\b/.test(t) && /\b(was (ist|bedeutet)|wie funktioniert|wie funktionieren|was macht|wo kann .* kaufen)\b/.test(t) && !/\b(mein|meine|meiner|bei mir|habe ich|hab ich|ich habe|ich hab|zeig mir|zeige mir)\b/.test(t); }
 function isPersonalInvestmentQuestion(t){ return /\b(etfs?|aktien?|fonds?|depot|portfolio|investments?)\b/.test(t) && (/\b(mein|meine|meiner|bei mir|habe ich|hab ich|ich habe|ich hab|zeig mir|zeige mir)\b/.test(t) || /\b(etfs?|aktien?|depot|portfolio|investments?)\b.{0,18}\b(prüf|pruef|status|performance)\b/.test(t)); }
+function isEtfReviewQuestion(t){
+  return /\betfs?\b/.test(t)
+    && /\b(prüf\w*|pruef\w*|bestand|position\w*|anteil|wert|sparrate|beiträg\w*|beitrag\w*)\b/.test(t)
+    && !/\b(kauf\w*|verkauf\w*|welch\w*|besser|soll ich)\b/.test(t);
+}
+function etfReviewPositions(){
+  const asset=(DATA.assets||[]).find(item=>{
+    const name=String(item?.name||"").toLowerCase();
+    return /etf|invest/.test(name) && Array.isArray(item?.positions);
+  });
+  return (asset?.positions||[]).filter(position=>
+    position?.holding
+    && String(position.assetType||"").toLowerCase()==="etf"
+    && !position.unassigned
+    && Number.isFinite(Number(position.v))
+    && Number(position.v)>=0
+  );
+}
+function ans_etf_review(){
+  const positions=etfReviewPositions();
+  if(!positions.length) return `Keine ETF-Positionen hinterlegt.`;
+  const total=positions.reduce((sum,position)=>sum+Number(position.v||0),0);
+  const largest=positions.reduce((best,position)=>Number(position.v)>Number(best.v)?position:best,positions[0]);
+  const plans=positions.reduce((sum,position)=>sum+(position.positionPlan?.active?Number(position.positionPlan.amount||0):0),0);
+  const configuredPlan=Number(DATA.etfPlan?.active?DATA.etfPlan?.amount:0)||0;
+  const globalRate=Number(DATA.sts?.sparratenParts?.etf||DATA.sts?.etfSparrate||0);
+  const monthly=plans>0?plans:(configuredPlan>0?configuredPlan:globalRate);
+  const contributions=positions.reduce((sum,position)=>sum+Number(position.contributions||0)+Number(position.pendingContribution||0),0);
+  const lines=[
+    `ETF-Gesamtwert: <b>${eur2(total)}</b>.`,
+    `Monatliche ETF-Sparrate: <b>${monthly>0?eur2(monthly):"nicht hinterlegt"}</b>.`,
+    `ETF-Positionen: <b>${positions.length}</b>.`,
+    `Größte ETF-Position: <b>${announcementEscape(largest.n||"Unbekannt")}</b> · ${eur2(largest.v)}.`
+  ];
+  if(DATA.netWorthAvailable===true && Number(DATA.netWorth)>0)
+    lines.push(`Anteil am Gesamtvermögen: <b>${(total/Number(DATA.netWorth)*100).toFixed(2).replace(".",",")} %</b>.`);
+  lines.push(`Erfasste ETF-Beiträge: <b>${contributions>0?eur2(contributions):"keine bestätigt"}</b>.`);
+  if(total>0 && positions.length>1 && Number(largest.v)/total>=0.6)
+    lines.push(`Datenbasierter Hinweis: ${announcementEscape(largest.n||"Die größte Position")} macht ${(Number(largest.v)/total*100).toFixed(1).replace(".",",")} % des ETF-Bestands aus.`);
+  return lines.join("<br>");
+}
 function isAmbiguousInvestmentQuestion(t){ return /^was ist mein(?:e|er)?\s+(etf|depot|portfolio|aktie)[?!.,\s]*$/.test(t); }
 function isMentorPriorityQuestion(t){
   return /größter finanzieller schwachpunkt|groesster finanzieller schwachpunkt|wichtigster finanzieller hebel|wichtigste finanzielle hebel|woran soll ich zuerst arbeiten|was bremst meinen score/.test(t)
@@ -11521,6 +11562,9 @@ async function roveAnswer(raw){
   // Mentor-Fakten, Erklärungen und Verbesserungsfragen müssen vor lokalen Budget-/Score-Fallbacks
   // zur API gelangen, damit dort dieselben kanonischen Mentor-/Score-Daten verwendet werden.
   if(isMentorAnalysisQuestion(t)) return null;
+  // Eigene ETF-Bestandsfragen sind aus dem kanonischen App-State beantwortbar und dürfen
+  // deshalb nicht in den generischen Investment-/AI-Pfad fallen.
+  if(isEtfReviewQuestion(t)) return ans_etf_review();
   // Hilfe zuerst — „was kannst du" soll nie im Fallback landen
   if(/was kannst du|was kann ich dich|was kann (ich|man) (hier|damit|in der app|alles)|was kann ich (machen|tun)|was geht (hier|in der app)|was kann die app|wozu (ist|dient|brauche|nutzt|hilft)|was bringt (mir|das)|hilfe|wie funktionierst du|anleitung|was ist (das hier|rov)/.test(t)
      || (/wie (benutz|nutz)|was mache? ich hier|wie funktioniert|erklär|erklaer|wie geht das/.test(t) && /rov\.?e|rove|clarity|\bbot\b|\bapp\b|\bhier\b|\bdas\b/.test(t))) return ans_help();
