@@ -15,12 +15,24 @@ Diese Regeln halten Repository und Laufzeit nachvollziehbar.
 - Experimente, Previews und Einmal-Ausgaben gehoeren in Scratch-/Archivbereiche.
 - Unklare Dateien werden klassifiziert, nicht vorschnell geloescht.
 
-## Backups and generated files
+## Backups, retention and generated files
 
 - Backups gehoeren ausserhalb des aktiven Quellbaums.
 - Logs, PDFs, Previews, Caches, WAL/SHM-Dateien und temporaere Ausgaben werden
   nicht versioniert.
 - Historische Quellen werden nur mit dokumentiertem Grund archiviert.
+- Automatische DB-Backups haben eine exakte Retention von 30 Tagen.
+- Manuelle und Release-Backups gelten ebenfalls fuer 30 Tage ab `mtime`, ausser
+  sie sind ausdruecklich als aktiver Rollback-/Recovery-Stand dokumentiert.
+- Legacy-DBs werden nur mit dokumentiertem Zweck oder bis zum Nachweis einer
+  gleichwertigen Ersatzkopie behalten; unbegrenzte Aufbewahrung ohne Zweck ist
+  nicht zulaessig.
+- Sensible DB-Dateien muessen `600 root:root` sein. WAL/SHM-Sidecars werden mit
+  ihrer Haupt-DB als eine Backup-Gruppe behandelt.
+- Restore-Prozesse muessen Account-Delete-Tombstones erneut anwenden und bei
+  fehlendem oder ungueltigem Ledger fail-closed abbrechen.
+- Versionierte Dokumentation darf keine personenbezogenen oder finanziellen
+  Inhalte enthalten.
 
 ## Ownership
 

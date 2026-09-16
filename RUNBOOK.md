@@ -98,11 +98,45 @@ enthalten.
 ## Backup
 
 `rove-db-backup.timer` erstellt taegliche SQLite-Backups mit einer vorgesehenen
-Aufbewahrung von 30 Tagen. Vor einem risikobehafteten Daten- oder Schemaeingriff
-wird zusaetzlich ein separates, zugriffsgeschuetztes Backup angelegt.
+Aufbewahrung von exakt 30 Tagen. Manuelle und Release-Backups werden grundsaetzlich
+ebenfalls 30 Tage ab Erstellung (`mtime`) aufbewahrt, ausser sie sind ausdruecklich
+als aktiver Rollback- oder Recovery-Stand dokumentiert.
 
 Ein vorhandener Dateiname allein beweist kein gueltiges Backup. Pruefungen
 muessen SQLite-Integritaet, Dateigroesse und Lesbarkeit einschliessen.
+
+### Retention-Regeln und verifizierter Produktionsstand
+
+- Automatische Backups liegen unter `/root/clarity/backups/automatic` und werden
+  nach exakt 30 Tagen rotiert.
+- Manuelle und Release-Backups erhalten ohne dokumentierten Ausnahmegrund kein
+  unbegrenztes Aufbewahrungsrecht. Das Retention-Ende ist `mtime + 30 Tage`.
+- Ein aktiver Rollback- oder Recovery-Stand muss mit Zweck und benoetigter Frist
+  dokumentiert sein. Nach Wegfall des Zwecks gilt wieder die regulaere Retention.
+- Legacy-DBs bleiben nur erhalten, solange ein dokumentierter Zweck besteht oder
+  keine gleichwertige Ersatzkopie fuer Recovery vorhanden ist.
+- Sensible DB-Dateien werden restriktiv als `600 root:root` gehalten; sensible
+  DB-Verzeichnisse sollen, sofern ohne Betriebsrisiko moeglich, `700 root:root`
+  sein.
+- `*.db-wal` und `*.db-shm` gehoeren immer zur jeweiligen Haupt-DB-Gruppe und
+  werden nicht separat klassifiziert oder freigegeben.
+- Account-Delete-Tombstones liegen ausserhalb der SQLite-Backups. Ein Restore
+  muss das Tombstone-Ledger vor dem API-Start erneut anwenden und bei fehlendem
+  oder ungueltigem Ledger fail-closed abbrechen.
+- Diese Dokumentation enthaelt keine personenbezogenen oder finanziellen Inhalte.
+
+Der am 15.09.2026 read-only verifizierte Produktionsstand ist:
+
+- automatischer Backup-Timer aktiv;
+- 30-Tage-Rotation wirksam, 32 von 32 automatischen Backups integer;
+- drei alte DB-Gruppen inklusive zugehoeriger Sidecars geloescht;
+- 22 sensible Alt-DBs auf `600 root:root` gehaertet;
+- verbleibende Legacy- und Rollback-Kopien bewusst retained, weil ihr Zweck oder
+  ihre Recovery-Relevanz dokumentiert weiter bewertet wird.
+
+Weitere Dateiaktionen erfordern weiterhin eine dateiweise Pruefung von Zweck,
+statischen Referenzen, aktiver Nutzung, Integritaet und gleichwertiger Recovery-
+Abdeckung. Die obige Verifikation hat keine weiteren Dateien oder Services geaendert.
 
 ## Restore-Grundablauf
 
