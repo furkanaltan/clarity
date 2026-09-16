@@ -174,6 +174,51 @@ class CoachV3EventTests(unittest.TestCase):
         )
         self.assertFalse(next(event for event in repeated if event["event_type"] == "contract_changed")["is_new"])
 
+    def test_existing_contract_without_change_has_no_candidate(self):
+        result = self.candidate(
+            contracts=[{"cat": "Verträge", "items": [{"n": "Fitnessstudio", "a": 30}]}],
+            debt_status="none",
+        )
+        self.assertIsNone(result)
+
+    def test_contract_candidate_requires_a_concrete_change_event(self):
+        result = self.candidate(events=[{
+            "event_id": "coach:contract_changed:test",
+            "event_type": "contract_changed",
+            "priority": 47,
+            "is_new": True,
+            "name": "Fitnessstudio",
+        }], debt_status="none")
+        self.assertEqual(result["type"], "contract_changed")
+        self.assertIn("Fitnessstudio", result["message"])
+
+    def test_savings_candidate_contains_measured_evidence(self):
+        result = self.candidate(score=self.score(savings_ratio=0.05, savings=5))
+        self.assertEqual(result["type"], "savings")
+        self.assertIn("5,0 %", result["message"])
+
+    def test_missing_tracking_data_does_not_create_tracking_recommendation(self):
+        result = self.candidate(score={
+            "value": 70,
+            "debt": 30,
+            "liquidity": 15,
+            "liquidity_months": 3,
+            "savings": 17,
+            "savings_ratio": 0.20,
+            "consumer_debt_total": 0,
+        }, debt_status="none")
+        self.assertIsNone(result)
+
+    def test_missing_liquidity_data_does_not_create_liquidity_recommendation(self):
+        result = self.candidate(score={
+            "value": 70,
+            "debt": 30,
+            "savings": 17,
+            "savings_ratio": 0.20,
+            "consumer_debt_total": 0,
+        }, debt_status="none")
+        self.assertIsNone(result)
+
     def test_new_report_is_detected(self):
         self.conn.execute(
             """CREATE TABLE report_jobs (

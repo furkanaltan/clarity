@@ -810,6 +810,13 @@ def build_mentor_candidate(
         formatted = f"{abs(number):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return f"{formatted} €"
 
+    def percentage(value: object) -> str:
+        try:
+            number = float(value or 0) * 100
+        except (TypeError, ValueError):
+            number = 0.0
+        return f"{number:.1f}".replace(".", ",") + " %"
+
     def candidate(
         item_id: str,
         priority: int,
@@ -896,24 +903,58 @@ def build_mentor_candidate(
         )
 
     liquidity_months = score.get("liquidity_months")
+    liquidity_points = score.get("liquidity")
+    liquidity_points_value = None
+    try:
+        if liquidity_points is not None:
+            liquidity_points_value = float(liquidity_points)
+    except (TypeError, ValueError):
+        pass
     try:
         weak_liquidity = liquidity_months is not None and float(liquidity_months) < 1
     except (TypeError, ValueError):
         weak_liquidity = False
-    if weak_liquidity or float(score.get("liquidity") or 0) <= 4:
+    weak_liquidity = weak_liquidity or (
+        liquidity_points_value is not None and liquidity_points_value <= 4
+    )
+    if weak_liquidity:
+        evidence = (
+            f"Deine Rücklage deckt aktuell nur {float(liquidity_months):.1f} Monatsausgaben ab."
+            if liquidity_months is not None
+            else f"Deine Liquidität liegt aktuell bei {liquidity_points_value:.0f}/20 Punkten."
+        )
         return candidate(
             "liquidity", 90, "liquidity",
             "Dein Notgroschen ist noch knapp",
-            "Deine verfügbare Rücklage reicht aktuell noch nicht für einen stabilen Puffer.",
+            evidence,
             "Liquidität prüfen", "score", "weak_liquidity",
         )
 
-    savings_ratio = float(score.get("savings_ratio") or 0)
-    if savings_ratio < 0.10 or float(score.get("savings") or 0) <= 10:
+    savings_ratio = score.get("savings_ratio")
+    savings_points = score.get("savings")
+    savings_ratio_value = None
+    weak_savings = False
+    if savings_ratio is not None:
+        try:
+            savings_ratio_value = float(savings_ratio)
+            weak_savings = savings_ratio_value < 0.10
+        except (TypeError, ValueError):
+            pass
+    if savings_points is not None:
+        try:
+            weak_savings = weak_savings or float(savings_points) <= 10
+        except (TypeError, ValueError):
+            pass
+    if weak_savings:
+        evidence = (
+            f"Deine erfasste Sparrate liegt bei {percentage(savings_ratio_value)}."
+            if savings_ratio_value is not None
+            else f"Deine Sparrate liegt aktuell bei {float(savings_points):.0f}/20 Punkten."
+        )
         return candidate(
             "savings-rate", 70, "savings",
             "Deine Sparrate ist der nächste Hebel",
-            "Schon ein kleiner regelmäßiger Schritt kann deine finanzielle Stabilität stärken.",
+            f"{evidence} Das ist aktuell ein konkreter Verbesserungsbereich.",
             "Sparrate prüfen", "score", "weak_savings_rate",
         )
 
@@ -944,21 +985,17 @@ def build_mentor_candidate(
     if event:
         return event_candidate(event)
 
-    tracking_days = int(score.get("tracking_days_90") or 0)
-    if tracking_days < 4:
+    tracking_days_value = score.get("tracking_days_90")
+    try:
+        tracking_days = int(tracking_days_value) if tracking_days_value is not None else None
+    except (TypeError, ValueError):
+        tracking_days = None
+    if tracking_days is not None and tracking_days < 4:
         return candidate(
             "tracking", 45, "tracking",
             "Deine Datenbasis darf noch wachsen",
-            "Mit regelmäßig erfassten Buchungen wird dein Finanzbild belastbarer.",
+            f"In den letzten 90 Tagen sind erst {tracking_days} Tracking-Tage erfasst.",
             "Ausgaben erfassen", "analysis", "weak_tracking",
-        )
-
-    if contracts:
-        return candidate(
-            "contracts", 25, "contracts",
-            "Prüfe deine laufenden Verträge",
-            "Ein klarer Überblick über wiederkehrende Kosten schafft zusätzlichen Spielraum.",
-            "Verträge öffnen", "contracts", "contracts_present",
         )
 
     ready_report = next(
@@ -974,19 +1011,11 @@ def build_mentor_candidate(
             "Report öffnen", "reports", "report_ready",
         )
 
-    if not goals:
-        return candidate(
-            "goal", 20, "goal",
-            "Setze dir ein konkretes Ziel",
-            "Ein klares Ziel macht deinen nächsten finanziellen Schritt sichtbar.",
-            "Ziel anlegen", "goals", "no_goal",
-        )
-
     if float(score.get("value") or 0) >= 75:
         return candidate(
             "motivation", 10, "motivation",
             "Deine finanzielle Basis ist stabil",
-            "Bleib bei den Gewohnheiten, die deinen Fortschritt tragen.",
+            f"Dein aktueller Rov.E-Score liegt bei {int(float(score.get('value') or 0))}/100.",
             "Score ansehen", "score", "stable_finances",
         )
     return None

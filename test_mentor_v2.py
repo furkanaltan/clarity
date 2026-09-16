@@ -110,15 +110,28 @@ class MentorV2Tests(unittest.TestCase):
         )
         self.assertEqual(result["type"], "monthly_action")
 
-    def test_lower_priority_sources_are_considered_deterministically(self):
+    def test_evidence_gate_ignores_unsubstantiated_contracts(self):
         report = self.candidate(
             reports=[{"month": "2026-08", "status": "ready"}],
         )
         self.assertEqual(report["type"], "report")
         contracts = self.candidate(
+            score=self.score(value=70),
             contracts=[{"cat": "Verträge", "items": [{"n": "Miete"}]}],
         )
-        self.assertEqual(contracts["type"], "contracts")
+        self.assertIsNone(contracts)
+
+    def test_budget_evidence_beats_multiple_existing_contracts(self):
+        result = self.candidate(
+            score=self.score(value=70),
+            budget_truth={"free_month_remaining": 100, "category_remaining": -128},
+            contracts=[
+                {"cat": "Verträge", "items": [{"n": "Miete", "a": 900}]},
+                {"cat": "Abos", "items": [{"n": "Fitnessstudio", "a": 30}]},
+            ],
+        )
+        self.assertEqual(result["type"], "budget_overrun")
+        self.assertIn("128,00 €", result["message"])
 
     def test_opened_report_no_longer_blocks_the_next_mentor_candidate(self):
         report = self.candidate(
