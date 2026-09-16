@@ -33,6 +33,17 @@ class FrontendSupportOfferTests(unittest.TestCase):
             render_list.index('data-support="${key}"'),
         )
 
+    def test_support_offers_keep_a_neutral_palette(self):
+        start = self.frontend.index("/* Zusatzangebote:")
+        end = self.frontend.index("/* Score-Screen:", start)
+        support_styles = self.frontend[start:end]
+        self.assertIn("neutrale Materialbasis", support_styles)
+        for legacy_accent in ("#F19A95", "#8FD0AA", "#E4C77E", "#D8B66A", "var(--green)"):
+            self.assertNotIn(legacy_accent, support_styles)
+        self.assertIn(".support-card.reset-offer", support_styles)
+        self.assertIn(".support-card.guidance-offer", support_styles)
+        self.assertIn(".support-card.access-offer", support_styles)
+
 
 if __name__ == "__main__":
     unittest.main()

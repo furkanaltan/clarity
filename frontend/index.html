@@ -500,7 +500,7 @@
   .prow .pbadge{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;background:var(--blue-soft);color:var(--blue);flex-shrink:0}
   .prow.premium{background:linear-gradient(150deg,#1a2536,#141b26);border-color:rgba(216,182,106,.35)}
 
-  /* Zusatzangebote: gemeinsame Materialbasis, klare Hierarchie über zurückhaltende Akzentfarben. */
+  /* Zusatzangebote: gemeinsame neutrale Materialbasis, klare Hierarchie über Kontrast und CTA-Gewicht. */
   .support-intro{font-size:14px;line-height:1.55;color:var(--muted);margin:0 2px 18px;max-width:34ch}
   .support-list{display:flex;flex-direction:column;gap:16px}
   .support-card{--support-accent:#C6D1D9;--support-accent-soft:rgba(198,209,217,.07);
@@ -517,13 +517,13 @@
     background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--support-accent) 76%,white),transparent);pointer-events:none}
   .support-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;z-index:1;margin-bottom:19px}
   .support-card-tag{font-size:10.5px;font-weight:850;letter-spacing:.13em;text-transform:uppercase;color:#B6C3CC}
-  .support-card-tag.active{display:inline-flex;align-items:center;gap:7px;color:var(--green)}
-  .support-card-tag.active:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px color-mix(in srgb,currentColor 58%,transparent)}
+  .support-card-tag.active{display:inline-flex;align-items:center;gap:7px;color:#B9C5CD}
+  .support-card-tag.active:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
   .support-card-price{font-size:13px;font-weight:800;color:#F4F1EA;white-space:nowrap}
   .support-card-price small{font-size:10.5px;color:var(--muted);font-weight:600}
   .support-top{display:flex;align-items:flex-start;gap:14px;position:relative;z-index:1;flex:1}
   .support-icon{width:46px;height:46px;border-radius:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;
-    color:#E4C77E!important;background:linear-gradient(145deg,rgba(216,182,106,.24),rgba(216,182,106,.07))!important}
+    color:#D5DEE4!important;background:rgba(255,255,255,.07)!important}
   .support-icon svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
   .support-copy{flex:1;min-width:0}.support-title{font-size:18px;font-weight:820;letter-spacing:-.3px}
   .support-desc{font-size:13.5px;line-height:1.48;color:var(--muted);margin-top:5px}
@@ -532,27 +532,16 @@
     border-radius:13px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.11);
     color:var(--support-accent);font-size:13px;font-weight:850;position:relative;z-index:1}
   .support-card-cta svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:2.2}
-  .support-card.reset-offer{--support-accent:#F19A95;--support-accent-soft:rgba(240,124,122,.09);
-    border-color:rgba(240,124,122,.5);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 16px 30px rgba(88,20,28,.13)}
-  .support-card.reset-offer:before{background:linear-gradient(90deg,transparent,rgba(240,124,122,.58),transparent)}
-  .support-card.reset-offer .support-icon{color:#F7AAA4!important;background:linear-gradient(145deg,rgba(240,124,122,.25),rgba(240,124,122,.08))!important}
-  .support-card.reset-offer .support-card-tag{color:#F19A95}
-  .support-card.reset-offer .support-card-cta{background:rgba(240,124,122,.14);color:#F7AAA4;border-color:rgba(240,124,122,.31)}
-  .support-card.guidance-offer{--support-accent:#9ACFB0;--support-accent-soft:rgba(120,214,160,.06);
-    border-color:rgba(120,214,160,.25)}
-  .support-card.guidance-offer .support-card-tag{color:#8FD0AA}
-  .support-card.guidance-offer .support-icon{color:#8AE0AE!important;background:linear-gradient(145deg,rgba(120,214,160,.2),rgba(120,214,160,.06))!important}
-  .support-card.access-offer{--support-accent:#B9C7D1;--support-accent-soft:rgba(185,199,209,.06);
-    border-color:rgba(185,199,209,.2)}
-  .support-card.access-offer .support-icon{color:#C5D0D8!important;background:linear-gradient(145deg,rgba(185,199,209,.17),rgba(185,199,209,.05))!important}
-  .support-card.access-offer .support-card-cta{background:rgba(185,199,209,.08);border-color:rgba(185,199,209,.18);color:#C5D0D8;box-shadow:none}
+  .support-card.reset-offer,.support-card.guidance-offer,.support-card.access-offer{--support-accent:#D5DEE4;--support-accent-soft:rgba(213,222,228,.06);border-color:rgba(213,222,228,.2)}
+  .support-card.reset-offer{border-left:2px solid rgba(229,236,240,.62)}
+  .support-card.reset-offer .support-card-cta{background:#E7EDF0;color:#172027;border-color:rgba(231,237,240,.72);font-weight:900}
   .support-card-tag.featured{display:inline-flex;align-items:center;gap:7px}
-  .support-card-tag.featured:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
-  .support-back{appearance:none;border:0;background:none;color:var(--blue);font:inherit;font-size:14px;font-weight:700;
+  .support-card-tag.featured:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .support-back{appearance:none;border:0;background:none;color:#B9C5CD;font:inherit;font-size:14px;font-weight:700;
     padding:2px 0 16px;cursor:pointer}
-  .support-detail-head{padding:18px;border:1px solid rgba(216,182,106,.34);border-radius:20px;background:
-    radial-gradient(circle at 94% 2%,rgba(216,182,106,.17),transparent 38%),linear-gradient(145deg,rgba(28,34,43,.96),rgba(14,22,31,.92))}
-  .support-kicker{font-size:11px;font-weight:850;letter-spacing:.14em;text-transform:uppercase;color:#E4C77E}
+  .support-detail-head{padding:18px;border:1px solid rgba(213,222,228,.2);border-radius:20px;background:
+    radial-gradient(circle at 94% 2%,rgba(232,240,245,.075),transparent 38%),linear-gradient(145deg,rgba(31,40,50,.9),rgba(10,17,25,.8))}
+  .support-kicker{font-size:11px;font-weight:850;letter-spacing:.14em;text-transform:uppercase;color:#B9C5CD}
   .support-detail-title{font-size:27px;line-height:1.1;font-weight:850;letter-spacing:-.7px;margin-top:8px}
   .support-price{font-size:29px;font-weight:850;letter-spacing:-.7px;margin-top:17px}
   .support-price small{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:0}
@@ -561,37 +550,32 @@
     font-size:14px;line-height:1.42;color:var(--ink)}
   .support-feature:last-child{border-bottom:0}
   .support-check{width:19px;height:19px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-    background:var(--blue-soft);color:var(--blue);font-size:12px;font-weight:900;flex-shrink:0;margin-top:1px}
-  .support-cta{width:100%;margin-top:20px;padding:15px;border:0;border-radius:15px;
-    background:linear-gradient(135deg,#E7CC86,#CFA858);color:#17130A;box-shadow:inset 0 1px 0 rgba(255,255,255,.5);
+    background:rgba(255,255,255,.08);color:#D5DEE4;font-size:12px;font-weight:900;flex-shrink:0;margin-top:1px}
+  .support-cta{width:100%;margin-top:20px;padding:15px;border:1px solid rgba(231,237,240,.72);border-radius:15px;
+    background:linear-gradient(135deg,#E7EDF0,#C9D3D9);color:#172027;box-shadow:inset 0 1px 0 rgba(255,255,255,.5);
     font:inherit;font-size:15px;font-weight:850;cursor:pointer}
   .support-cta:active{transform:scale(.98)}
   .support-note{text-align:center;color:var(--faint);font-size:12px;line-height:1.45;margin:10px 18px 0}
   :root[data-theme="light"] .support-card,:root[data-theme="light"] .support-detail-head{
-    background:radial-gradient(circle at 92% 4%,rgba(216,182,106,.2),transparent 36%),linear-gradient(145deg,#FFFDF8,#F4F0E7);
-    border-color:rgba(176,136,46,.3);box-shadow:0 14px 30px rgba(58,45,18,.08),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card-price,:root[data-theme="light"] .support-outcome{color:#332A18}
-  :root[data-theme="light"] .support-card.reset-offer{background:linear-gradient(145deg,#FFFDFC,#F8F4F2);border-color:rgba(202,91,99,.38);box-shadow:0 14px 30px rgba(126,35,43,.08),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card.guidance-offer{background:linear-gradient(145deg,#FEFFFE,#F5F9F6);border-color:rgba(60,154,99,.23);box-shadow:0 14px 30px rgba(29,93,55,.06),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card.access-offer{background:linear-gradient(145deg,#FFFFFF,#F5F7F8);border-color:rgba(110,129,142,.19);box-shadow:0 14px 30px rgba(48,65,77,.06),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card.reset-offer .support-outcome{color:#6F2E35}
-  :root[data-theme="light"] .support-card.guidance-offer .support-outcome{color:#245D3B}
+    background:linear-gradient(145deg,#FFFFFF,#F1F4F5);border-color:rgba(75,91,102,.22);box-shadow:0 14px 30px rgba(48,65,77,.06),inset 0 1px 0 #fff}
+  :root[data-theme="light"] .support-card-price,:root[data-theme="light"] .support-outcome{color:#27343C}
+  :root[data-theme="light"] .support-card.reset-offer,:root[data-theme="light"] .support-card.guidance-offer,:root[data-theme="light"] .support-card.access-offer{background:linear-gradient(145deg,#FFFFFF,#F1F4F5);border-color:rgba(75,91,102,.22);box-shadow:0 14px 30px rgba(48,65,77,.06),inset 0 1px 0 #fff}
 
   /* Zugang / späteres Abo: Beta bleibt offen, die Tarifstruktur ist bereits sichtbar. */
-  .access-hero{position:relative;overflow:hidden;background:linear-gradient(145deg,#132235,var(--card));
-    border:1px solid rgba(42,171,238,.24);border-radius:20px;padding:20px;margin-bottom:14px}
+  .access-hero{position:relative;overflow:hidden;background:linear-gradient(145deg,rgba(31,40,50,.9),rgba(10,17,25,.8));
+    border:1px solid rgba(213,222,228,.2);border-radius:20px;padding:20px;margin-bottom:14px}
   .access-hero:after{content:"";position:absolute;width:170px;height:170px;border-radius:50%;right:-75px;top:-100px;
-    background:rgba(42,171,238,.13);filter:blur(4px)}
+    background:rgba(255,255,255,.05);filter:none}
   .access-status{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;
-    background:rgba(53,208,127,.13);color:var(--green);font-size:12px;font-weight:800;position:relative;z-index:1}
-  .access-status:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}
+    background:rgba(255,255,255,.07);color:#B9C5CD;font-size:12px;font-weight:800;position:relative;z-index:1}
+  .access-status:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
   .access-title{font-size:24px;font-weight:850;letter-spacing:-.55px;margin-top:18px;position:relative;z-index:1}
   .access-copy{font-size:13.5px;line-height:1.52;color:var(--muted);margin-top:7px;position:relative;z-index:1}
   .access-plan{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:19px}
   .access-plan-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:15px;border-bottom:1px solid var(--line)}
   .access-plan-name{font-size:17px;font-weight:800}.access-plan-sub{font-size:12.5px;color:var(--muted);margin-top:4px}
   .access-plan-price{text-align:right;font-size:22px;font-weight:850;white-space:nowrap}.access-plan-price small{display:block;font-size:11px;color:var(--muted);font-weight:600;margin-top:2px}
-  .access-beta-note{margin-top:14px;padding:12px 13px;border-radius:13px;background:var(--blue-soft);color:var(--blue);
+  .access-beta-note{margin-top:14px;padding:12px 13px;border-radius:13px;background:rgba(255,255,255,.055);color:#D5DEE4;
     font-size:12.5px;font-weight:650;line-height:1.45}
 
   /* Score-Screen: Rov.E-Reaktor statt einfacher Fortschrittsring. Die Zusatzringe bewegen sich
@@ -2212,6 +2196,28 @@
   #supportsheet .support-card:before{background:linear-gradient(90deg,transparent,rgba(218,229,235,.5),transparent)}
   #supportsheet .support-card-cta,#supportsheet .support-cta{border:1px solid rgba(214,225,231,.2);background:rgba(255,255,255,.055);color:#d9e5ea;box-shadow:inset 0 1px 0 rgba(255,255,255,.1)}
   #accesssheet .access-beta-note{border:1px solid rgba(159,198,216,.22);background:rgba(96,157,183,.12);color:#c4e1eb}
+
+  /* Support-Angebote bleiben bewusst monochrom: Hierarchie entsteht durch Reihenfolge,
+     Kontrast, Border und CTA-Gewicht statt durch bunte Sales-Akzente. */
+  #supportsheet .support-card.reset-offer,#supportsheet .support-card.guidance-offer,#supportsheet .support-card.access-offer{
+    --support-accent:#D5DEE4;--support-accent-soft:rgba(213,222,228,.06);
+    border-color:rgba(213,222,228,.2);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.09),inset 0 -14px 25px rgba(0,0,0,.11),0 14px 30px rgba(0,0,0,.14)}
+  #supportsheet .support-card.reset-offer{border-left:2px solid rgba(229,236,240,.62)}
+  #supportsheet .support-card.reset-offer:before,#supportsheet .support-card.guidance-offer:before,#supportsheet .support-card.access-offer:before{background:linear-gradient(90deg,transparent,rgba(218,229,235,.5),transparent)}
+  #supportsheet .support-card.reset-offer .support-icon,#supportsheet .support-card.guidance-offer .support-icon,#supportsheet .support-card.access-offer .support-icon{color:#D5DEE4!important;background:rgba(255,255,255,.07)!important}
+  #supportsheet .support-card.reset-offer .support-card-tag,#supportsheet .support-card.guidance-offer .support-card-tag,#supportsheet .support-card.access-offer .support-card-tag,#supportsheet .support-card-tag.active{color:#B9C5CD}
+  #supportsheet .support-card-tag.active:before{background:#B9C5CD;box-shadow:none}
+  #supportsheet .support-card-tag.featured:before{box-shadow:none}
+  #supportsheet .support-card.reset-offer .support-card-cta{background:#E7EDF0;color:#172027;border-color:rgba(231,237,240,.72);box-shadow:inset 0 1px 0 rgba(255,255,255,.52);font-weight:900}
+  #supportsheet .support-card.guidance-offer .support-card-cta,#supportsheet .support-card.access-offer .support-card-cta{background:rgba(255,255,255,.055);color:#D5DEE4;border-color:rgba(214,225,231,.2);box-shadow:inset 0 1px 0 rgba(255,255,255,.1)}
+  #supportsheet .support-back,#supportsheet .support-kicker{color:#B9C5CD}
+  #supportsheet .support-check{background:rgba(255,255,255,.08)!important;color:#D5DEE4!important}
+  #accesssheet .access-hero{background:radial-gradient(118% 82% at 0% 0%,rgba(232,240,245,.075),transparent 46%),linear-gradient(145deg,rgba(31,40,50,.9),rgba(10,17,25,.8));border-color:rgba(213,222,228,.2);box-shadow:inset 0 1px 0 rgba(255,255,255,.09),inset 0 -14px 25px rgba(0,0,0,.11),0 14px 30px rgba(0,0,0,.14)}
+  #accesssheet .access-hero:after{background:rgba(255,255,255,.05);filter:none}
+  #accesssheet .access-status{background:rgba(255,255,255,.07);color:#B9C5CD}
+  #accesssheet .access-status:before{box-shadow:none}
+  #accesssheet .access-beta-note{border-color:rgba(213,222,228,.2);background:rgba(255,255,255,.055);color:#D5DEE4}
 
   #adminsheet .admin-hero{border-color:rgba(211,221,229,.2);border-radius:21px;background:radial-gradient(112% 85% at 0% 0%,rgba(194,217,229,.1),transparent 47%),linear-gradient(145deg,rgba(30,40,51,.9),rgba(10,17,25,.8));box-shadow:inset 0 1px 0 rgba(255,255,255,.09),inset 0 -14px 24px rgba(0,0,0,.1),0 13px 28px rgba(0,0,0,.13)}
   #adminsheet .admin-metric{border-color:rgba(211,221,229,.16);border-radius:17px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.016));box-shadow:inset 0 1px 0 rgba(255,255,255,.065),0 5px 12px rgba(0,0,0,.08)}
@@ -9510,7 +9516,7 @@ function renderSupportDetail(key){
       <div class="support-desc" style="margin-top:10px">${o.desc}</div>
       <div class="support-price">${o.price} <small>${o.suffix}</small></div>
     </div>
-    <div class="support-features">${o.features.map(f=>`<div class="support-feature"><span class="support-check" style="background:rgba(216,182,106,.15);color:#D8B66A">✓</span><span>${f}</span></div>`).join("")}</div>
+    <div class="support-features">${o.features.map(f=>`<div class="support-feature"><span class="support-check">✓</span><span>${f}</span></div>`).join("")}</div>
     <button class="support-cta" data-support-request="${key}">${o.cta}</button>
     <div class="support-note">Die Anfrage ist unverbindlich. Eine Zahlung erfolgt erst nach deiner ausdrücklichen Bestätigung.</div>`;
 }
