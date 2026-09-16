@@ -503,19 +503,19 @@
   /* Zusatzangebote: gemeinsame Materialbasis, klare Hierarchie über zurückhaltende Akzentfarben. */
   .support-intro{font-size:14px;line-height:1.55;color:var(--muted);margin:0 2px 18px;max-width:34ch}
   .support-list{display:flex;flex-direction:column;gap:14px}
-  .support-card{--support-accent:#D8B66A;--support-accent-soft:rgba(216,182,106,.16);--support-cta:#E7CC86;
+  .support-card{--support-accent:#C6D1D9;--support-accent-soft:rgba(198,209,217,.07);
     position:relative;border:1px solid color-mix(in srgb,var(--support-accent) 34%,transparent);border-radius:20px;
     padding:19px;cursor:pointer;overflow:hidden;transition:transform .16s ease,border-color .16s ease;
     appearance:none;width:100%;text-align:left;color:var(--ink);font:inherit;background:
       radial-gradient(circle at 92% 4%,var(--support-accent-soft),transparent 34%),
       linear-gradient(145deg,rgba(28,34,43,.96),rgba(14,22,31,.92));
     box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 16px 34px rgba(0,0,0,.16)}
-  .support-card:hover{border-color:color-mix(in srgb,var(--support-accent) 58%,transparent);transform:translateY(-1px)}
+  .support-card:hover{border-color:color-mix(in srgb,var(--support-accent) 58%,transparent)}
   .support-card:active{transform:scale(.985);border-color:color-mix(in srgb,var(--support-accent) 66%,transparent)}
   .support-card:before{content:"";position:absolute;left:18px;right:18px;top:0;height:1px;
     background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--support-accent) 76%,white),transparent);pointer-events:none}
   .support-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;z-index:1;margin-bottom:15px}
-  .support-card-tag{font-size:10.5px;font-weight:850;letter-spacing:.13em;text-transform:uppercase;color:var(--support-accent)}
+  .support-card-tag{font-size:10.5px;font-weight:850;letter-spacing:.13em;text-transform:uppercase;color:#B6C3CC}
   .support-card-tag.active{display:inline-flex;align-items:center;gap:7px;color:var(--green)}
   .support-card-tag.active:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 10px color-mix(in srgb,currentColor 58%,transparent)}
   .support-card-price{font-size:13px;font-weight:800;color:#F4F1EA;white-space:nowrap}
@@ -528,27 +528,22 @@
   .support-desc{font-size:13.5px;line-height:1.48;color:var(--muted);margin-top:5px}
   .support-outcome{font-size:12px;line-height:1.4;color:#D8D2C4;margin-top:12px;font-weight:650}
   .support-card-cta{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:17px;padding:12px 13px;
-    border-radius:13px;background:color-mix(in srgb,var(--support-accent) 14%,transparent);border:1px solid color-mix(in srgb,var(--support-accent) 27%,transparent);
+    border-radius:13px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.11);
     color:var(--support-accent);font-size:13px;font-weight:850;position:relative;z-index:1}
   .support-card-cta svg{transition:transform .18s cubic-bezier(.23,1,.32,1)}
   .support-card:hover .support-card-cta svg{transform:translateX(2px)}
   .support-card-cta svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:2.2}
-  .support-card.reset-offer{--support-accent:#F07C7A;--support-accent-soft:rgba(240,124,122,.19);--support-cta:#F07C7A;
-    border-color:rgba(240,124,122,.45);background:
-    radial-gradient(circle at 92% 4%,rgba(240,124,122,.19),transparent 34%),
-    linear-gradient(145deg,rgba(48,29,35,.98),rgba(18,22,30,.94));
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 18px 38px rgba(88,20,28,.18),0 0 28px rgba(240,124,122,.07)}
+  .support-card.reset-offer{--support-accent:#F19A95;--support-accent-soft:rgba(240,124,122,.11);
+    border-color:rgba(240,124,122,.52);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 18px 38px rgba(88,20,28,.15),0 0 28px rgba(240,124,122,.06)}
   .support-card.reset-offer .support-icon{color:#F7AAA4!important;background:linear-gradient(145deg,rgba(240,124,122,.25),rgba(240,124,122,.08))!important}
-  .support-card.reset-offer .support-card-cta{background:linear-gradient(135deg,rgba(240,124,122,.92),rgba(202,91,99,.9));color:#271316;border-color:rgba(255,190,181,.36);box-shadow:inset 0 1px 0 rgba(255,255,255,.32)}
-  .support-card.guidance-offer{--support-accent:#78D6A0;--support-accent-soft:rgba(120,214,160,.13);--support-cta:#78D6A0;
-    border-color:rgba(120,214,160,.29);background:
-    radial-gradient(circle at 92% 4%,rgba(120,214,160,.13),transparent 34%),
-    linear-gradient(145deg,rgba(24,42,38,.97),rgba(14,23,30,.93));}
+  .support-card.reset-offer .support-card-tag{color:#F19A95}
+  .support-card.reset-offer .support-card-cta{background:rgba(240,124,122,.14);color:#F7AAA4;border-color:rgba(240,124,122,.31)}
+  .support-card.guidance-offer{--support-accent:#8FD0AA;--support-accent-soft:rgba(120,214,160,.08);
+    border-color:rgba(120,214,160,.3)}
+  .support-card.guidance-offer .support-card-tag{color:#8FD0AA}
   .support-card.guidance-offer .support-icon{color:#8AE0AE!important;background:linear-gradient(145deg,rgba(120,214,160,.2),rgba(120,214,160,.06))!important}
-  .support-card.access-offer{--support-accent:#B9C7D1;--support-accent-soft:rgba(185,199,209,.1);--support-cta:#C5D0D8;
-    border-color:rgba(185,199,209,.2);background:
-    radial-gradient(circle at 92% 4%,rgba(185,199,209,.1),transparent 34%),
-    linear-gradient(145deg,rgba(25,39,53,.96),rgba(13,24,34,.92))}
+  .support-card.access-offer{--support-accent:#B9C7D1;--support-accent-soft:rgba(185,199,209,.06);
+    border-color:rgba(185,199,209,.2)}
   .support-card.access-offer .support-icon{color:#C5D0D8!important;background:linear-gradient(145deg,rgba(185,199,209,.17),rgba(185,199,209,.05))!important}
   .support-card.access-offer .support-card-cta{background:rgba(185,199,209,.08);border-color:rgba(185,199,209,.18);color:#C5D0D8;box-shadow:none}
   .support-card-tag.featured{display:inline-flex;align-items:center;gap:7px}
@@ -576,9 +571,9 @@
     background:radial-gradient(circle at 92% 4%,rgba(216,182,106,.2),transparent 36%),linear-gradient(145deg,#FFFDF8,#F4F0E7);
     border-color:rgba(176,136,46,.3);box-shadow:0 14px 30px rgba(58,45,18,.08),inset 0 1px 0 #fff}
   :root[data-theme="light"] .support-card-price,:root[data-theme="light"] .support-outcome{color:#332A18}
-  :root[data-theme="light"] .support-card.reset-offer{background:radial-gradient(circle at 92% 4%,rgba(240,124,122,.17),transparent 36%),linear-gradient(145deg,#FFF8F7,#F7ECEA);border-color:rgba(202,91,99,.34);box-shadow:0 14px 30px rgba(126,35,43,.1),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card.guidance-offer{background:radial-gradient(circle at 92% 4%,rgba(120,214,160,.16),transparent 36%),linear-gradient(145deg,#F8FFFB,#EDF6F1);border-color:rgba(60,154,99,.28);box-shadow:0 14px 30px rgba(29,93,55,.08),inset 0 1px 0 #fff}
-  :root[data-theme="light"] .support-card.access-offer{background:radial-gradient(circle at 92% 4%,rgba(185,199,209,.16),transparent 36%),linear-gradient(145deg,#FBFCFD,#EEF2F4);border-color:rgba(110,129,142,.24);box-shadow:0 14px 30px rgba(48,65,77,.08),inset 0 1px 0 #fff}
+  :root[data-theme="light"] .support-card.reset-offer{background:radial-gradient(circle at 92% 4%,rgba(240,124,122,.1),transparent 36%),linear-gradient(145deg,#FFFDFC,#F7F3F1);border-color:rgba(202,91,99,.38);box-shadow:0 14px 30px rgba(126,35,43,.08),inset 0 1px 0 #fff}
+  :root[data-theme="light"] .support-card.guidance-offer{background:radial-gradient(circle at 92% 4%,rgba(120,214,160,.08),transparent 36%),linear-gradient(145deg,#FEFFFE,#F3F8F5);border-color:rgba(60,154,99,.25);box-shadow:0 14px 30px rgba(29,93,55,.06),inset 0 1px 0 #fff}
+  :root[data-theme="light"] .support-card.access-offer{background:radial-gradient(circle at 92% 4%,rgba(185,199,209,.07),transparent 36%),linear-gradient(145deg,#FFFFFF,#F4F6F7);border-color:rgba(110,129,142,.2);box-shadow:0 14px 30px rgba(48,65,77,.06),inset 0 1px 0 #fff}
   :root[data-theme="light"] .support-card.reset-offer .support-outcome{color:#6F2E35}
   :root[data-theme="light"] .support-card.guidance-offer .support-outcome{color:#245D3B}
 
@@ -9485,14 +9480,6 @@ function renderSupportList(){
   document.getElementById("supportbody").innerHTML=`
     <div class="support-intro">Dein Rov.E Zugang und persönliche Unterstützung, wenn du den nächsten Schritt gemeinsam angehen möchtest.</div>
     <div class="support-list">
-      <button type="button" class="support-card access-offer" data-support-access>
-        <div class="support-card-head"><span class="support-card-tag active">Beta-Zugang aktiv</span><span class="support-card-price">6,99 € <small>pro Monat</small></span></div>
-        <div class="support-top">
-          <div class="support-icon">${PICONS.crown}</div>
-          <div class="support-copy"><div class="support-title">Rov.E Zugang</div><div class="support-desc">Tracking, Score, Budgetrahmen und Monatsreport in einem vollständigen Finanzsystem.</div><div class="support-outcome">Während deiner Beta-Phase aktuell ohne Gebühren.</div></div>
-        </div>
-        <div class="support-card-cta"><span>Zugang ansehen</span><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div>
-      </button>
       ${Object.entries(SUPPORT_OFFERS).map(([key,o])=>`
       <button type="button" class="support-card ${key === "reset" ? "reset-offer" : "guidance-offer"}" data-support="${key}">
         <div class="support-card-head"><span class="support-card-tag ${key === "reset" ? "featured" : ""}">${key === "reset" ? "Starker Einstieg" : o.tag}</span><span class="support-card-price">${o.price} <small>${o.suffix}</small></span></div>
@@ -9501,7 +9488,16 @@ function renderSupportList(){
           <div class="support-copy"><div class="support-title">${o.title}</div><div class="support-desc">${o.desc}</div><div class="support-outcome">${o.outcome}</div></div>
         </div>
         <div class="support-card-cta"><span>${o.cardCta}</span><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div>
-      </button>`).join("")}</div>`;
+      </button>`).join("")}
+      <button type="button" class="support-card access-offer" data-support-access>
+        <div class="support-card-head"><span class="support-card-tag active">Beta-Zugang aktiv</span><span class="support-card-price">6,99 € <small>pro Monat</small></span></div>
+        <div class="support-top">
+          <div class="support-icon">${PICONS.crown}</div>
+          <div class="support-copy"><div class="support-title">Rov.E Zugang</div><div class="support-desc">Tracking, Score, Budgetrahmen und Monatsreport in einem vollständigen Finanzsystem.</div><div class="support-outcome">Während deiner Beta-Phase aktuell ohne Gebühren.</div></div>
+        </div>
+        <div class="support-card-cta"><span>Zugang ansehen</span><svg viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></svg></div>
+      </button>
+    </div>`;
 }
 function renderSupportDetail(key){
   const o=SUPPORT_OFFERS[key]; if(!o) return renderSupportList();
