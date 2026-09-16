@@ -55,6 +55,16 @@ class FrontendTransferVisibilityTests(unittest.TestCase):
         self.assertIn('if(!direction){ showToast("Kein Zielkonto verfügbar"); return; }', self.frontend)
         self.assertIn('if(meta.dynamic && !Number.isSafeInteger(targetId))', self.frontend)
 
+    def test_dynamic_transfer_payload_uses_resolved_target_id(self):
+        self.assertIn(
+            'targetAccountId:targetId,amount,request_id:transferId',
+            self.frontend,
+        )
+        self.assertNotIn(
+            'targetAccountId,amount,request_id:transferId',
+            self.frontend,
+        )
+
     def test_booking_failure_does_not_restore_a_stale_account_snapshot(self):
         rollback = re.search(
             r"function rollbackFailedBooking\(e\)\{(?P<body>.*?)\n\}",

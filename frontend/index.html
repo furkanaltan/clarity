@@ -6107,7 +6107,7 @@ document.getElementById("dbody").addEventListener("click",e=>{
       PENDING_TRANSFER_REQUEST={sourceId:meta.id,targetId,amount,requestId:transferId};
     }
     const request=meta.dynamic
-      ? financialAccountRequest("/v1/financial-accounts/transfer","POST",{sourceAccountId:meta.id,targetAccountId,amount,request_id:transferId})
+      ? financialAccountRequest("/v1/financial-accounts/transfer","POST",{sourceAccountId:meta.id,targetAccountId:targetId,amount,request_id:transferId})
       : (()=>{const [source,target]=selection.split(":");return syncCashAccount("transfer",{from:source,to:target,amount});})();
     request.then(ok=>{
       if(!ok) return;
