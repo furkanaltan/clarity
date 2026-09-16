@@ -24,6 +24,7 @@ Migrations-Punkte"):
     Höhe des aktuellen Vermögens statt eine Kurve zu erfinden.
 """
 import json
+import hashlib
 import logging
 import os
 import secrets
@@ -474,6 +475,314 @@ def _monthly_budget_truth(
     }
 
 
+MENTOR_EVENT_RECENCY_DAYS = 14
+
+
+def ensure_app_mentor_event_state_table(conn: sqlite3.Connection) -> None:
+    """Store only coach metadata; financial truth remains in its canonical tables."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_mentor_event_state (
+            user_id       INTEGER NOT NULL,
+            event_id      TEXT NOT NULL,
+            event_type    TEXT NOT NULL,
+            source_id     TEXT NOT NULL,
+            period_key    TEXT NOT NULL,
+            occurred_at   TEXT NOT NULL,
+            fingerprint   TEXT NOT NULL DEFAULT '',
+            seen_at       TEXT,
+            resolved_at   TEXT,
+            expires_at    TEXT,
+            updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, event_id),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_app_mentor_event_state_user "
+        "ON app_mentor_event_state(user_id, event_type, updated_at)"
+    )
+
+
+def _mentor_event_id(event_type: str, source_id: object, period_key: str) -> str:
+    """Build a stable, non-sensitive identifier from event type/source/period."""
+    raw = f"{event_type}|{source_id}|{period_key}".encode("utf-8")
+    return f"coach:{event_type}:{hashlib.sha256(raw).hexdigest()[:20]}"
+
+
+def _mentor_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=None)
+
+
+def _mentor_event_is_recent(value: object, now: datetime, days: int = MENTOR_EVENT_RECENCY_DAYS) -> bool:
+    parsed = _mentor_timestamp(value)
+    if parsed is None:
+        return False
+    age = now - parsed
+    return timedelta(days=-1) <= age <= timedelta(days=days)
+
+
+def _observe_mentor_event(
+    conn: sqlite3.Connection,
+    user_id: int,
+    event: dict,
+    *,
+    worsening: bool = False,
+) -> dict:
+    """Upsert one event and report whether it is new since the last display."""
+    ensure_app_mentor_event_state_table(conn)
+    event_id = str(event["event_id"])
+    row = conn.execute(
+        """SELECT fingerprint, seen_at, resolved_at
+             FROM app_mentor_event_state WHERE user_id = ? AND event_id = ?""",
+        (user_id, event_id),
+    ).fetchone()
+    fingerprint = str(event.get("fingerprint") or "")
+    is_new = row is None or row["seen_at"] is None
+    if row is not None and (row["resolved_at"] or (worsening and row["fingerprint"] != fingerprint)):
+        is_new = True
+        conn.execute(
+            """UPDATE app_mentor_event_state
+                  SET event_type=?, source_id=?, period_key=?, occurred_at=?, fingerprint=?,
+                      seen_at=NULL, resolved_at=NULL, expires_at=?, updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND event_id=?""",
+            (
+                event["event_type"], event["source_id"], event["period_key"],
+                event["occurred_at"], fingerprint, event.get("expires_at"), user_id, event_id,
+            ),
+        )
+    elif row is None:
+        conn.execute(
+            """INSERT INTO app_mentor_event_state
+               (user_id,event_id,event_type,source_id,period_key,occurred_at,fingerprint,expires_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                user_id, event_id, event["event_type"], event["source_id"], event["period_key"],
+                event["occurred_at"], fingerprint, event.get("expires_at"),
+            ),
+        )
+    else:
+        conn.execute(
+            """UPDATE app_mentor_event_state
+                  SET occurred_at=?, fingerprint=?, expires_at=?, updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND event_id=?""",
+            (event["occurred_at"], fingerprint, event.get("expires_at"), user_id, event_id),
+        )
+    event = dict(event)
+    event["seen"] = bool(row and row["seen_at"])
+    event["resolved"] = False
+    event["is_new"] = is_new
+    event["status"] = "new" if is_new else "active"
+    return event
+
+
+def mark_mentor_event_seen(conn: sqlite3.Connection, user_id: int, event_id: object) -> None:
+    ensure_app_mentor_event_state_table(conn)
+    conn.execute(
+        """UPDATE app_mentor_event_state
+              SET seen_at=COALESCE(seen_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND event_id=?""",
+        (user_id, str(event_id)),
+    )
+
+
+def _resolve_mentor_event(conn: sqlite3.Connection, user_id: int, event_id: str) -> None:
+    ensure_app_mentor_event_state_table(conn)
+    conn.execute(
+        """UPDATE app_mentor_event_state
+              SET resolved_at=COALESCE(resolved_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND event_id=?""",
+        (user_id, event_id),
+    )
+
+
+def build_mentor_events(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    budget_truth: dict,
+    income: float = 0.0,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Detect only events proven by existing canonical data.
+
+    Transfers are intentionally not included: app_cash_movements.kind='transfer' is an
+    internal movement and must never become an expense or a negative coach event.
+    """
+    ensure_app_mentor_event_state_table(conn)
+    now = now or datetime.now()
+    occurred_now = now.isoformat(timespec="seconds")
+    month_key = now.strftime("%Y-%m")
+    events: list[dict] = []
+
+    free_remaining = float(budget_truth.get("free_month_remaining") or 0)
+    category_remaining = float(budget_truth.get("category_remaining") or 0)
+    if free_remaining < 0 or category_remaining < 0:
+        shortfall = round(max(
+            abs(free_remaining) if free_remaining < 0 else 0,
+            abs(category_remaining) if category_remaining < 0 else 0,
+        ), 2)
+        event = {
+            "event_type": "budget_overrun",
+            "source_id": "monthly_budget",
+            "period_key": month_key,
+            "occurred_at": occurred_now,
+            "priority": 110,
+            "expires_at": None,
+            "fingerprint": f"{shortfall:.2f}",
+            "shortfall": shortfall,
+        }
+        event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], month_key)
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+    else:
+        _resolve_mentor_event(conn, user_id, _mentor_event_id("budget_overrun", "monthly_budget", month_key))
+
+    try:
+        debt_rows = conn.execute(
+            """SELECT id, debt_id, outstanding_balance, active, event_type, effective_at
+                 FROM app_consumer_debt_events
+                WHERE user_id=? AND active=1
+                ORDER BY datetime(effective_at) DESC, id DESC""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        debt_rows = []
+    for row in debt_rows:
+        effective_at = str(row["effective_at"] or "")
+        if not _mentor_event_is_recent(effective_at, now):
+            continue
+        event_type = str(row["event_type"] or "")
+        if event_type not in {"created", "updated"} or float(row["outstanding_balance"] or 0) <= 0:
+            continue
+        previous = conn.execute(
+            """SELECT outstanding_balance FROM app_consumer_debt_events
+                WHERE user_id=? AND debt_id=? AND id < ?
+                ORDER BY id DESC LIMIT 1""",
+            (user_id, int(row["debt_id"]), int(row["id"])),
+        ).fetchone()
+        worsening = event_type == "created" or previous is None or float(row["outstanding_balance"] or 0) > float(previous[0] or 0) + 0.01
+        if not worsening:
+            continue
+        period_key = effective_at[:7] or month_key
+        event = {
+            "event_type": "consumer_debt_new",
+            "source_id": str(row["debt_id"]),
+            "period_key": period_key,
+            "occurred_at": effective_at or occurred_now,
+            "priority": 105,
+            "expires_at": None,
+            "fingerprint": f"{float(row['outstanding_balance'] or 0):.2f}",
+            "amount": round(float(row["outstanding_balance"] or 0), 2),
+        }
+        event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], period_key)
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+        break
+
+    try:
+        income_rows = conn.execute(
+            """SELECT id, amount, label, created_at
+                 FROM app_cash_movements
+                WHERE user_id=? AND kind='income'
+                  AND strftime('%Y-%m', created_at)=?
+                ORDER BY datetime(created_at) DESC, id DESC""",
+            (user_id, month_key),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        income_rows = []
+    salary_threshold = max(1.0, float(income or 0) * 0.5)
+    for row in income_rows:
+        label = str(row["label"] or "").casefold()
+        amount = float(row["amount"] or 0)
+        if not ("gehalt" in label or "salary" in label or "lohn" in label or amount >= salary_threshold):
+            continue
+        occurred_at = str(row["created_at"] or occurred_now)
+        period_key = occurred_at[:7] or month_key
+        event = {
+            "event_type": "salary_received",
+            "source_id": str(row["id"]),
+            "period_key": period_key,
+            "occurred_at": occurred_at,
+            "priority": 40,
+            "expires_at": None,
+            "fingerprint": f"{amount:.2f}",
+            "amount": round(amount, 2),
+        }
+        event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], period_key)
+        events.append(_observe_mentor_event(conn, user_id, event))
+        break
+
+    try:
+        contract_rows = conn.execute(
+            """SELECT contract_id, name, category, amount, created_at, updated_at
+                 FROM app_contracts WHERE user_id=?
+                ORDER BY datetime(updated_at) DESC, contract_id DESC""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        contract_rows = []
+    for row in contract_rows:
+        changed_at = str(row["updated_at"] or row["created_at"] or "")
+        if not _mentor_event_is_recent(changed_at, now):
+            continue
+        period_key = changed_at[:7] or month_key
+        source_id = str(row["contract_id"])
+        event = {
+            "event_type": "contract_changed",
+            "source_id": source_id,
+            "period_key": period_key,
+            "occurred_at": changed_at,
+            "priority": 47,
+            "expires_at": None,
+            "fingerprint": f"{row['name']}|{row['category']}|{float(row['amount'] or 0):.2f}|{changed_at}",
+            "name": str(row["name"]),
+        }
+        event["event_id"] = _mentor_event_id(event["event_type"], source_id, period_key)
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+        break
+
+    try:
+        report_columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(report_jobs)")
+        }
+        opened_select = "opened_at" if "opened_at" in report_columns else "NULL AS opened_at"
+        report_rows = conn.execute(
+            f"""SELECT report_month, status, created_at, {opened_select}
+                 FROM report_jobs WHERE user_id=? AND status='sent'
+                ORDER BY datetime(created_at) DESC, report_month DESC""",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        report_rows = []
+    for row in report_rows:
+        occurred_at = str(row["created_at"] or "")
+        if occurred_at and not _mentor_event_is_recent(occurred_at, now, 31):
+            continue
+        period_key = str(row["report_month"] or month_key)
+        event_id = _mentor_event_id("report_ready", period_key, period_key)
+        if row["opened_at"]:
+            _resolve_mentor_event(conn, user_id, event_id)
+            continue
+        event = {
+            "event_type": "report_ready",
+            "source_id": period_key,
+            "period_key": period_key,
+            "occurred_at": occurred_at or occurred_now,
+            "priority": 35,
+            "expires_at": None,
+            "fingerprint": period_key,
+        }
+        event["event_id"] = event_id
+        events.append(_observe_mentor_event(conn, user_id, event))
+        break
+
+    return events
+
+
 def build_mentor_candidate(
     *,
     score: dict,
@@ -485,6 +794,7 @@ def build_mentor_candidate(
     income: float,
     fixed_costs: float,
     debt_status: str = "unknown",
+    events: list[dict] | None = None,
 ) -> dict | None:
     """Choose one deterministic next step from already-canonical app state.
 
@@ -521,10 +831,50 @@ def build_mentor_candidate(
             "reason": reason,
         }
 
+    events = events or []
+
+    def new_event(event_type: str) -> dict | None:
+        return next((event for event in events if event.get("event_type") == event_type and event.get("is_new")), None)
+
+    def event_candidate(event: dict) -> dict:
+        event_type = event["event_type"]
+        if event_type == "budget_overrun":
+            title = "Dein Budget gerät weiter unter Druck"
+            message = f"In deinem Monatsplan fehlen aktuell {amount(event.get('shortfall'))}."
+            action = "Budget prüfen"
+            deep_link = "analysis"
+        elif event_type == "consumer_debt_new":
+            title = "Neue Konsumschuld erkannt"
+            message = f"Rov.E kennt {amount(event.get('amount'))} an neuer Konsumschuld. Eine Hypothek wird davon getrennt betrachtet."
+            action = "Schulden prüfen"
+            deep_link = "settings"
+        elif event_type == "contract_changed":
+            title = "Ein Vertrag wurde neu erfasst oder geändert"
+            message = f"Prüfe den Vertrag {event.get('name') or 'in deinem Profil'} und seine monatlichen Kosten."
+            action = "Verträge öffnen"
+            deep_link = "contracts"
+        elif event_type == "salary_received":
+            title = "Dein Gehalt ist eingegangen"
+            message = f"Rov.E hat eine Einnahme über {amount(event.get('amount'))} erkannt."
+            action = "Cashflow öffnen"
+            deep_link = "analysis"
+        else:
+            title = "Dein Monatsreport ist neu"
+            message = "Dein aktueller Report ist bereit."
+            action = "Report öffnen"
+            deep_link = "reports"
+        return candidate(event["event_id"], int(event["priority"]), event_type, title, message, action, deep_link, event_type)
+
     free_remaining = float(budget_truth.get("free_month_remaining") or 0)
     category_remaining = float(budget_truth.get("category_remaining") or 0)
+    event = new_event("budget_overrun")
+    if event:
+        return event_candidate(event)
     if free_remaining < 0 or category_remaining < 0:
-        shortfall = max(abs(free_remaining) if free_remaining < 0 else 0, abs(category_remaining))
+        shortfall = max(
+            abs(free_remaining) if free_remaining < 0 else 0,
+            abs(category_remaining) if category_remaining < 0 else 0,
+        )
         return candidate(
             "budget-overrun", 100, "budget_overrun",
             "Dein Budget braucht Aufmerksamkeit",
@@ -534,6 +884,9 @@ def build_mentor_candidate(
 
     consumer_debt = float(score.get("consumer_debt_total") or 0)
     debt_points = float(score.get("debt") or 0)
+    event = new_event("consumer_debt_new")
+    if event:
+        return event_candidate(event)
     if consumer_debt > 0 and debt_points < 25:
         return candidate(
             "consumer-debt", 95, "consumer_debt",
@@ -581,6 +934,16 @@ def build_mentor_candidate(
             "Monatscheck öffnen", "monthly-checkin", "monthly_action_due",
         )
 
+    event = new_event("contract_changed")
+    if event:
+        return event_candidate(event)
+    event = new_event("salary_received")
+    if event:
+        return event_candidate(event)
+    event = new_event("report_ready")
+    if event:
+        return event_candidate(event)
+
     tracking_days = int(score.get("tracking_days_90") or 0)
     if tracking_days < 4:
         return candidate(
@@ -588,6 +951,14 @@ def build_mentor_candidate(
             "Deine Datenbasis darf noch wachsen",
             "Mit regelmäßig erfassten Buchungen wird dein Finanzbild belastbarer.",
             "Ausgaben erfassen", "analysis", "weak_tracking",
+        )
+
+    if contracts:
+        return candidate(
+            "contracts", 25, "contracts",
+            "Prüfe deine laufenden Verträge",
+            "Ein klarer Überblick über wiederkehrende Kosten schafft zusätzlichen Spielraum.",
+            "Verträge öffnen", "contracts", "contracts_present",
         )
 
     ready_report = next(
@@ -601,14 +972,6 @@ def build_mentor_candidate(
             "Dein Monatsreport ist bereit",
             "Schau dir die Entwicklung deines letzten abgeschlossenen Monats an.",
             "Report öffnen", "reports", "report_ready",
-        )
-
-    if contracts:
-        return candidate(
-            "contracts", 25, "contracts",
-            "Prüfe deine laufenden Verträge",
-            "Ein klarer Überblick über wiederkehrende Kosten schafft zusätzlichen Spielraum.",
-            "Verträge öffnen", "contracts", "contracts_present",
         )
 
     if not goals:
@@ -2138,6 +2501,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """
     ensure_app_properties_table(conn)
     ensure_debt_status_column(conn)
+    ensure_app_mentor_event_state_table(conn)
     # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
     # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
     apply_due_scheduled_savings(conn, user_id)
@@ -2291,6 +2655,12 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         goal for goal in get_app_goals(conn, user_id)
         if str(goal["t"]).casefold() != str(u.get("goal_description") or "").strip().casefold()
     ]
+    mentor_events = build_mentor_events(
+        conn,
+        user_id,
+        budget_truth=budget_truth,
+        income=income,
+    )
     mentor_candidate = build_mentor_candidate(
         score=score,
         budget_truth=budget_truth,
@@ -2301,7 +2671,10 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         income=income,
         fixed_costs=fixed_costs,
         debt_status=normalize_debt_status(u.get("debt_status")),
+        events=mentor_events,
     )
+    if mentor_candidate and mentor_candidate.get("id", "").startswith("coach:"):
+        mark_mentor_event_seen(conn, user_id, mentor_candidate["id"])
     onboarding_step = int(u.get("onboarding_step") or 0)
     onboarding_required = onboarding_step < 10
     onboarding_status = (
@@ -2361,6 +2734,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "budgetHistory": budget_history,
         "budgets": budgets,
         "reports": reports,
+        "mentor_events": mentor_events,
         "monthlyPlan": monthly_plan,
         "monthlyCheckinActions": monthly_checkin_actions,
         "monthlyCheckinDueCount": len(monthly_checkin_actions),
