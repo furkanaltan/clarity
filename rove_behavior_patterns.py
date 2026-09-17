@@ -605,6 +605,415 @@ def _arbitrate_composites(patterns: list[dict[str, Any]]) -> None:
         winner["supersedes"] = sorted(set(winner.get("supersedes") or []) | set(superseded))
 
 
+def _insight_type_for_pattern(pattern: dict[str, Any]) -> str | None:
+    pattern_type = pattern.get("pattern_type")
+    composite_type = pattern.get("composite_type")
+    if composite_type == "budget_recovery":
+        return "budget_recovery"
+    if composite_type in {
+        "repeated_discretionary_overspend",
+        "repeated_discretionary_budget_pressure",
+        "behavior_driving_budget_pressure",
+    }:
+        return "budget_attention"
+    if composite_type == "post_income_behavior_with_budget_pressure":
+        return "post_income_pattern"
+    if pattern_type in {
+        "category_budget_pressure",
+        "category_repeated_over_budget",
+    }:
+        return "budget_attention"
+    if pattern_type in {
+        "merchant_frequency",
+        "merchant_weekday_pattern",
+        "late_night_discretionary_spending",
+    }:
+        return "repeated_spending_pattern"
+    if pattern_type == "category_spending_worsening":
+        return "spending_trend_worsening"
+    if pattern_type == "category_spending_improving":
+        return "spending_trend_improving"
+    if pattern_type.startswith("post_income_"):
+        return "post_income_pattern"
+    if pattern_type == "similar_recurring_services":
+        return "subscription_cluster"
+    if pattern_type == "behavior_change_vs_personal_baseline":
+        return (
+            "spending_trend_worsening"
+            if pattern.get("direction") == "worsening"
+            else "spending_trend_improving"
+        )
+    return None
+
+
+def _insight_metrics(
+    pattern: dict[str, Any],
+    insight_type: str,
+) -> dict[str, Any]:
+    observations = pattern.get("observations") or {}
+    keys_by_type = {
+        "budget_attention": (
+            "amount_total", "amount_spent", "monthly_limit", "amount_over",
+            "budget_used_fraction", "months_considered", "months_over_budget",
+            "average_over_budget_percent", "total_deviation_eur",
+            "monthly_values", "historical_budget_evidence",
+            "overall_pressure_months", "historical_overall_budget_status",
+            "overall_context_known_and_healthy", "category_deviation_is_large",
+            "behavior_pattern_id", "budget_pattern_id", "behavior_type",
+            "behavior_amount_total", "behavior_transaction_count",
+            "behavior_occurrence_date_count", "budget_amount_spent",
+            "budget_monthly_limit", "budget_amount_over",
+        ),
+        "repeated_spending_pattern": (
+            "amount_total", "transaction_count", "occurrence_date_count",
+            "weekday_opportunities", "occurrence_ratio", "time_window",
+        ),
+        "spending_trend_worsening": (
+            "months_compared", "monthly_amounts", "absolute_change_eur",
+            "relative_change", "baseline_months", "baseline_amounts",
+            "baseline_average_eur", "current_month", "current_amount_eur",
+            "difference_eur", "fair_baseline_eur", "comparison_mode",
+        ),
+        "spending_trend_improving": (
+            "months_compared", "monthly_amounts", "absolute_change_eur",
+            "relative_change", "baseline_months", "baseline_amounts",
+            "baseline_average_eur", "current_month", "current_amount_eur",
+            "difference_eur", "fair_baseline_eur", "comparison_mode",
+        ),
+        "post_income_pattern": (
+            "amount_total",
+            "salary_cycles", "window_days", "available_windows",
+            "post_income_average_eur", "personal_baseline_average_eur",
+            "absolute_delta_eur", "relative_delta", "temporal_correlation_only",
+            "budget_pressure_months", "budget_status_by_month",
+        ),
+        "subscription_cluster": (
+            "amount_total",
+            "cluster_type", "service_count", "monthly_normalized_total",
+            "frequency_complete", "activity_confidence", "duplicate_ambiguous",
+            "data_quality",
+        ),
+        "budget_recovery": (
+            "amount_total",
+            "budget_context",
+            "months_over_budget", "historical_budget_evidence",
+        ),
+    }
+    metrics = {
+        key: observations[key]
+        for key in keys_by_type.get(insight_type, ())
+        if key in observations
+    }
+    if "amount_total" in keys_by_type.get(insight_type, ()) and "amount_total" in pattern:
+        metrics["amount_total"] = pattern["amount_total"]
+    return metrics
+
+
+def _insight_suppression_reason(
+    pattern: dict[str, Any],
+    insight_type: str,
+) -> str | None:
+    observations = pattern.get("observations") or {}
+    if pattern.get("conflicting_evidence"):
+        return "conflicting_evidence"
+    if pattern.get("superseded_by_pattern_id"):
+        return "superseded"
+    if observations.get("activity_confidence") not in (None, "verified"):
+        return "uncertain_activity_status"
+    if observations.get("uncertain_event_time"):
+        return "uncertain_event_time"
+    if observations.get("single_expense_dominated"):
+        return "single_outlier"
+    if _merchant_class("", str(pattern.get("category") or "")) == "essential":
+        return "essential_spending"
+    if pattern.get("financial_relevance") == "low":
+        return "low_financial_relevance"
+    if (
+        insight_type == "budget_attention"
+        and observations.get("overall_context_known_and_healthy")
+        and not observations.get("overall_pressure_months")
+        and not observations.get("category_deviation_is_large")
+    ):
+        return "healthy_overall_budget"
+    if not pattern.get("eligible_for_coach") and not pattern.get("eligible_for_report"):
+        return "insufficient_history"
+    return None
+
+
+def _insight_report_eligible(
+    pattern: dict[str, Any],
+    insight_type: str,
+    suppression_reason: str | None,
+) -> bool:
+    if suppression_reason:
+        return False
+    if insight_type == "budget_attention":
+        if pattern.get("pattern_type") == "category_budget_pressure":
+            return False
+        return bool(pattern.get("eligible_for_report"))
+    if insight_type in {"spending_trend_worsening", "spending_trend_improving"}:
+        observations = pattern.get("observations") or {}
+        return bool(
+            pattern.get("eligible_for_report")
+            and observations.get("months_compared", 0) >= MIN_HISTORICAL_MONTHS
+        )
+    if insight_type == "repeated_spending_pattern":
+        observations = pattern.get("observations") or {}
+        return bool(
+            pattern.get("pattern_type") == "merchant_weekday_pattern"
+            and pattern.get("eligible_for_coach")
+            and observations.get("occurrence_date_count", 0) >= MIN_REPEATED_TRANSACTIONS
+        )
+    if insight_type == "post_income_pattern":
+        return bool(
+            pattern.get("eligible_for_report")
+            and (pattern.get("observations") or {}).get("salary_cycles", 0) >= MIN_SALARY_CYCLES
+        )
+    if insight_type == "subscription_cluster":
+        return bool(
+            pattern.get("eligible_for_report")
+            and (pattern.get("observations") or {}).get("activity_confidence") == "verified"
+        )
+    return bool(pattern.get("eligible_for_report"))
+
+
+def _suppressed_salary_time_insight(
+    context: dict[str, Any],
+) -> dict[str, Any] | None:
+    source_ids = [str(source_id) for source_id in context.get(
+        "unreliable_salary_source_ids", []
+    )]
+    if not source_ids:
+        return None
+    check_id = _stable_id(
+        "salary_event_time_check",
+        source_ids,
+        "unreliable-event-time",
+    )
+    source_count = len(source_ids)
+    return {
+        "candidate_type": "behavior_insight_candidate",
+        "insight_id": check_id,
+        "insight_type": "post_income_pattern",
+        "source_pattern_ids": [check_id],
+        "primary_pattern_id": check_id,
+        "period_start": None,
+        "period_end": None,
+        "category": None,
+        "merchant": None,
+        "direction": None,
+        "evidence_summary": {
+            "pattern_type": "post_income_event_time_check",
+            "source": "app_cash_movements",
+            "event_time_reliable": False,
+            "source_count": source_count,
+        },
+        "evidence_metrics": {
+            "event_time_reliable": False,
+            "source_count": source_count,
+        },
+        "pattern_strength": "low",
+        "financial_relevance": "low",
+        "confidence_class": "unknown",
+        "coach_eligible": False,
+        "report_eligible": False,
+        "coach_timing_hint": None,
+        "report_section_hint": "behavior_summary",
+        "suppression_reason": "uncertain_event_time",
+        "conflicting_evidence": False,
+        "superseded_by_pattern_id": None,
+    }
+
+
+def _insight_timing_hint(pattern: dict[str, Any], insight_type: str) -> str | None:
+    if insight_type == "post_income_pattern":
+        return "post_salary_window"
+    if pattern.get("pattern_type") == "merchant_weekday_pattern":
+        return "weekend_prevention"
+    if insight_type == "budget_recovery":
+        return "month_end"
+    if pattern.get("pattern_type") == "category_budget_pressure":
+        return "immediate"
+    if insight_type in {"budget_attention", "spending_trend_worsening"}:
+        return "next_checkin"
+    return "next_checkin" if insight_type else None
+
+
+def _insight_report_section(insight_type: str) -> str:
+    return {
+        "budget_attention": "monthly_attention",
+        "repeated_spending_pattern": "spending_patterns",
+        "spending_trend_worsening": "behavior_summary",
+        "spending_trend_improving": "positive_progress",
+        "post_income_pattern": "behavior_summary",
+        "subscription_cluster": "recurring_costs",
+        "budget_recovery": "positive_progress",
+    }[insight_type]
+
+
+def _insights_share_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_category = _key(left.get("category"))
+    right_category = _key(right.get("category"))
+    if left_category != right_category:
+        return False
+    left_merchant = _key(left.get("merchant"))
+    right_merchant = _key(right.get("merchant"))
+    if left_merchant and right_merchant and left_merchant != right_merchant:
+        return False
+    left_ids = set(left.get("source_pattern_ids") or [])
+    left_ids.add(left.get("primary_pattern_id"))
+    right_ids = set(right.get("source_pattern_ids") or [])
+    right_ids.add(right.get("primary_pattern_id"))
+    return bool(left_ids & right_ids) or _date_range_overlaps(left, right)
+
+
+def _arbitrate_insights(insights: list[dict[str, Any]]) -> None:
+    """Select at most one coach and one report insight per shared subject."""
+    for insight in insights:
+        insight["primary_coach_insight"] = False
+        insight["primary_report_insight"] = False
+
+    groups: list[list[dict[str, Any]]] = []
+    for insight in insights:
+        matching = [group for group in groups if any(
+            _insights_share_scope(insight, other) for other in group
+        )]
+        if not matching:
+            groups.append([insight])
+            continue
+        target = matching[0]
+        target.append(insight)
+        for other in matching[1:]:
+            target.extend(other)
+            groups.remove(other)
+
+    def ranking(insight: dict[str, Any]) -> tuple[int, int, bool, str]:
+        return (
+            _composite_relevance_rank(insight),
+            int(insight["insight_type"] in {
+                "budget_attention",
+                "spending_trend_worsening",
+                "spending_trend_improving",
+            }),
+            insight.get("pattern_strength") == "high",
+            insight.get("insight_id") or "",
+        )
+
+    for group in groups:
+        active = [
+            insight for insight in group
+            if insight["coach_eligible"] or insight["report_eligible"]
+        ]
+        directions = {insight.get("direction") for insight in active}
+        if "worsening" in directions and "improving" in directions:
+            for insight in active:
+                insight["conflicting_evidence"] = True
+                insight["suppression_reason"] = "conflicting_evidence"
+                insight["coach_eligible"] = False
+                insight["report_eligible"] = False
+            continue
+
+        coach_candidates = [insight for insight in active if insight["coach_eligible"]]
+        if coach_candidates:
+            winner = max(coach_candidates, key=ranking)
+            winner["primary_coach_insight"] = True
+            for insight in coach_candidates:
+                if insight is winner:
+                    continue
+                insight["coach_eligible"] = False
+                insight["suppression_reason"] = "superseded"
+
+        report_candidates = [insight for insight in active if insight["report_eligible"]]
+        if report_candidates:
+            winner = max(report_candidates, key=ranking)
+            winner["primary_report_insight"] = True
+            for insight in report_candidates:
+                if insight is winner:
+                    continue
+                insight["report_eligible"] = False
+                if not insight["suppression_reason"]:
+                    insight["suppression_reason"] = "superseded"
+
+
+def build_behavior_insights(
+    patterns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive shadow-only, structured insights from already arbitrated patterns."""
+    insights: list[dict[str, Any]] = []
+    for pattern in patterns:
+        insight_type = _insight_type_for_pattern(pattern)
+        if not insight_type:
+            continue
+        source_pattern_ids = sorted(set(
+            pattern.get("related_pattern_ids") or [pattern["pattern_id"]]
+        ))
+        suppression_reason = _insight_suppression_reason(pattern, insight_type)
+        report_eligible = _insight_report_eligible(
+            pattern,
+            insight_type,
+            suppression_reason,
+        )
+        coach_eligible = bool(
+            pattern.get("eligible_for_coach") and not suppression_reason
+        )
+        insight_key = f"{insight_type}:{pattern['period_start']}:{pattern['period_end']}"
+        insights.append({
+            "candidate_type": "behavior_insight_candidate",
+            "insight_id": _stable_id(
+                "behavior_insight",
+                source_pattern_ids,
+                insight_key,
+            ),
+            "insight_type": insight_type,
+            "source_pattern_ids": source_pattern_ids,
+            "primary_pattern_id": pattern["pattern_id"],
+            "period_start": pattern["period_start"],
+            "period_end": pattern["period_end"],
+            "category": pattern.get("category"),
+            "merchant": pattern.get("merchant"),
+            "direction": pattern.get("direction"),
+            "evidence_summary": {
+                "pattern_type": pattern["pattern_type"],
+                "composite_type": pattern.get("composite_type"),
+                "category": pattern.get("category"),
+                "merchant": pattern.get("merchant"),
+                "direction": pattern.get("direction"),
+            },
+            "evidence_metrics": _insight_metrics(pattern, insight_type),
+            "pattern_strength": pattern.get("pattern_strength"),
+            "financial_relevance": pattern.get("financial_relevance"),
+            "confidence_class": (
+                "unknown"
+                if suppression_reason in {
+                    "conflicting_evidence",
+                    "uncertain_activity_status",
+                    "uncertain_event_time",
+                }
+                else "high"
+                if pattern.get("pattern_strength") == "high"
+                and pattern.get("financial_relevance") == "high"
+                else "medium"
+                if pattern.get("pattern_strength") in {"high", "medium"}
+                else "low"
+            ),
+            "coach_eligible": coach_eligible,
+            "report_eligible": report_eligible,
+            "coach_timing_hint": _insight_timing_hint(pattern, insight_type),
+            "report_section_hint": _insight_report_section(insight_type),
+            "suppression_reason": suppression_reason,
+            "conflicting_evidence": bool(pattern.get("conflicting_evidence")),
+            "superseded_by_pattern_id": pattern.get("superseded_by_pattern_id"),
+        })
+
+    _arbitrate_insights(insights)
+    return sorted(insights, key=lambda insight: (
+        insight["period_start"],
+        insight["insight_type"],
+        insight.get("category") or "",
+        insight["insight_id"],
+    ))
+
+
 def _month_distance(left: str, right: str) -> int:
     left_year, left_month = (int(part) for part in left.split("-"))
     right_year, right_month = (int(part) for part in right.split("-"))
@@ -964,9 +1373,18 @@ def _historical_category_patterns(
             and pattern.get("eligible_for_coach")
             for pattern in related
         )
-        overall_is_known_and_healthy = bool(historical_overall_budget) and all(
+        budget_evidence_months = {
+            row["month"]
+            for row in repeated_observations.get("monthly_values", [])
+        }
+        relevant_overall_budget = {
+            month: status
+            for month, status in historical_overall_budget.items()
+            if month in budget_evidence_months
+        }
+        overall_is_known_and_healthy = bool(relevant_overall_budget) and all(
             status.get("status") == "healthy"
-            for status in historical_overall_budget.values()
+            for status in relevant_overall_budget.values()
         )
         composite_supported = (
             len(overall_pressure_months) >= 2
@@ -986,6 +1404,7 @@ def _historical_category_patterns(
                 "historical_budget_evidence": repeated["observations"]["monthly_values"],
                 "historical_overall_budget_status": historical_overall_budget,
                 "overall_pressure_months": overall_pressure_months,
+                "overall_context_known_and_healthy": overall_is_known_and_healthy,
                 "category_deviation_is_large": category_deviation_is_large,
             },
             direction="worsening",
@@ -1335,12 +1754,60 @@ def _overall_budget_status(
     return result
 
 
+def _unreliable_salary_source_ids(
+    conn: sqlite3.Connection,
+    user_id: int,
+) -> list[str]:
+    """Identify explicitly labelled salary rows without a usable event time."""
+    columns = _columns(conn, "app_cash_movements")
+    if not {"id", "user_id", "kind", "amount"}.issubset(columns):
+        return []
+    label_expression = "label" if "label" in columns else "'' AS label"
+    timestamp_column = next(
+        (name for name in RELIABLE_TIMESTAMP_COLUMNS if name in columns),
+        None,
+    )
+    event_time_expression = timestamp_column or "NULL"
+    rows = conn.execute(
+        f"""SELECT id, {label_expression}, {event_time_expression} AS event_time
+               FROM app_cash_movements
+              WHERE user_id=? AND kind='income' AND amount > 0
+              ORDER BY id""",
+        (user_id,),
+    ).fetchall()
+    unreliable: list[str] = []
+    for row in rows:
+        label_key = _key(row["label"])
+        if not _contains_hint(label_key, SALARY_LABEL_HINTS):
+            continue
+        if _contains_hint(label_key, NON_SALARY_INCOME_HINTS):
+            continue
+        if _contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
+            continue
+        if _parse_timestamp(row["event_time"]) is None:
+            unreliable.append(str(row["id"]))
+    return unreliable
+
+
 def _post_income_patterns(
     conn: sqlite3.Connection,
     user_id: int,
     *,
     now: datetime,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    unreliable_salary_source_ids = _unreliable_salary_source_ids(conn, user_id)
+    if unreliable_salary_source_ids:
+        return [], {
+            "minimum_reliable_cycles": MIN_SALARY_CYCLES,
+            "cycles_detected": 0,
+            "cycles_used": 0,
+            "windows": list(SALARY_WINDOW_DAYS),
+            "income_events": [],
+            "unreliable_salary_source_count": len(unreliable_salary_source_ids),
+            "unreliable_salary_source_ids": unreliable_salary_source_ids,
+            "eligibility_reason": "uncertain_event_time",
+        }
+
     events = _load_salary_income_events(conn, user_id, now=now)
     cycles = _salary_cycles(events, now=now)
     context: dict[str, Any] = {
@@ -1951,6 +2418,7 @@ def _category_budget_pressures(
                 "budget_used_fraction": round(used_fraction, 3),
                 "monthly_limit": round(limit, 2),
                 "amount_spent": spent,
+                "amount_over": round(max(0.0, spent - limit), 2),
             },
             pattern_strength="high" if pressure_gap >= 0.25 else "medium",
             financial_relevance="high",
@@ -2318,6 +2786,22 @@ def detect_behavior_patterns(
                 "behavior_pattern_id": behavior["pattern_id"],
                 "budget_pattern_id": pressure["pattern_id"],
                 "behavior_type": behavior["pattern_type"],
+                "behavior_amount_total": behavior["amount_total"],
+                "behavior_transaction_count": behavior["observations"].get(
+                    "transaction_count"
+                ),
+                "behavior_occurrence_date_count": behavior["observations"].get(
+                    "occurrence_date_count"
+                ),
+                "budget_amount_spent": pressure["observations"].get(
+                    "amount_spent"
+                ),
+                "budget_monthly_limit": pressure["observations"].get(
+                    "monthly_limit"
+                ),
+                "budget_amount_over": pressure["observations"].get(
+                    "amount_over"
+                ),
                 "budget_used_fraction": pressure["observations"]["budget_used_fraction"],
             },
             pattern_strength=(
@@ -2393,6 +2877,37 @@ def build_shadow_inspector(
         now=effective_now,
     )
     patterns = detect_behavior_patterns(conn, user_id, now=effective_now)
+    insights = build_behavior_insights(patterns)
+    suppressed_salary_time = _suppressed_salary_time_insight(post_income_context)
+    if suppressed_salary_time:
+        insights.append(suppressed_salary_time)
+        insights.sort(key=lambda insight: (
+            insight.get("period_start") or "",
+            insight["insight_type"],
+            insight.get("category") or "",
+            insight["insight_id"],
+        ))
+    primary_coach_insights = [
+        insight for insight in insights
+        if insight.get("primary_coach_insight")
+    ]
+    primary_report_insights = [
+        insight for insight in insights
+        if insight.get("primary_report_insight")
+    ]
+
+    def primary_key(insight: dict[str, Any]) -> tuple[int, int, bool, str]:
+        return (
+            _composite_relevance_rank(insight),
+            int(insight.get("insight_type") in {
+                "budget_attention",
+                "spending_trend_worsening",
+                "spending_trend_improving",
+            }),
+            insight.get("pattern_strength") == "high",
+            insight.get("insight_id") or "",
+        )
+
     composites = [
         pattern for pattern in patterns
         if pattern.get("pattern_kind") == "composite_behavior_pattern"
@@ -2442,4 +2957,15 @@ def build_shadow_inspector(
         "historical_overall_budget_status": historical_budget_status,
         "post_income_shadow": post_income_context,
         "similar_recurring_shadow": similar_service_context,
+        "insight_candidates": insights,
+        "primary_coach_insight": (
+            max(primary_coach_insights, key=primary_key)["insight_id"]
+            if primary_coach_insights
+            else None
+        ),
+        "primary_report_insight": (
+            max(primary_report_insights, key=primary_key)["insight_id"]
+            if primary_report_insights
+            else None
+        ),
     }

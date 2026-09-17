@@ -4,7 +4,11 @@ import sqlite3
 import unittest
 from datetime import datetime
 
-from rove_behavior_patterns import build_shadow_inspector, detect_behavior_patterns
+from rove_behavior_patterns import (
+    build_behavior_insights,
+    build_shadow_inspector,
+    detect_behavior_patterns,
+)
 
 
 class CoachV4ShadowPatternTests(unittest.TestCase):
@@ -90,6 +94,9 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
 
     def patterns(self):
         return detect_behavior_patterns(self.conn, 1, now=self.NOW)
+
+    def insights(self):
+        return build_behavior_insights(self.patterns())
 
     def of_type(self, pattern_type: str):
         return [p for p in self.patterns() if p["pattern_type"] == pattern_type]
@@ -241,8 +248,8 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertFalse(any(p["eligible_for_coach"] for p in self.patterns()))
 
     def test_three_of_four_sundays_create_weekday_pattern(self):
-        for index, day in enumerate((6, 13, 20), 1):
-            self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
+        for index, (day, amount) in enumerate(((6, 30), (13, 28), (20, 28)), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", amount, f"2026-09-{day:02d} 19:00:00")
         patterns = self.of_type("merchant_weekday_pattern")
         self.assertEqual(len(patterns), 1)
         self.assertEqual(patterns[0]["observations"]["transaction_count"], 3)
@@ -973,6 +980,14 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.conn.execute("UPDATE app_cash_movements SET occurred_at=NULL")
         inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
         self.assertEqual(inspector["post_income_shadow"]["cycles_detected"], 0)
+        suppressed = [
+            insight for insight in inspector["insight_candidates"]
+            if insight["insight_type"] == "post_income_pattern"
+        ]
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(suppressed[0]["suppression_reason"], "uncertain_event_time")
+        self.assertFalse(suppressed[0]["coach_eligible"])
+        self.assertFalse(suppressed[0]["report_eligible"])
 
     def test_backfill_uses_event_date_not_import_time(self):
         self.configure_budget_plan()
@@ -1225,6 +1240,237 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         ), 1):
             self.add_income(index, created_at=created_at)
         self.assertFalse(self.of_type("post_income_discretionary_spike"))
+
+    def test_insight_candidate_contract_is_structured_and_traceable(self):
+        self.add_budget("Restaurants", "2026-09", 100)
+        self.add_expense(1, "Restaurant", "Restaurants", 160, "2026-09-05 12:00:00")
+        insight = self.insights()[0]
+        self.assertEqual(insight["candidate_type"], "behavior_insight_candidate")
+        self.assertEqual(insight["insight_type"], "budget_attention")
+        self.assertEqual(insight["source_pattern_ids"], [insight["primary_pattern_id"]])
+        self.assertEqual(insight["evidence_metrics"]["amount_spent"], 160.0)
+        self.assertEqual(insight["coach_timing_hint"], "immediate")
+        self.assertEqual(insight["report_section_hint"], "monthly_attention")
+        self.assertTrue(insight["coach_eligible"])
+        self.assertFalse(insight["report_eligible"])
+
+    def test_repeated_spending_insight_preserves_amount_and_period_evidence(self):
+        pattern = self.of_type("merchant_weekday_pattern")
+        self.assertFalse(pattern)
+        for index, (day, amount) in enumerate(((6, 30), (13, 28), (20, 28)), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", amount, f"2026-09-{day:02d} 19:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "repeated_spending_pattern"
+            and insight["coach_eligible"]
+        )
+        self.assertEqual(insight["merchant"], "Lieferando")
+        self.assertEqual(insight["category"], "Restaurants")
+        self.assertEqual(insight["evidence_metrics"]["amount_total"], 86.0)
+        self.assertEqual(insight["evidence_metrics"]["occurrence_date_count"], 3)
+        self.assertEqual(insight["evidence_metrics"]["weekday_opportunities"], 4)
+        self.assertEqual(insight["period_start"], "2026-09-01")
+        self.assertEqual(insight["period_end"], "2026-09-30")
+
+    def test_behavior_budget_composite_preserves_both_evidence_sides(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Restaurants", "2026-09", 100)
+        for index, (day, amount) in enumerate(((6, 50), (13, 50), (20, 50)), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", amount, f"2026-09-{day:02d} 19:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["evidence_summary"]["composite_type"] == "behavior_driving_budget_pressure"
+        )
+        metrics = insight["evidence_metrics"]
+        self.assertEqual(metrics["behavior_amount_total"], 150.0)
+        self.assertEqual(metrics["behavior_transaction_count"], 3)
+        self.assertEqual(metrics["budget_amount_spent"], 150.0)
+        self.assertEqual(metrics["budget_monthly_limit"], 100.0)
+        self.assertEqual(metrics["budget_amount_over"], 50.0)
+
+    def test_historical_budget_insight_preserves_monthly_budget_evidence(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_month(1, "2026-06", (80, 80))
+        self.add_month(3, "2026-07", (100, 100))
+        self.add_month(5, "2026-08", (130, 130))
+        insight = next(
+            insight for insight in self.insights()
+            if insight["primary_pattern_id"].startswith("shadow:repeated_discretionary_budget_pressure")
+        )
+        metrics = insight["evidence_metrics"]
+        self.assertEqual(metrics["months_over_budget"], 3)
+        self.assertEqual(len(metrics["historical_budget_evidence"]), 3)
+        self.assertEqual(
+            [row["monthly_limit"] for row in metrics["historical_budget_evidence"]],
+            [100.0, 100.0, 100.0],
+        )
+
+    def test_salary_time_suppression_does_not_use_created_at(self):
+        self.configure_budget_plan()
+        self.add_income(1, created_at="2026-08-01 09:00:00")
+        self.conn.execute("UPDATE app_cash_movements SET occurred_at=NULL")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        insight = next(
+            insight for insight in inspector["insight_candidates"]
+            if insight["suppression_reason"] == "uncertain_event_time"
+        )
+        self.assertIsNone(insight["period_start"])
+        self.assertIsNone(insight["period_end"])
+        self.assertFalse(insight["coach_eligible"])
+
+    def test_healthy_historical_budget_is_not_a_coach_insight(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08")):
+            self.add_month(index * 2 + 1, month, (60, 60))
+        insights = self.insights()
+        self.assertTrue(any(
+            insight["suppression_reason"] == "healthy_overall_budget"
+            for insight in insights
+        ))
+        self.assertFalse(any(
+            insight["insight_type"] == "budget_attention"
+            and insight["coach_eligible"]
+            for insight in insights
+        ))
+
+    def test_repeated_spending_insight_has_weekend_timing_and_report_scope(self):
+        for index, day in enumerate((6, 13, 20), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "repeated_spending_pattern"
+            and insight["coach_eligible"]
+        )
+        self.assertEqual(insight["coach_timing_hint"], "weekend_prevention")
+        self.assertEqual(insight["report_section_hint"], "spending_patterns")
+        self.assertTrue(insight["report_eligible"])
+
+    def test_historical_worsening_becomes_reportable_trend_insight(self):
+        self._add_historical_months(((45, 45), (62.5, 62.5), (85, 85)))
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "spending_trend_worsening"
+        )
+        self.assertEqual(insight["direction"], "worsening")
+        self.assertEqual(insight["report_section_hint"], "behavior_summary")
+        self.assertTrue(insight["coach_eligible"])
+        self.assertTrue(insight["report_eligible"])
+
+    def test_historical_improvement_becomes_positive_progress_insight(self):
+        self._add_historical_months(((90, 90), (70, 70), (45, 45)))
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "spending_trend_improving"
+        )
+        self.assertEqual(insight["direction"], "improving")
+        self.assertEqual(insight["report_section_hint"], "positive_progress")
+        self.assertTrue(insight["coach_eligible"])
+        self.assertTrue(insight["report_eligible"])
+
+    def test_post_income_insight_exposes_salary_window_hint(self):
+        self._salary_cycle_fixture()
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "post_income_pattern"
+            and insight["coach_eligible"]
+        )
+        self.assertEqual(insight["coach_timing_hint"], "post_salary_window")
+        self.assertIn("salary_cycles", insight["evidence_metrics"])
+
+    def test_subscription_insight_is_separate_from_other_insight_types(self):
+        self.add_contract("c1", "Netflix", 25)
+        self.add_contract("c2", "Disney+", 25)
+        self.add_contract("c3", "Paramount+", 25)
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "subscription_cluster"
+        )
+        self.assertEqual(insight["category"], "streaming_video")
+        self.assertEqual(insight["report_section_hint"], "recurring_costs")
+        self.assertTrue(insight["coach_eligible"])
+        self.assertFalse(insight["report_eligible"])
+
+    def test_unverified_activity_creates_suppressed_subscription_insight(self):
+        self.conn.execute("DROP TABLE app_contracts")
+        self.conn.execute(
+            """CREATE TABLE app_contracts (
+                user_id INTEGER NOT NULL,
+                contract_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                amount REAL NOT NULL,
+                frequency TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, contract_id)
+            )"""
+        )
+        self.conn.executemany(
+            """INSERT INTO app_contracts
+               (user_id, contract_id, name, category, amount, frequency,
+                created_at, updated_at)
+               VALUES (1, ?, ?, 'Abos', ?, 'monthly',
+                       '2026-09-01 09:00:00', '2026-09-01 09:00:00')""",
+            (("c1", "Netflix", 25), ("c2", "Disney+", 25), ("c3", "Paramount+", 25)),
+        )
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "subscription_cluster"
+        )
+        self.assertEqual(insight["suppression_reason"], "uncertain_activity_status")
+        self.assertFalse(insight["coach_eligible"])
+        self.assertFalse(insight["report_eligible"])
+
+    def test_single_outlier_insight_is_visible_but_not_eligible(self):
+        self._add_historical_months(((40,), (42.5,), (310,)))
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "spending_trend_worsening"
+        )
+        self.assertEqual(insight["suppression_reason"], "single_outlier")
+        self.assertFalse(insight["coach_eligible"])
+        self.assertFalse(insight["report_eligible"])
+
+    def test_conflicting_directions_suppress_primary_insights(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_month(1, "2026-06", (60, 60))
+        self.add_month(3, "2026-07", (80, 80))
+        self.add_month(5, "2026-08", (100, 100))
+        self.add_month(7, "2026-09", (40, 40))
+        insights = self.insights()
+        self.assertTrue(any(
+            insight["suppression_reason"] == "conflicting_evidence"
+            for insight in insights
+        ))
+        self.assertFalse(any(
+            insight["primary_coach_insight"] or insight["primary_report_insight"]
+            for insight in insights
+            if insight["suppression_reason"] == "conflicting_evidence"
+        ))
+
+    def test_insight_arbitration_exposes_one_primary_per_channel_and_inspector_ids(self):
+        self._add_historical_months(((60, 60), (80, 80), (100, 100)))
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        insights = inspector["insight_candidates"]
+        coach_primaries = [i for i in insights if i["primary_coach_insight"]]
+        report_primaries = [i for i in insights if i["primary_report_insight"]]
+        self.assertLessEqual(len(coach_primaries), 1)
+        self.assertLessEqual(len(report_primaries), 1)
+        if coach_primaries:
+            self.assertEqual(inspector["primary_coach_insight"], coach_primaries[0]["insight_id"])
+        if report_primaries:
+            self.assertEqual(inspector["primary_report_insight"], report_primaries[0]["insight_id"])
+        self.assertFalse(inspector["coach_v3_affected"])
+
+    def _add_historical_months(self, values):
+        for index, (month, amounts) in enumerate(
+            zip(("2026-06", "2026-07", "2026-08"), values)
+        ):
+            self.add_month(index * 10 + 1, month, amounts)
 
 
 if __name__ == "__main__":
