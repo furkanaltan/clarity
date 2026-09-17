@@ -36,6 +36,7 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type
 import rove_account_delete_cleanup as account_delete_cleanup
 from rove_log_safety import safe_exception_summary
+from rove_behavior_patterns import build_shadow_inspector
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -426,6 +427,7 @@ def health():
 @app.route("/v1/auth/pin/recover", methods=["OPTIONS"])
 @app.route("/v1/onboarding", methods=["OPTIONS"])
 @app.route("/v1/admin/overview", methods=["OPTIONS"])
+@app.route("/v1/admin/coach-patterns/<int:target_user_id>", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations/<int:invitation_id>", methods=["OPTIONS"])
 @app.route("/v1/admin/access/<int:target_user_id>", methods=["OPTIONS"])
@@ -3471,6 +3473,20 @@ def admin_overview():
         "alerts": alerts,
     })
 
+
+@app.route("/v1/admin/coach-patterns/<int:target_user_id>", methods=["GET"])
+def admin_coach_patterns(target_user_id: int):
+    """Expose Coach V4 evidence only to authorized internal inspectors."""
+    with db() as conn:
+        _, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
+        if not conn.execute(
+            "SELECT 1 FROM users WHERE user_id = ?", (target_user_id,)
+        ).fetchone():
+            return jsonify({"ok": False, "error": "user_not_found"}), 404
+        inspector = build_shadow_inspector(conn, target_user_id)
+    return jsonify({"ok": True, "user_id": target_user_id, **inspector})
 
 @app.route("/v1/admin/invitations", methods=["POST"])
 def admin_create_invitation():
