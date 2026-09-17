@@ -36,6 +36,11 @@ MIN_POST_INCOME_DELTA_EUR = 30.0
 MIN_POST_INCOME_RELATIVE_CHANGE = 0.25
 MIN_BASELINE_DATES = 3
 MIN_POST_INCOME_ITEMS_PER_CYCLE = 2
+SIMILAR_SERVICE_MIN_COUNT = 2
+SIMILAR_SERVICE_MEDIUM_COUNT = 3
+SIMILAR_SERVICE_HIGH_COUNT = 5
+SIMILAR_SERVICE_MEDIUM_EUR = 40.0
+SIMILAR_SERVICE_HIGH_EUR = 80.0
 LATE_NIGHT_START = time(20, 30)
 LATE_NIGHT_END = time(0, 30)
 RELIABLE_TIMESTAMP_COLUMNS = ("occurred_at", "transaction_at", "transacted_at", "booking_at")
@@ -149,6 +154,43 @@ AMBIGUOUS_SALARY_SOURCE_HINTS = (
     "rente",
     "pension",
 )
+
+SERVICE_CLASS_HINTS = {
+    "streaming_video": (
+        "netflix", "disney+", "disney plus", "paramount", "prime video",
+        "max streaming", "sky stream", "sky cinema", "sky entertainment",
+        "wow tv", "rtl+", "joyn",
+    ),
+    "streaming_music": (
+        "spotify", "apple music", "tidal", "deezer", "youtube music",
+    ),
+    "sport_streaming": (
+        "dazn", "sky sport", "eurosport player",
+    ),
+    "fitness": (
+        "fitnessstudio", "fitness studio", "mcfit", "clever fit", "gym",
+        "urban sports", "classpass",
+    ),
+    "cloud_software": (
+        "icloud", "dropbox", "google one", "microsoft 365", "office 365",
+        "adobe creative cloud", "notion", "canva pro",
+    ),
+    "news_media": (
+        "zeit", "spiegel", "faz", "new york times", "nyt", "newspaper",
+    ),
+    "gaming": (
+        "xbox game pass", "playstation plus", "nintendo online", "game pass",
+    ),
+}
+SERVICE_STATUS_ACTIVE = {"active", "enabled", "current", "laufend"}
+SERVICE_STATUS_INACTIVE = {
+    "cancelled", "canceled", "inactive", "ended", "paused", "deleted",
+    "terminated", "beendet", "gekuendigt", "pausiert",
+}
+SERVICE_FREQUENCY_MONTHLY = {"month", "monthly", "monat", "monatlich", "m"}
+SERVICE_FREQUENCY_ANNUAL = {
+    "annual", "annually", "year", "yearly", "jahr", "jaehrlich", "y", "12m",
+}
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -1293,6 +1335,285 @@ def _post_income_patterns(
     return patterns, context
 
 
+def _classify_recurring_service(name: str, category: str) -> str | None:
+    text = _key(f"{name} {category}")
+    # Prime is a bundle; only an explicit Prime Video label is safe to classify
+    # as video streaming. Generic Amazon/Prime rows remain unclassified.
+    if "prime" in text and "prime video" not in text:
+        return None
+    for cluster_type, hints in SERVICE_CLASS_HINTS.items():
+        if _contains_hint(text, hints):
+            return cluster_type
+    return None
+
+
+def _service_key(name: str, cluster_type: str) -> str:
+    """Build a stable, provider-scoped key without changing source data."""
+    text = re.sub(r"[^a-z0-9]+", " ", _key(name)).strip()
+    text = re.sub(r"\b(?:www|com|de|net|org)\b", " ", text)
+    text = re.sub(
+        r"\b(?:basic|standard|premium|monthly|annual|abo|subscription)\b",
+        " ",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    aliases = (
+        ("netflix", ("netflix",)),
+        ("disney_plus", ("disney plus", "disney")),
+        ("paramount_plus", ("paramount plus", "paramount")),
+        ("prime_video", ("prime video",)),
+        ("spotify", ("spotify",)),
+        ("apple_music", ("apple music",)),
+        ("dazn", ("dazn",)),
+        ("sky_stream", ("sky stream",)),
+        ("sky_cinema", ("sky cinema",)),
+        ("sky_entertainment", ("sky entertainment",)),
+        ("wow_tv", ("wow tv",)),
+    )
+    provider = next(
+        (canonical for canonical, hints in aliases if any(hint in text for hint in hints)),
+        text or "unknown",
+    )
+    return f"{cluster_type}:{provider}"
+
+
+def _contract_frequency(row: sqlite3.Row, columns: set[str]) -> tuple[str, float | None]:
+    frequency_column = next(
+        (
+            name
+            for name in (
+                "frequency",
+                "billing_frequency",
+                "billing_cycle",
+                "recurrence",
+                "period",
+            )
+            if name in columns
+        ),
+        None,
+    )
+    raw_frequency = str(row[frequency_column] or "").strip() if frequency_column else ""
+    frequency_key = _key(raw_frequency)
+    amount = round(float(row["amount"] or 0), 2)
+    if frequency_key in SERVICE_FREQUENCY_MONTHLY:
+        return "monthly", amount
+    if frequency_key in SERVICE_FREQUENCY_ANNUAL:
+        return "annual", round(amount / 12.0, 2)
+    return "unknown", None
+
+
+def _contract_is_active(row: sqlite3.Row, columns: set[str]) -> bool:
+    status_column = next(
+        (name for name in ("status", "lifecycle_status") if name in columns),
+        None,
+    )
+    if status_column:
+        status = _key(row[status_column])
+        if status in SERVICE_STATUS_INACTIVE:
+            return False
+        if status not in SERVICE_STATUS_ACTIVE:
+            return False
+    active_column = next(
+        (name for name in ("active", "is_active") if name in columns),
+        None,
+    )
+    if active_column and row[active_column] not in (1, True, "1", "true", "active"):
+        return False
+    return True
+
+
+def _contract_activity_confidence(columns: set[str]) -> str:
+    if "status" in columns or "lifecycle_status" in columns or "active" in columns or "is_active" in columns:
+        return "verified"
+    return "unknown"
+
+
+def _similar_recurring_service_patterns(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    columns = _columns(conn, "app_contracts")
+    required = {"user_id", "contract_id", "name", "amount"}
+    context: dict[str, Any] = {
+        "source": "app_contracts",
+        "clusters_considered": [],
+        "eligibility_reason": None,
+    }
+    if not required.issubset(columns):
+        context["eligibility_reason"] = "canonical_contract_source_unavailable"
+        return [], context
+
+    rows = conn.execute(
+        "SELECT * FROM app_contracts WHERE user_id=? ORDER BY contract_id",
+        (user_id,),
+    ).fetchall()
+    clusters: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    seen_contract_ids: set[str] = set()
+    activity_confidence = _contract_activity_confidence(columns)
+    for row in rows:
+        contract_id = str(row["contract_id"] or "").strip()
+        if not contract_id or contract_id in seen_contract_ids:
+            continue
+        seen_contract_ids.add(contract_id)
+        if not _contract_is_active(row, columns):
+            continue
+        amount = round(float(row["amount"] or 0), 2)
+        if amount <= 0:
+            continue
+        name = str(row["name"] or "").strip()
+        category = str(row["category"] or "").strip() if "category" in columns else ""
+        cluster_type = _classify_recurring_service(name, category)
+        if cluster_type is None:
+            continue
+        service_key = _service_key(name, cluster_type)
+        frequency, monthly_amount = _contract_frequency(row, columns)
+        timestamp = None
+        for timestamp_column in ("updated_at", "created_at"):
+            if timestamp_column in columns:
+                timestamp = _parse_timestamp(row[timestamp_column])
+                if timestamp:
+                    break
+        timestamp = timestamp or now
+        clusters[cluster_type][service_key].append({
+            "source_id": contract_id,
+            "service_key": service_key,
+            "name": name,
+            "category": category,
+            "amount": amount,
+            "frequency": frequency,
+            "monthly_amount": monthly_amount,
+            "occurred_at": timestamp,
+        })
+
+    patterns: list[dict[str, Any]] = []
+    for cluster_type, service_groups in sorted(clusters.items()):
+        services: list[dict[str, Any]] = []
+        for service_key, rows_for_service in sorted(service_groups.items()):
+            rows_for_service.sort(key=lambda service: service["source_id"])
+            amounts = {service["amount"] for service in rows_for_service}
+            frequencies = {service["frequency"] for service in rows_for_service}
+            monthly_amounts = {service["monthly_amount"] for service in rows_for_service}
+            representative = dict(rows_for_service[0])
+            representative["contract_row_count"] = len(rows_for_service)
+            representative["contract_ids"] = [service["source_id"] for service in rows_for_service]
+            representative["duplicate_ambiguous"] = len(rows_for_service) > 1
+            representative["amount_ambiguous"] = len(amounts) > 1
+            representative["frequency_ambiguous"] = len(frequencies) > 1
+            representative["monthly_amount"] = (
+                next(iter(monthly_amounts))
+                if len(monthly_amounts) == 1
+                else None
+            )
+            services.append(representative)
+        if len(services) < SIMILAR_SERVICE_MIN_COUNT:
+            continue
+        services.sort(key=lambda service: (service["name"].casefold(), service["source_id"]))
+        monthly_total = (
+            round(sum(float(service["monthly_amount"]) for service in services), 2)
+            if all(service["monthly_amount"] is not None for service in services)
+            else None
+        )
+        service_count = len(services)
+        strength = (
+            "high" if service_count >= SIMILAR_SERVICE_HIGH_COUNT
+            else "medium" if service_count >= SIMILAR_SERVICE_MEDIUM_COUNT
+            else "low"
+        )
+        relevance = (
+            "high" if monthly_total is not None and monthly_total >= SIMILAR_SERVICE_HIGH_EUR
+            else "medium" if monthly_total is not None and monthly_total >= SIMILAR_SERVICE_MEDIUM_EUR
+            else "low"
+        )
+        if monthly_total is None:
+            reason = (
+                "Mehrere aehnlich klassifizierte laufende Services erkannt; "
+                "die Frequenz ist nicht belastbar genug fuer eine Monatsnormalisierung."
+            )
+        else:
+            reason = (
+                f"{service_count} aehnliche laufende Services mit zusammen "
+                f"{monthly_total:.2f} EUR pro Monat erkannt; daraus folgt keine Aussage "
+                "ueber Notwendigkeit oder Kuendbarkeit."
+            )
+        duplicate_ambiguous = any(service["duplicate_ambiguous"] for service in services)
+        amount_ambiguous = any(service["amount_ambiguous"] for service in services)
+        if duplicate_ambiguous:
+            reason += " Mehrfachzeilen derselben Service-Familie werden nur einmal gezaehlt."
+        if amount_ambiguous:
+            reason += " Unterschiedliche Duplikatbetraege werden nicht zusammengefasst."
+        if activity_confidence != "verified":
+            reason = (
+                "Mehrere klassifizierte Vertragszeilen erkannt; der Aktivitaetsstatus ist "
+                "nicht belastbar verifiziert. Daher keine Coach- oder Report-Eignung."
+            )
+        context["clusters_considered"].append({
+            "cluster_type": cluster_type,
+            "service_count": service_count,
+            "monthly_normalized_total": monthly_total,
+            "frequency_complete": monthly_total is not None,
+            "activity_confidence": activity_confidence,
+            "duplicate_ambiguous": duplicate_ambiguous,
+        })
+        pattern_items = [
+            {
+                "source_id": service["source_id"],
+                "amount": service["amount"],
+                "occurred_at": service["occurred_at"],
+            }
+            for service in services
+        ]
+        patterns.append(_pattern(
+            pattern_type="similar_recurring_services",
+            items=pattern_items,
+            period_start=min(service["occurred_at"] for service in services),
+            period_end=max(service["occurred_at"] for service in services),
+            category=cluster_type,
+            merchant=None,
+            observations={
+                "cluster_type": cluster_type,
+                "services": [
+                    {
+                        "name": service["name"],
+                        "service_key": service["service_key"],
+                        "contract_row_count": service["contract_row_count"],
+                        "contract_ids": service["contract_ids"],
+                        "duplicate_ambiguous": service["duplicate_ambiguous"],
+                        "raw_amount_eur": service["amount"],
+                        "frequency": service["frequency"],
+                        "monthly_normalized_amount_eur": service["monthly_amount"],
+                    }
+                    for service in services
+                ],
+                "service_count": service_count,
+                "monthly_normalized_total": monthly_total,
+                "raw_recurring_amounts": [service["amount"] for service in services],
+                "frequency_complete": monthly_total is not None,
+                "data_quality": (
+                    "complete"
+                    if monthly_total is not None and activity_confidence == "verified"
+                    else "activity_unknown"
+                    if activity_confidence != "verified"
+                    else "frequency_unknown"
+                ),
+                "activity_confidence": activity_confidence,
+                "duplicate_ambiguous": duplicate_ambiguous,
+            },
+            pattern_strength=strength,
+            financial_relevance=relevance,
+            relevance_reason=reason,
+            eligible_for_coach=(
+                activity_confidence == "verified" and relevance in {"medium", "high"}
+            ),
+            eligible_for_report=False,
+            stable_period_key=f"similar-recurring:{cluster_type}",
+        ))
+    if not patterns:
+        context["eligibility_reason"] = "no_conservative_similarity_cluster"
+    return patterns, context
+
+
 def _category_budget_pressures(
     conn: sqlite3.Connection,
     user_id: int,
@@ -1506,6 +1827,15 @@ def detect_behavior_patterns(
     post_income_patterns, _ = _post_income_patterns(conn, user_id, now=now)
     patterns.extend(post_income_patterns)
 
+    # Phase 2C stays shadow-only as well. Contract similarity is evidence only;
+    # it does not create a visible coach candidate or any cancellation action.
+    similar_service_patterns, _ = _similar_recurring_service_patterns(
+        conn,
+        user_id,
+        now=now,
+    )
+    patterns.extend(similar_service_patterns)
+
     # A multi-month discretionary pattern supersedes the current one-month
     # pressure so the shadow inspector exposes one coherent explanation.
     historical_combinations = [
@@ -1608,9 +1938,15 @@ def build_shadow_inspector(
         user_id,
         now=effective_now,
     )
+    _, similar_service_context = _similar_recurring_service_patterns(
+        conn,
+        user_id,
+        now=effective_now,
+    )
     return {
         "mode": "shadow",
         "coach_v3_affected": False,
         "patterns": detect_behavior_patterns(conn, user_id, now=effective_now),
         "post_income_shadow": post_income_context,
+        "similar_recurring_shadow": similar_service_context,
     }

@@ -50,6 +50,19 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
                 monthly_limit REAL NOT NULL,
                 active_month TEXT NOT NULL
             );
+            CREATE TABLE app_contracts (
+                user_id INTEGER NOT NULL,
+                contract_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                amount REAL NOT NULL,
+                frequency TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, contract_id)
+            );
             """
         )
 
@@ -131,6 +144,35 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.conn.execute(
             "UPDATE users SET income=?, fixed_costs=?, etf_savings=?, cash_savings=? WHERE user_id=1",
             (income, fixed_costs, etf_savings, cash_savings),
+        )
+
+    def add_contract(
+        self,
+        contract_id: str,
+        name: str,
+        amount: float,
+        *,
+        category: str = "Abos",
+        frequency: str | None = "monthly",
+        status: str = "active",
+        active: int = 1,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO app_contracts
+               (user_id, contract_id, name, category, amount, frequency, status, active,
+                created_at, updated_at)
+               VALUES (1,?,?,?,?,?,?,?,?,?)""",
+            (
+                contract_id,
+                name,
+                category,
+                amount,
+                frequency,
+                status,
+                active,
+                "2026-09-01 09:00:00",
+                "2026-09-01 09:00:00",
+            ),
         )
 
     def add_financial_snapshot(
@@ -736,6 +778,155 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
             pattern["pattern_type"].startswith("post_income_")
             for pattern in self.patterns()
         ))
+
+    def test_similar_video_services_form_a_shadow_cluster(self):
+        self.add_contract("c1", "Netflix", 15)
+        self.add_contract("c2", "Disney+", 15)
+        pattern = next(
+            pattern for pattern in self.of_type("similar_recurring_services")
+            if pattern["observations"]["cluster_type"] == "streaming_video"
+        )
+        self.assertEqual(pattern["observations"]["service_count"], 2)
+        self.assertEqual(pattern["observations"]["monthly_normalized_total"], 30.0)
+        self.assertEqual(pattern["financial_relevance"], "low")
+        self.assertFalse(pattern["eligible_for_coach"])
+
+    def test_duplicate_service_rows_count_once_and_expose_family_metadata(self):
+        self.add_contract("n1", "Netflix", 15)
+        self.add_contract("n2", "NETFLIX.COM", 15)
+        self.add_contract("d1", "Disney+", 15)
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["observations"]["service_count"], 2)
+        self.assertEqual(pattern["observations"]["monthly_normalized_total"], 30.0)
+        netflix = next(
+            service for service in pattern["observations"]["services"]
+            if service["service_key"] == "streaming_video:netflix"
+        )
+        self.assertEqual(netflix["contract_row_count"], 2)
+        self.assertEqual(netflix["contract_ids"], ["n1", "n2"])
+        self.assertTrue(netflix["duplicate_ambiguous"])
+        self.assertTrue(pattern["observations"]["duplicate_ambiguous"])
+
+    def test_ambiguous_duplicate_amounts_are_not_summed(self):
+        self.add_contract("n1", "Netflix", 15)
+        self.add_contract("n2", "Netflix", 25)
+        self.add_contract("d1", "Disney+", 15)
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertIsNone(pattern["observations"]["monthly_normalized_total"])
+        self.assertEqual(pattern["financial_relevance"], "low")
+        self.assertTrue(pattern["observations"]["duplicate_ambiguous"])
+
+    def test_unverified_activity_keeps_shadow_evidence_ineligible(self):
+        self.conn.execute("DROP TABLE app_contracts")
+        self.conn.execute(
+            """CREATE TABLE app_contracts (
+                user_id INTEGER NOT NULL,
+                contract_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                amount REAL NOT NULL,
+                frequency TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, contract_id)
+            )"""
+        )
+        self.conn.executemany(
+            """INSERT INTO app_contracts
+               (user_id, contract_id, name, category, amount, frequency, created_at, updated_at)
+               VALUES (1, ?, ?, 'Abos', ?, 'monthly', '2026-09-01 09:00:00', '2026-09-01 09:00:00')""",
+            (("n1", "Netflix", 50), ("d1", "Disney+", 50)),
+        )
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["observations"]["activity_confidence"], "unknown")
+        self.assertEqual(pattern["observations"]["data_quality"], "activity_unknown")
+        self.assertFalse(pattern["eligible_for_coach"])
+        self.assertFalse(pattern["eligible_for_report"])
+
+    def test_explicit_sky_and_wow_products_are_classified_but_generic_names_are_not(self):
+        self.add_contract("s1", "Sky Stream", 25)
+        self.add_contract("s2", "Sky Cinema", 15)
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["observations"]["cluster_type"], "streaming_video")
+
+        self.tearDown()
+        self.setUp()
+        self.add_contract("s1", "Sky", 25)
+        self.add_contract("s2", "WOW", 15)
+        self.assertFalse(self.of_type("similar_recurring_services"))
+
+    def test_different_service_clusters_are_not_merged(self):
+        self.add_contract("c1", "Netflix", 15)
+        self.add_contract("c2", "Spotify", 10)
+        self.assertFalse(self.of_type("similar_recurring_services"))
+
+    def test_video_and_sport_services_keep_separate_clusters(self):
+        for index, name in enumerate(("Netflix", "Disney+", "Paramount+"), 1):
+            self.add_contract(f"v{index}", name, 20)
+        self.add_contract("sport", "DAZN", 30)
+        patterns = self.of_type("similar_recurring_services")
+        self.assertEqual(
+            {pattern["observations"]["cluster_type"] for pattern in patterns},
+            {"streaming_video"},
+        )
+
+    def test_five_similar_services_have_high_pattern_strength(self):
+        for index, name in enumerate(("Netflix", "Disney+", "Paramount+", "WOW TV", "RTL+"), 1):
+            self.add_contract(f"c{index}", name, 20)
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["pattern_strength"], "high")
+        self.assertEqual(pattern["financial_relevance"], "high")
+        self.assertEqual(pattern["observations"]["monthly_normalized_total"], 100.0)
+
+    def test_annual_service_is_normalized_only_with_explicit_frequency(self):
+        self.add_contract("c1", "Netflix", 120, frequency="annual")
+        self.add_contract("c2", "Disney+", 15, frequency="monthly")
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["observations"]["monthly_normalized_total"], 25.0)
+        self.assertTrue(pattern["observations"]["frequency_complete"])
+
+    def test_unknown_frequency_is_not_artificially_normalized(self):
+        self.add_contract("c1", "Netflix", 120, frequency=None)
+        self.add_contract("c2", "Disney+", 15, frequency=None)
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertIsNone(pattern["observations"]["monthly_normalized_total"])
+        self.assertEqual(pattern["observations"]["data_quality"], "frequency_unknown")
+        self.assertEqual(pattern["financial_relevance"], "low")
+
+    def test_inactive_contract_is_not_counted(self):
+        self.add_contract("c1", "Netflix", 15)
+        self.add_contract("c2", "Disney+", 15, status="cancelled")
+        self.assertFalse(self.of_type("similar_recurring_services"))
+
+    def test_prime_is_conservative_and_shopping_is_not_a_service(self):
+        self.add_contract("prime", "Amazon Prime", 8.99)
+        self.add_contract("video", "Prime Video", 8.99)
+        self.add_expense(1, "Amazon", "Shopping", 80, "2026-09-10 12:00:00")
+        self.assertFalse(self.of_type("similar_recurring_services"))
+
+    def test_unknown_service_is_not_guessed(self):
+        self.add_contract("c1", "Unknown Merchant X", 20)
+        self.add_contract("c2", "Unknown Merchant Y", 20)
+        self.assertFalse(self.of_type("similar_recurring_services"))
+
+    def test_same_contract_stream_has_stable_single_evidence_object(self):
+        self.add_contract("c1", "Netflix", 20)
+        self.add_contract("c2", "Disney+", 20)
+        first = self.of_type("similar_recurring_services")[0]
+        second = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(first["pattern_id"], second["pattern_id"])
+        self.assertEqual(first["observations"]["service_count"], 2)
+
+    def test_shadow_inspector_exposes_similarity_metadata_without_visible_coach(self):
+        self.add_contract("c1", "Netflix", 20)
+        self.add_contract("c2", "Disney+", 20)
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertFalse(inspector["coach_v3_affected"])
+        self.assertIn("similar_recurring_shadow", inspector)
+        pattern = next(pattern for pattern in inspector["patterns"] if pattern["pattern_type"] == "similar_recurring_services")
+        self.assertIn("services", pattern["observations"])
+        self.assertIn("monthly_normalized_total", pattern["observations"])
+        self.assertFalse(pattern["eligible_for_report"])
 
     def test_unlabeled_income_amount_is_not_promoted_to_salary(self):
         self.configure_budget_plan()
