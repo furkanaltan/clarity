@@ -16,8 +16,15 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(
             """
-            CREATE TABLE users (user_id INTEGER PRIMARY KEY);
-            INSERT INTO users VALUES (1);
+            CREATE TABLE users (
+                user_id INTEGER PRIMARY KEY,
+                income REAL DEFAULT 0,
+                other_income REAL DEFAULT 0,
+                fixed_costs REAL DEFAULT 0,
+                etf_savings REAL DEFAULT 0,
+                cash_savings REAL DEFAULT 0
+            );
+            INSERT INTO users (user_id) VALUES (1);
             CREATE TABLE expenses (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -34,7 +41,8 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
                 kind TEXT NOT NULL,
                 amount REAL NOT NULL,
                 expense_id INTEGER,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                occurred_at TEXT
             );
             CREATE TABLE category_budgets (
                 user_id INTEGER NOT NULL,
@@ -77,6 +85,77 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.conn.execute(
             "INSERT INTO category_budgets VALUES (1,?,?,?)",
             (category, limit, month),
+        )
+
+    def add_income(
+        self,
+        movement_id: int,
+        amount: float = 3000,
+        created_at: str = "2026-06-01 09:00:00",
+        label: str = "Gehalt",
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO app_cash_movements "
+            "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+            (movement_id, 1, "income", amount, None, created_at),
+        )
+        self.conn.execute(
+            "UPDATE app_cash_movements SET expense_id=NULL WHERE id=?",
+            (movement_id,),
+        )
+        # The fixture schema mirrors the current production table, where the
+        # income label is optional in older installations.
+        try:
+            self.conn.execute(
+                "ALTER TABLE app_cash_movements ADD COLUMN label TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        self.conn.execute(
+            "UPDATE app_cash_movements SET label=? WHERE id=?",
+            (label, movement_id),
+        )
+        self.conn.execute(
+            "UPDATE app_cash_movements SET occurred_at=created_at WHERE id=?",
+            (movement_id,),
+        )
+
+    def configure_budget_plan(
+        self,
+        *,
+        income: float = 3000,
+        fixed_costs: float = 1000,
+        etf_savings: float = 0,
+        cash_savings: float = 0,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE users SET income=?, fixed_costs=?, etf_savings=?, cash_savings=? WHERE user_id=1",
+            (income, fixed_costs, etf_savings, cash_savings),
+        )
+
+    def add_financial_snapshot(
+        self,
+        month: str,
+        *,
+        income: float = 3000,
+        fixed_costs: float = 1000,
+        etf_savings: float = 0,
+        cash_savings: float = 0,
+    ) -> None:
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS monthly_financial_snapshots (
+                user_id INTEGER,
+                report_month TEXT,
+                income REAL,
+                other_income REAL,
+                fixed_costs REAL,
+                etf_savings REAL,
+                cash_savings REAL
+            )"""
+        )
+        self.conn.execute(
+            "INSERT INTO monthly_financial_snapshots VALUES (?,?,?,?,?,?,?)",
+            (1, month, income, 0, fixed_costs, etf_savings, cash_savings),
         )
 
     def add_month(self, start_id: int, month: str, amounts: tuple[float, ...], category: str = "Restaurants") -> None:
@@ -195,14 +274,18 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
 
     def test_internal_transfer_is_not_consumption(self):
         self.conn.execute(
-            "INSERT INTO app_cash_movements VALUES (1,1,'transfer',500,NULL,'2026-09-16 08:00:00')"
+            "INSERT INTO app_cash_movements "
+            "(id,user_id,kind,amount,expense_id,created_at) "
+            "VALUES (1,1,'transfer',500,NULL,'2026-09-16 08:00:00')"
         )
         self.assertEqual(self.patterns(), [])
 
     def test_transfer_linked_to_an_expense_row_is_not_historical_consumption(self):
         self.add_expense(1, "Girokonto", "Transfer", 500, "2026-08-16 08:00:00")
         self.conn.execute(
-            "INSERT INTO app_cash_movements VALUES (1,1,'transfer',500,1,'2026-08-16 08:00:00')"
+            "INSERT INTO app_cash_movements "
+            "(id,user_id,kind,amount,expense_id,created_at) "
+            "VALUES (1,1,'transfer',500,1,'2026-08-16 08:00:00')"
         )
         self.assertEqual(self.patterns(), [])
 
@@ -517,6 +600,222 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(len(current_pressure), 1)
         self.assertFalse(current_pressure[0]["eligible_for_coach"])
         self.assertIn(current_pressure[0]["pattern_id"], combined[0]["related_pattern_ids"])
+
+    def _salary_cycle_fixture(self, *, post_amount: float = 200, baseline_amount: float = 10):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(
+                100 + index,
+                "Restaurant",
+                "Restaurants",
+                post_amount / 2,
+                f"{month}-02 12:00:00",
+            )
+            self.add_expense(
+                300 + index,
+                "Restaurant",
+                "Restaurants",
+                post_amount / 2,
+                f"{month}-03 12:00:00",
+            )
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(
+                200 + index,
+                "Restaurant",
+                "Restaurants",
+                baseline_amount,
+                f"2026-05-{day:02d} 12:00:00",
+            )
+
+    def test_post_income_discretionary_spike_requires_three_salary_cycles(self):
+        self._salary_cycle_fixture()
+        patterns = self.of_type("post_income_discretionary_spike")
+        self.assertEqual(len(patterns), 1)
+        pattern = patterns[0]
+        self.assertEqual(pattern["observations"]["salary_cycles"], 3)
+        self.assertIn(pattern["observations"]["window_days"], (3, 7))
+        self.assertEqual(pattern["observations"]["available_windows"], [3, 7])
+        self.assertTrue(pattern["observations"]["temporal_correlation_only"])
+        self.assertTrue(pattern["eligible_for_coach"])
+
+    def test_unknown_credits_bonus_and_transfers_are_not_salary_cycles(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            label = "Gutschrift" if month == "2026-06" else "Bonus" if month == "2026-07" else "Umbuchung"
+            self.add_income(index, created_at=f"{month}-01 09:00:00", label=label)
+        self.add_income(9, created_at="2026-06-20 09:00:00", label="Gehalt")
+        self.assertFalse(self.of_type("post_income_discretionary_spike"))
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertLess(inspector["post_income_shadow"]["cycles_detected"], 3)
+
+    def test_special_payments_are_not_salary_cycles(self):
+        self.configure_budget_plan()
+        for label in ("13. Gehalt", "Weihnachtsgeld", "Weihnachtsgeld Gehalt", "Urlaubsgeld"):
+            for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+                self.add_income(index, created_at=f"{month}-01 09:00:00", label=label)
+            inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+            self.assertEqual(
+                inspector["post_income_shadow"]["cycles_detected"],
+                0,
+                label,
+            )
+            self.conn.execute("DELETE FROM app_cash_movements")
+
+    def test_parallel_income_sources_are_not_blindly_merged(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00", label="Gehalt")
+            self.add_income(10 + index, created_at=f"{month}-15 09:00:00", label="Lohn Nebenjob")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        selected_labels = [event["label"] for event in inspector["post_income_shadow"]["income_events"]]
+        self.assertEqual(selected_labels, ["Gehalt", "Gehalt", "Gehalt"])
+
+    def test_single_large_purchase_per_cycle_is_not_a_pattern(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(100 + index, "Amazon", "Shopping", 500, f"{month}-02 12:00:00")
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(200 + index, "Restaurant", "Restaurants", 10, f"2026-05-{day:02d} 12:00:00")
+        self.assertFalse(any(
+            pattern["pattern_type"].startswith("post_income_")
+            and pattern["eligible_for_coach"]
+            for pattern in self.patterns()
+        ))
+
+    def test_multiple_discretionary_purchases_per_cycle_can_form_a_pattern(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(300 + index, "Amazon", "Shopping", 180, f"{month}-02 12:00:00")
+            self.add_expense(400 + index, "Zalando", "Shopping", 180, f"{month}-03 12:00:00")
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(500 + index, "Restaurant", "Restaurants", 10, f"2026-05-{day:02d} 12:00:00")
+        self.assertTrue(self.of_type("post_income_discretionary_spike"))
+
+    def test_single_cycle_outlier_does_not_form_stable_pattern(self):
+        self.configure_budget_plan()
+        for index, (month, amount) in enumerate(
+            (("2026-06", 80), ("2026-07", 85), ("2026-08", 310)),
+            1,
+        ):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(600 + index, "Amazon", "Shopping", amount, f"{month}-02 12:00:00")
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(700 + index, "Restaurant", "Restaurants", 10, f"2026-05-{day:02d} 12:00:00")
+        self.assertFalse(self.of_type("post_income_discretionary_spike"))
+
+    def test_missing_income_event_date_is_fail_closed(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+        self.conn.execute("UPDATE app_cash_movements SET occurred_at=NULL")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertEqual(inspector["post_income_shadow"]["cycles_detected"], 0)
+
+    def test_backfill_uses_event_date_not_import_time(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-20 09:00:00")
+            self.conn.execute(
+                "UPDATE app_cash_movements SET occurred_at=? WHERE id=?",
+                (f"{month}-01 09:00:00", index),
+            )
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertTrue(inspector["post_income_shadow"]["income_events"][0]["occurred_at"].startswith("2026-06-01"))
+
+    def test_small_post_income_spikes_are_conservatively_suppressed(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(800 + index, "Amazon", "Shopping", 20, f"{month}-02 12:00:00")
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(900 + index, "Restaurant", "Restaurants", 1, f"2026-05-{day:02d} 12:00:00")
+        self.assertFalse(any(
+            pattern["pattern_type"].startswith("post_income_")
+            for pattern in self.patterns()
+        ))
+
+    def test_unlabeled_income_amount_is_not_promoted_to_salary(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00", label="")
+        self.assertFalse(self.of_type("post_income_discretionary_spike"))
+
+    def test_essentials_after_income_are_not_behavioral_coach_evidence(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(
+                300 + index,
+                "Lidl",
+                "Lebensmittel",
+                300,
+                f"{month}-02 12:00:00",
+            )
+        self.assertFalse(any(
+            pattern["pattern_type"].startswith("post_income_")
+            and pattern["eligible_for_coach"]
+            for pattern in self.patterns()
+        ))
+
+    def test_post_income_budget_pressure_requires_negative_total_budget(self):
+        self._salary_cycle_fixture(post_amount=200)
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_financial_snapshot(month)
+        self.add_budget("Restaurants", "2026-09", 50)
+        self.assertFalse(self.of_type("post_income_budget_pressure"))
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_expense(
+                400 + index,
+                "Haushalt",
+                "Sonstiges",
+                2200,
+                f"{month}-10 12:00:00",
+            )
+        pressure = self.of_type("post_income_budget_pressure")
+        self.assertEqual(len(pressure), 1)
+        self.assertEqual(pressure[0]["observations"]["budget_pressure_months"], ["2026-06", "2026-07", "2026-08"])
+        self.assertFalse(self.of_type("post_income_discretionary_spike")[0]["eligible_for_coach"])
+
+    def test_category_budget_overrun_alone_does_not_create_post_income_budget_pressure(self):
+        self._salary_cycle_fixture()
+        self.add_budget("Restaurants", "2026-06", 1)
+        self.add_budget("Restaurants", "2026-07", 1)
+        self.add_budget("Restaurants", "2026-08", 1)
+        self.assertFalse(self.of_type("post_income_budget_pressure"))
+
+    def test_incomplete_latest_salary_window_suppresses_pattern(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-07", "2026-08", "2026-09"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(500 + index, "Restaurant", "Restaurants", 200, f"{month}-02 12:00:00")
+        self.assertFalse(self.of_type("post_income_discretionary_spike"))
+        inspector = build_shadow_inspector(self.conn, 1, now=datetime(2026, 9, 5, 12, 0, 0))
+        self.assertEqual(inspector["post_income_shadow"]["eligibility_reason"], "post_income_window_incomplete")
+
+    def test_shadow_inspector_exposes_salary_metadata_without_affecting_coach_v3(self):
+        self._salary_cycle_fixture()
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        shadow = inspector["post_income_shadow"]
+        self.assertFalse(inspector["coach_v3_affected"])
+        self.assertEqual(shadow["cycles_used"], 3)
+        self.assertEqual(len(shadow["income_events"]), 3)
+        self.assertIn("overall_budget_status", shadow)
+        self.assertIn("baseline", shadow)
+
+    def test_two_income_events_in_one_month_do_not_create_a_cycle(self):
+        self.configure_budget_plan()
+        for index, created_at in enumerate((
+            "2026-06-01 09:00:00",
+            "2026-06-15 09:00:00",
+            "2026-07-01 09:00:00",
+            "2026-08-01 09:00:00",
+        ), 1):
+            self.add_income(index, created_at=created_at)
+        self.assertFalse(self.of_type("post_income_discretionary_spike"))
 
 
 if __name__ == "__main__":

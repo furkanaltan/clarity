@@ -27,6 +27,15 @@ MAX_SINGLE_EXPENSE_SHARE = 0.75
 MIN_REPEATED_TRANSACTIONS = 3
 MIN_WEEKDAY_OCCURRENCES = 4
 MIN_RELEVANT_TOTAL_EUR = 30.0
+SALARY_HISTORY_MONTHS = 6
+MIN_SALARY_CYCLES = 3
+MIN_SALARY_GAP_DAYS = 20
+MAX_SALARY_GAP_DAYS = 45
+SALARY_WINDOW_DAYS = (3, 7)
+MIN_POST_INCOME_DELTA_EUR = 30.0
+MIN_POST_INCOME_RELATIVE_CHANGE = 0.25
+MIN_BASELINE_DATES = 3
+MIN_POST_INCOME_ITEMS_PER_CYCLE = 2
 LATE_NIGHT_START = time(20, 30)
 LATE_NIGHT_END = time(0, 30)
 RELIABLE_TIMESTAMP_COLUMNS = ("occurred_at", "transaction_at", "transacted_at", "booking_at")
@@ -92,6 +101,53 @@ DISCRETIONARY_CATEGORY_HINTS = (
     "entertainment",
     "stream",
     "abo",
+)
+SALARY_LABEL_HINTS = (
+    "gehalt",
+    "salary",
+    "lohn",
+    "payroll",
+    "arbeitsentgelt",
+    "nettolohn",
+)
+NON_SALARY_INCOME_HINTS = (
+    "13. gehalt",
+    "13gehalt",
+    "weihnachtsgeld",
+    "urlaubsgeld",
+    "jahresbonus",
+    "bonus",
+    "praemie",
+    "sonderzahlung",
+    "gratifikation",
+    "einmalzahlung",
+    "tantieme",
+    "dividend",
+    "kredit",
+    "darlehen",
+    "loan",
+    "refund",
+    "erstattung",
+    "ruckerstattung",
+    "rueckerstattung",
+    "gutschrift",
+    "dividende",
+    "transfer",
+    "umbuch",
+    "investment",
+    "verkauf",
+)
+AMBIGUOUS_SALARY_SOURCE_HINTS = (
+    "nebenjob",
+    "minijob",
+    "partner",
+    "privat",
+    "familie",
+    "freund",
+    "unterhalt",
+    "kindergeld",
+    "rente",
+    "pension",
 )
 
 
@@ -735,6 +791,508 @@ def _load_consumption_items(
     return items
 
 
+def _load_salary_income_events(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Load only canonical, plausibly recurring salary movements.
+
+    ``app_cash_movements.kind='income'`` is the canonical source. A generic
+    credit is not enough: it needs an explicit salary label, and known one-off
+    labels are excluded. A planned amount is only context, never a classifier.
+    """
+    columns = _columns(conn, "app_cash_movements")
+    if not {"id", "user_id", "kind", "amount"}.issubset(columns):
+        return []
+    # Import/creation time is not a safe substitute for the fachliche booking
+    # date. Without a reliable event timestamp, salary-cycle shadow analysis is
+    # intentionally disabled rather than inventing a timing story.
+    timestamp_column = next(
+        (name for name in RELIABLE_TIMESTAMP_COLUMNS if name in columns),
+        None,
+    )
+    if timestamp_column is None:
+        return []
+    label_expression = "label" if "label" in columns else "'' AS label"
+    history_start = _shift_month(
+        now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        -SALARY_HISTORY_MONTHS,
+    )
+    event_time_expression = timestamp_column
+    rows = conn.execute(
+        f"""SELECT id, amount, {label_expression}, {event_time_expression} AS event_time
+               FROM app_cash_movements
+              WHERE user_id=? AND kind='income' AND amount > 0
+                AND {event_time_expression} >= ? AND {event_time_expression} <= ?
+              ORDER BY datetime({event_time_expression}), id""",
+        (user_id, _iso(history_start), _iso(now)),
+    ).fetchall()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        occurred_at = _parse_timestamp(row["event_time"])
+        if occurred_at is None:
+            continue
+        label = str(row["label"] or "").strip()
+        label_key = _key(label)
+        if _contains_hint(label_key, NON_SALARY_INCOME_HINTS):
+            continue
+        if _contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
+            continue
+        amount = round(float(row["amount"] or 0), 2)
+        explicit_salary = _contains_hint(label_key, SALARY_LABEL_HINTS)
+        if not explicit_salary:
+            continue
+        reason = "explicit_salary_label"
+        period_key = occurred_at.strftime("%Y-%m-%d")
+        event_id = _stable_id("salary_cycle", [str(row["id"])], period_key)
+        events.append({
+            "event_id": event_id,
+            "source_id": str(row["id"]),
+            "occurred_at": occurred_at,
+            "amount": amount,
+            "label": label,
+            "classification_reason": reason,
+            "source_key": label_key,
+        })
+    return events
+
+
+def _salary_cycles(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Return one conservative monthly salary chain, never inferred credits."""
+    if not events:
+        return []
+    source_keys = {event.get("source_key") for event in events}
+    if len(source_keys) != 1:
+        return []
+    clusters: list[list[dict[str, Any]]] = []
+    for event in events:
+        if clusters and (event["occurred_at"] - clusters[-1][-1]["occurred_at"]).days <= 7:
+            clusters[-1].append(event)
+        else:
+            clusters.append([event])
+    # Multiple salary-like credits in one immediate window are ambiguous
+    # (bonus, duplicate booking, correction) and are not a cycle.
+    deduplicated = [cluster[0] for cluster in clusters if len(cluster) == 1]
+    if not deduplicated:
+        return []
+
+    chains: list[list[dict[str, Any]]] = []
+    for event in deduplicated:
+        if not chains:
+            chains.append([event])
+            continue
+        gap = (event["occurred_at"] - chains[-1][-1]["occurred_at"]).days
+        if MIN_SALARY_GAP_DAYS <= gap <= MAX_SALARY_GAP_DAYS:
+            chains[-1].append(event)
+        else:
+            chains.append([event])
+    chain = max(chains, key=lambda candidate: (len(candidate), candidate[-1]["occurred_at"]))
+    cycles: list[dict[str, Any]] = []
+    for index, event in enumerate(chain):
+        next_event = chain[index + 1] if index + 1 < len(chain) else None
+        window_7_end = event["occurred_at"] + timedelta(days=7)
+        cycles.append({
+            **event,
+            "window_3_end": _iso(event["occurred_at"] + timedelta(days=3)),
+            "window_7_end": _iso(window_7_end),
+            "window_7_complete": window_7_end <= now and (
+                next_event is None
+                or next_event["occurred_at"] > window_7_end
+            ),
+        })
+    return cycles
+
+
+def _window_items(
+    items: list[dict[str, Any]],
+    cycle: dict[str, Any],
+    window_days: int,
+) -> list[dict[str, Any]]:
+    start = cycle["occurred_at"]
+    end = start + timedelta(days=window_days)
+    return [
+        item for item in items
+        if _merchant_class(item["merchant"], item["category"]) == "discretionary"
+        and timedelta(0) <= item["occurred_at"] - start <= end - start
+    ]
+
+
+def _salary_window_context(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "event_id": cycle["event_id"],
+            "source_id": cycle["source_id"],
+            "occurred_at": _iso(cycle["occurred_at"]),
+            "amount": cycle["amount"],
+            "label": cycle["label"],
+            "classification_reason": cycle["classification_reason"],
+            "window_3_end": cycle["window_3_end"],
+            "window_7_end": cycle["window_7_end"],
+            "window_7_complete": cycle["window_7_complete"],
+        }
+        for cycle in cycles
+    ]
+
+
+def _overall_budget_status(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    items: list[dict[str, Any]],
+    month_keys: list[str],
+    current_month: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for month in month_keys:
+        spent = round(sum(
+            float(item["amount"])
+            for item in items
+            if item["occurred_at"].strftime("%Y-%m") == month
+        ), 2)
+        plan: dict[str, Any] | None = None
+        snapshot_columns = _columns(conn, "monthly_financial_snapshots")
+        if {"user_id", "report_month", "income", "fixed_costs"}.issubset(snapshot_columns):
+            snapshot_fields = [
+                name if name in snapshot_columns else f"0 AS {name}"
+                for name in ("income", "other_income", "fixed_costs", "etf_savings", "cash_savings")
+            ]
+            snapshot = conn.execute(
+                f"""SELECT {', '.join(snapshot_fields)}
+                     FROM monthly_financial_snapshots
+                    WHERE user_id=? AND report_month=?""",
+                (user_id, month),
+            ).fetchone()
+            if snapshot and snapshot["income"] is not None and snapshot["fixed_costs"] is not None:
+                plan = {
+                    "income": float(snapshot["income"] or 0) + float(snapshot["other_income"] or 0),
+                    "fixed": float(snapshot["fixed_costs"] or 0),
+                    "savings": float(snapshot["etf_savings"] or 0) + float(snapshot["cash_savings"] or 0),
+                    "source": "monthly_financial_snapshot",
+                }
+        if plan is None and month == current_month:
+            user_columns = _columns(conn, "users")
+            if {"user_id", "income", "fixed_costs"}.issubset(user_columns):
+                user = conn.execute(
+                    "SELECT * FROM users WHERE user_id=?",
+                    (user_id,),
+                ).fetchone()
+                if user and user["income"] is not None and user["fixed_costs"] is not None:
+                    user_keys = set(user.keys())
+                    plan = {
+                        "income": (
+                            float(user["income"] or 0)
+                            + float(user["other_income"] or 0)
+                            if "other_income" in user_keys
+                            else float(user["income"] or 0)
+                        ),
+                        "fixed": float(user["fixed_costs"] or 0),
+                        "savings": sum(
+                            float(user[name] or 0)
+                            for name in ("etf_savings", "cash_savings")
+                            if name in user_keys
+                        ),
+                        "source": "current_canonical_user_plan",
+                    }
+        if plan is None:
+            result[month] = {
+                "status": "unknown",
+                "variable_expenses_eur": spent,
+                "reason": "historical_budget_snapshot_missing",
+            }
+            continue
+        variable_budget = round(plan["income"] - plan["fixed"] - plan["savings"], 2)
+        result[month] = {
+            "status": "under_pressure" if spent > variable_budget else "healthy",
+            "variable_budget_eur": variable_budget,
+            "variable_expenses_eur": spent,
+            "free_remaining_eur": round(variable_budget - spent, 2),
+            "budget_source": plan["source"],
+        }
+    return result
+
+
+def _post_income_patterns(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    events = _load_salary_income_events(conn, user_id, now=now)
+    cycles = _salary_cycles(events, now=now)
+    context: dict[str, Any] = {
+        "minimum_reliable_cycles": MIN_SALARY_CYCLES,
+        "cycles_detected": len(cycles),
+        "cycles_used": 0,
+        "windows": list(SALARY_WINDOW_DAYS),
+        "income_events": _salary_window_context(cycles),
+        "eligibility_reason": None,
+    }
+    if len(cycles) < MIN_SALARY_CYCLES:
+        context["eligibility_reason"] = "minimum_salary_cycles_not_met"
+        return [], context
+    usable_cycles = [cycle for cycle in cycles if cycle["window_7_complete"]]
+    context["cycles_used"] = len(usable_cycles)
+    if len(usable_cycles) < MIN_SALARY_CYCLES:
+        context["eligibility_reason"] = "post_income_window_incomplete"
+        return [], context
+
+    first_cycle_month = min(cycle["occurred_at"] for cycle in usable_cycles).replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    history_start = _shift_month(first_cycle_month, -SALARY_HISTORY_MONTHS)
+    history_end = now
+    items = _load_consumption_items(
+        conn,
+        user_id,
+        period_start=history_start,
+        period_end=history_end,
+    )
+    salary_windows = [
+        (cycle["occurred_at"], cycle["occurred_at"] + timedelta(days=7))
+        for cycle in usable_cycles
+    ]
+    baseline_items = [
+        item for item in items
+        if _merchant_class(item["merchant"], item["category"]) == "discretionary"
+        and not any(start <= item["occurred_at"] <= end for start, end in salary_windows)
+    ]
+    baseline_dates = {item["occurred_at"].date() for item in baseline_items}
+    context["baseline"] = {
+        "available": len(baseline_dates) >= MIN_BASELINE_DATES,
+        "observed_dates": len(baseline_dates),
+        "source": "discretionary_transactions_outside_post_income_windows",
+    }
+    if len(baseline_dates) < MIN_BASELINE_DATES:
+        context["eligibility_reason"] = "insufficient_personal_baseline"
+        return [], context
+
+    patterns: list[dict[str, Any]] = []
+
+    def metrics(
+        post_rows: list[dict[str, Any]],
+        baseline_rows: list[dict[str, Any]],
+        span_days: int,
+        cycle_count: int,
+    ) -> tuple[float, float, float, float] | None:
+        baseline_dates_local = {row["occurred_at"].date() for row in baseline_rows}
+        if len(baseline_dates_local) < MIN_BASELINE_DATES:
+            return None
+        post_average = sum(float(row["amount"]) for row in post_rows) / cycle_count
+        daily_baseline = sum(float(row["amount"]) for row in baseline_rows) / len(baseline_dates_local)
+        baseline_average = daily_baseline * span_days
+        delta = round(post_average - baseline_average, 2)
+        relative = round(delta / max(baseline_average, 1.0), 3)
+        return round(post_average, 2), round(baseline_average, 2), delta, relative
+
+    def evaluate_window(
+        window_days: int,
+        *,
+        category_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        rows_by_cycle = []
+        for cycle in usable_cycles:
+            rows = _window_items(items, cycle, window_days)
+            if category_key is not None:
+                rows = [row for row in rows if row["category_key"] == category_key]
+            quality = _month_quality(rows)
+            if (
+                len(rows) >= MIN_POST_INCOME_ITEMS_PER_CYCLE
+                and not quality["single_expense_dominated"]
+            ):
+                rows_by_cycle.append((cycle, rows))
+        if len(rows_by_cycle) < MIN_SALARY_CYCLES:
+            return None
+        post_rows = [row for _, rows in rows_by_cycle for row in rows]
+        baseline_rows = (
+            baseline_items
+            if category_key is None
+            else [row for row in baseline_items if row["category_key"] == category_key]
+        )
+        result = metrics(post_rows, baseline_rows, window_days + 1, len(rows_by_cycle))
+        if result is None or result[2] < MIN_POST_INCOME_DELTA_EUR or result[3] < MIN_POST_INCOME_RELATIVE_CHANGE:
+            return None
+        return {
+            "window_days": window_days,
+            "rows_by_cycle": rows_by_cycle,
+            "post_rows": post_rows,
+            "metrics": result,
+        }
+
+    total_evaluations = [
+        evaluation
+        for window_days in SALARY_WINDOW_DAYS
+        if (evaluation := evaluate_window(window_days)) is not None
+    ]
+    if total_evaluations:
+        selected_total = max(
+            total_evaluations,
+            key=lambda evaluation: (
+                evaluation["metrics"][3],
+                evaluation["metrics"][2],
+                -evaluation["window_days"],
+            ),
+        )
+        total_by_cycle = selected_total["rows_by_cycle"]
+        total_post_items = selected_total["post_rows"]
+        post_average, baseline_average, delta, relative = selected_total["metrics"]
+        total_pattern = _pattern(
+            pattern_type="post_income_discretionary_spike",
+            items=total_post_items,
+            period_start=min(cycle["occurred_at"] for cycle, _ in total_by_cycle),
+            period_end=min(now, max(cycle["occurred_at"] + timedelta(days=selected_total["window_days"]) for cycle, _ in total_by_cycle)),
+            category=None,
+            merchant=None,
+            observations={
+                "income_event_ids": [cycle["event_id"] for cycle, _ in total_by_cycle],
+                "salary_cycles": len(total_by_cycle),
+                "window_days": selected_total["window_days"],
+                "window_definition": "income_timestamp_through_income_timestamp_plus_window_days",
+                "available_windows": [evaluation["window_days"] for evaluation in total_evaluations],
+                "post_income_average_eur": post_average,
+                "personal_baseline_average_eur": baseline_average,
+                "absolute_delta_eur": delta,
+                "relative_delta": relative,
+                "temporal_correlation_only": True,
+            },
+            pattern_strength="high" if relative >= 0.5 else "medium",
+            financial_relevance="high" if delta >= 100 else "medium",
+            relevance_reason="Diskretionaere Ausgaben liegen nach mehreren Gehaltseingaengen ueber der persoenlichen Basislinie; das belegt eine zeitliche Korrelation, keine Kausalitaet.",
+            eligible_for_coach=True,
+            eligible_for_report=True,
+            stable_period_key="salary-cycle:total:" + ",".join(cycle["event_id"] for cycle, _ in total_by_cycle),
+        )
+        patterns.append(total_pattern)
+    else:
+        total_pattern = None
+
+    category_keys = {
+        row["category_key"]
+        for cycle in usable_cycles
+        for window_days in SALARY_WINDOW_DAYS
+        for row in _window_items(items, cycle, window_days)
+    }
+    for category_key in sorted(category_keys):
+        category_evaluations = [
+            evaluation
+            for window_days in SALARY_WINDOW_DAYS
+            if (evaluation := evaluate_window(window_days, category_key=category_key)) is not None
+        ]
+        if not category_evaluations:
+            continue
+        selected_category = max(
+            category_evaluations,
+            key=lambda evaluation: (
+                evaluation["metrics"][3],
+                evaluation["metrics"][2],
+                -evaluation["window_days"],
+            ),
+        )
+        rows_by_cycle = selected_category["rows_by_cycle"]
+        category_post = selected_category["post_rows"]
+        post_average, baseline_average, delta, relative = selected_category["metrics"]
+        category = Counter(row["category"] for row in category_post).most_common(1)[0][0]
+        patterns.append(_pattern(
+            pattern_type="post_income_category_spike",
+            items=category_post,
+            period_start=min(cycle["occurred_at"] for cycle, _ in rows_by_cycle),
+            period_end=min(now, max(cycle["occurred_at"] + timedelta(days=selected_category["window_days"]) for cycle, _ in rows_by_cycle)),
+            category=category,
+            merchant=None,
+            observations={
+                "income_event_ids": [cycle["event_id"] for cycle, _ in rows_by_cycle],
+                "salary_cycles": len(rows_by_cycle),
+                "window_days": selected_category["window_days"],
+                "available_windows": [evaluation["window_days"] for evaluation in category_evaluations],
+                "post_income_average_eur": post_average,
+                "personal_baseline_average_eur": baseline_average,
+                "absolute_delta_eur": delta,
+                "relative_delta": relative,
+                "temporal_correlation_only": True,
+            },
+            pattern_strength="high" if relative >= 0.5 else "medium",
+            financial_relevance="high" if delta >= 100 else "medium",
+            relevance_reason="Diese diskretionaere Kategorie liegt nach mehreren Gehaltseingaengen ueber ihrer persoenlichen Basislinie; das belegt keine Ursache.",
+            eligible_for_coach=True,
+            eligible_for_report=True,
+            stable_period_key="salary-cycle:category:" + category_key + ":" + ",".join(cycle["event_id"] for cycle, _ in rows_by_cycle),
+        ))
+
+    pattern_month_keys = (
+        sorted({cycle["occurred_at"].strftime("%Y-%m") for cycle, _ in total_by_cycle})
+        if total_pattern
+        else []
+    )
+    month_keys = sorted({cycle["occurred_at"].strftime("%Y-%m") for cycle in usable_cycles})
+    budget_status = _overall_budget_status(
+        conn,
+        user_id,
+        items=items,
+        month_keys=month_keys,
+        current_month=now.strftime("%Y-%m"),
+    )
+    context["overall_budget_status"] = budget_status
+    budget_pressure_months = [
+        month for month, status in budget_status.items()
+        if status.get("status") == "under_pressure" and month in pattern_month_keys
+    ]
+    if total_pattern and budget_pressure_months:
+        component_patterns = [
+            total_pattern,
+            *[
+                pattern for pattern in patterns
+                if pattern["pattern_type"] == "post_income_category_spike"
+            ],
+        ]
+        component_ids = [pattern["pattern_id"] for pattern in component_patterns]
+        pressure = _pattern(
+            pattern_type="post_income_budget_pressure",
+            items=total_post_items,
+            period_start=min(cycle["occurred_at"] for cycle, _ in total_by_cycle),
+            period_end=min(
+                now,
+                max(
+                    cycle["occurred_at"] + timedelta(days=total_pattern["observations"]["window_days"])
+                    for cycle, _ in total_by_cycle
+                ),
+            ),
+            category=None,
+            merchant=None,
+            observations={
+                "component_pattern_ids": component_ids,
+                "budget_status_by_month": budget_status,
+                "budget_pressure_months": budget_pressure_months,
+                "income_event_ids": [cycle["event_id"] for cycle, _ in total_by_cycle],
+                "temporal_correlation_only": True,
+            },
+            pattern_strength="high",
+            financial_relevance="high",
+            relevance_reason="Post-Income-Ausgabenmuster trifft auf belegten negativen Gesamtbudgetstatus; eine Kausalitaet wird nicht behauptet.",
+            eligible_for_coach=True,
+            eligible_for_report=True,
+            stable_period_key="salary-cycle:budget-pressure:" + ",".join(cycle["event_id"] for cycle, _ in total_by_cycle),
+            related_pattern_ids=component_ids,
+        )
+        for component in component_patterns:
+            component["eligible_for_coach"] = False
+            component["eligible_for_report"] = False
+            component["superseded_by_pattern_id"] = pressure["pattern_id"]
+        patterns.append(pressure)
+
+    if not patterns:
+        context["eligibility_reason"] = context.get("eligibility_reason") or "no_threshold_reached"
+    return patterns, context
+
+
 def _category_budget_pressures(
     conn: sqlite3.Connection,
     user_id: int,
@@ -943,6 +1501,11 @@ def detect_behavior_patterns(
     historical_patterns = _historical_category_patterns(conn, user_id, now=now)
     patterns.extend(historical_patterns)
 
+    # Phase 2B stays shadow-only: salary-cycle evidence is appended to the
+    # existing inspector stream and never enters Coach V3 prioritization.
+    post_income_patterns, _ = _post_income_patterns(conn, user_id, now=now)
+    patterns.extend(post_income_patterns)
+
     # A multi-month discretionary pattern supersedes the current one-month
     # pressure so the shadow inspector exposes one coherent explanation.
     historical_combinations = [
@@ -1039,8 +1602,15 @@ def build_shadow_inspector(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Small read-only inspector payload for authorized internal tooling."""
+    effective_now = (now or datetime.now()).replace(tzinfo=None)
+    _, post_income_context = _post_income_patterns(
+        conn,
+        user_id,
+        now=effective_now,
+    )
     return {
         "mode": "shadow",
         "coach_v3_affected": False,
-        "patterns": detect_behavior_patterns(conn, user_id, now=now),
+        "patterns": detect_behavior_patterns(conn, user_id, now=effective_now),
+        "post_income_shadow": post_income_context,
     }
