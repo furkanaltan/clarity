@@ -532,6 +532,57 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         )
         self.assertEqual(self.patterns(), [])
 
+    def test_transfer_with_later_card_reference_stays_out_of_shadow_inspector(self):
+        for index, day in enumerate((16, 17, 18), 1):
+            self.add_expense(index, "Amazon", "Shopping", 500, f"2026-09-{day:02d} 21:00:00")
+            self.conn.execute(
+                "INSERT INTO app_cash_movements "
+                "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+                (index * 2 - 1, 1, "transfer", 500, index, f"2026-09-{day:02d} 21:00:00"),
+            )
+            self.conn.execute(
+                "INSERT INTO app_cash_movements "
+                "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+                (index * 2, 1, "card", 500, index, f"2026-09-{day:02d} 21:01:00"),
+            )
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertFalse(any(
+            pattern["pattern_type"] in {
+                "late_night_discretionary_spending",
+                "merchant_weekday_pattern",
+            }
+            and pattern["eligible_for_coach"]
+            for pattern in inspector["patterns"]
+        ))
+        self.assertIsNone(inspector["primary_coach_insight"])
+
+    def test_investment_with_later_card_reference_stays_out_of_shadow_inspector(self):
+        for index, day in enumerate((16, 17, 18), 1):
+            self.add_expense(index, "Broker", "Shopping", 500, f"2026-09-{day:02d} 21:00:00")
+            self.conn.execute(
+                "INSERT INTO app_cash_movements "
+                "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+                (index * 2 - 1, 1, "investment", 500, index, f"2026-09-{day:02d} 21:00:00"),
+            )
+            self.conn.execute(
+                "INSERT INTO app_cash_movements "
+                "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+                (index * 2, 1, "card", 500, index, f"2026-09-{day:02d} 21:01:00"),
+            )
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertFalse(any(pattern["eligible_for_coach"] for pattern in inspector["patterns"]))
+
+    def test_unknown_explicit_movement_kind_fails_closed(self):
+        for index, day in enumerate((16, 17, 18), 1):
+            self.add_expense(index, "Amazon", "Shopping", 500, f"2026-09-{day:02d} 21:00:00")
+            self.conn.execute(
+                "INSERT INTO app_cash_movements "
+                "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
+                (index, 1, "mystery", 500, index, f"2026-09-{day:02d} 21:00:00"),
+            )
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertFalse(any(pattern["eligible_for_coach"] for pattern in inspector["patterns"]))
+
     def test_investment_movement_is_not_consumption(self):
         self.conn.execute(
             """CREATE TABLE investment_events (
@@ -1389,6 +1440,40 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(insight["suppression_reason"], "overall_budget_status_unknown")
         self.assertFalse(insight["coach_eligible"])
         self.assertFalse(insight["primary_coach_insight"])
+
+    def test_current_budget_uses_full_calendar_month_on_october_31(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-10", 100)
+        self.add_expense(1, "Fruehe Ausgabe", "Sonstiges", 1900, "2026-10-01 09:00:00")
+        self.add_expense(2, "Sonstiges", "Sonstiges", 228, "2026-10-15 12:00:00")
+        inspector = build_shadow_inspector(
+            self.conn,
+            1,
+            now=datetime(2026, 10, 31, 12, 0, 0),
+        )
+        insight = next(
+            insight for insight in inspector["insight_candidates"]
+            if insight["insight_type"] == "budget_attention"
+            and insight["primary_pattern_id"].startswith("shadow:category_budget_pressure")
+        )
+        self.assertEqual(insight["evidence_metrics"]["amount_spent"], 2128.0)
+        self.assertEqual(insight["evidence_metrics"]["overall_budget_status"], "under_pressure")
+        self.assertTrue(insight["coach_eligible"])
+
+    def test_current_budget_resets_at_november_first(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-11", 100)
+        self.add_expense(1, "October", "Sonstiges", 1900, "2026-10-31 23:00:00")
+        self.add_expense(2, "November", "Sonstiges", 10, "2026-11-01 09:00:00")
+        inspector = build_shadow_inspector(
+            self.conn,
+            1,
+            now=datetime(2026, 11, 1, 12, 0, 0),
+        )
+        self.assertFalse(any(
+            insight["insight_type"] == "budget_attention"
+            for insight in inspector["insight_candidates"]
+        ))
 
     def test_historical_repeated_category_evidence_remains_report_separate(self):
         for month in ("2026-06", "2026-07", "2026-08"):

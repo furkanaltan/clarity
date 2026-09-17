@@ -16,6 +16,11 @@ from collections import Counter, defaultdict
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from rove_expense_domain import (
+    NON_CONSUMPTION_MOVEMENTS,
+    canonical_expense_movement_kinds,
+)
+
 
 DEFAULT_WINDOW_DAYS = 30
 HISTORICAL_MONTHS = 6
@@ -1494,27 +1499,20 @@ def _load_consumption_items(
                  WHERE user_id=?"""
     rows = conn.execute(query, (user_id,)).fetchall()
 
-    movement_by_expense: dict[int, str] = {}
-    movement_columns = _columns(conn, "app_cash_movements")
-    if {"expense_id", "kind", "user_id"}.issubset(movement_columns):
-        for movement in conn.execute(
-            """SELECT expense_id, kind FROM app_cash_movements
-                WHERE user_id=? AND expense_id IS NOT NULL
-                ORDER BY id""",
-            (user_id,),
-        ).fetchall():
-            movement_by_expense[int(movement["expense_id"])] = str(
-                movement["kind"] or ""
-            ).strip().casefold()
+    movement_by_expense = canonical_expense_movement_kinds(conn, user_id)
 
     items: list[dict[str, Any]] = []
     for row in rows:
         occurred_at = _parse_timestamp(row["event_time"])
         if occurred_at is None or not (period_start <= occurred_at <= period_end):
             continue
-        movement_kind = movement_by_expense.get(int(row["id"]), "")
-        if movement_kind in NON_CONSUMPTION_MOVEMENTS:
-            continue
+        movement_kind = movement_by_expense.get(int(row["id"]))
+        if movement_kind is not None:
+            if movement_kind in NON_CONSUMPTION_MOVEMENTS:
+                continue
+            # V4 must not guess when an explicit movement kind is unknown.
+            if movement_kind not in {"card", "payment"}:
+                continue
         amount = float(row["amount"] or 0)
         if amount <= 0:
             continue
@@ -2729,12 +2727,30 @@ def detect_behavior_patterns(
             stable_period_key=stable_window_key,
         ))
 
-    pressures = _category_budget_pressures(conn, user_id, now=now, items=items)
+    budget_period_start = now.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    budget_items = _load_consumption_items(
+        conn,
+        user_id,
+        period_start=budget_period_start,
+        period_end=now,
+    )
+    pressures = _category_budget_pressures(
+        conn,
+        user_id,
+        now=now,
+        items=budget_items,
+    )
     patterns.extend(pressures)
     overall_budget = _overall_budget_status(
         conn,
         user_id,
-        items=items,
+        items=budget_items,
         month_keys=[now.strftime("%Y-%m")],
         current_month=now.strftime("%Y-%m"),
     ).get(now.strftime("%Y-%m"), {"status": "unknown"})

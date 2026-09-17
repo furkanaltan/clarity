@@ -26,6 +26,30 @@ NON_CONSUMPTION_MOVEMENTS = {
 }
 
 
+def canonical_expense_movement_kinds(
+    conn: sqlite3.Connection,
+    user_id: int,
+) -> dict[int, str]:
+    """Return the user-scoped, sticky movement classification for expenses."""
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_cash_movements'"
+    ).fetchone()
+    if not table_exists:
+        return {}
+    movements: dict[int, str] = {}
+    for movement in conn.execute(
+        """SELECT expense_id, kind FROM app_cash_movements
+            WHERE user_id=? AND expense_id IS NOT NULL ORDER BY id""",
+        (user_id,),
+    ):
+        expense_id = int(movement["expense_id"])
+        kind = str(movement["kind"] or "").strip().casefold()
+        # An explicit non-consumption movement wins over later card/payment links.
+        if expense_id not in movements or kind in NON_CONSUMPTION_MOVEMENTS:
+            movements[expense_id] = kind
+    return movements
+
+
 def classified_expenses(conn: sqlite3.Connection, user_id: int, month_key: str,
                         cutoff_date: str | None = None) -> list[dict]:
     """Classify concrete payments by their user-scoped movement, never by category."""
@@ -35,16 +59,7 @@ def classified_expenses(conn: sqlite3.Connection, user_id: int, month_key: str,
            AND (? IS NULL OR DATE(created_at) <= DATE(?)) ORDER BY created_at DESC""",
         (user_id, month_key, cutoff_date, cutoff_date),
     ).fetchall()
-    movements = {}
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_cash_movements'").fetchone():
-        for movement in conn.execute(
-            "SELECT expense_id, kind FROM app_cash_movements WHERE user_id = ? AND expense_id IS NOT NULL ORDER BY id",
-            (user_id,),
-        ):
-            kind = str(movement["kind"] or "").strip().lower()
-            # Payment/card references must not override an explicit non-consumption reference.
-            if movement["expense_id"] not in movements or kind in NON_CONSUMPTION_MOVEMENTS:
-                movements[movement["expense_id"]] = kind
+    movements = canonical_expense_movement_kinds(conn, user_id)
     result = []
     for row in rows:
         item = dict(row)
