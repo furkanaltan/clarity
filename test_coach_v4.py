@@ -46,7 +46,8 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
                 amount REAL NOT NULL,
                 expense_id INTEGER,
                 created_at TEXT NOT NULL,
-                occurred_at TEXT
+                occurred_at TEXT,
+                label TEXT
             );
             CREATE TABLE category_budgets (
                 user_id INTEGER NOT NULL,
@@ -116,8 +117,8 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
     ) -> None:
         self.conn.execute(
             "INSERT INTO app_cash_movements "
-            "(id,user_id,kind,amount,expense_id,created_at) VALUES (?,?,?,?,?,?)",
-            (movement_id, 1, "income", amount, None, created_at),
+            "(id,user_id,kind,amount,expense_id,created_at,label) VALUES (?,?,?,?,?,?,?)",
+            (movement_id, 1, "income", amount, None, created_at, label),
         )
         self.conn.execute(
             "UPDATE app_cash_movements SET expense_id=NULL WHERE id=?",
@@ -349,7 +350,7 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertFalse(combined[0]["eligible_for_coach"])
 
     def test_historical_slight_category_overrun_stays_low_when_overall_is_healthy(self):
-        for month in ("2026-06", "2026-07", "2026-08"):
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
             self.add_budget("Restaurants", month, 100)
             self.add_financial_snapshot(month)
         self.add_month(1, "2026-06", (55, 55))
@@ -368,7 +369,7 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         )
 
     def test_strong_category_and_repeated_overall_pressure_can_be_high(self):
-        for month in ("2026-06", "2026-07", "2026-08"):
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
             self.add_budget("Restaurants", month, 100)
             self.add_financial_snapshot(month, income=500, fixed_costs=300)
         self.add_month(1, "2026-06", (150, 150))
@@ -1618,6 +1619,129 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         if report_primaries:
             self.assertEqual(inspector["primary_report_insight"], report_primaries[0]["insight_id"])
         self.assertFalse(inspector["coach_v3_affected"])
+
+    def test_mid_month_budget_creation_is_not_applied_to_earlier_history(self):
+        self.conn.execute("ALTER TABLE category_budgets ADD COLUMN created_at TEXT")
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.conn.execute(
+                "INSERT INTO category_budgets VALUES (1,?,?,?,?)",
+                ("Restaurants", 100, month, f"{month}-20 09:00:00"),
+            )
+            self.add_month(index * 10, month, (80, 80))
+        self.assertFalse(self.of_type("category_repeated_over_budget"))
+
+    def test_budget_present_from_month_start_can_be_used_historically(self):
+        self.conn.execute("ALTER TABLE category_budgets ADD COLUMN created_at TEXT")
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.conn.execute(
+                "INSERT INTO category_budgets VALUES (1,?,?,?,?)",
+                ("Restaurants", 100, month, f"{month}-01 00:00:00"),
+            )
+            self.add_month(index * 10, month, (80, 80))
+        self.assertTrue(self.of_type("category_repeated_over_budget"))
+
+    def test_hard_single_outlier_remains_suppressed_after_historical_fusion(self):
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month, income=500, fixed_costs=300)
+            self.add_month(index * 10, month, (300,))
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        composite = next(
+            pattern for pattern in inspector["composite_patterns"]
+            if pattern.get("composite_type") == "repeated_discretionary_budget_pressure"
+        )
+        self.assertFalse(composite["eligible_for_coach"])
+        self.assertEqual(
+            composite["observations"]["hard_quality_exclusion"],
+            "single_outlier",
+        )
+        insight = next(
+            insight for insight in inspector["insight_candidates"]
+            if insight["primary_pattern_id"] == composite["pattern_id"]
+        )
+        self.assertEqual(insight["suppression_reason"], "single_outlier")
+        self.assertFalse(insight["coach_eligible"])
+
+    def test_historical_composite_keeps_category_isolation(self):
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month, income=500, fixed_costs=300)
+            self.add_month(index * 10, month, (150, 150))
+            self.add_expense(
+                100 + int(month[-2:]),
+                "Lidl",
+                "Zubehoer",
+                1,
+                f"{month}-10 12:00:00",
+            )
+        composites = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "repeated_discretionary_budget_pressure"
+            and pattern.get("category") == "Restaurants"
+        ]
+        self.assertEqual(len(composites), 1)
+        self.assertTrue(composites[0]["eligible_for_coach"])
+        self.assertEqual(
+            composites[0]["observations"]["category_kind"],
+            "discretionary",
+        )
+
+    def test_weekday_outlier_does_not_become_behavioral_coaching(self):
+        for expense_id, day, amount in ((1, 6, 1), (2, 13, 1), (3, 20, 500)):
+            self.add_expense(
+                expense_id, "Restaurant", "Restaurants", amount,
+                f"2026-09-{day:02d} 19:00:00",
+            )
+        pattern = self.of_type("merchant_weekday_pattern")[0]
+        self.assertTrue(pattern["observations"]["single_expense_dominated"])
+        self.assertFalse(pattern["eligible_for_coach"])
+        self.assertEqual(pattern["financial_relevance"], "low")
+
+    def test_essential_merchant_classification_survives_historical_category_aggregation(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Shopping", month, 100)
+            self.add_expense(
+                int(month[-2:]), "Lidl", "Shopping", 150,
+                f"{month}-05 12:00:00",
+            )
+        self.assertFalse(any(
+            pattern.get("category") == "Shopping"
+            and pattern.get("eligible_for_coach")
+            for pattern in self.patterns()
+            if pattern["pattern_type"] in {
+                "category_spending_worsening",
+                "category_repeated_over_budget",
+                "repeated_discretionary_budget_pressure",
+            }
+        ))
+
+    def test_salary_insight_requires_reliable_expense_event_dates(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(
+                100 + index, "Amazon", "Shopping", 200,
+                f"{month}-02 12:00:00", transaction_at=None,
+            )
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(
+                200 + index, "Restaurant", "Restaurants", 10,
+                f"2026-05-{day:02d} 12:00:00",
+            )
+        self.assertFalse(any(
+            pattern["pattern_type"].startswith("post_income_")
+            and pattern["eligible_for_coach"]
+            for pattern in self.patterns()
+        ))
+
+    def test_old_unreliable_salary_row_does_not_block_reliable_cycles(self):
+        self._salary_cycle_fixture()
+        self.conn.execute(
+            "INSERT INTO app_cash_movements "
+            "(id,user_id,kind,amount,expense_id,created_at,label,occurred_at) "
+            "VALUES (99,1,'income',3000,NULL,'2026-05-01 09:00:00','Gehalt',NULL)"
+        )
+        self.assertTrue(self.of_type("post_income_discretionary_spike"))
 
     def _add_historical_months(self, values):
         for index, (month, amounts) in enumerate(

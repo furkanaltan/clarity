@@ -160,6 +160,11 @@ AMBIGUOUS_SALARY_SOURCE_HINTS = (
     "kindergeld",
     "rente",
     "pension",
+    "miete",
+    "mietzahlung",
+    "rental",
+    "rent",
+    "vermietung",
 )
 
 SERVICE_CLASS_HINTS = {
@@ -249,6 +254,36 @@ def _iso(value: datetime | None) -> str | None:
 def _contains_hint(value: object, hints: tuple[str, ...]) -> bool:
     text = _key(value)
     return any(hint in text for hint in hints)
+
+
+def _salary_label_key(value: object) -> str:
+    """Normalize salary labels without weakening the general text key."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = text.translate(str.maketrans({
+        "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+    }))
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _salary_contains_hint(value: object, hints: tuple[str, ...]) -> bool:
+    text = _salary_label_key(value)
+    compact = text.replace(" ", "")
+    return any(
+        _salary_label_key(hint) in text
+        or _salary_label_key(hint).replace(" ", "") in compact
+        for hint in hints
+    )
+
+
+def _category_kind(items: list[dict[str, Any]], category: str) -> str:
+    """Keep merchant-level essential classifications in category aggregates."""
+    kinds = {
+        _merchant_class(str(item.get("merchant") or ""), category)
+        for item in items
+    }
+    if "essential" in kinds or "tank" in kinds:
+        return "essential"
+    return _merchant_class("", category)
 
 
 def _merchant_class(merchant: str, category: str) -> str:
@@ -358,17 +393,33 @@ def _historical_budgets(
         return {}
     placeholders = ",".join("?" for _ in month_keys)
     rows = conn.execute(
-        f"""SELECT category, monthly_limit, active_month
+        f"""SELECT category, monthly_limit, active_month,
+                          {"created_at" if "created_at" in columns else "NULL AS created_at"}
                 FROM category_budgets
                WHERE user_id=? AND active_month IN ({placeholders})""",
         (user_id, *month_keys),
     ).fetchall()
+    row_counts = Counter(
+        (_key(row["category"]), str(row["active_month"]))
+        for row in rows
+    )
     budgets: dict[tuple[str, str], float] = {}
     for row in rows:
+        key = (_key(row["category"]), str(row["active_month"]))
+        # Multiple unversioned rows for the same month do not tell us which
+        # limit applied when. Do not reconstruct a historical budget timeline.
+        if row_counts[key] > 1:
+            continue
         limit = float(row["monthly_limit"] or 0)
         if limit <= 0:
             continue
-        budgets[(_key(row["category"]), str(row["active_month"]))] = round(limit, 2)
+        created_at = _parse_timestamp(row["created_at"])
+        month_start = datetime.fromisoformat(f"{key[1]}-01 00:00:00")
+        if created_at and created_at > month_start:
+            # A creation/update timestamp after month start only proves a
+            # partial-month budget; applying it to the full month is unsafe.
+            continue
+        budgets[key] = round(limit, 2)
     return budgets
 
 
@@ -730,6 +781,8 @@ def _insight_suppression_reason(
         return "uncertain_activity_status"
     if observations.get("uncertain_event_time"):
         return "uncertain_event_time"
+    if observations.get("hard_quality_exclusion"):
+        return str(observations["hard_quality_exclusion"])
     if observations.get("single_expense_dominated"):
         return "single_outlier"
     if (
@@ -743,8 +796,6 @@ def _insight_suppression_reason(
             return "overall_budget_status_unknown"
     if _merchant_class("", str(pattern.get("category") or "")) == "essential":
         return "essential_spending"
-    if pattern.get("financial_relevance") == "low":
-        return "low_financial_relevance"
     if (
         insight_type == "budget_attention"
         and observations.get("overall_context_known_and_healthy")
@@ -752,6 +803,8 @@ def _insight_suppression_reason(
         and not observations.get("category_deviation_is_large")
     ):
         return "healthy_overall_budget"
+    if pattern.get("financial_relevance") == "low":
+        return "low_financial_relevance"
     if not pattern.get("eligible_for_coach") and not pattern.get("eligible_for_report"):
         return "insufficient_history"
     return None
@@ -1112,7 +1165,10 @@ def _historical_category_patterns(
 
     for category_key in category_keys:
         category = _category_label(items, category_key)
-        category_kind = _merchant_class("", category)
+        category_items_all = [
+            item for item in items if item["category_key"] == category_key
+        ]
+        category_kind = _category_kind(category_items_all, category)
         budget_months = [
             month_key
             for month_key in month_keys
@@ -1200,6 +1256,8 @@ def _historical_category_patterns(
                     "overall_pressure_months": overall_pressure_months,
                     "overall_context_known_and_healthy": overall_is_known_and_healthy,
                     "large_repeated_category_deviation": large_repeated_category_deviation,
+                    "category_kind": category_kind,
+                    "hard_quality_exclusion": "single_outlier" if dominated else None,
                 },
                 direction="worsening" if len(over_rows) >= 4 else "stable",
                 pattern_strength="high" if len(over_rows) >= 4 else "medium",
@@ -1368,6 +1426,13 @@ def _historical_category_patterns(
     for category_key, repeated in repeated_by_category.items():
         related = [repeated, *trend_by_category.get(category_key, [])]
         category = repeated["category"]
+        composite_category_kind = repeated["observations"].get(
+            "category_kind",
+            _category_kind(
+                [item for item in items if item["category_key"] == category_key],
+                category,
+            ),
+        )
         related_ids = [pattern["pattern_id"] for pattern in related]
         combined_source_ids = sorted({source_id for pattern in related for source_id in pattern["source_ids"]})
         items_by_id = {item["source_id"]: item for item in items}
@@ -1408,8 +1473,23 @@ def _historical_category_patterns(
             or category_deviation_is_large
             or related_worsening
         )
-        composite_relevance = "high" if composite_supported else "medium"
-        composite_eligible = composite_supported and category_kind == "discretionary"
+        composite_hard_exclusion = bool(
+            repeated_observations.get("hard_quality_exclusion")
+            or any(
+                pattern.get("observations", {}).get("hard_quality_exclusion")
+                for pattern in related
+            )
+        )
+        composite_relevance = (
+            "high" if composite_supported and not composite_hard_exclusion
+            else "medium" if composite_supported
+            else "low"
+        )
+        composite_eligible = (
+            composite_supported
+            and composite_category_kind == "discretionary"
+            and not composite_hard_exclusion
+        )
         combined = _historical_pattern(
             pattern_type="repeated_discretionary_budget_pressure",
             items=combined_items,
@@ -1423,13 +1503,17 @@ def _historical_category_patterns(
                 "overall_pressure_months": overall_pressure_months,
                 "overall_context_known_and_healthy": overall_is_known_and_healthy,
                 "category_deviation_is_large": category_deviation_is_large,
+                "category_kind": composite_category_kind,
+                "hard_quality_exclusion": (
+                    "single_outlier" if composite_hard_exclusion else None
+                ),
             },
             direction="worsening",
             pattern_strength="high",
             financial_relevance=composite_relevance,
             relevance_reason=(
                 "Diskretionaere Budgetabweichung ist ueber mehrere Monate belegt."
-                if composite_supported
+                if composite_supported and not composite_hard_exclusion
                 else "Kategorieabweichung ist beobachtbar; der bekannte Gesamtbudgetstatus bleibt historisch gesund."
             ),
             eligible_for_coach=composite_eligible,
@@ -1529,6 +1613,7 @@ def _load_consumption_items(
             "merchant": merchant,
             "merchant_key": _key(merchant),
             "description": description,
+            "event_time_reliable": bool(row["reliable_event_time"]),
             "occurred_at": occurred_at,
             "calendar_time_reliable": bool(row["reliable_event_time"])
             and _timestamp_quality(row["reliable_event_time"]) in {"date_only", "local_clock"},
@@ -1582,13 +1667,14 @@ def _load_salary_income_events(
         if occurred_at is None:
             continue
         label = str(row["label"] or "").strip()
-        label_key = _key(label)
-        if _contains_hint(label_key, NON_SALARY_INCOME_HINTS):
+        label_key = _salary_label_key(label)
+        # Exclusions run before the generic salary hints ("Gehalt", "Lohn").
+        if _salary_contains_hint(label_key, NON_SALARY_INCOME_HINTS):
             continue
-        if _contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
+        if _salary_contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
             continue
         amount = round(float(row["amount"] or 0), 2)
-        explicit_salary = _contains_hint(label_key, SALARY_LABEL_HINTS)
+        explicit_salary = _salary_contains_hint(label_key, SALARY_LABEL_HINTS)
         if not explicit_salary:
             continue
         reason = "explicit_salary_label"
@@ -1787,12 +1873,12 @@ def _unreliable_salary_source_ids(
     ).fetchall()
     unreliable: list[str] = []
     for row in rows:
-        label_key = _key(row["label"])
-        if not _contains_hint(label_key, SALARY_LABEL_HINTS):
+        label_key = _salary_label_key(row["label"])
+        if not _salary_contains_hint(label_key, SALARY_LABEL_HINTS):
             continue
-        if _contains_hint(label_key, NON_SALARY_INCOME_HINTS):
+        if _salary_contains_hint(label_key, NON_SALARY_INCOME_HINTS):
             continue
-        if _contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
+        if _salary_contains_hint(label_key, AMBIGUOUS_SALARY_SOURCE_HINTS):
             continue
         if _parse_timestamp(row["event_time"]) is None:
             unreliable.append(str(row["id"]))
@@ -1806,18 +1892,6 @@ def _post_income_patterns(
     now: datetime,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     unreliable_salary_source_ids = _unreliable_salary_source_ids(conn, user_id)
-    if unreliable_salary_source_ids:
-        return [], {
-            "minimum_reliable_cycles": MIN_SALARY_CYCLES,
-            "cycles_detected": 0,
-            "cycles_used": 0,
-            "windows": list(SALARY_WINDOW_DAYS),
-            "income_events": [],
-            "unreliable_salary_source_count": len(unreliable_salary_source_ids),
-            "unreliable_salary_source_ids": unreliable_salary_source_ids,
-            "eligibility_reason": "uncertain_event_time",
-        }
-
     events = _load_salary_income_events(conn, user_id, now=now)
     cycles = _salary_cycles(events, now=now)
     context: dict[str, Any] = {
@@ -1826,6 +1900,8 @@ def _post_income_patterns(
         "cycles_used": 0,
         "windows": list(SALARY_WINDOW_DAYS),
         "income_events": _salary_window_context(cycles),
+        "unreliable_salary_source_count": len(unreliable_salary_source_ids),
+        "unreliable_salary_source_ids": unreliable_salary_source_ids,
         "eligibility_reason": None,
     }
     if len(cycles) < MIN_SALARY_CYCLES:
@@ -1858,7 +1934,8 @@ def _post_income_patterns(
     ]
     baseline_items = [
         item for item in items
-        if _merchant_class(item["merchant"], item["category"]) == "discretionary"
+        if item.get("event_time_reliable")
+        and _merchant_class(item["merchant"], item["category"]) == "discretionary"
         and not any(start <= item["occurred_at"] <= end for start, end in salary_windows)
     ]
     baseline_dates = {item["occurred_at"].date() for item in baseline_items}
@@ -1899,6 +1976,10 @@ def _post_income_patterns(
             rows = _window_items(items, cycle, window_days)
             if category_key is not None:
                 rows = [row for row in rows if row["category_key"] == category_key]
+            # Both sides of the comparison need a fachliches transaction date;
+            # created_at fallback data must not create a salary story.
+            if not all(row.get("event_time_reliable") for row in rows):
+                continue
             quality = _month_quality(rows)
             if (
                 len(rows) >= MIN_POST_INCOME_ITEMS_PER_CYCLE
@@ -2662,7 +2743,12 @@ def detect_behavior_patterns(
             continue
         merchant = weekday_items[0]["merchant"]
         category = Counter(item["category"] for item in weekday_items).most_common(1)[0][0]
-        relevant = sum(float(item["amount"]) for item in weekday_items) >= MIN_RELEVANT_TOTAL_EUR
+        total = sum(float(item["amount"]) for item in weekday_items)
+        single_expense_dominated = max(
+            (float(item["amount"]) for item in weekday_items),
+            default=0.0,
+        ) / total >= MAX_SINGLE_EXPENSE_SHARE if total else False
+        relevant = total >= MIN_RELEVANT_TOTAL_EUR and not single_expense_dominated
         patterns.append(_pattern(
             pattern_type="merchant_weekday_pattern",
             items=weekday_items,
@@ -2677,10 +2763,15 @@ def detect_behavior_patterns(
                 "occurrence_date_count": len(occurrence_dates),
                 "weekday_opportunities": opportunities,
                 "occurrence_ratio": round(ratio, 3),
+                "single_expense_dominated": single_expense_dominated,
             },
             pattern_strength=_strength(len(weekday_items)),
             financial_relevance="medium" if relevant else "low",
-            relevance_reason="Wiederholung an einem Wochentag ist nur bei ausreichender Evidenz belastbar.",
+            relevance_reason=(
+                "Wiederholung an einem Wochentag ist nur bei ausreichender Evidenz belastbar."
+                if relevant
+                else "Das Wochentagsmuster ist wegen einer dominanten Einzelbuchung nicht belastbar."
+            ),
             eligible_for_coach=relevant and all(
                 item.get("calendar_time_reliable", False) for item in weekday_items
             ),
@@ -2702,11 +2793,19 @@ def detect_behavior_patterns(
         if item["merchant_key"]:
             by_late_merchant[item["merchant_key"]].append(item)
     for late_merchant_items in by_late_merchant.values():
-        if len(late_merchant_items) < MIN_REPEATED_TRANSACTIONS:
+        occurrence_dates = {
+            item["occurred_at"].date() for item in late_merchant_items
+        }
+        if len(occurrence_dates) < MIN_REPEATED_TRANSACTIONS:
             continue
         merchant = Counter(item["merchant"] for item in late_merchant_items).most_common(1)[0][0]
         category = Counter(item["category"] for item in late_merchant_items).most_common(1)[0][0]
-        relevant = sum(float(item["amount"]) for item in late_merchant_items) >= MIN_RELEVANT_TOTAL_EUR
+        total = sum(float(item["amount"]) for item in late_merchant_items)
+        single_expense_dominated = max(
+            (float(item["amount"]) for item in late_merchant_items),
+            default=0.0,
+        ) / total >= MAX_SINGLE_EXPENSE_SHARE if total else False
+        relevant = total >= MIN_RELEVANT_TOTAL_EUR and not single_expense_dominated
         patterns.append(_pattern(
             pattern_type="late_night_discretionary_spending",
             items=late_merchant_items,
@@ -2717,11 +2816,17 @@ def detect_behavior_patterns(
             observations={
                 "merchant": merchant,
                 "transaction_count": len(late_merchant_items),
+                "occurrence_date_count": len(occurrence_dates),
                 "time_window": "20:30-00:30",
+                "single_expense_dominated": single_expense_dominated,
             },
             pattern_strength=_strength(len(late_merchant_items)),
             financial_relevance="medium" if relevant else "low",
-            relevance_reason="Mehrere diskretionaere Buchungen liegen im definierten spaeten Zeitfenster.",
+            relevance_reason=(
+                "Mehrere diskretionaere Buchungen liegen an verschiedenen Tagen im definierten spaeten Zeitfenster."
+                if relevant
+                else "Das spaete Zeitfenster liefert wegen fehlender Verteilung oder einer dominanten Einzelbuchung keine belastbare Evidenz."
+            ),
             eligible_for_coach=relevant,
             eligible_for_report=False,
             stable_period_key=stable_window_key,
