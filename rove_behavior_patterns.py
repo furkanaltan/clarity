@@ -658,6 +658,9 @@ def _insight_metrics(
             "average_over_budget_percent", "total_deviation_eur",
             "monthly_values", "historical_budget_evidence",
             "overall_pressure_months", "historical_overall_budget_status",
+            "overall_budget_status", "overall_variable_budget_eur",
+            "overall_variable_spend_eur", "overall_free_remaining_eur",
+            "month_elapsed_fraction",
             "overall_context_known_and_healthy", "category_deviation_is_large",
             "behavior_pattern_id", "budget_pattern_id", "behavior_type",
             "behavior_amount_total", "behavior_transaction_count",
@@ -724,6 +727,15 @@ def _insight_suppression_reason(
         return "uncertain_event_time"
     if observations.get("single_expense_dominated"):
         return "single_outlier"
+    if (
+        insight_type == "budget_attention"
+        and pattern.get("pattern_type") == "category_budget_pressure"
+    ):
+        overall_status = observations.get("overall_budget_status")
+        if overall_status == "healthy":
+            return "healthy_overall_budget"
+        if overall_status != "under_pressure":
+            return "overall_budget_status_unknown"
     if _merchant_class("", str(pattern.get("category") or "")) == "essential":
         return "essential_spending"
     if pattern.get("financial_relevance") == "low":
@@ -2379,6 +2391,14 @@ def _category_budget_pressures(
     if not {"user_id", "category", "monthly_limit"}.issubset(columns):
         return []
     month_key = now.strftime("%Y-%m")
+    overall_context = _overall_budget_status(
+        conn,
+        user_id,
+        items=items,
+        month_keys=[month_key],
+        current_month=month_key,
+    ).get(month_key, {"status": "unknown"})
+    overall_status = overall_context.get("status", "unknown")
     query = """SELECT category, monthly_limit
                  FROM category_budgets
                 WHERE user_id=?"""
@@ -2406,6 +2426,11 @@ def _category_budget_pressures(
         if used_fraction < 0.75 or used_fraction <= elapsed_fraction + 0.10:
             continue
         pressure_gap = used_fraction - elapsed_fraction
+        category_relevance = (
+            "high" if overall_status == "under_pressure"
+            else "medium" if overall_status == "healthy"
+            else "low"
+        )
         pressure = _pattern(
             pattern_type="category_budget_pressure",
             items=category_items,
@@ -2419,11 +2444,30 @@ def _category_budget_pressures(
                 "monthly_limit": round(limit, 2),
                 "amount_spent": spent,
                 "amount_over": round(max(0.0, spent - limit), 2),
+                "overall_budget_status": overall_status,
+                "overall_variable_budget_eur": overall_context.get(
+                    "variable_budget_eur"
+                ),
+                "overall_variable_spend_eur": overall_context.get(
+                    "variable_expenses_eur"
+                ),
+                "overall_free_remaining_eur": overall_context.get(
+                    "free_remaining_eur"
+                ),
+                "month_elapsed_fraction": round(elapsed_fraction, 3),
             },
             pattern_strength="high" if pressure_gap >= 0.25 else "medium",
-            financial_relevance="high",
-            relevance_reason="Kategorie-Budget ist gemessen am Monatsfortschritt deutlich unter Druck.",
-            eligible_for_coach=True,
+            financial_relevance=category_relevance,
+            relevance_reason=(
+                "Kategorie-Budget ist gemessen am Monatsfortschritt deutlich unter Druck; "
+                "der gesamte variable Monatsrahmen steht ebenfalls unter Druck."
+                if overall_status == "under_pressure"
+                else "Kategorie-Budget ist gemessen am Monatsfortschritt deutlich unter Druck; "
+                "der gesamte variable Monatsrahmen ist weiterhin gesund."
+                if overall_status == "healthy"
+                else "Kategorie-Budget ist auffaellig, aber der Gesamtbudgetstatus ist nicht belastbar."
+            ),
+            eligible_for_coach=overall_status == "under_pressure",
             eligible_for_report=True,
             stable_period_key=month_key,
         )

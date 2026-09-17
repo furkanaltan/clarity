@@ -1336,6 +1336,74 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
             for insight in insights
         ))
 
+    def test_current_category_overrun_with_healthy_overall_budget_is_suppressed(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-09", 100)
+        self.add_expense(1, "Sonstiges", "Sonstiges", 228, "2026-09-14 12:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "budget_attention"
+        )
+        self.assertEqual(insight["evidence_metrics"]["amount_spent"], 228.0)
+        self.assertEqual(insight["evidence_metrics"]["monthly_limit"], 100.0)
+        self.assertEqual(insight["evidence_metrics"]["amount_over"], 128.0)
+        self.assertEqual(insight["evidence_metrics"]["overall_budget_status"], "healthy")
+        self.assertEqual(insight["suppression_reason"], "healthy_overall_budget")
+        self.assertFalse(insight["coach_eligible"])
+        self.assertFalse(insight["primary_coach_insight"])
+
+    def test_current_category_overrun_can_be_coach_eligible_when_total_is_under_pressure(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-09", 100)
+        self.add_expense(1, "Sonstiges", "Sonstiges", 228, "2026-09-14 12:00:00")
+        self.add_expense(2, "Weitere Ausgabe", "Sonstiges", 1900, "2026-09-15 12:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "budget_attention"
+        )
+        self.assertEqual(insight["evidence_metrics"]["overall_budget_status"], "under_pressure")
+        self.assertTrue(insight["coach_eligible"])
+        self.assertIsNone(insight["suppression_reason"])
+
+    def test_small_category_overrun_with_healthy_total_is_not_coach_eligible(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-09", 100)
+        self.add_expense(1, "Sonstiges", "Sonstiges", 111, "2026-09-14 12:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "budget_attention"
+        )
+        self.assertEqual(insight["financial_relevance"], "medium")
+        self.assertEqual(insight["suppression_reason"], "healthy_overall_budget")
+        self.assertFalse(insight["coach_eligible"])
+
+    def test_unknown_overall_budget_status_fails_closed(self):
+        self.conn.execute("UPDATE users SET income=NULL, fixed_costs=NULL")
+        self.add_budget("Sonstiges", "2026-09", 100)
+        self.add_expense(1, "Sonstiges", "Sonstiges", 228, "2026-09-14 12:00:00")
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "budget_attention"
+        )
+        self.assertEqual(insight["evidence_metrics"]["overall_budget_status"], "unknown")
+        self.assertEqual(insight["suppression_reason"], "overall_budget_status_unknown")
+        self.assertFalse(insight["coach_eligible"])
+        self.assertFalse(insight["primary_coach_insight"])
+
+    def test_historical_repeated_category_evidence_remains_report_separate(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08")):
+            self.add_month(index * 2 + 1, month, (90, 90))
+        insights = self.insights()
+        historical = next(
+            insight for insight in insights
+            if insight["insight_type"] == "budget_attention"
+            and insight["evidence_metrics"].get("months_over_budget") == 3
+        )
+        self.assertTrue(historical["report_eligible"])
+
     def test_repeated_spending_insight_has_weekend_timing_and_report_scope(self):
         for index, day in enumerate((6, 13, 20), 1):
             self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
