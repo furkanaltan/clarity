@@ -18,6 +18,12 @@ from typing import Any
 
 
 DEFAULT_WINDOW_DAYS = 30
+HISTORICAL_MONTHS = 6
+MIN_HISTORICAL_MONTHS = 3
+MIN_OVER_BUDGET_MONTHS = 3
+MIN_TREND_DELTA_EUR = 30.0
+MIN_TREND_RELATIVE_CHANGE = 0.25
+MAX_SINGLE_EXPENSE_SHARE = 0.75
 MIN_REPEATED_TRANSACTIONS = 3
 MIN_WEEKDAY_OCCURRENCES = 4
 MIN_RELEVANT_TOTAL_EUR = 30.0
@@ -216,6 +222,434 @@ def _pattern(
         "last_seen_at": last_seen,
     }
     return result
+
+
+def _shift_month(value: datetime, offset: int) -> datetime:
+    month_index = value.year * 12 + (value.month - 1) + offset
+    year, month_index = divmod(month_index, 12)
+    return value.replace(year=year, month=month_index + 1, day=1)
+
+
+def _completed_month_keys(now: datetime, count: int = HISTORICAL_MONTHS) -> list[str]:
+    current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return [
+        _shift_month(current_month, offset).strftime("%Y-%m")
+        for offset in range(-max(1, count), 0)
+    ]
+
+
+def _month_end(month_key: str) -> datetime:
+    year, month = (int(part) for part in month_key.split("-"))
+    return datetime(year, month, monthrange(year, month)[1], 23, 59, 59)
+
+
+def _historical_budgets(
+    conn: sqlite3.Connection,
+    user_id: int,
+    month_keys: list[str],
+) -> dict[tuple[str, str], float]:
+    columns = _columns(conn, "category_budgets")
+    if not {"user_id", "category", "monthly_limit", "active_month"}.issubset(columns):
+        return {}
+    placeholders = ",".join("?" for _ in month_keys)
+    rows = conn.execute(
+        f"""SELECT category, monthly_limit, active_month
+                FROM category_budgets
+               WHERE user_id=? AND active_month IN ({placeholders})""",
+        (user_id, *month_keys),
+    ).fetchall()
+    budgets: dict[tuple[str, str], float] = {}
+    for row in rows:
+        limit = float(row["monthly_limit"] or 0)
+        if limit <= 0:
+            continue
+        budgets[(_key(row["category"]), str(row["active_month"]))] = round(limit, 2)
+    return budgets
+
+
+def _historical_category_items(
+    items: list[dict[str, Any]],
+    month_keys: list[str],
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    allowed = set(month_keys)
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        month_key = item["occurred_at"].strftime("%Y-%m")
+        if month_key in allowed:
+            grouped[(item["category_key"], month_key)].append(item)
+    return grouped
+
+
+def _month_quality(items: list[dict[str, Any]]) -> dict[str, Any]:
+    total = sum(float(item["amount"]) for item in items)
+    largest = max((float(item["amount"]) for item in items), default=0.0)
+    share = largest / total if total else 0.0
+    return {
+        "transaction_count": len(items),
+        "max_single_expense_share": round(share, 3),
+        "single_expense_dominated": bool(items) and share >= MAX_SINGLE_EXPENSE_SHARE,
+    }
+
+
+def _trend_direction(values: list[float]) -> str | None:
+    if len(values) < MIN_HISTORICAL_MONTHS:
+        return None
+    if all(left < right for left, right in zip(values, values[1:])):
+        return "worsening"
+    if all(left > right for left, right in zip(values, values[1:])):
+        return "improving"
+    return None
+
+
+def _historical_pattern(
+    *,
+    pattern_type: str,
+    items: list[dict[str, Any]],
+    month_keys: list[str],
+    category: str,
+    observations: dict[str, Any],
+    direction: str,
+    pattern_strength: str,
+    financial_relevance: str,
+    relevance_reason: str,
+    eligible_for_coach: bool,
+    eligible_for_report: bool,
+    related_pattern_ids: list[str] | None = None,
+    period_end_override: datetime | None = None,
+) -> dict[str, Any]:
+    result = _pattern(
+        pattern_type=pattern_type,
+        items=items,
+        period_start=datetime.fromisoformat(f"{month_keys[0]}-01 00:00:00"),
+        period_end=period_end_override or _month_end(month_keys[-1]),
+        category=category,
+        merchant=None,
+        observations=observations,
+        pattern_strength=pattern_strength,
+        financial_relevance=financial_relevance,
+        relevance_reason=relevance_reason,
+        eligible_for_coach=eligible_for_coach,
+        eligible_for_report=eligible_for_report,
+        stable_period_key=f"completed:{','.join(month_keys)}",
+        related_pattern_ids=related_pattern_ids,
+    )
+    result["direction"] = direction
+    return result
+
+
+def _month_distance(left: str, right: str) -> int:
+    left_year, left_month = (int(part) for part in left.split("-"))
+    right_year, right_month = (int(part) for part in right.split("-"))
+    return (right_year - left_year) * 12 + right_month - left_month
+
+
+def _contiguous_months(months: list[str]) -> bool:
+    return bool(months) and all(
+        _month_distance(left, right) == 1
+        for left, right in zip(months, months[1:])
+    )
+
+
+def _historical_items_for_category(
+    grouped: dict[tuple[str, str], list[dict[str, Any]]],
+    category_key: str,
+    month_keys: list[str],
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for month_key in month_keys
+        for item in grouped.get((category_key, month_key), [])
+    ]
+
+
+def _category_label(
+    items: list[dict[str, Any]],
+    category_key: str,
+) -> str:
+    labels = [item["category"] for item in items if item["category_key"] == category_key]
+    return Counter(labels).most_common(1)[0][0] if labels else "Unbekannt"
+
+
+def _items_through_day(
+    items: list[dict[str, Any]],
+    month_key: str,
+    day: int,
+) -> list[dict[str, Any]]:
+    month_end_day = monthrange(
+        *(int(part) for part in month_key.split("-"))
+    )[1]
+    cutoff = min(day, month_end_day)
+    return [item for item in items if item["occurred_at"].day <= cutoff]
+
+
+def _historical_category_patterns(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    month_keys = _completed_month_keys(now)
+    history_start = datetime.fromisoformat(f"{month_keys[0]}-01 00:00:00")
+    items = _load_consumption_items(
+        conn,
+        user_id,
+        period_start=history_start,
+        period_end=now,
+    )
+    grouped = _historical_category_items(items, month_keys)
+    budgets = _historical_budgets(conn, user_id, month_keys)
+    if not items and not budgets:
+        return []
+
+    category_keys = sorted(
+        {category_key for category_key, _ in grouped}
+        | {category_key for category_key, _ in budgets}
+    )
+    patterns: list[dict[str, Any]] = []
+    repeated_by_category: dict[str, dict[str, Any]] = {}
+    trend_by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for category_key in category_keys:
+        category = _category_label(items, category_key)
+        category_kind = _merchant_class("", category)
+        budget_months = [
+            month_key
+            for month_key in month_keys
+            if (category_key, month_key) in budgets
+        ]
+        over_rows: list[dict[str, Any]] = []
+        budget_rows: list[dict[str, Any]] = []
+        for month_key in budget_months:
+            month_items = grouped.get((category_key, month_key), [])
+            spent = round(sum(float(item["amount"]) for item in month_items), 2)
+            limit = budgets[(category_key, month_key)]
+            quality = _month_quality(month_items)
+            row = {
+                "month": month_key,
+                "amount_spent": spent,
+                "monthly_limit": limit,
+                "amount_over": round(max(0.0, spent - limit), 2),
+                "over_budget": spent > limit,
+                "over_budget_percent": round(max(0.0, spent / limit - 1.0), 3),
+                "quality": quality,
+            }
+            budget_rows.append(row)
+            if row["over_budget"]:
+                over_rows.append(row)
+
+        if len(budget_rows) >= MIN_HISTORICAL_MONTHS and len(over_rows) >= MIN_OVER_BUDGET_MONTHS:
+            over_months = [row["month"] for row in over_rows]
+            over_items = _historical_items_for_category(grouped, category_key, over_months)
+            dominated = any(row["quality"]["single_expense_dominated"] for row in over_rows)
+            eligible = category_kind == "discretionary" and not dominated
+            repeated = _historical_pattern(
+                pattern_type="category_repeated_over_budget",
+                items=over_items,
+                month_keys=budget_months,
+                category=category,
+                observations={
+                    "months_considered": len(budget_rows),
+                    "months_over_budget": len(over_rows),
+                    "monthly_values": budget_rows,
+                    "average_over_budget_percent": round(
+                        sum(row["over_budget_percent"] for row in over_rows) / len(over_rows),
+                        3,
+                    ),
+                    "total_deviation_eur": round(
+                        sum(row["amount_over"] for row in over_rows), 2
+                    ),
+                    "single_expense_dominated": dominated,
+                },
+                direction="worsening" if len(over_rows) >= 4 else "stable",
+                pattern_strength="high" if len(over_rows) >= 4 else "medium",
+                financial_relevance="high" if eligible else "low",
+                relevance_reason=(
+                    "Diskretionaere Kategorie liegt wiederholt ueber dem eigenen Monatsbudget."
+                    if eligible
+                    else "Historische Budgetabweichung ist nicht belastbar fuer Verhaltenscoaching."
+                ),
+                eligible_for_coach=eligible,
+                eligible_for_report=eligible,
+            )
+            patterns.append(repeated)
+            if eligible:
+                repeated_by_category[category_key] = repeated
+
+        month_rows = []
+        for month_key in month_keys:
+            month_items = grouped.get((category_key, month_key), [])
+            if not month_items:
+                continue
+            month_rows.append({
+                "month": month_key,
+                "amount": round(sum(float(item["amount"]) for item in month_items), 2),
+                "quality": _month_quality(month_items),
+            })
+        if len(month_rows) < MIN_HISTORICAL_MONTHS:
+            continue
+        trend_rows = month_rows[-MIN_HISTORICAL_MONTHS:]
+        trend_months = [row["month"] for row in trend_rows]
+        values = [float(row["amount"]) for row in trend_rows]
+        if not _contiguous_months(trend_months):
+            continue
+        direction = _trend_direction(values)
+        if direction is None:
+            continue
+        delta = round(values[-1] - values[0], 2)
+        relative = abs(delta) / max(abs(values[0]), 1.0)
+        if abs(delta) < MIN_TREND_DELTA_EUR or relative < MIN_TREND_RELATIVE_CHANGE:
+            continue
+        dominated = any(row["quality"]["single_expense_dominated"] for row in trend_rows)
+        eligible = category_kind == "discretionary" and not dominated
+        trend_type = (
+            "category_spending_worsening"
+            if direction == "worsening"
+            else "category_spending_improving"
+        )
+        trend = _historical_pattern(
+            pattern_type=trend_type,
+            items=_historical_items_for_category(grouped, category_key, trend_months),
+            month_keys=trend_months,
+            category=category,
+            observations={
+                "months_compared": len(trend_rows),
+                "monthly_amounts": trend_rows,
+                "absolute_change_eur": delta,
+                "relative_change": round(relative, 3),
+                "single_expense_dominated": dominated,
+            },
+            direction=direction,
+            pattern_strength="high" if relative >= 0.5 else "medium",
+            financial_relevance="high" if eligible and direction == "worsening" else "medium" if eligible else "low",
+            relevance_reason=(
+                "Eigene Ausgabenentwicklung ist ueber mehrere abgeschlossene Monate klar "
+                + ("angestiegen." if direction == "worsening" else "gesunken.")
+                if eligible
+                else "Historische Entwicklung ist nicht fuer Verhaltenscoaching freigegeben."
+            ),
+            eligible_for_coach=eligible,
+            eligible_for_report=eligible,
+        )
+        patterns.append(trend)
+        if eligible:
+            trend_by_category[category_key].append(trend)
+
+    current_month = now.strftime("%Y-%m")
+    baseline_months = month_keys[-MIN_HISTORICAL_MONTHS:]
+    for category_key in category_keys:
+        baseline_month_items = [
+            grouped.get((category_key, month_key), [])
+            for month_key in baseline_months
+        ]
+        baseline_rows = [
+            _items_through_day(month_items, month_key, now.day)
+            for month_items, month_key in zip(baseline_month_items, baseline_months)
+        ]
+        current_month_items = [
+            item for item in items
+            if item["category_key"] == category_key
+            and item["occurred_at"].strftime("%Y-%m") == current_month
+        ]
+        current_items = _items_through_day(current_month_items, current_month, now.day)
+        if not current_items or any(not month_items for month_items in baseline_rows):
+            continue
+        category = _category_label(items, category_key)
+        if _merchant_class("", category) != "discretionary":
+            continue
+        baseline_amounts = [
+            round(sum(float(item["amount"]) for item in month_items), 2)
+            for month_items in baseline_rows
+        ]
+        baseline_quality = [_month_quality(month_items) for month_items in baseline_rows]
+        current_quality = _month_quality(current_items)
+        single_expense_dominated = any(
+            quality["single_expense_dominated"] for quality in baseline_quality
+        ) or current_quality["single_expense_dominated"]
+        baseline_average = sum(baseline_amounts) / len(baseline_amounts)
+        elapsed_fraction = now.day / monthrange(now.year, now.month)[1]
+        # The baseline already covers the same calendar-day segment. Scaling it
+        # by the current month's fraction would compare a partial segment twice.
+        fair_baseline = baseline_average
+        current_amount = round(sum(float(item["amount"]) for item in current_items), 2)
+        delta = round(current_amount - fair_baseline, 2)
+        relative = abs(delta) / max(fair_baseline, 1.0)
+        if abs(delta) < MIN_TREND_DELTA_EUR or relative < MIN_TREND_RELATIVE_CHANGE:
+            continue
+        direction = "worsening" if delta > 0 else "improving"
+        baseline_items = _historical_items_for_category(grouped, category_key, baseline_months)
+        pattern = _historical_pattern(
+            pattern_type="behavior_change_vs_personal_baseline",
+            items=baseline_items + current_items,
+            month_keys=baseline_months,
+            category=category,
+            observations={
+                "baseline_months": baseline_months,
+                "comparison_mode": "same_day_of_month_segment",
+                "comparison_day": now.day,
+                "baseline_amounts": baseline_amounts,
+                "baseline_average_eur": round(baseline_average, 2),
+                "current_month": current_month,
+                "current_amount_eur": current_amount,
+                "elapsed_fraction": round(elapsed_fraction, 3),
+                "fair_baseline_eur": round(fair_baseline, 2),
+                "difference_eur": delta,
+                "relative_change": round(relative, 3),
+                "single_expense_dominated": single_expense_dominated,
+            },
+            direction=direction,
+            pattern_strength="high" if relative >= 0.5 else "medium",
+            financial_relevance=(
+                "high" if direction == "worsening" and not single_expense_dominated
+                else "medium" if not single_expense_dominated
+                else "low"
+            ),
+            relevance_reason=(
+                "Aktueller Monat liegt fair anteilig deutlich ueber der eigenen Basislinie."
+                if direction == "worsening" and not single_expense_dominated
+                else "Aktueller Monat liegt fair anteilig deutlich unter der eigenen Basislinie."
+                if not single_expense_dominated
+                else "Basislinienvergleich ist wegen einer dominanten Einzelbuchung nicht belastbar."
+            ),
+            eligible_for_coach=not single_expense_dominated,
+            eligible_for_report=not single_expense_dominated,
+            period_end_override=now,
+        )
+        patterns.append(pattern)
+        if direction == "worsening" and not single_expense_dominated:
+            trend_by_category[category_key].append(pattern)
+
+    for category_key, repeated in repeated_by_category.items():
+        related = [repeated, *trend_by_category.get(category_key, [])]
+        category = repeated["category"]
+        related_ids = [pattern["pattern_id"] for pattern in related]
+        combined_source_ids = sorted({source_id for pattern in related for source_id in pattern["source_ids"]})
+        items_by_id = {item["source_id"]: item for item in items}
+        combined_items = [items_by_id[source_id] for source_id in combined_source_ids if source_id in items_by_id]
+        combined = _historical_pattern(
+            pattern_type="repeated_discretionary_budget_pressure",
+            items=combined_items,
+            month_keys=month_keys,
+            category=category,
+            observations={
+                "component_pattern_ids": related_ids,
+                "months_over_budget": repeated["observations"]["months_over_budget"],
+                "historical_budget_evidence": repeated["observations"]["monthly_values"],
+            },
+            direction="worsening",
+            pattern_strength="high",
+            financial_relevance="high",
+            relevance_reason="Diskretionaere Budgetabweichung ist ueber mehrere Monate belegt.",
+            eligible_for_coach=True,
+            eligible_for_report=True,
+            related_pattern_ids=related_ids,
+        )
+        for component in related:
+            component["eligible_for_coach"] = False
+            component["eligible_for_report"] = False
+            component["superseded_by_pattern_id"] = combined["pattern_id"]
+        patterns.append(combined)
+
+    return patterns
 
 
 def _load_consumption_items(
@@ -505,6 +939,33 @@ def detect_behavior_patterns(
 
     pressures = _category_budget_pressures(conn, user_id, now=now, items=items)
     patterns.extend(pressures)
+
+    historical_patterns = _historical_category_patterns(conn, user_id, now=now)
+    patterns.extend(historical_patterns)
+
+    # A multi-month discretionary pattern supersedes the current one-month
+    # pressure so the shadow inspector exposes one coherent explanation.
+    historical_combinations = [
+        pattern
+        for pattern in historical_patterns
+        if pattern["pattern_type"] == "repeated_discretionary_budget_pressure"
+    ]
+    for pressure in pressures:
+        matching = [
+            combined
+            for combined in historical_combinations
+            if _key(combined.get("category")) == _key(pressure.get("category"))
+        ]
+        if not matching:
+            continue
+        combined = matching[0]
+        combined["related_pattern_ids"] = sorted(
+            set(combined["related_pattern_ids"]) | {pressure["pattern_id"]}
+        )
+        combined["observations"]["current_budget_pattern_id"] = pressure["pattern_id"]
+        pressure["eligible_for_coach"] = False
+        pressure["eligible_for_report"] = False
+        pressure["superseded_by_pattern_id"] = combined["pattern_id"]
 
     items_by_id = {item["source_id"]: item for item in items}
     behavior_patterns = [
