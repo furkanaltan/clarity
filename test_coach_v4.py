@@ -313,6 +313,200 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         eligible = [p for p in self.patterns() if p["eligible_for_coach"]]
         self.assertEqual([p["pattern_type"] for p in eligible], ["behavior_plus_budget_pressure"])
         self.assertEqual(len(combined[0]["related_pattern_ids"]), 2)
+        self.assertEqual(combined[0]["composite_type"], "behavior_driving_budget_pressure")
+        self.assertEqual(combined[0]["pattern_kind"], "composite_behavior_pattern")
+
+    def test_category_pressure_without_behavior_does_not_fuse(self):
+        self.conn.execute(
+            "INSERT INTO category_budgets VALUES (1,'Restaurants',100,'2026-09')"
+        )
+        self.add_expense(1, "Restaurant", "Restaurants", 160, "2026-09-15 19:00:00")
+        self.assertFalse(any(
+            pattern.get("composite_type") == "behavior_driving_budget_pressure"
+            for pattern in self.patterns()
+        ))
+
+    def test_healthy_overall_budget_keeps_behavior_fusion_low_relevance(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.conn.execute(
+            "INSERT INTO category_budgets VALUES (1,'Shopping',100,'2026-09')"
+        )
+        for index, day in enumerate((6, 13, 20, 27), 1):
+            self.add_expense(index, "Amazon", "Shopping", 40, f"2026-09-{day:02d} 21:00:00")
+        combined = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "behavior_driving_budget_pressure"
+        ]
+        self.assertEqual(len(combined), 1)
+        self.assertEqual(combined[0]["financial_relevance"], "low")
+        self.assertFalse(combined[0]["eligible_for_coach"])
+
+    def test_historical_slight_category_overrun_stays_low_when_overall_is_healthy(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month)
+        self.add_month(1, "2026-06", (55, 55))
+        self.add_month(3, "2026-07", (57.5, 57.5))
+        self.add_month(5, "2026-08", (60, 60))
+        combined = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "repeated_discretionary_budget_pressure"
+        ]
+        self.assertEqual(len(combined), 1)
+        self.assertNotEqual(combined[0]["financial_relevance"], "high")
+        self.assertFalse(combined[0]["eligible_for_coach"])
+        self.assertEqual(
+            combined[0]["observations"]["overall_pressure_months"],
+            [],
+        )
+
+    def test_strong_category_and_repeated_overall_pressure_can_be_high(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+            self.add_financial_snapshot(month, income=500, fixed_costs=300)
+        self.add_month(1, "2026-06", (150, 150))
+        self.add_month(3, "2026-07", (160, 160))
+        self.add_month(5, "2026-08", (170, 170))
+        combined = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "repeated_discretionary_budget_pressure"
+        ]
+        self.assertEqual(len(combined), 1)
+        self.assertEqual(combined[0]["financial_relevance"], "high")
+        self.assertTrue(combined[0]["eligible_for_coach"])
+
+    def test_repeated_overspend_composite_requires_worsening_evidence(self):
+        for month, amounts in (
+            ("2026-06", (60, 60)),
+            ("2026-07", (80, 80)),
+            ("2026-08", (100, 100)),
+        ):
+            self.add_budget("Restaurants", month)
+            self.add_month(int(month[-2:]) * 10, month, amounts)
+        combined = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "repeated_discretionary_overspend"
+        ]
+        self.assertEqual(len(combined), 1)
+        self.assertTrue(combined[0]["eligible_for_coach"])
+        self.assertEqual(combined[0]["direction"], "worsening")
+        self.assertFalse(combined[0]["conflicting_evidence"])
+
+    def test_improving_category_creates_positive_composite(self):
+        self.add_month(1, "2026-06", (90, 90))
+        self.add_month(3, "2026-07", (70, 70))
+        self.add_month(5, "2026-08", (45, 45))
+        positive = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "category_spending_improvement_confirmed"
+        ]
+        self.assertEqual(len(positive), 1)
+        self.assertEqual(positive[0]["direction"], "improving")
+        self.assertEqual(positive[0]["pattern_strength"], "high")
+
+    def test_budget_recovery_requires_completed_current_month(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month)
+        self.add_month(1, "2026-06", (80, 80))
+        self.add_month(3, "2026-07", (80, 80))
+        self.add_month(5, "2026-08", (80, 80))
+        self.add_month(7, "2026-09", (20, 20))
+        positive = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "budget_recovery"
+        ]
+        self.assertEqual(len(positive), 1)
+        self.assertEqual(positive[0]["direction"], "improving")
+
+    def test_budget_recovery_is_suppressed_when_current_budget_was_increased(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_budget("Restaurants", "2026-09", 200)
+        self.add_month(1, "2026-06", (80, 80))
+        self.add_month(3, "2026-07", (80, 80))
+        self.add_month(5, "2026-08", (80, 80))
+        self.add_month(7, "2026-09", (75, 75))
+        self.assertFalse(any(
+            pattern.get("composite_type") == "budget_recovery"
+            for pattern in self.patterns()
+        ))
+
+    def test_historical_worsening_and_current_recovery_are_conflicting(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_month(1, "2026-06", (75, 75))
+        self.add_month(3, "2026-07", (90, 90))
+        self.add_month(5, "2026-08", (110, 110))
+        self.add_month(7, "2026-09", (40, 40))
+        patterns = self.patterns()
+        composites = [
+            pattern for pattern in patterns
+            if pattern.get("pattern_kind") == "composite_behavior_pattern"
+            and pattern.get("category") == "Restaurants"
+        ]
+        self.assertTrue(any(pattern.get("composite_type") == "budget_recovery" for pattern in composites))
+        self.assertTrue(any(
+            pattern.get("composite_type") == "repeated_discretionary_overspend"
+            for pattern in composites
+        ))
+        self.assertTrue(all(pattern["conflicting_evidence"] for pattern in composites))
+        self.assertTrue(all(not pattern["eligible_for_coach"] for pattern in composites))
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertTrue(inspector["conflicting_evidence"])
+        self.assertIsNone(inspector["primary_composite"])
+
+    def test_three_weak_months_do_not_create_high_composite(self):
+        for month in ("2026-06", "2026-07", "2026-08"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_month(1, "2026-06", (52.5, 52.5))
+        self.add_month(3, "2026-07", (55, 55))
+        self.add_month(5, "2026-08", (57.5, 57.5))
+        combined = [
+            pattern for pattern in self.patterns()
+            if pattern.get("composite_type") == "repeated_discretionary_budget_pressure"
+        ]
+        self.assertEqual(len(combined), 1)
+        self.assertNotEqual(combined[0]["financial_relevance"], "high")
+        self.assertFalse(combined[0]["eligible_for_coach"])
+
+    def test_positive_composite_is_suppressed_by_conflicting_current_worsening(self):
+        self.add_month(1, "2026-06", (90, 90))
+        self.add_month(3, "2026-07", (70, 70))
+        self.add_month(5, "2026-08", (45, 45))
+        self.add_month(7, "2026-09", (200, 200))
+        self.assertTrue(self.of_type("category_spending_improving"))
+        self.assertTrue(self.of_type("behavior_change_vs_personal_baseline"))
+        self.assertFalse(any(
+            pattern.get("composite_type") == "category_spending_improvement_confirmed"
+            for pattern in self.patterns()
+        ))
+
+    def test_missing_history_does_not_create_positive_composite(self):
+        self.add_month(1, "2026-06", (90, 90))
+        self.add_month(3, "2026-08", (45, 45))
+        self.assertFalse(any(
+            pattern.get("pattern_kind") == "composite_behavior_pattern"
+            and pattern.get("direction") == "improving"
+            for pattern in self.patterns()
+        ))
+
+    def test_shadow_inspector_exposes_raw_and_composite_patterns(self):
+        self.conn.execute(
+            "INSERT INTO category_budgets VALUES (1,'Shopping',100,'2026-09')"
+        )
+        for index, day in enumerate((6, 13, 20, 27), 1):
+            self.add_expense(index, "Amazon", "Shopping", 40, f"2026-09-{day:02d} 21:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertTrue(inspector["composite_patterns"])
+        self.assertTrue(any(
+            pattern["pattern_type"] == "merchant_weekday_pattern"
+            for pattern in inspector["patterns"]
+        ))
+        self.assertTrue(any(
+            pattern["composite_type"] == "behavior_driving_budget_pressure"
+            for pattern in inspector["composite_patterns"]
+        ))
+        self.assertFalse(inspector["coach_v3_affected"])
 
     def test_internal_transfer_is_not_consumption(self):
         self.conn.execute(
@@ -642,6 +836,30 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(len(current_pressure), 1)
         self.assertFalse(current_pressure[0]["eligible_for_coach"])
         self.assertIn(current_pressure[0]["pattern_id"], combined[0]["related_pattern_ids"])
+
+    def test_overlapping_same_category_composites_have_one_primary(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month, 100)
+        self.add_month(1, "2026-06", (90, 90))
+        self.add_month(3, "2026-07", (100, 100))
+        self.add_month(5, "2026-08", (110, 110))
+        for index, day in enumerate((1, 2, 3, 4), 7):
+            self.add_expense(index, "Amazon", "Restaurants", 40, f"2026-09-{day:02d} 21:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        composites = [
+            pattern for pattern in inspector["composite_patterns"]
+            if pattern.get("category") == "Restaurants"
+        ]
+        self.assertGreaterEqual(len(composites), 2)
+        self.assertEqual(
+            sum(pattern.get("primary_composite", False) for pattern in composites),
+            1,
+        )
+        self.assertTrue(any(
+            pattern.get("superseded_by_pattern_id")
+            for pattern in composites
+            if not pattern.get("primary_composite")
+        ))
 
     def _salary_cycle_fixture(self, *, post_amount: float = 200, baseline_amount: float = 10):
         self.configure_budget_plan()

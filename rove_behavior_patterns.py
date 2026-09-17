@@ -21,6 +21,8 @@ DEFAULT_WINDOW_DAYS = 30
 HISTORICAL_MONTHS = 6
 MIN_HISTORICAL_MONTHS = 3
 MIN_OVER_BUDGET_MONTHS = 3
+MIN_MAJOR_CATEGORY_OVERAGE_PERCENT = 0.50
+MAX_COMPARABLE_BUDGET_CHANGE = 0.10
 MIN_TREND_DELTA_EUR = 30.0
 MIN_TREND_RELATIVE_CHANGE = 0.25
 MAX_SINGLE_EXPENSE_SHARE = 0.75
@@ -435,6 +437,174 @@ def _historical_pattern(
     return result
 
 
+def _mark_composite(
+    pattern: dict[str, Any],
+    *,
+    composite_type: str,
+    related_pattern_ids: list[str],
+    direction: str,
+    evidence_summary: str,
+    conflicting_evidence: bool = False,
+) -> dict[str, Any]:
+    """Annotate an existing evidence object as a fused shadow signal."""
+    related = sorted(set(related_pattern_ids))
+    pattern.update({
+        "pattern_kind": "composite_behavior_pattern",
+        "composite_type": composite_type,
+        "related_pattern_ids": related,
+        "direction": direction,
+        "evidence_summary": evidence_summary,
+        "conflicting_evidence": bool(conflicting_evidence),
+        "supersedes": related,
+    })
+    return pattern
+
+
+def _positive_composite(
+    pattern: dict[str, Any],
+    *,
+    composite_type: str,
+    evidence_summary: str,
+    relevance_reason: str,
+    observations_update: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a positive shadow object without changing source evidence."""
+    source_ids = list(pattern["source_ids"])
+    period_key = f"{composite_type}:{pattern['period_start']}:{pattern['period_end']}"
+    result = dict(pattern)
+    result["observations"] = {
+        **dict(pattern.get("observations") or {}),
+        **(observations_update or {}),
+    }
+    result["pattern_id"] = _stable_id(
+        "composite_behavior_pattern", source_ids, period_key,
+    )
+    result["pattern_type"] = "composite_behavior_pattern"
+    result["pattern_kind"] = "composite_behavior_pattern"
+    result["composite_type"] = composite_type
+    result["related_pattern_ids"] = [pattern["pattern_id"]]
+    result["supersedes"] = []
+    result["superseded_by_pattern_id"] = None
+    result["direction"] = "improving"
+    result["evidence_summary"] = evidence_summary
+    result["conflicting_evidence"] = False
+    result["relevance_reason"] = relevance_reason
+    return result
+
+
+def _date_range_overlaps(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_start = left.get("period_start")
+    left_end = left.get("period_end")
+    right_start = right.get("period_start")
+    right_end = right.get("period_end")
+    if not all((left_start, left_end, right_start, right_end)):
+        return False
+    return left_start <= right_end and right_start <= left_end
+
+
+def _composites_share_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_category = _key(left.get("category"))
+    right_category = _key(right.get("category"))
+    if not left_category or left_category != right_category:
+        return False
+    left_merchant = _key(left.get("merchant"))
+    right_merchant = _key(right.get("merchant"))
+    if left_merchant and right_merchant and left_merchant != right_merchant:
+        return False
+    left_ids = set(left.get("related_pattern_ids") or [])
+    left_ids.add(left.get("pattern_id"))
+    right_ids = set(right.get("related_pattern_ids") or [])
+    right_ids.add(right.get("pattern_id"))
+    return bool(left_ids & right_ids) or _date_range_overlaps(left, right)
+
+
+def _composite_relevance_rank(pattern: dict[str, Any]) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(
+        pattern.get("financial_relevance"),
+        0,
+    )
+
+
+def _composite_specificity_rank(pattern: dict[str, Any]) -> int:
+    return int(pattern.get("composite_type") in {
+        "behavior_driving_budget_pressure",
+        "post_income_behavior_with_budget_pressure",
+    })
+
+
+def _budgets_are_comparable(
+    historical_limits: list[float],
+    current_limit: float,
+) -> bool:
+    limits = [*historical_limits, current_limit]
+    if not historical_limits or any(limit <= 0 for limit in limits):
+        return False
+    reference = max(limits)
+    return all(
+        abs(limit - reference) / reference <= MAX_COMPARABLE_BUDGET_CHANGE
+        for limit in limits
+    )
+
+
+def _arbitrate_composites(patterns: list[dict[str, Any]]) -> None:
+    """Resolve overlapping shadow composites without changing raw evidence."""
+    composites = [
+        pattern for pattern in patterns
+        if pattern.get("pattern_kind") == "composite_behavior_pattern"
+    ]
+    for pattern in composites:
+        pattern["primary_composite"] = False
+
+    groups: list[list[dict[str, Any]]] = []
+    for pattern in composites:
+        matching = [group for group in groups if any(
+            _composites_share_scope(pattern, other) for other in group
+        )]
+        if not matching:
+            groups.append([pattern])
+            continue
+        target = matching[0]
+        target.append(pattern)
+        for other in matching[1:]:
+            target.extend(other)
+            groups.remove(other)
+
+    for group in groups:
+        directions = {pattern.get("direction") for pattern in group}
+        conflict = "worsening" in directions and "improving" in directions
+        if conflict:
+            for pattern in group:
+                pattern["conflicting_evidence"] = True
+                pattern["conflict_reason"] = "opposite_directions_same_scope"
+                pattern["primary_composite"] = False
+                pattern["eligible_for_coach"] = False
+                pattern["eligible_for_report"] = False
+            continue
+
+        reliable = [pattern for pattern in group if pattern.get("eligible_for_coach")]
+        if not reliable:
+            continue
+        winner = max(
+            reliable,
+            key=lambda pattern: (
+                _composite_relevance_rank(pattern),
+                _composite_specificity_rank(pattern),
+                pattern.get("pattern_strength") == "high",
+                pattern.get("pattern_id") or "",
+            ),
+        )
+        winner["primary_composite"] = True
+        superseded = []
+        for pattern in group:
+            if pattern is winner:
+                continue
+            pattern["eligible_for_coach"] = False
+            pattern["eligible_for_report"] = False
+            pattern["superseded_by_pattern_id"] = winner["pattern_id"]
+            superseded.append(pattern["pattern_id"])
+        winner["supersedes"] = sorted(set(winner.get("supersedes") or []) | set(superseded))
+
+
 def _month_distance(left: str, right: str) -> int:
     left_year, left_month = (int(part) for part in left.split("-"))
     right_year, right_month = (int(part) for part in right.split("-"))
@@ -496,6 +666,13 @@ def _historical_category_patterns(
     )
     grouped = _historical_category_items(items, month_keys)
     budgets = _historical_budgets(conn, user_id, month_keys)
+    historical_overall_budget = _overall_budget_status(
+        conn,
+        user_id,
+        items=items,
+        month_keys=month_keys,
+        current_month=now.strftime("%Y-%m"),
+    )
     if not items and not budgets:
         return []
 
@@ -539,7 +716,46 @@ def _historical_category_patterns(
             over_months = [row["month"] for row in over_rows]
             over_items = _historical_items_for_category(grouped, category_key, over_months)
             dominated = any(row["quality"]["single_expense_dominated"] for row in over_rows)
-            eligible = category_kind == "discretionary" and not dominated
+            average_over_budget_percent = round(
+                sum(row["over_budget_percent"] for row in over_rows) / len(over_rows),
+                3,
+            )
+            overall_rows = [
+                {
+                    "month": month_key,
+                    **historical_overall_budget.get(month_key, {}),
+                }
+                for month_key in budget_months
+            ]
+            known_overall_rows = [
+                row for row in overall_rows
+                if row.get("status") in {"healthy", "under_pressure"}
+            ]
+            overall_is_known_and_healthy = bool(overall_rows) and (
+                len(known_overall_rows) == len(overall_rows)
+                and all(row["status"] == "healthy" for row in known_overall_rows)
+            )
+            overall_pressure_months = [
+                row["month"] for row in overall_rows
+                if row.get("status") == "under_pressure"
+            ]
+            large_repeated_category_deviation = (
+                average_over_budget_percent >= MIN_MAJOR_CATEGORY_OVERAGE_PERCENT
+            )
+            relevance_supported = (
+                len(overall_pressure_months) >= 2
+                or large_repeated_category_deviation
+            )
+            eligible = (
+                category_kind == "discretionary"
+                and not dominated
+                and relevance_supported
+            )
+            financial_relevance = (
+                "high" if eligible else
+                "medium" if category_kind == "discretionary" and not dominated else
+                "low"
+            )
             repeated = _historical_pattern(
                 pattern_type="category_repeated_over_budget",
                 items=over_items,
@@ -549,28 +765,35 @@ def _historical_category_patterns(
                     "months_considered": len(budget_rows),
                     "months_over_budget": len(over_rows),
                     "monthly_values": budget_rows,
-                    "average_over_budget_percent": round(
-                        sum(row["over_budget_percent"] for row in over_rows) / len(over_rows),
-                        3,
-                    ),
+                    "average_over_budget_percent": average_over_budget_percent,
                     "total_deviation_eur": round(
                         sum(row["amount_over"] for row in over_rows), 2
                     ),
                     "single_expense_dominated": dominated,
+                    "historical_overall_budget_status": historical_overall_budget,
+                    "overall_pressure_months": overall_pressure_months,
+                    "overall_context_known_and_healthy": overall_is_known_and_healthy,
+                    "large_repeated_category_deviation": large_repeated_category_deviation,
                 },
                 direction="worsening" if len(over_rows) >= 4 else "stable",
                 pattern_strength="high" if len(over_rows) >= 4 else "medium",
-                financial_relevance="high" if eligible else "low",
+                financial_relevance=financial_relevance,
                 relevance_reason=(
                     "Diskretionaere Kategorie liegt wiederholt ueber dem eigenen Monatsbudget."
+                    if eligible and not overall_is_known_and_healthy
+                    else "Diskretionaere Kategorie liegt wiederholt ueber dem eigenen Monatsbudget; "
+                         "zusaetzlicher Gesamtbudgetdruck oder eine grosse wiederholte Abweichung ist belegt."
                     if eligible
+                    else "Kategorieabweichung ist beobachtbar, aber der historische Gesamtbudgetkontext "
+                         "stuetzt keinen starken negativen Composite."
+                    if category_kind == "discretionary" and not dominated
                     else "Historische Budgetabweichung ist nicht belastbar fuer Verhaltenscoaching."
                 ),
                 eligible_for_coach=eligible,
                 eligible_for_report=eligible,
             )
             patterns.append(repeated)
-            if eligible:
+            if category_kind == "discretionary":
                 repeated_by_category[category_key] = repeated
 
         month_rows = []
@@ -723,6 +946,35 @@ def _historical_category_patterns(
         combined_source_ids = sorted({source_id for pattern in related for source_id in pattern["source_ids"]})
         items_by_id = {item["source_id"]: item for item in items}
         combined_items = [items_by_id[source_id] for source_id in combined_source_ids if source_id in items_by_id]
+        repeated_observations = repeated["observations"]
+        historical_overall_budget = repeated_observations.get(
+            "historical_overall_budget_status",
+            {},
+        )
+        overall_pressure_months = repeated_observations.get(
+            "overall_pressure_months",
+            [],
+        )
+        category_deviation_is_large = repeated_observations.get(
+            "large_repeated_category_deviation",
+            False,
+        )
+        related_worsening = any(
+            pattern.get("direction") == "worsening"
+            and pattern.get("eligible_for_coach")
+            for pattern in related
+        )
+        overall_is_known_and_healthy = bool(historical_overall_budget) and all(
+            status.get("status") == "healthy"
+            for status in historical_overall_budget.values()
+        )
+        composite_supported = (
+            len(overall_pressure_months) >= 2
+            or category_deviation_is_large
+            or related_worsening
+        )
+        composite_relevance = "high" if composite_supported else "medium"
+        composite_eligible = composite_supported and category_kind == "discretionary"
         combined = _historical_pattern(
             pattern_type="repeated_discretionary_budget_pressure",
             items=combined_items,
@@ -732,14 +984,38 @@ def _historical_category_patterns(
                 "component_pattern_ids": related_ids,
                 "months_over_budget": repeated["observations"]["months_over_budget"],
                 "historical_budget_evidence": repeated["observations"]["monthly_values"],
+                "historical_overall_budget_status": historical_overall_budget,
+                "overall_pressure_months": overall_pressure_months,
+                "category_deviation_is_large": category_deviation_is_large,
             },
             direction="worsening",
             pattern_strength="high",
-            financial_relevance="high",
-            relevance_reason="Diskretionaere Budgetabweichung ist ueber mehrere Monate belegt.",
-            eligible_for_coach=True,
-            eligible_for_report=True,
+            financial_relevance=composite_relevance,
+            relevance_reason=(
+                "Diskretionaere Budgetabweichung ist ueber mehrere Monate belegt."
+                if composite_supported
+                else "Kategorieabweichung ist beobachtbar; der bekannte Gesamtbudgetstatus bleibt historisch gesund."
+            ),
+            eligible_for_coach=composite_eligible,
+            eligible_for_report=composite_eligible,
             related_pattern_ids=related_ids,
+        )
+        composite_type = (
+            "repeated_discretionary_overspend"
+            if any(pattern.get("direction") == "worsening" for pattern in related)
+            else "repeated_discretionary_budget_pressure"
+        )
+        _mark_composite(
+            combined,
+            composite_type=composite_type,
+            related_pattern_ids=related_ids,
+            direction="worsening",
+            evidence_summary=(
+                "Wiederholter diskretionaerer Budgetdruck wird durch die "
+                "mehrmonatige Ausgabenentwicklung gestuetzt."
+                if composite_type == "repeated_discretionary_overspend"
+                else "Wiederholter diskretionaerer Budgetdruck ist ueber mehrere Monate belegt."
+            ),
         )
         for component in related:
             component["eligible_for_coach"] = False
@@ -1324,6 +1600,17 @@ def _post_income_patterns(
             stable_period_key="salary-cycle:budget-pressure:" + ",".join(cycle["event_id"] for cycle, _ in total_by_cycle),
             related_pattern_ids=component_ids,
         )
+        _mark_composite(
+            pressure,
+            composite_type="post_income_behavior_with_budget_pressure",
+            related_pattern_ids=component_ids,
+            direction="worsening",
+            evidence_summary=(
+                "Ein belastbares Post-Income-Ausgabenmuster faellt mit "
+                "tatsaechlichem Gesamtbudgetdruck zusammen; eine Kausalitaet "
+                "wird nicht behauptet."
+            ),
+        )
         for component in component_patterns:
             component["eligible_for_coach"] = False
             component["eligible_for_report"] = False
@@ -1676,6 +1963,120 @@ def _category_budget_pressures(
     return pressures
 
 
+def _positive_shadow_composites(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    now: datetime,
+    patterns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build positive evidence only from already validated raw patterns."""
+    composites: list[dict[str, Any]] = []
+    worsening_categories = {
+        _key(pattern.get("category"))
+        for pattern in patterns
+        if pattern.get("direction") == "worsening"
+        and pattern.get("eligible_for_coach")
+        and pattern.get("category")
+    }
+    for pattern in patterns:
+        category_key = _key(pattern.get("category"))
+        if not pattern.get("eligible_for_coach") or category_key in worsening_categories:
+            continue
+        if pattern["pattern_type"] == "category_spending_improving":
+            composites.append(_positive_composite(
+                pattern,
+                composite_type="category_spending_improvement_confirmed",
+                evidence_summary=(
+                    "Die diskretionaeren Ausgaben dieser Kategorie sind ueber "
+                    "mehrere belastbare Monate gesunken."
+                ),
+                relevance_reason=(
+                    "Mehrmonatige Verbesserung der eigenen diskretionaeren "
+                    "Kategorie ist durch aktuelle Daten belegt."
+                ),
+            ))
+        elif pattern["pattern_type"] == "behavior_change_vs_personal_baseline" and pattern.get("direction") == "improving":
+            composites.append(_positive_composite(
+                pattern,
+                composite_type="discretionary_spending_reduction",
+                evidence_summary=(
+                    "Die diskretionaeren Ausgaben liegen belastbar unter der "
+                    "eigenen vergleichbaren Basislinie."
+                ),
+                relevance_reason=(
+                    "Eine Reduktion gegen die eigene Basislinie ist durch "
+                    "vergleichbare Daten belegt."
+                ),
+            ))
+
+    # A recovery claim needs a completed current month and an explicit current
+    # budget; absence of a pressure signal alone is not enough evidence.
+    current_month = now.strftime("%Y-%m")
+    if now.day != monthrange(now.year, now.month)[1]:
+        return composites
+    current_budgets = _historical_budgets(conn, user_id, [current_month])
+    if not current_budgets:
+        return composites
+    current_items = _load_consumption_items(
+        conn,
+        user_id,
+        period_start=now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+        period_end=now,
+    )
+    for pattern in patterns:
+        if pattern["pattern_type"] != "repeated_discretionary_budget_pressure":
+            continue
+        category = str(pattern.get("category") or "").strip()
+        category_key = _key(category)
+        limit = current_budgets.get((category_key, current_month))
+        category_items = [
+            item for item in current_items
+            if item["category_key"] == category_key
+        ]
+        spent = round(sum(float(item["amount"]) for item in category_items), 2)
+        historical_limits = [
+            float(row["monthly_limit"])
+            for row in pattern.get("observations", {}).get(
+                "historical_budget_evidence",
+                [],
+            )
+            if row.get("monthly_limit") is not None
+        ]
+        budgets_comparable = limit is not None and _budgets_are_comparable(
+            historical_limits,
+            float(limit),
+        )
+        if (
+            not pattern.get("eligible_for_coach")
+            or limit is None
+            or not category_items
+            or spent > limit
+            or not budgets_comparable
+        ):
+            continue
+        composites.append(_positive_composite(
+            pattern,
+            composite_type="budget_recovery",
+            evidence_summary=(
+                "Eine zuvor wiederholt belastete diskretionaere Kategorie "
+                "liegt im abgeschlossenen aktuellen Monat wieder im Budget."
+            ),
+            relevance_reason=(
+                "Historischer Budgetdruck und ein abgeschlossener aktueller "
+                "Monat innerhalb des eigenen Budgets sind belegt."
+            ),
+            observations_update={
+                "budget_context": {
+                    "current_limit": round(float(limit), 2),
+                    "historical_limits": sorted(set(historical_limits)),
+                    "comparable": True,
+                },
+            },
+        ))
+    return composites
+
+
 def detect_behavior_patterns(
     conn: sqlite3.Connection,
     user_id: int,
@@ -1818,6 +2219,13 @@ def detect_behavior_patterns(
 
     pressures = _category_budget_pressures(conn, user_id, now=now, items=items)
     patterns.extend(pressures)
+    overall_budget = _overall_budget_status(
+        conn,
+        user_id,
+        items=items,
+        month_keys=[now.strftime("%Y-%m")],
+        current_month=now.strftime("%Y-%m"),
+    ).get(now.strftime("%Y-%m"), {"status": "unknown"})
 
     historical_patterns = _historical_category_patterns(conn, user_id, now=now)
     patterns.extend(historical_patterns)
@@ -1868,6 +2276,13 @@ def detect_behavior_patterns(
             "late_night_discretionary_spending",
         } and pattern["eligible_for_coach"]
     ]
+    improving_categories = {
+        _key(pattern.get("category"))
+        for pattern in patterns
+        if pattern.get("direction") == "improving"
+        and pattern.get("eligible_for_coach")
+        and pattern.get("category")
+    }
     for pressure in pressures:
         matching = [
             behavior for behavior in behavior_patterns
@@ -1886,6 +2301,10 @@ def detect_behavior_patterns(
         behavior_category = _key(behavior.get("category"))
         if behavior_category != _key(pressure.get("category")):
             continue
+        if behavior_category in improving_categories:
+            # Keep contradictory raw evidence visible, but do not manufacture
+            # a negative composite from a simultaneous improvement signal.
+            continue
         combined_ids = sorted(set(behavior["source_ids"]) | set(pressure["source_ids"]))
         combined_items = [items_by_id[source_id] for source_id in combined_ids if source_id in items_by_id]
         combined = _pattern(
@@ -1901,13 +2320,34 @@ def detect_behavior_patterns(
                 "behavior_type": behavior["pattern_type"],
                 "budget_used_fraction": pressure["observations"]["budget_used_fraction"],
             },
-            pattern_strength="high",
-            financial_relevance="high",
-            relevance_reason="Belastbares Verhaltensmuster trifft auf konkreten Kategorie-Budgetdruck.",
-            eligible_for_coach=True,
-            eligible_for_report=True,
+            pattern_strength=(
+                "high" if overall_budget.get("status") == "under_pressure" else "medium"
+            ),
+            financial_relevance=(
+                "high" if overall_budget.get("status") == "under_pressure" else "low"
+            ),
+            relevance_reason=(
+                "Belastbares Verhaltensmuster trifft auf konkreten Kategorie-Budgetdruck "
+                "und negativen Gesamtbudgetstatus."
+                if overall_budget.get("status") == "under_pressure"
+                else "Verhaltensmuster faellt mit Kategorie-Budgetdruck zusammen; "
+                "der Gesamtbudgetstatus ist nicht belastbar negativ."
+            ),
+            eligible_for_coach=overall_budget.get("status") == "under_pressure",
+            eligible_for_report=overall_budget.get("status") == "under_pressure",
             stable_period_key=f"{stable_window_key}|{now.strftime('%Y-%m')}",
             related_pattern_ids=[behavior["pattern_id"], pressure["pattern_id"]],
+        )
+        _mark_composite(
+            combined,
+            composite_type="behavior_driving_budget_pressure",
+            related_pattern_ids=[behavior["pattern_id"], pressure["pattern_id"]],
+            direction="worsening",
+            evidence_summary=(
+                "Ein belastbares Verhaltenspattern faellt zeitlich mit "
+                "konkretem Kategorie-Budgetdruck zusammen; eine Kausalitaet "
+                "wird nicht behauptet."
+            ),
         )
         behavior["eligible_for_coach"] = False
         behavior["eligible_for_report"] = False
@@ -1916,6 +2356,15 @@ def detect_behavior_patterns(
         pressure["eligible_for_report"] = False
         pressure["superseded_by_pattern_id"] = combined["pattern_id"]
         patterns.append(combined)
+
+    patterns.extend(_positive_shadow_composites(
+        conn,
+        user_id,
+        now=now,
+        patterns=patterns,
+    ))
+
+    _arbitrate_composites(patterns)
 
     return sorted(patterns, key=lambda pattern: (
         pattern["period_start"],
@@ -1943,10 +2392,54 @@ def build_shadow_inspector(
         user_id,
         now=effective_now,
     )
+    patterns = detect_behavior_patterns(conn, user_id, now=effective_now)
+    composites = [
+        pattern for pattern in patterns
+        if pattern.get("pattern_kind") == "composite_behavior_pattern"
+    ]
+    primary_composites = [
+        pattern for pattern in composites
+        if pattern.get("primary_composite")
+    ]
+    historical_budget_status: dict[str, Any] = {}
+    for pattern in composites:
+        historical_budget_status.update(
+            pattern.get("observations", {}).get(
+                "historical_overall_budget_status",
+                {},
+            )
+        )
+    conflict_reasons = sorted({
+        str(pattern["conflict_reason"])
+        for pattern in composites
+        if pattern.get("conflicting_evidence") and pattern.get("conflict_reason")
+    })
     return {
         "mode": "shadow",
         "coach_v3_affected": False,
-        "patterns": detect_behavior_patterns(conn, user_id, now=effective_now),
+        "patterns": patterns,
+        "composite_patterns": composites,
+        "positive_patterns": [
+            pattern for pattern in patterns
+            if pattern.get("direction") == "improving"
+            and pattern.get("pattern_kind") == "composite_behavior_pattern"
+        ],
+        "primary_composite": (
+            primary_composites[0]["pattern_id"]
+            if len(primary_composites) == 1
+            else None
+        ),
+        "superseded_by": {
+            pattern["pattern_id"]: pattern["superseded_by_pattern_id"]
+            for pattern in composites
+            if pattern.get("superseded_by_pattern_id")
+        },
+        "conflicting_evidence": bool(conflict_reasons),
+        "conflict_reason": conflict_reasons[0] if conflict_reasons else None,
+        "budget_context": {
+            "historical_overall_budget_status": historical_budget_status,
+        },
+        "historical_overall_budget_status": historical_budget_status,
         "post_income_shadow": post_income_context,
         "similar_recurring_shadow": similar_service_context,
     }
