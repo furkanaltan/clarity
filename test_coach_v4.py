@@ -96,6 +96,9 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
     def patterns(self):
         return detect_behavior_patterns(self.conn, 1, now=self.NOW)
 
+    def patterns_at(self, now):
+        return detect_behavior_patterns(self.conn, 1, now=now)
+
     def insights(self):
         return build_behavior_insights(self.patterns())
 
@@ -420,11 +423,23 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.add_month(5, "2026-08", (80, 80))
         self.add_month(7, "2026-09", (20, 20))
         positive = [
-            pattern for pattern in self.patterns()
+            pattern for pattern in self.patterns_at(datetime(2026, 9, 30, 23, 59, 59))
             if pattern.get("composite_type") == "budget_recovery"
         ]
         self.assertEqual(len(positive), 1)
         self.assertEqual(positive[0]["direction"], "improving")
+
+    def test_budget_recovery_not_complete_at_last_day_noon(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month)
+        self.add_month(1, "2026-06", (80, 80))
+        self.add_month(3, "2026-07", (80, 80))
+        self.add_month(5, "2026-08", (80, 80))
+        self.add_month(7, "2026-09", (20, 20))
+        self.assertFalse(any(
+            pattern.get("composite_type") == "budget_recovery"
+            for pattern in self.patterns()
+        ))
 
     def test_budget_recovery_is_suppressed_when_current_budget_was_increased(self):
         for month in ("2026-06", "2026-07", "2026-08"):
@@ -446,7 +461,8 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.add_month(3, "2026-07", (90, 90))
         self.add_month(5, "2026-08", (110, 110))
         self.add_month(7, "2026-09", (40, 40))
-        patterns = self.patterns()
+        full_close = datetime(2026, 9, 30, 23, 59, 59)
+        patterns = self.patterns_at(full_close)
         composites = [
             pattern for pattern in patterns
             if pattern.get("pattern_kind") == "composite_behavior_pattern"
@@ -454,14 +470,42 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         ]
         self.assertTrue(any(pattern.get("composite_type") == "budget_recovery" for pattern in composites))
         self.assertTrue(any(
-            pattern.get("composite_type") == "repeated_discretionary_overspend"
+            pattern.get("composite_type") in {
+                "repeated_discretionary_overspend",
+                "repeated_discretionary_budget_pressure",
+            }
             for pattern in composites
         ))
-        self.assertTrue(all(pattern["conflicting_evidence"] for pattern in composites))
-        self.assertTrue(all(not pattern["eligible_for_coach"] for pattern in composites))
-        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
-        self.assertTrue(inspector["conflicting_evidence"])
-        self.assertIsNone(inspector["primary_composite"])
+        recovery_id = next(
+            pattern["pattern_id"]
+            for pattern in composites
+            if pattern.get("composite_type") == "budget_recovery"
+        )
+        historical = next(
+            pattern for pattern in composites
+            if pattern.get("composite_type") != "budget_recovery"
+        )
+        self.assertTrue(historical.get("superseded_by_pattern_id") == recovery_id)
+        self.assertTrue(next(
+            pattern["eligible_for_coach"]
+            for pattern in composites
+            if pattern.get("composite_type") == "budget_recovery"
+        ))
+        inspector = build_shadow_inspector(self.conn, 1, now=full_close)
+        self.assertFalse(inspector["conflicting_evidence"])
+        self.assertEqual(
+            inspector["primary_composite"],
+            next(
+                pattern["pattern_id"]
+                for pattern in composites
+                if pattern.get("composite_type") == "budget_recovery"
+            ),
+        )
+        self.assertFalse(any(
+            pattern.get("composite_type") == "repeated_discretionary_overspend"
+            and pattern.get("primary_composite")
+            for pattern in composites
+        ))
 
     def test_three_weak_months_do_not_create_high_composite(self):
         for month in ("2026-06", "2026-07", "2026-08"):
@@ -895,6 +939,40 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(len(current_pressure), 1)
         self.assertFalse(current_pressure[0]["eligible_for_coach"])
         self.assertIn(current_pressure[0]["pattern_id"], combined[0]["related_pattern_ids"])
+
+    def test_suppressed_historical_composite_cannot_supersede_current_pressure(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month, 100)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08"), 1):
+            self.add_financial_snapshot(month)
+            self.add_month(index * 10, month, (300,))
+        self.add_expense(50, "Restaurant", "Restaurants", 220, "2026-09-15 12:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        historical = next(
+            pattern for pattern in inspector["composite_patterns"]
+            if pattern.get("composite_type") in {
+                "repeated_discretionary_overspend",
+                "repeated_discretionary_budget_pressure",
+            }
+        )
+        current = next(
+            pattern for pattern in inspector["patterns"]
+            if pattern["pattern_type"] == "category_budget_pressure"
+        )
+        self.assertFalse(historical["eligible_for_coach"])
+        self.assertFalse(historical.get("primary_composite", False))
+        self.assertTrue(current["eligible_for_coach"])
+        self.assertIsNone(current.get("superseded_by_pattern_id"))
+        self.assertEqual(
+            inspector["primary_coach_insight"],
+            next(
+                insight["insight_id"]
+                for insight in inspector["insight_candidates"]
+                if insight["primary_coach_insight"]
+                and insight["insight_type"] == "budget_attention"
+                and insight["period_start"] == "2026-09-01"
+            ),
+        )
 
     def test_overlapping_same_category_composites_have_one_primary(self):
         for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
@@ -1619,6 +1697,72 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         if report_primaries:
             self.assertEqual(inspector["primary_report_insight"], report_primaries[0]["insight_id"])
         self.assertFalse(inspector["coach_v3_affected"])
+
+    def test_shared_salary_evidence_has_one_primary_per_channel(self):
+        self._salary_cycle_fixture()
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        salary_insights = [
+            insight for insight in inspector["insight_candidates"]
+            if insight["insight_type"] == "post_income_pattern"
+        ]
+        self.assertGreaterEqual(len(salary_insights), 2)
+        self.assertEqual(
+            len([insight for insight in salary_insights if insight["primary_coach_insight"]]),
+            1,
+        )
+        self.assertTrue(any(
+            insight["suppression_reason"] == "superseded"
+            for insight in salary_insights
+        ))
+        self.assertTrue(
+            set(salary_insights[0]["source_ids"]) & set(salary_insights[1]["source_ids"])
+        )
+
+    def test_insight_arbitration_is_insert_order_independent(self):
+        self._salary_cycle_fixture()
+        patterns = self.patterns()
+        normal = build_behavior_insights(patterns)
+        reversed_order = build_behavior_insights(list(reversed(patterns)))
+        normal_primary = [
+            insight["insight_id"] for insight in normal
+            if insight["primary_coach_insight"]
+        ]
+        reversed_primary = [
+            insight["insight_id"] for insight in reversed_order
+            if insight["primary_coach_insight"]
+        ]
+        self.assertEqual(normal_primary, reversed_primary)
+
+    def test_recovery_keeps_current_period_and_historical_trace(self):
+        for month in ("2026-06", "2026-07", "2026-08", "2026-09"):
+            self.add_budget("Restaurants", month)
+        self.add_month(1, "2026-06", (80, 80))
+        self.add_month(3, "2026-07", (90, 90))
+        self.add_month(5, "2026-08", (110, 110))
+        self.add_month(7, "2026-09", (40, 40))
+        full_close = datetime(2026, 9, 30, 23, 59, 59)
+        inspector = build_shadow_inspector(self.conn, 1, now=full_close)
+        recovery = next(
+            pattern for pattern in inspector["composite_patterns"]
+            if pattern.get("composite_type") == "budget_recovery"
+        )
+        self.assertEqual(recovery["period_start"], "2026-09-01")
+        self.assertEqual(recovery["period_end"], "2026-09-30")
+        self.assertEqual(recovery["observations"]["current_period_start"], "2026-09-01")
+        self.assertEqual(recovery["observations"]["current_period_end"], "2026-09-30")
+        self.assertEqual(
+            recovery["observations"]["historical_pattern_id"],
+            recovery["related_pattern_ids"][0],
+        )
+        recovery_insight = next(
+            insight for insight in inspector["insight_candidates"]
+            if insight["primary_pattern_id"] == recovery["pattern_id"]
+        )
+        self.assertTrue(recovery_insight["primary_coach_insight"])
+        self.assertIn(
+            recovery["observations"]["historical_pattern_id"],
+            recovery_insight["source_pattern_ids"],
+        )
 
     def test_mid_month_budget_creation_is_not_applied_to_earlier_history(self):
         self.conn.execute("ALTER TABLE category_budgets ADD COLUMN created_at TEXT")

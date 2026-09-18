@@ -523,10 +523,26 @@ def _positive_composite(
     evidence_summary: str,
     relevance_reason: str,
     observations_update: dict[str, Any] | None = None,
+    items: list[dict[str, Any]] | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    stable_period_key: str | None = None,
 ) -> dict[str, Any]:
     """Create a positive shadow object without changing source evidence."""
-    source_ids = list(pattern["source_ids"])
-    period_key = f"{composite_type}:{pattern['period_start']}:{pattern['period_end']}"
+    source_ids = [
+        str(item["source_id"])
+        for item in (items if items is not None else [])
+    ] or list(pattern["source_ids"])
+    result_period_start = period_start or datetime.fromisoformat(
+        f"{pattern['period_start']} 00:00:00"
+    )
+    result_period_end = period_end or datetime.fromisoformat(
+        f"{pattern['period_end']} 23:59:59"
+    )
+    period_key = stable_period_key or (
+        f"{composite_type}:{result_period_start.date().isoformat()}:"
+        f"{result_period_end.date().isoformat()}"
+    )
     result = dict(pattern)
     result["observations"] = {
         **dict(pattern.get("observations") or {}),
@@ -535,6 +551,17 @@ def _positive_composite(
     result["pattern_id"] = _stable_id(
         "composite_behavior_pattern", source_ids, period_key,
     )
+    result["period_start"] = result_period_start.date().isoformat()
+    result["period_end"] = result_period_end.date().isoformat()
+    result["source_ids"] = sorted(source_ids)
+    if items is not None:
+        result["amount_total"] = round(
+            sum(float(item["amount"]) for item in items),
+            2,
+        )
+        timestamps = [item["occurred_at"] for item in items if item.get("occurred_at")]
+        result["first_seen_at"] = min(timestamps) if timestamps else None
+        result["last_seen_at"] = max(timestamps) if timestamps else None
     result["pattern_type"] = "composite_behavior_pattern"
     result["pattern_kind"] = "composite_behavior_pattern"
     result["composite_type"] = composite_type
@@ -604,10 +631,16 @@ def _budgets_are_comparable(
 
 def _arbitrate_composites(patterns: list[dict[str, Any]]) -> None:
     """Resolve overlapping shadow composites without changing raw evidence."""
-    composites = [
+    composites = sorted([
         pattern for pattern in patterns
         if pattern.get("pattern_kind") == "composite_behavior_pattern"
-    ]
+    ], key=lambda pattern: (
+        pattern.get("category") or "",
+        pattern.get("period_start") or "",
+        pattern.get("period_end") or "",
+        pattern.get("composite_type") or "",
+        pattern.get("pattern_id") or "",
+    ))
     for pattern in composites:
         pattern["primary_composite"] = False
 
@@ -627,7 +660,16 @@ def _arbitrate_composites(patterns: list[dict[str, Any]]) -> None:
 
     for group in groups:
         directions = {pattern.get("direction") for pattern in group}
-        conflict = "worsening" in directions and "improving" in directions
+        conflict = (
+            "worsening" in directions
+            and "improving" in directions
+            and any(
+                _date_range_overlaps(left, right)
+                for index, left in enumerate(group)
+                for right in group[index + 1:]
+                if left.get("direction") != right.get("direction")
+            )
+        )
         if conflict:
             for pattern in group:
                 pattern["conflicting_evidence"] = True
@@ -640,15 +682,17 @@ def _arbitrate_composites(patterns: list[dict[str, Any]]) -> None:
         reliable = [pattern for pattern in group if pattern.get("eligible_for_coach")]
         if not reliable:
             continue
-        winner = max(
-            reliable,
-            key=lambda pattern: (
-                _composite_relevance_rank(pattern),
-                _composite_specificity_rank(pattern),
-                pattern.get("pattern_strength") == "high",
-                pattern.get("pattern_id") or "",
-            ),
-        )
+        winner = max(reliable, key=lambda pattern: (
+            _composite_relevance_rank(pattern),
+            pattern.get("confidence_class") == "high",
+            pattern.get("pattern_strength") == "high",
+            pattern.get("period_end") or "",
+            _composite_specificity_rank(pattern),
+            bool(pattern.get("category")),
+            pattern.get("category") or "",
+            pattern.get("merchant") or "",
+            pattern.get("pattern_id") or "",
+        ))
         winner["primary_composite"] = True
         superseded = []
         for pattern in group:
@@ -922,6 +966,10 @@ def _insight_report_section(insight_type: str) -> str:
 
 
 def _insights_share_scope(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_source_ids = set(str(source_id) for source_id in left.get("source_ids") or [])
+    right_source_ids = set(str(source_id) for source_id in right.get("source_ids") or [])
+    if left_source_ids & right_source_ids:
+        return True
     left_category = _key(left.get("category"))
     right_category = _key(right.get("category"))
     if left_category != right_category:
@@ -944,7 +992,14 @@ def _arbitrate_insights(insights: list[dict[str, Any]]) -> None:
         insight["primary_report_insight"] = False
 
     groups: list[list[dict[str, Any]]] = []
-    for insight in insights:
+    ordered_insights = sorted(insights, key=lambda insight: (
+        insight.get("category") or "",
+        insight.get("period_start") or "",
+        insight.get("period_end") or "",
+        insight.get("insight_type") or "",
+        insight.get("insight_id") or "",
+    ))
+    for insight in ordered_insights:
         matching = [group for group in groups if any(
             _insights_share_scope(insight, other) for other in group
         )]
@@ -957,15 +1012,19 @@ def _arbitrate_insights(insights: list[dict[str, Any]]) -> None:
             target.extend(other)
             groups.remove(other)
 
-    def ranking(insight: dict[str, Any]) -> tuple[int, int, bool, str]:
+    def ranking(insight: dict[str, Any]) -> tuple[int, int, bool, str, int, str, str, str]:
         return (
             _composite_relevance_rank(insight),
+            int(insight.get("confidence_class") == "high"),
+            insight.get("pattern_strength") == "high",
+            insight.get("period_end") or "",
             int(insight["insight_type"] in {
                 "budget_attention",
                 "spending_trend_worsening",
                 "spending_trend_improving",
             }),
-            insight.get("pattern_strength") == "high",
+            bool(insight.get("category")),
+            insight.get("category") or "",
             insight.get("insight_id") or "",
         )
 
@@ -1035,6 +1094,9 @@ def build_behavior_insights(
                 insight_key,
             ),
             "insight_type": insight_type,
+            "source_ids": sorted(set(
+                str(source_id) for source_id in pattern.get("source_ids") or []
+            )),
             "source_pattern_ids": source_pattern_ids,
             "primary_pattern_id": pattern["pattern_id"],
             "period_start": pattern["period_start"],
@@ -2604,7 +2666,8 @@ def _positive_shadow_composites(
     # A recovery claim needs a completed current month and an explicit current
     # budget; absence of a pressure signal alone is not enough evidence.
     current_month = now.strftime("%Y-%m")
-    if now.day != monthrange(now.year, now.month)[1]:
+    current_month_end = _month_end(current_month)
+    if now < current_month_end:
         return composites
     current_budgets = _historical_budgets(conn, user_id, [current_month])
     if not current_budgets:
@@ -2660,10 +2723,32 @@ def _positive_shadow_composites(
             observations_update={
                 "budget_context": {
                     "current_limit": round(float(limit), 2),
+                    "current_spent": spent,
                     "historical_limits": sorted(set(historical_limits)),
                     "comparable": True,
                 },
+                "historical_pattern_id": pattern["pattern_id"],
+                "historical_period_start": pattern["period_start"],
+                "historical_period_end": pattern["period_end"],
+                "current_period_start": current_items[0]["occurred_at"].replace(
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                ).date().isoformat(),
+                "current_period_end": now.date().isoformat(),
             },
+            items=category_items,
+            period_start=now.replace(
+                day=1,
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            ),
+            period_end=now,
+            stable_period_key=f"budget-recovery:{pattern['pattern_id']}:{current_month}",
         ))
     return composites
 
@@ -2893,6 +2978,8 @@ def detect_behavior_patterns(
         if not matching:
             continue
         combined = matching[0]
+        if not combined.get("eligible_for_coach"):
+            continue
         combined["related_pattern_ids"] = sorted(
             set(combined["related_pattern_ids"]) | {pressure["pattern_id"]}
         )
