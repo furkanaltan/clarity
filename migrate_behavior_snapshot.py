@@ -94,6 +94,17 @@ def run(db_path: Path, *, apply: bool) -> dict:
     }
 
 
+def result_is_valid(result: dict, *, apply: bool) -> bool:
+    """Validate either a dry-run inspection or an applied schema result."""
+    valid = (
+        result["integrity_check"] == "ok"
+        and result["foreign_key_errors"] == 0
+    )
+    if apply:
+        valid = valid and result["table_after"] and result["queue_index_after"]
+    return bool(valid)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Rov.E Coach V4 snapshot schema migration")
     parser.add_argument("--db", required=True, type=Path)
@@ -103,13 +114,7 @@ def main() -> int:
     args = parser.parse_args()
     result = run(args.db, apply=bool(args.apply))
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    valid = (
-        result["integrity_check"] == "ok"
-        and result["foreign_key_errors"] == 0
-        and result["table_after"]
-        and result["queue_index_after"]
-    )
-    return 0 if valid else 1
+    return 0 if result_is_valid(result, apply=bool(args.apply)) else 1
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import rove_behavior_patterns as behavior_patterns
-from migrate_behavior_snapshot import run as run_snapshot_migration
+from migrate_behavior_snapshot import result_is_valid, run as run_snapshot_migration
 from rove_behavior_snapshot import (
     BEHAVIOR_CONTRACT_VERSION,
     BEHAVIOR_ENGINE_VERSION,
@@ -245,6 +245,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertFalse(dry["table_before"])
             self.assertFalse(dry["table_after"])
             self.assertFalse(dry["changed"])
+            self.assertTrue(result_is_valid(dry, apply=False))
 
             first = run_snapshot_migration(db_path, apply=True)
             second = run_snapshot_migration(db_path, apply=True)
@@ -253,6 +254,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertTrue(first["queue_index_after"])
             self.assertEqual(first["integrity_check"], "ok")
             self.assertEqual(first["foreign_key_errors"], 0)
+            self.assertTrue(result_is_valid(first, apply=True))
             self.assertFalse(second["changed"])
             self.assertEqual(second["backup"], "")
 
