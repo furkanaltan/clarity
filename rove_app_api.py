@@ -37,6 +37,10 @@ from argon2.low_level import Type
 import rove_account_delete_cleanup as account_delete_cleanup
 from rove_log_safety import safe_exception_summary
 from rove_behavior_patterns import build_shadow_inspector
+from rove_behavior_snapshot import (
+    delete_behavior_snapshot,
+    invalidate_behavior_snapshot,
+)
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -290,6 +294,16 @@ DATA_EXPORT_TABLES = (
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_BYTES + 512 * 1024
 logger = logging.getLogger("rove-app-api")
+
+
+def invalidate_behavior_snapshot_safely(
+    conn: sqlite3.Connection, user_id: int, reason: str
+) -> None:
+    """Queue shadow recomputation without making a financial write fail."""
+    try:
+        invalidate_behavior_snapshot(conn, user_id, reason)
+    except sqlite3.Error:
+        logger.warning("Coach-V4-Snapshot konnte nicht invalidiert werden")
 
 
 @contextmanager
@@ -4614,6 +4628,7 @@ def complete_app_onboarding():
                 ),
             )
             conn.execute("UPDATE users SET payday = ? WHERE user_id = ?", (payday or None, user_id))
+            invalidate_behavior_snapshot_safely(conn, user_id, "income_plan_changed")
             conn.execute(
                 """UPDATE app_accounts SET display_name = ?, updated_at = CURRENT_TIMESTAMP
                      WHERE user_id = ?""",
@@ -5000,6 +5015,7 @@ def update_profile():
                     "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
                     (etf_savings, cash_savings, user_id),
                 )
+                invalidate_behavior_snapshot_safely(conn, user_id, "savings_plan_changed")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -5246,6 +5262,7 @@ def update_contracts():
                 )
 
         sync_app_contract_details(conn, user_id)
+        invalidate_behavior_snapshot_safely(conn, user_id, "contract_changed")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
     return jsonify({"ok": True, **live_data})
@@ -5277,6 +5294,7 @@ def update_budgets():
                                  source = excluded.source""",
                 (user_id, category, limit, source, active_month),
             )
+        invalidate_behavior_snapshot_safely(conn, user_id, "budget_changed")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -5599,6 +5617,7 @@ def transfer_financial_accounts_endpoint():
                VALUES (?, 'transfer', ?, 'Umbuchung', ?, ?, ?)""",
             (user_id, amount, source_id, target_id, request_id),
         )
+        invalidate_behavior_snapshot_safely(conn, user_id, "transfer_changed")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
     return jsonify({"ok": True, "idempotent_replay": False, **live_data})
@@ -5813,6 +5832,7 @@ def update_property():
             (json.dumps(details, ensure_ascii=False), user_id),
         )
         sync_contract_fixed_costs(conn, user_id)
+        invalidate_behavior_snapshot_safely(conn, user_id, "fixed_costs_changed")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -7132,6 +7152,7 @@ def commit_screenshot_import():
             )
         elif not pilot:
             save_app_cash_accounts(conn, user_id, balances)
+        invalidate_behavior_snapshot_safely(conn, user_id, "expense_imported")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -7573,6 +7594,7 @@ def delete_user_rows_for_tombstone(conn: sqlite3.Connection, user_id: int) -> No
                 conn.execute(f"DELETE FROM app_session_pins WHERE session_id IN (SELECT id FROM app_sessions WHERE account_id IN ({placeholders}))", account_ids)
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
     delete_account_scoped_artifacts(conn, user_id, emails)
+    delete_behavior_snapshot(conn, user_id)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_financial_accounts'").fetchone():
         delete_financial_account_data(conn, user_id)
     delete_provider_data_for_user(conn, user_id)
@@ -7735,6 +7757,7 @@ def delete_account():
             )
             conn.execute(f"DELETE FROM app_sessions WHERE account_id IN ({placeholders})", account_ids)
         delete_account_scoped_artifacts(conn, token_user_id, emails)
+        delete_behavior_snapshot(conn, token_user_id)
 
         # Diese Kindtabelle muss vor portfolio_holdings weg; danach entfernt die dynamische
         # user_id-Schleife auch neue, spaeter hinzukommende Rov.E-Tabellen automatisch.
@@ -7903,6 +7926,7 @@ def create_income():
             )
         movement_id = cur.lastrowid
         live_data = build_live_app_data(conn, user_id)
+        invalidate_behavior_snapshot_safely(conn, user_id, "income_changed")
         finish_cash_request(conn, user_id, request_id, {
             "ok": True, "id": movement_id, "amount": applied, "label": label,
             "accounts": balances, "available": live_data["sts"]["available"],
@@ -7946,6 +7970,7 @@ def update_expense_category(expense_id: int):
             (bot_category, expense_id, user_id),
         )
         save_category_rule(conn, user_id, str(row["merchant"] or ""), bot_category)
+        invalidate_behavior_snapshot_safely(conn, user_id, "expense_category_changed")
         conn.commit()
 
     return jsonify({
@@ -8032,6 +8057,7 @@ def delete_expense(expense_id: int):
                 (cash_movement["id"], user_id),
             )
 
+        invalidate_behavior_snapshot_safely(conn, user_id, "expense_deleted")
         balances = app_cash_accounts(conn, user_id)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
@@ -8131,6 +8157,7 @@ def delete_cash_movement(movement_id: int):
             "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
             (movement_id, user_id),
         )
+        invalidate_behavior_snapshot_safely(conn, user_id, "cash_movement_deleted")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 

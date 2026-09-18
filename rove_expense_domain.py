@@ -19,6 +19,7 @@ from rove_financial_accounts import (
     require_financial_account,
 )
 from rove_score import award_tracking_points
+from rove_behavior_snapshot import invalidate_behavior_snapshot
 
 
 NON_CONSUMPTION_MOVEMENTS = {
@@ -224,6 +225,9 @@ def create_expense_for_user(
         if {"last_activity_date", "streak_days", "clarity_points"}.issubset(user_columns)
         else None
     )
+    # Snapshot invalidation is deliberately asynchronous: the expense write
+    # remains the source transaction and no V4 computation runs here.
+    invalidate_behavior_snapshot(conn, user_id, "expense_changed")
     return {
         "id": expense_id,
         "amount": amount,

@@ -17,6 +17,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from rove_behavior_snapshot import BEHAVIOR_CONTRACT_VERSION
+
 from rove_expense_domain import (
     NON_CONSUMPTION_MOVEMENTS,
     canonical_expense_movement_kinds,
@@ -1200,7 +1202,7 @@ def build_behavior_insights(
     ))
 
 
-VISIBLE_BEHAVIOR_CONTRACT_VERSION = 1
+VISIBLE_BEHAVIOR_CONTRACT_VERSION = BEHAVIOR_CONTRACT_VERSION
 VISIBLE_CONTRACT_FORBIDDEN_FIELDS = frozenset({
     "source_ids", "source_pattern_ids", "primary_pattern_id",
     "superseded_by_pattern_id", "insight_id", "pattern_id", "composite_id",
@@ -3617,6 +3619,8 @@ def build_shadow_inspector(
             for insight in insights
         ],
     }
+    from rove_behavior_snapshot import get_behavior_snapshot_status
+
     return {
         "mode": "shadow",
         "coach_v3_affected": False,
@@ -3647,6 +3651,7 @@ def build_shadow_inspector(
         "similar_recurring_shadow": similar_service_context,
         "insight_candidates": insights,
         "visible_contract_preview": _visible_behavior_preview(insights),
+        "snapshot_status": get_behavior_snapshot_status(conn, user_id, now=effective_now),
         "evidence_graph": evidence_graph,
         "primary_coach_insight": (
             max(primary_coach_insights, key=primary_key)["insight_id"]
