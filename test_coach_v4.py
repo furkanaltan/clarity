@@ -729,6 +729,12 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertTrue(pattern["eligible_for_coach"])
         self.assertEqual(pattern["direction"], "worsening")
         self.assertEqual(pattern["observations"]["absolute_change_eur"], 80.0)
+        insight = next(
+            item for item in self.insights()
+            if item["insight_type"] == "spending_trend_worsening"
+        )
+        self.assertEqual(insight["evidence_metrics"]["absolute_change_eur"], 80.0)
+        self.assertIn("relative_change", insight["evidence_metrics"])
 
     def test_single_event_outlier_is_not_coach_eligible_as_stable_worsening(self):
         self.add_month(1, "2026-06", (40, 40))
@@ -1033,6 +1039,13 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(pattern["observations"]["salary_cycles"], 3)
         self.assertIn(pattern["observations"]["window_days"], (3, 7))
         self.assertEqual(pattern["observations"]["available_windows"], [3, 7])
+        self.assertEqual(pattern["observations"]["cycles_detected"], 3)
+        self.assertEqual(pattern["observations"]["cycles_used"], 3)
+        self.assertEqual(pattern["observations"]["source_quality"], "reliable_event_time")
+        self.assertEqual(
+            {row["window_days"] for row in pattern["observations"]["window_metrics"]},
+            {3, 7},
+        )
         self.assertTrue(pattern["observations"]["temporal_correlation_only"])
         self.assertTrue(pattern["eligible_for_coach"])
 
@@ -1402,6 +1415,20 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertEqual(insight["period_start"], "2026-09-01")
         self.assertEqual(insight["period_end"], "2026-09-30")
 
+    def test_weekday_evidence_survives_and_weekday_hint_is_not_weekend(self):
+        for index, day in enumerate((7, 14, 21), 1):
+            self.add_expense(
+                index, "Lieferando", "Restaurants", 35,
+                f"2026-09-{day:02d} 19:00:00",
+            )
+        insight = next(
+            insight for insight in self.insights()
+            if insight["insight_type"] == "repeated_spending_pattern"
+            and insight["coach_eligible"]
+        )
+        self.assertEqual(insight["evidence_metrics"]["weekday"], 0)
+        self.assertEqual(insight["coach_timing_hint"], "next_checkin")
+
     def test_behavior_budget_composite_preserves_both_evidence_sides(self):
         self.configure_budget_plan(income=3000, fixed_costs=1000)
         self.add_budget("Restaurants", "2026-09", 100)
@@ -1448,6 +1475,9 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
         self.assertIsNone(insight["period_start"])
         self.assertIsNone(insight["period_end"])
         self.assertFalse(insight["coach_eligible"])
+        self.assertEqual(insight["source_pattern_ids"], [])
+        self.assertTrue(insight["diagnostic_source_ids"])
+        self.assertEqual(inspector["evidence_graph"]["dangling_source_pattern_ids"], [])
 
     def test_healthy_historical_budget_is_not_a_coach_insight(self):
         for month in ("2026-06", "2026-07", "2026-08"):
@@ -1886,6 +1916,129 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
             "VALUES (99,1,'income',3000,NULL,'2026-05-01 09:00:00','Gehalt',NULL)"
         )
         self.assertTrue(self.of_type("post_income_discretionary_spike"))
+
+    def test_old_unreliable_salary_row_with_only_two_good_cycles_fails_closed(self):
+        self.configure_budget_plan()
+        for index, month in enumerate(("2026-06", "2026-07"), 1):
+            self.add_income(index, created_at=f"{month}-01 09:00:00")
+            self.add_expense(100 + index, "Amazon", "Shopping", 150, f"{month}-02 12:00:00")
+            self.add_expense(200 + index, "Zalando", "Shopping", 150, f"{month}-03 12:00:00")
+        self.conn.execute(
+            "INSERT INTO app_cash_movements "
+            "(id,user_id,kind,amount,expense_id,created_at,label,occurred_at) "
+            "VALUES (99,1,'income',3000,NULL,'2026-05-01 09:00:00','Gehalt',NULL)"
+        )
+        for index, day in enumerate((10, 11, 12), 1):
+            self.add_expense(300 + index, "Restaurant", "Restaurants", 10, f"2026-05-{day:02d} 12:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        self.assertEqual(inspector["post_income_shadow"]["cycles_used"], 2)
+        self.assertFalse(any(
+            pattern["pattern_type"].startswith("post_income_")
+            for pattern in self.patterns()
+        ))
+
+    def test_annual_frequency_accepts_german_yearly_label(self):
+        self.add_contract("c1", "Netflix", 120, frequency="jährlich")
+        self.add_contract("c2", "Disney+", 15, frequency="monatlich")
+        pattern = self.of_type("similar_recurring_services")[0]
+        self.assertEqual(pattern["observations"]["monthly_normalized_total"], 25.0)
+
+    def test_small_absolute_trend_is_not_high_relevance_from_percent_only(self):
+        self._add_historical_months(((2, 3), (7, 8), (17, 18)))
+        trend = next(
+            pattern for pattern in self.patterns()
+            if pattern["pattern_type"] == "category_spending_worsening"
+        )
+        self.assertEqual(trend["financial_relevance"], "medium")
+
+    def test_non_finite_amounts_are_excluded_fail_closed(self):
+        self.add_expense(1, "Bad NaN", "Shopping", "nan", "2026-09-01 12:00:00")
+        self.add_expense(2, "Bad Inf", "Shopping", float("inf"), "2026-09-02 12:00:00")
+        self.add_expense(3, "Bad NegInf", "Shopping", float("-inf"), "2026-09-03 12:00:00")
+        self.assertEqual(self.patterns(), [])
+
+    def test_positive_composites_map_to_existing_insight_types(self):
+        self._add_historical_months(((90, 90), (70, 70), (45, 45)))
+        patterns = self.patterns()
+        positive_ids = {
+            pattern["pattern_id"] for pattern in patterns
+            if pattern.get("composite_type") in {
+                "category_spending_improvement_confirmed",
+                "discretionary_spending_reduction",
+            }
+        }
+        insights = build_behavior_insights(patterns)
+        self.assertTrue(positive_ids)
+        self.assertTrue(any(
+            insight["primary_pattern_id"] in positive_ids
+            and insight["insight_type"] == "spending_trend_improving"
+            for insight in insights
+        ))
+
+    def test_coach_and_report_eligibility_are_independent(self):
+        patterns = []
+        states = ((True, False), (False, True), (True, True), (False, False))
+        for index, (coach, report) in enumerate(states, 1):
+            patterns.append({
+                "pattern_id": f"pattern-{index}",
+                "pattern_type": "category_spending_worsening",
+                "pattern_kind": "raw",
+                "source_ids": [str(index)],
+                "related_pattern_ids": [],
+                "period_start": "2026-06-01",
+                "period_end": f"2026-08-{index:02d}",
+                "category": f"Category {index}",
+                "merchant": None,
+                "direction": "worsening",
+                "observations": {"months_compared": 3, "monthly_amounts": []},
+                "amount_total": 100.0,
+                "pattern_strength": "medium",
+                "financial_relevance": "medium",
+                "eligible_for_coach": coach,
+                "eligible_for_report": report,
+                "conflicting_evidence": False,
+                "superseded_by_pattern_id": None,
+            })
+        insights = build_behavior_insights(patterns)
+        self.assertEqual(
+            [(insight["coach_eligible"], insight["report_eligible"]) for insight in insights],
+            list(states),
+        )
+
+    def test_evidence_graph_has_no_dangling_pattern_references(self):
+        self._salary_cycle_fixture()
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        graph = inspector["evidence_graph"]
+        self.assertEqual(graph["dangling_source_pattern_ids"], [])
+        pattern_ids = set(graph["pattern_ids"])
+        for path in graph["paths"]:
+            self.assertTrue(set(path["source_pattern_ids"]).issubset(pattern_ids))
+
+    def test_primary_tiebreak_prefers_latest_period_before_id(self):
+        patterns = []
+        for index, period_end in enumerate(("2026-08-10", "2026-08-20"), 1):
+            patterns.append({
+                "pattern_id": f"z-id-{index}",
+                "pattern_type": "category_spending_worsening",
+                "source_ids": [str(index)],
+                "related_pattern_ids": [],
+                "period_start": "2026-08-01",
+                "period_end": period_end,
+                "category": "Restaurants",
+                "merchant": None,
+                "direction": "worsening",
+                "observations": {"months_compared": 3, "monthly_amounts": []},
+                "amount_total": 100.0,
+                "pattern_strength": "medium",
+                "financial_relevance": "medium",
+                "eligible_for_coach": True,
+                "eligible_for_report": False,
+                "conflicting_evidence": False,
+                "superseded_by_pattern_id": None,
+            })
+        insights = build_behavior_insights(patterns)
+        primary = next(insight for insight in insights if insight["primary_coach_insight"])
+        self.assertEqual(primary["primary_pattern_id"], "z-id-2")
 
     def _add_historical_months(self, values):
         for index, (month, amounts) in enumerate(
