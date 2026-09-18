@@ -1,5 +1,5 @@
 [Unit]
-Description=Rov.E daily ETF and stock valuation
+Description=Rov.E daily market valuation
 Wants=network-online.target
 After=network-online.target
 

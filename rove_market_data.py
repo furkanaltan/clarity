@@ -738,8 +738,17 @@ def apply_market_quote(
         raise
 
 
+def _safe_refresh_error(exc: BaseException) -> str:
+    """Keep refresh diagnostics bounded and free of provider payloads/secrets."""
+    text = str(exc).strip()
+    if text and re.fullmatch(r"[a-z0-9_]+", text):
+        return text
+    return exc.__class__.__name__
+
+
 def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None) -> dict:
-    """Refresh all enabled positions; one bad symbol never blocks the remaining portfolio."""
+    """Refresh all enabled positions; one bad symbol never blocks the portfolio."""
+    started_at = datetime.now(timezone.utc)
     path = str(db_path)
     with sqlite3.connect(path, timeout=20) as conn:
         conn.row_factory = sqlite3.Row
@@ -753,6 +762,13 @@ def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None
         ).fetchall()
     updated = 0
     failures: list[dict[str, str]] = []
+    provider_failures: dict[str, int] = {}
+
+    def record_failure(provider: str, exc: BaseException | str) -> None:
+        error = exc if isinstance(exc, str) else _safe_refresh_error(exc)
+        failures.append({"provider": provider, "error": error})
+        provider_failures[provider] = provider_failures.get(provider, 0) + 1
+
     fx_cache: dict[str, float] = {}
     crypto_rows = [
         row for row in rows
@@ -769,15 +785,13 @@ def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None
             )
         except Exception as exc:
             crypto_batch_failed = True
-            failures.extend({
-                "symbol": str(row["price_symbol"] or ""),
-                "error": str(exc) or exc.__class__.__name__,
-            } for row in crypto_rows)
+            for _row in crypto_rows:
+                record_failure("coinmarketcap", exc)
     for row in crypto_rows:
         quote = crypto_quotes.get(str(row["provider_asset_id"] or ""))
         if not quote:
             if not crypto_batch_failed:
-                failures.append({"symbol": str(row["price_symbol"] or ""), "error": "crypto_asset_not_found"})
+                record_failure("coinmarketcap", "crypto_asset_not_found")
             continue
         try:
             with sqlite3.connect(path, timeout=20) as conn:
@@ -785,7 +799,7 @@ def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None
                 apply_market_quote(conn, row["id"], quote, expected_symbol=row["price_symbol"])
             updated += 1
         except Exception as exc:
-            failures.append({"symbol": str(row["price_symbol"] or ""), "error": str(exc) or exc.__class__.__name__})
+            record_failure("coinmarketcap", exc)
 
     crypto_ids = {int(row["id"]) for row in crypto_rows}
     for row in rows:
@@ -802,13 +816,17 @@ def refresh_all_market_positions(db_path: str | Path, api_key: str | None = None
         except Exception as exc:
             # Eine einzelne falsche Position oder ein kurzzeitiger DB-Konflikt darf
             # die Bewertungen aller anderen Nutzer nicht verhindern.
-            failures.append({
-                "symbol": str(row["price_symbol"] or ""),
-                "error": str(exc) or exc.__class__.__name__,
-            })
+            provider = str(row["market_data_provider"] or "").strip().lower() or "market_data"
+            record_failure(provider, exc)
+    finished_at = datetime.now(timezone.utc)
     return {
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
+        "positions_considered": len(rows),
         "updated": updated,
         "failed": len(failures),
         "total": len(rows),
+        "provider_failures": provider_failures,
         "failures": failures,
     }

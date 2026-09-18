@@ -14,7 +14,13 @@ def main() -> int:
     args = parser.parse_args()
 
     result = refresh_all_market_positions(args.db)
-    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    print(json.dumps({
+        key: result[key]
+        for key in (
+            "started_at", "finished_at", "duration_seconds",
+            "positions_considered", "updated", "failed", "provider_failures",
+        )
+    }, ensure_ascii=True, sort_keys=True))
 
     # One bad user ticker must not block valid portfolios. A complete provider
     # outage should still be visible as a failed systemd run.

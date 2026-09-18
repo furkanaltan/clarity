@@ -418,6 +418,8 @@ def health():
         "ok": True,
         "service": "rove-app-api",
         "marketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
+        "stockMarketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
+        "cryptoMarketDataConfigured": bool(os.getenv("COINMARKETCAP_API_KEY", "").strip()),
         "europeMarketDataConfigured": bool(os.getenv("LEEWAY_API_TOKEN", "").strip()),
         "screenshotImportConfigured": bool(OPENAI_API_KEY),
     })
