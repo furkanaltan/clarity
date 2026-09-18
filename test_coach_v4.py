@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 import sqlite3
 import unittest
 from datetime import datetime
@@ -7,6 +9,7 @@ from datetime import datetime
 from rove_behavior_patterns import (
     build_behavior_insights,
     build_shadow_inspector,
+    build_visible_behavior_insight,
     detect_behavior_patterns,
 )
 
@@ -2004,6 +2007,169 @@ class CoachV4ShadowPatternTests(unittest.TestCase):
             [(insight["coach_eligible"], insight["report_eligible"]) for insight in insights],
             list(states),
         )
+
+    def test_visible_contract_projects_budget_attention_only(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Restaurants", "2026-09", 100)
+        self.add_expense(1, "Restaurant A", "Restaurants", 1000, "2026-09-01 09:00:00")
+        self.add_expense(2, "Restaurant B", "Restaurants", 1128, "2026-09-15 12:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        insight = next(
+            item for item in inspector["insight_candidates"]
+            if item["insight_type"] == "budget_attention"
+            and item["primary_coach_insight"]
+        )
+        payload = build_visible_behavior_insight(insight)
+        self.assertEqual(payload["visible_behavior_contract_version"], 1)
+        self.assertEqual(payload["category_display"], "Restaurants")
+        self.assertEqual(payload["amount_current"], 2128.0)
+        self.assertEqual(payload["budget_amount"], 100.0)
+        self.assertEqual(payload["amount_over_budget"], 2028.0)
+        self.assertEqual(payload["overall_budget_status"], "under_pressure")
+
+    def test_healthy_budget_suppression_has_no_visible_dto(self):
+        self.configure_budget_plan(income=3000, fixed_costs=1000)
+        self.add_budget("Sonstiges", "2026-09", 100)
+        self.add_expense(1, "Sonstiges", "Sonstiges", 228, "2026-09-14 12:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        insight = next(
+            item for item in inspector["insight_candidates"]
+            if item["insight_type"] == "budget_attention"
+        )
+        self.assertEqual(insight["suppression_reason"], "healthy_overall_budget")
+        self.assertIsNone(build_visible_behavior_insight(insight))
+
+    def test_visible_repeated_spending_keeps_counts_and_period(self):
+        for index, day in enumerate((6, 13, 20), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
+        insight = next(
+            item for item in self.insights()
+            if item["insight_type"] == "repeated_spending_pattern"
+            and item["primary_coach_insight"]
+        )
+        payload = build_visible_behavior_insight(insight)
+        self.assertEqual(payload["merchant_display"], "Lieferando")
+        self.assertEqual(payload["transaction_count"], 3)
+        self.assertEqual(payload["active_days"], 3)
+        self.assertEqual(payload["amount_current"], 105.0)
+        self.assertEqual(payload["period_start"], "2026-09-01")
+        self.assertEqual(payload["period_end"], "2026-09-30")
+
+    def test_visible_trend_keeps_monthly_amounts_without_internal_quality(self):
+        self._add_historical_months(((45, 45), (62.5, 62.5), (85, 85)))
+        insight = next(
+            item for item in self.insights()
+            if item["insight_type"] == "spending_trend_worsening"
+            and item["primary_coach_insight"]
+        )
+        payload = build_visible_behavior_insight(insight)
+        self.assertEqual(
+            payload["monthly_amounts"],
+            [
+                {"month": "2026-06", "amount": 90.0},
+                {"month": "2026-07", "amount": 125.0},
+                {"month": "2026-08", "amount": 170.0},
+            ],
+        )
+        self.assertNotIn("quality", json.dumps(payload))
+
+    def test_visible_salary_has_no_raw_label_or_causal_claim(self):
+        self._salary_cycle_fixture()
+        insight = next(
+            item for item in self.insights()
+            if item["insight_type"] == "post_income_pattern"
+            and item["primary_coach_insight"]
+        )
+        payload = build_visible_behavior_insight(insight)
+        self.assertNotIn("Gehalt", json.dumps(payload))
+        self.assertNotIn("cause", payload)
+        self.assertNotIn("salary_triggered_spending", payload)
+        self.assertEqual(payload["cycles_used"], 3)
+        self.assertEqual(payload["window_days"], 3)
+        self.assertEqual(payload["amount_delta"], 160.0)
+
+    def test_visible_subscription_annual_labels_share_monthly_contract(self):
+        payloads = []
+        for frequency in ("annual", "yearly", "jährlich", "jahrlich"):
+            self.conn.execute("DELETE FROM app_contracts")
+            for index, name in enumerate(("Netflix", "Disney+", "Paramount+", "WOW TV", "RTL+"), 1):
+                self.add_contract(f"c{index}", name, 120, frequency=frequency)
+            insight = next(
+                item for item in self.insights()
+                if item["insight_type"] == "subscription_cluster"
+                and item["primary_coach_insight"]
+            )
+            payload = build_visible_behavior_insight(insight)
+            payloads.append(payload["monthly_normalized_total"])
+            self.assertEqual(payload["monthly_normalized_total"], 50.0)
+            self.assertNotIn("amount_total", payload)
+        self.assertEqual(payloads, [50.0, 50.0, 50.0, 50.0])
+
+    def test_visible_contract_has_no_internal_ids_or_debug_fields(self):
+        self._salary_cycle_fixture()
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        forbidden = {
+            "source_ids", "source_pattern_ids", "primary_pattern_id", "insight_id",
+            "suppression_reason", "coach_eligible", "report_eligible", "iban",
+            "account_id", "token", "salary_source_label",
+        }
+
+        def keys(value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield key
+                    yield from keys(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from keys(child)
+
+        for preview in inspector["visible_contract_preview"]["payloads"]:
+            self.assertTrue(forbidden.isdisjoint(set(keys(preview))))
+
+    def test_visible_essential_behavior_is_fail_closed(self):
+        for index, day in enumerate((6, 13, 20), 1):
+            self.add_expense(index, "Lidl", "Lebensmittel", 35, f"2026-09-{day:02d} 19:00:00")
+        for insight in self.insights():
+            if insight["insight_type"] == "repeated_spending_pattern":
+                self.assertIsNone(build_visible_behavior_insight(insight))
+
+    def test_visible_contract_missing_metric_and_nonfinite_value_fail_closed(self):
+        for index, day in enumerate((6, 13, 20), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
+        insight = next(
+            item for item in self.insights()
+            if item["insight_type"] == "repeated_spending_pattern"
+            and item["primary_coach_insight"]
+        )
+        missing = copy.deepcopy(insight)
+        missing["evidence_metrics"].pop("transaction_count", None)
+        missing["evidence_metrics"].pop("occurrence_date_count", None)
+        self.assertIsNone(build_visible_behavior_insight(missing))
+        nonfinite = copy.deepcopy(insight)
+        nonfinite["evidence_metrics"]["amount_total"] = float("nan")
+        self.assertIsNone(build_visible_behavior_insight(nonfinite))
+
+    def test_visible_contract_unknown_insight_type_is_default_deny(self):
+        self.assertIsNone(build_visible_behavior_insight({
+            "insight_type": "future_internal_experiment",
+            "coach_eligible": True,
+            "primary_coach_insight": True,
+            "evidence_metrics": {"amount_total": 100.0},
+        }))
+
+    def test_visible_contract_is_deterministic_and_shadow_only(self):
+        for index, day in enumerate((6, 13, 20), 1):
+            self.add_expense(index, "Lieferando", "Restaurants", 35, f"2026-09-{day:02d} 19:00:00")
+        inspector = build_shadow_inspector(self.conn, 1, now=self.NOW)
+        insight = next(
+            item for item in inspector["insight_candidates"]
+            if item["insight_type"] == "repeated_spending_pattern"
+            and item["primary_coach_insight"]
+        )
+        self.assertEqual(build_visible_behavior_insight(insight), build_visible_behavior_insight(insight))
+        self.assertEqual(inspector["mode"], "shadow")
+        self.assertFalse(inspector["coach_v3_affected"])
+        self.assertEqual(inspector["visible_contract_preview"]["contract_version"], 1)
 
     def test_evidence_graph_has_no_dangling_pattern_references(self):
         self._salary_cycle_fixture()

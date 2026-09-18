@@ -1200,6 +1200,267 @@ def build_behavior_insights(
     ))
 
 
+VISIBLE_BEHAVIOR_CONTRACT_VERSION = 1
+VISIBLE_CONTRACT_FORBIDDEN_FIELDS = frozenset({
+    "source_ids", "source_pattern_ids", "primary_pattern_id",
+    "superseded_by_pattern_id", "insight_id", "pattern_id", "composite_id",
+    "diagnostic_source_ids", "suppression_reason", "coach_suppression_reason",
+    "report_suppression_reason", "coach_eligible", "report_eligible",
+    "primary_coach_insight", "primary_report_insight", "salary_source_label",
+    "provider_id", "account_id", "iban", "secret", "token",
+})
+
+_VISIBLE_CATEGORY_LABELS = {
+    "restaurant": "Restaurants", "restaurants": "Restaurants", "essen": "Essen",
+    "essen gehen": "Essen", "shopping": "Shopping", "mode": "Mode",
+    "freizeit": "Freizeit", "entertainment": "Unterhaltung", "sonstiges": "Sonstiges",
+    "lebensmittel": "Lebensmittel", "drogerie": "Drogerie", "gesundheit": "Gesundheit",
+    "apotheke": "Apotheke", "medizin": "Medizin", "pflege": "Pflege",
+    "tankstelle": "Tankstelle", "streaming_video": "Streaming", "streaming_music": "Musik",
+    "sport_streaming": "Sport-Streaming", "fitness": "Fitness", "cloud_software": "Cloud und Software",
+    "news_media": "Medien", "gaming": "Gaming", "abo": "Abonnements",
+}
+_VISIBLE_DIRECTIONS = frozenset({"worsening", "improving"})
+_VISIBLE_TIMING_HINTS = frozenset({
+    "weekend_prevention", "next_checkin", "immediate", "post_salary_window", "month_end",
+})
+_VISIBLE_INSIGHT_TYPES = frozenset({
+    "budget_attention",
+    "repeated_spending_pattern",
+    "spending_trend_worsening",
+    "spending_trend_improving",
+    "post_income_pattern",
+    "subscription_cluster",
+    "budget_recovery",
+})
+
+
+def _visible_category_label(value: object) -> str | None:
+    return _VISIBLE_CATEGORY_LABELS.get(_key(value))
+
+
+def _visible_merchant_label(value: object) -> str | None:
+    """Keep merchant display bounded; rendering remains text-only downstream."""
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text or any(ord(char) < 32 for char in text):
+        return None
+    return text[:80].rstrip() or None
+
+
+def _visible_number(metrics: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key not in metrics:
+            continue
+        value = _finite_float(metrics.get(key))
+        if value is not None:
+            return round(value, 2)
+    return None
+
+
+def _visible_count(metrics: dict[str, Any], *keys: str) -> int | None:
+    value = _visible_number(metrics, *keys)
+    if value is None or value < 0 or not value.is_integer():
+        return None
+    return int(value)
+
+
+def _visible_monthly_amounts(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_values = metrics.get("monthly_amounts") or metrics.get("monthly_values")
+    if not isinstance(raw_values, list):
+        return []
+    values: list[dict[str, Any]] = []
+    for raw_value in raw_values:
+        if not isinstance(raw_value, dict):
+            continue
+        month = str(raw_value.get("month") or "")
+        amount = _finite_float(raw_value.get("amount"))
+        if not re.fullmatch(r"\d{4}-\d{2}", month) or amount is None:
+            continue
+        values.append({"month": month, "amount": round(amount, 2)})
+    return values
+
+
+def _visible_values_are_finite(value: object) -> bool:
+    if isinstance(value, dict):
+        return all(_visible_values_are_finite(child) for child in value.values())
+    if isinstance(value, list):
+        return all(_visible_values_are_finite(child) for child in value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return math.isfinite(float(value))
+    return True
+
+
+def _visible_required_metrics(insight_type: str, payload: dict[str, Any]) -> tuple[str, ...]:
+    del payload
+    required = {
+        "budget_attention": (
+            "category_display", "amount_current", "budget_amount",
+            "amount_over_budget", "overall_budget_status",
+        ),
+        "repeated_spending_pattern": ("period_start", "period_end"),
+        "spending_trend_worsening": ("category_display", "months_compared"),
+        "spending_trend_improving": ("category_display", "months_compared"),
+        "post_income_pattern": (
+            "cycles_used", "window_days", "amount_current",
+            "amount_reference", "amount_delta",
+        ),
+        "subscription_cluster": (
+            "category_display", "service_count", "monthly_normalized_total",
+        ),
+        "budget_recovery": (
+            "category_display", "period_start", "period_end",
+            "reference_period_start", "reference_period_end", "amount_current",
+            "amount_reference", "amount_delta",
+        ),
+    }
+    return required.get(insight_type, ())
+
+
+def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Project one eligible internal insight into the default-deny DTO."""
+    insight_type = insight.get("insight_type")
+    if not isinstance(insight_type, str):
+        return None, "unknown_insight_type"
+    if insight_type not in _VISIBLE_INSIGHT_TYPES:
+        return None, "unsupported_insight_type"
+    if not insight.get("coach_eligible"):
+        return None, "not_coach_eligible"
+    if not insight.get("primary_coach_insight"):
+        return None, "not_primary_coach_insight"
+    if insight.get("conflicting_evidence"):
+        return None, "conflicting_evidence"
+    if insight.get("suppression_reason"):
+        return None, "hard_or_channel_suppressed"
+    metrics = insight.get("evidence_metrics")
+    if not isinstance(metrics, dict):
+        return None, "missing_evidence_metrics"
+    if not _visible_values_are_finite(metrics):
+        return None, "nonfinite_evidence"
+
+    category_display = _visible_category_label(insight.get("category"))
+    merchant_display = (
+        _visible_merchant_label(insight.get("merchant"))
+        if insight_type == "repeated_spending_pattern" else None
+    )
+    payload: dict[str, Any] = {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": insight_type,
+    }
+    if category_display:
+        payload["category_display"] = category_display
+    if merchant_display:
+        payload["merchant_display"] = merchant_display
+    for field in ("period_start", "period_end"):
+        value = insight.get(field)
+        if isinstance(value, str) and value:
+            payload[field] = value
+    if insight.get("direction") in _VISIBLE_DIRECTIONS:
+        payload["direction"] = insight["direction"]
+    if insight.get("coach_timing_hint") in _VISIBLE_TIMING_HINTS:
+        payload["coach_timing_hint"] = insight["coach_timing_hint"]
+    if insight.get("confidence_class") in {"high", "medium", "low"}:
+        payload["confidence_class"] = insight["confidence_class"]
+
+    monthly_amounts = _visible_monthly_amounts(metrics)
+    if monthly_amounts:
+        payload["monthly_amounts"] = monthly_amounts
+    amount_current = _visible_number(metrics, "amount_spent", "current_amount_eur", "post_income_average_eur")
+    amount_reference = _visible_number(metrics, "reference_amount_eur", "personal_baseline_average_eur")
+    amount_delta = _visible_number(metrics, "amount_over", "absolute_change_eur", "difference_eur", "absolute_delta_eur")
+    if insight_type == "repeated_spending_pattern":
+        amount_current = _visible_number(metrics, "amount_total")
+    elif insight_type == "subscription_cluster":
+        amount_current = _visible_number(metrics, "monthly_normalized_total")
+    elif insight_type in {"spending_trend_worsening", "spending_trend_improving"} and monthly_amounts:
+        amount_reference = monthly_amounts[0]["amount"]
+        amount_current = monthly_amounts[-1]["amount"]
+    elif insight_type == "budget_recovery":
+        budget_context = metrics.get("budget_context")
+        if isinstance(budget_context, dict):
+            amount_current = _visible_number(budget_context, "current_spent")
+            payload["budget_amount"] = _visible_number(budget_context, "current_limit")
+        payload["reference_period_start"] = metrics.get("historical_period_start")
+        payload["reference_period_end"] = metrics.get("historical_period_end")
+    for field, value in (
+        ("amount_current", amount_current),
+        ("amount_reference", amount_reference),
+        ("amount_delta", amount_delta),
+    ):
+        if value is not None:
+            payload[field] = value
+
+    budget_amount = _visible_number(metrics, "monthly_limit", "budget_monthly_limit")
+    if budget_amount is not None:
+        payload["budget_amount"] = budget_amount
+    amount_over_budget = _visible_number(metrics, "amount_over", "budget_amount_over")
+    if amount_over_budget is not None:
+        payload["amount_over_budget"] = amount_over_budget
+    if metrics.get("overall_budget_status") in {"healthy", "under_pressure"}:
+        payload["overall_budget_status"] = metrics["overall_budget_status"]
+
+    for field, value in (
+        ("transaction_count", _visible_count(metrics, "transaction_count", "behavior_transaction_count")),
+        ("active_days", _visible_count(metrics, "active_days", "occurrence_date_count", "behavior_occurrence_date_count", "post_income_active_days")),
+        ("months_compared", _visible_count(metrics, "months_compared")),
+        ("cycles_used", _visible_count(metrics, "cycles_used")),
+        ("window_days", _visible_count(metrics, "window_days")),
+        ("service_count", _visible_count(metrics, "service_count")),
+    ):
+        if value is not None:
+            payload[field] = value
+    monthly_normalized_total = _visible_number(metrics, "monthly_normalized_total")
+    if monthly_normalized_total is not None:
+        payload["monthly_normalized_total"] = monthly_normalized_total
+
+    if insight_type == "repeated_spending_pattern" and not (category_display or merchant_display):
+        return None, "missing_display_subject"
+    if insight_type in {"spending_trend_worsening", "spending_trend_improving", "budget_attention", "budget_recovery"} and not category_display:
+        return None, "missing_controlled_category"
+    if insight_type == "post_income_pattern":
+        payload.pop("category_display", None)
+        payload.pop("merchant_display", None)
+        payload.pop("monthly_amounts", None)
+        if metrics.get("temporal_correlation_only") is not True:
+            return None, "missing_temporal_correlation_guard"
+    if insight_type == "subscription_cluster" and metrics.get("frequency_complete") is not True:
+        return None, "incomplete_frequency"
+    if insight_type in {"spending_trend_worsening", "spending_trend_improving"} and not (payload.get("monthly_amounts") or payload.get("amount_delta") is not None):
+        return None, "missing_trend_metric"
+    if insight_type == "repeated_spending_pattern" and payload.get("transaction_count") is None and payload.get("active_days") is None:
+        return None, "missing_repetition_metric"
+    if insight_type == "budget_recovery" and not all(payload.get(field) for field in ("reference_period_start", "reference_period_end")):
+        return None, "missing_recovery_reference"
+
+    missing = tuple(field for field in _visible_required_metrics(insight_type, payload) if payload.get(field) is None)
+    if missing:
+        return None, "missing_required_metrics:" + ",".join(missing)
+    if any(field in VISIBLE_CONTRACT_FORBIDDEN_FIELDS for field in payload):
+        return None, "forbidden_field"
+    return payload, None
+
+
+def build_visible_behavior_insight(insight: dict[str, Any]) -> dict[str, Any] | None:
+    """Return only the versioned, default-deny coach-visible projection."""
+    payload, _ = _visible_projection(insight)
+    return payload
+
+
+def _visible_behavior_preview(insights: list[dict[str, Any]]) -> dict[str, Any]:
+    previews = []
+    for insight in insights:
+        payload, reason = _visible_projection(insight)
+        previews.append({"eligible": payload is not None, "payload": payload, "reason": reason})
+    eligible_payloads = [preview["payload"] for preview in previews if preview["eligible"]]
+    return {
+        "contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "eligible": bool(eligible_payloads),
+        "payloads": eligible_payloads,
+        "candidates": previews,
+    }
+
+
 def _month_distance(left: str, right: str) -> int:
     left_year, left_month = (int(part) for part in left.split("-"))
     right_year, right_month = (int(part) for part in right.split("-"))
@@ -3385,6 +3646,7 @@ def build_shadow_inspector(
         "post_income_shadow": post_income_context,
         "similar_recurring_shadow": similar_service_context,
         "insight_candidates": insights,
+        "visible_contract_preview": _visible_behavior_preview(insights),
         "evidence_graph": evidence_graph,
         "primary_coach_insight": (
             max(primary_coach_insights, key=primary_key)["insight_id"]
