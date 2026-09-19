@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Rov.E Monthly Check Push every morning
+
+[Timer]
+OnCalendar=*-*-* 09:05:00 Europe/Berlin
+Persistent=true
+Unit=rove-monthly-reminders.service
+
+[Install]
+WantedBy=timers.target
