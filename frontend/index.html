@@ -12289,13 +12289,23 @@ if(location.hash){ const h=location.hash.slice(1); if(h==="empty"){ enterEmptyDe
 // ===================== AUTHENTIFIZIERTE WEB-APP =====================
 // Der Finanz-State wird ausschließlich über die HttpOnly-Session geladen. Demo- und
 // Profilmodus bleiben davon getrennt und senden keine Daten an die produktive API.
+const STARTUP_AUTH_TIMEOUT_MS=8000;
+function requestWithTimeout(url,options={},timeoutMs=STARTUP_AUTH_TIMEOUT_MS){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  return fetch(url,{...options,signal:controller.signal}).finally(()=>clearTimeout(timer));
+}
 async function pinRequest(path,options={}){
-  return fetch(`${PAIR_API_BASE_URL}${path}`,{
-    ...options,
+  const {timeoutMs, ...requestOptions}=options;
+  const request={
+    ...requestOptions,
     credentials:"include",
     cache:"no-store",
-    headers:{"Content-Type":"application/json",...(options.headers||{})}
-  });
+    headers:{"Content-Type":"application/json",...(requestOptions.headers||{})}
+  };
+  return timeoutMs==null
+    ? fetch(`${PAIR_API_BASE_URL}${path}`,request)
+    : requestWithTimeout(`${PAIR_API_BASE_URL}${path}`,request,timeoutMs);
 }
 
 function setPinMessage(message,error=false){
@@ -12461,7 +12471,7 @@ function pinValue(id){ return (document.getElementById(id)?.value||"").replace(/
 
 async function fetchPinStatus(){
   try{
-    const res=await pinRequest("/v1/auth/pin/status");
+    const res=await pinRequest("/v1/auth/pin/status",{timeoutMs:STARTUP_AUTH_TIMEOUT_MS});
     const data=await res.json().catch(()=>({}));
     if(res.status===401)return {state:"login"};
     if(!res.ok||!data.ok)return {state:"login"};
@@ -12896,12 +12906,13 @@ async function requestNewAccountCode(){
 
 async function restoreEmailSession(){
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/me`,{credentials:"include",cache:"no-store"});
+    const res=await requestWithTimeout(`${PAIR_API_BASE_URL}/v1/auth/me`,{credentials:"include",cache:"no-store"});
     const data=await res.json().catch(()=>({}));
     return {valid:!!(res.ok && data.ok), definitive:res.status===401||res.ok};
   }catch(e){ return {valid:false,definitive:false}; }
 }
 
+let STARTUP_AUTH_UNCERTAIN=false;
 async function resolveAppMode(){
   const session=await restoreEmailSession();
   if(session.valid){
@@ -12912,6 +12923,7 @@ async function resolveAppMode(){
   }
   // Do not turn an uncertain server/network state into a local financial view.
   if(!session.definitive){
+    STARTUP_AUTH_UNCERTAIN=true;
     APP_MODE="bridge";
     loadPaydayHistory();
     return APP_MODE;
@@ -13514,6 +13526,14 @@ function installProfileAutosave(){
 (async function(){
   await resolveAppMode();
   installProfileAutosave();
+  const showStartupFallback=(message="Der Start hat zu lange gedauert. Bitte melde dich erneut an.")=>{
+    document.getElementById("app")?.setAttribute("hidden","");
+    showAppConnect();
+    const onboard=document.getElementById("onboard");
+    if(onboard) onboard.hidden=false;
+    const hint=document.getElementById("authHint");
+    if(hint) hint.textContent=message;
+  };
   const removeSplash=()=>{ const s=document.getElementById("splash"); if(s) s.remove();
     const ob=document.getElementById("onboard");
     if(ob) ob.classList.add("go");
@@ -13522,23 +13542,24 @@ function installProfileAutosave(){
       obRender();
       ob.hidden=false;
     }
+    const app=document.getElementById("app");
+    if(app?.hidden && ob?.hidden) showStartupFallback();
   };   // startet die Welcome-Animation erst sichtbar
   if(APP_MODE==="bridge"){
-    const datenDa = Promise.race([
-      bootstrapAuthenticatedApp().then(state => {
-        // bootstrapAuthenticatedApp() hat den vollständigen Live-State bereits geladen und
-        // gerendert. Ein zweiter Refresh vor dem ersten stabilen Paint lässt Karten und Tabbar
-        // kurz neu messen und verursacht beim ersten PIN-Unlock den sichtbaren Höhensprung.
-        if(state==="ready") return true;
-        if(state==="login"){
-          showAppConnect();
-          const onboard=document.getElementById("onboard");
-          if(onboard) onboard.hidden=false;
-        }
-        return null;
-      }),
-      new Promise(r=>setTimeout(r,4000))
-    ]);
+    if(STARTUP_AUTH_UNCERTAIN){
+      showStartupFallback("Rov.E konnte deine Anmeldung gerade nicht prüfen. Bitte versuche es erneut.");
+      const animationDurch = new Promise(r=>setTimeout(r,1750));
+      animationDurch.finally(removeSplash);
+      return;
+    }
+    const datenDa = bootstrapAuthenticatedApp().then(state => {
+      // bootstrapAuthenticatedApp() hat den vollständigen Live-State bereits geladen und
+      // gerendert. Ein zweiter Refresh vor dem ersten stabilen Paint lässt Karten und Tabbar
+      // kurz neu messen und verursacht beim ersten PIN-Unlock den sichtbaren Höhensprung.
+      if(state==="ready") return true;
+      if(state==="login") showStartupFallback("Deine Anmeldung konnte nicht bestätigt werden. Bitte melde dich erneut an.");
+      return null;
+    }).catch(()=>{ showStartupFallback(); return null; });
     const animationDurch = new Promise(r=>setTimeout(r,1750));
     Promise.all([datenDa, animationDurch]).finally(removeSplash);
   } else if(APP_MODE==="profile"){
