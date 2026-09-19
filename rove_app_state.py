@@ -2283,7 +2283,7 @@ def get_app_cash_accounts(
 # stehen unter der Kurve falsche Daten. Zusaetzlich schicken wir die Labels gleich mit (histDates),
 # damit die App gar nicht erst raten muss.
 NET_SERIES_RANGES = {
-    "1W": (7, 1),      # (Spanne in Tagen, Schrittweite in Tagen)
+    "1W": (6, 1),      # Heute plus die sechs vorherigen lokalen Kalendertage
     "1M": (30, 1),
     "6M": (182, 7),
     "1J": (365, 30),
@@ -2489,8 +2489,6 @@ def _intraday_chart_points(conn: sqlite3.Connection, user_id: int,
          "WHERE user_id=? AND date(created_at)=?"),
         ("cash", "SELECT id, created_at, CASE WHEN kind='income' THEN amount ELSE -amount END AS delta "
          "FROM app_cash_movements WHERE user_id=? AND date(created_at)=? AND kind IN ('income','fixed')"),
-        ("valuation", "SELECT id, created_at, CASE WHEN direction='out' THEN -amount ELSE amount END AS delta "
-         "FROM investment_events WHERE user_id=? AND date(created_at)=? AND event_type='market_valuation'"),
     ]
     for source, query in queries:
         try:

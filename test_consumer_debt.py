@@ -55,8 +55,8 @@ class ConsumerDebtTests(unittest.TestCase):
 
     def test_net_worth_series_keeps_existing_history_without_consumer_debt(self):
         series, labels = state._net_worth_series(self.conn, 1, 15000)
-        self.assertEqual(len(series["1W"]), 8)
-        self.assertEqual(len(labels["1W"]), 8)
+        self.assertEqual(len(series["1W"]), 7)
+        self.assertEqual(len(labels["1W"]), 7)
 
     def test_current_property_equity_does_not_drift_into_old_series_points(self):
         state.ensure_app_properties_table(self.conn)
@@ -64,7 +64,7 @@ class ConsumerDebtTests(unittest.TestCase):
             "INSERT INTO app_properties(user_id,market_value,remaining_debt) VALUES (1,180000,171000)"
         )
         series, _ = state._net_worth_series(self.conn, 1, 19000)
-        self.assertEqual(series["1W"][:-1], [10.0] * 7)
+        self.assertEqual(series["1W"][:-1], [10.0] * 6)
         self.assertEqual(series["1W"][-1], 19.0)
 
     def test_property_coverage_timestamp_is_additive_and_stable(self):
@@ -116,7 +116,7 @@ class ConsumerDebtTests(unittest.TestCase):
             ((today - state.timedelta(days=2)).isoformat() + " 12:00:00", debt_id),
         )
         series, _ = state._net_worth_series(self.conn, 1, 0)
-        self.assertEqual(series["1W"], [15.0, 15.0, 15.0, -5.0, -5.0, 0.0, 0.0, 0.0])
+        self.assertEqual(series["1W"], [15.0, 15.0, -5.0, -5.0, 0.0, 0.0, 0.0])
 
     def test_legacy_debt_gets_created_at_baseline_without_current_backfill(self):
         ensure_consumer_debt_schema(self.conn)
@@ -295,8 +295,8 @@ class ConsumerDebtTests(unittest.TestCase):
     def test_live_series_does_not_backfill_current_debt(self):
         save_consumer_debt(self.conn, 1, self.payload())
         live = state.build_live_app_data(self.conn, 1)
-        self.assertEqual(len(live["series"]["1W"]), 8)
-        self.assertEqual(live["series"]["1W"][:-1], [15.0] * 7)
+        self.assertEqual(len(live["series"]["1W"]), 7)
+        self.assertEqual(live["series"]["1W"][:-1], [15.0] * 6)
         self.assertEqual(live["series"]["1W"][-1], -5.0)
         self.assertEqual(live["histDates"]["1W"][-1], "Heute")
 

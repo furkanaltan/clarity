@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +78,51 @@ console.log(JSON.stringify(output));
         self.assertEqual(len(points),2)
         self.assertEqual([p['value'] for p in points],[40138,40078])
         self.assertTrue(points[-1]['id'].startswith('expense:'))
+
+    def test_market_valuation_is_excluded_from_1t_but_retained_in_1w(self):
+        before = self.live()
+        today = date.today().isoformat()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute(
+                """INSERT INTO investment_events
+                   (user_id, amount, direction, asset_type, asset_name,
+                    event_type, source, created_at)
+                   VALUES (1, 15.23, 'out', 'market', 'Msci world',
+                           'market_valuation', 'leeway', ?)""",
+                (today + " 07:18:41",),
+            )
+        after = self.live()
+        self.assertEqual(
+            [point["id"] for point in after["chartV2"]["ranges"]["1T"]],
+            [point["id"] for point in before["chartV2"]["ranges"]["1T"]],
+        )
+        self.assertNotEqual(
+            after["chartV2"]["ranges"]["1W"][0]["value"],
+            before["chartV2"]["ranges"]["1W"][0]["value"],
+        )
+
+    def test_1w_has_exactly_seven_calendar_day_buckets(self):
+        live = self.live()
+        points = live["chartV2"]["ranges"]["1W"]
+        self.assertEqual(len(points), 7)
+        self.assertEqual(points[-1]["at"], date.today().isoformat())
+
+    def test_intraday_keeps_income_and_fixed_cost_but_excludes_transfer(self):
+        today = date.today().isoformat()
+        with sqlite3.connect(self.path) as conn:
+            conn.executemany(
+                """INSERT INTO app_cash_movements
+                   (user_id, kind, amount, created_at)
+                   VALUES (1, ?, ?, ?)""",
+                [
+                    ("income", 1000, today + " 08:00:00"),
+                    ("fixed", 25, today + " 09:00:00"),
+                    ("transfer", 300, today + " 10:00:00"),
+                ],
+            )
+        ids = [point["id"] for point in self.live()["chartV2"]["ranges"]["1T"]]
+        self.assertIn("cash:", "|".join(ids))
+        self.assertNotIn("transfer:", "|".join(ids))
 
     def test_clean_browser_local_v_and_range_order_have_no_effect(self):
         live=self.live()
