@@ -39,6 +39,7 @@ from rove_log_safety import safe_exception_summary
 from rove_behavior_patterns import build_shadow_inspector
 from rove_behavior_snapshot import (
     delete_behavior_snapshot,
+    get_behavior_snapshot_metrics,
     invalidate_behavior_snapshot,
 )
 from rove_app_state import (
@@ -444,6 +445,7 @@ def health():
 @app.route("/v1/onboarding", methods=["OPTIONS"])
 @app.route("/v1/admin/overview", methods=["OPTIONS"])
 @app.route("/v1/admin/coach-patterns/<int:target_user_id>", methods=["OPTIONS"])
+@app.route("/v1/admin/coach-snapshot-metrics", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations", methods=["OPTIONS"])
 @app.route("/v1/admin/invitations/<int:invitation_id>", methods=["OPTIONS"])
 @app.route("/v1/admin/access/<int:target_user_id>", methods=["OPTIONS"])
@@ -3503,6 +3505,17 @@ def admin_coach_patterns(target_user_id: int):
             return jsonify({"ok": False, "error": "user_not_found"}), 404
         inspector = build_shadow_inspector(conn, target_user_id)
     return jsonify({"ok": True, "user_id": target_user_id, **inspector})
+
+
+@app.route("/v1/admin/coach-snapshot-metrics", methods=["GET"])
+def admin_coach_snapshot_metrics():
+    """Expose aggregate Coach V4 queue metrics to authorized admins only."""
+    with db() as conn:
+        _, auth_error = authenticated_admin(conn)
+        if auth_error:
+            return auth_error
+        metrics = get_behavior_snapshot_metrics(conn)
+    return jsonify({"ok": True, **metrics})
 
 @app.route("/v1/admin/invitations", methods=["POST"])
 def admin_create_invitation():

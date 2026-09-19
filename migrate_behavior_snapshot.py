@@ -9,10 +9,25 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from rove_behavior_snapshot import SNAPSHOT_TABLE, ensure_behavior_snapshot_table
+from rove_behavior_snapshot import (
+    SNAPSHOT_METRIC_COLUMNS,
+    SNAPSHOT_TABLE,
+    ensure_behavior_snapshot_table,
+)
 
 
 SNAPSHOT_QUEUE_INDEX = "idx_app_behavior_snapshot_queue"
+SNAPSHOT_METRIC_DEFINITIONS = {
+    "metrics_invalidations_received": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_invalidations_coalesced": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_recomputes_avoided_by_coalescing": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_recomputes_started": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_recomputes_completed": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_recomputes_failed": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_recompute_duration_total_ms": "REAL NOT NULL DEFAULT 0",
+    "metrics_recompute_duration_count": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_max_recompute_duration_ms": "REAL NOT NULL DEFAULT 0",
+}
 
 
 def _has_object(conn: sqlite3.Connection, object_type: str, name: str) -> bool:
@@ -23,10 +38,27 @@ def _has_object(conn: sqlite3.Connection, object_type: str, name: str) -> bool:
 
 
 def _schema_state(conn: sqlite3.Connection) -> dict[str, bool]:
+    columns = {
+        str(row[1])
+        for row in conn.execute(f'PRAGMA table_info("{SNAPSHOT_TABLE}")')
+    } if _has_object(conn, "table", SNAPSHOT_TABLE) else set()
     return {
         "table": _has_object(conn, "table", SNAPSHOT_TABLE),
         "queue_index": _has_object(conn, "index", SNAPSHOT_QUEUE_INDEX),
+        "metrics": all(column in columns for column in SNAPSHOT_METRIC_COLUMNS),
     }
+
+
+def _add_metric_columns(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1])
+        for row in conn.execute(f'PRAGMA table_info("{SNAPSHOT_TABLE}")')
+    }
+    for name, definition in SNAPSHOT_METRIC_DEFINITIONS.items():
+        if name not in columns:
+            conn.execute(
+                f'ALTER TABLE "{SNAPSHOT_TABLE}" ADD COLUMN "{name}" {definition}'
+            )
 
 
 def create_backup(db_path: Path) -> Path:
@@ -54,13 +86,14 @@ def run(db_path: Path, *, apply: bool) -> dict:
 
     backup = None
     changed = False
-    if apply and not (before["table"] and before["queue_index"]):
+    if apply and not (before["table"] and before["queue_index"] and before["metrics"]):
         backup = create_backup(db_path)
         with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 ensure_behavior_snapshot_table(conn)
+                _add_metric_columns(conn)
                 integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
                 foreign_key_errors = list(conn.execute("PRAGMA foreign_key_check"))
                 if integrity != "ok" or foreign_key_errors:
@@ -85,8 +118,10 @@ def run(db_path: Path, *, apply: bool) -> dict:
         "backup": str(backup) if backup else "",
         "table_before": before["table"],
         "queue_index_before": before["queue_index"],
+        "metrics_before": before["metrics"],
         "table_after": after["table"],
         "queue_index_after": after["queue_index"],
+        "metrics_after": after["metrics"],
         "changed": changed,
         "integrity_check": integrity,
         "foreign_key_errors": foreign_key_errors,
@@ -101,7 +136,7 @@ def result_is_valid(result: dict, *, apply: bool) -> bool:
         and result["foreign_key_errors"] == 0
     )
     if apply:
-        valid = valid and result["table_after"] and result["queue_index_after"]
+        valid = valid and result["table_after"] and result["queue_index_after"] and result["metrics_after"]
     return bool(valid)
 
 

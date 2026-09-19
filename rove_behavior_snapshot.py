@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,6 +26,17 @@ SNAPSHOT_RECOMPUTE_IDLE = "idle"
 SNAPSHOT_RECOMPUTE_PENDING = "pending"
 SNAPSHOT_RECOMPUTE_RUNNING = "running"
 SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
+SNAPSHOT_METRIC_COLUMNS = (
+    "metrics_invalidations_received",
+    "metrics_invalidations_coalesced",
+    "metrics_recomputes_avoided_by_coalescing",
+    "metrics_recomputes_started",
+    "metrics_recomputes_completed",
+    "metrics_recomputes_failed",
+    "metrics_recompute_duration_total_ms",
+    "metrics_recompute_duration_count",
+    "metrics_max_recompute_duration_ms",
+)
 
 
 def _now_text(now: datetime | None = None) -> str:
@@ -63,6 +75,15 @@ def ensure_behavior_snapshot_table(conn: sqlite3.Connection) -> None:
                 CHECK(recompute_state IN ('idle', 'pending', 'running')),
             invalidation_version INTEGER NOT NULL DEFAULT 0,
             last_error_class TEXT,
+            metrics_invalidations_received INTEGER NOT NULL DEFAULT 0,
+            metrics_invalidations_coalesced INTEGER NOT NULL DEFAULT 0,
+            metrics_recomputes_avoided_by_coalescing INTEGER NOT NULL DEFAULT 0,
+            metrics_recomputes_started INTEGER NOT NULL DEFAULT 0,
+            metrics_recomputes_completed INTEGER NOT NULL DEFAULT 0,
+            metrics_recomputes_failed INTEGER NOT NULL DEFAULT 0,
+            metrics_recompute_duration_total_ms REAL NOT NULL DEFAULT 0,
+            metrics_recompute_duration_count INTEGER NOT NULL DEFAULT 0,
+            metrics_max_recompute_duration_ms REAL NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
@@ -70,6 +91,49 @@ def ensure_behavior_snapshot_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"""CREATE INDEX IF NOT EXISTS idx_{SNAPSHOT_TABLE}_queue
             ON {SNAPSHOT_TABLE}(recompute_state, updated_at)"""
+    )
+
+
+def _snapshot_columns(conn: sqlite3.Connection) -> set[str]:
+    if not _table_exists(conn, SNAPSHOT_TABLE):
+        return set()
+    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{SNAPSHOT_TABLE}")')}
+
+
+def _metrics_available(conn: sqlite3.Connection) -> bool:
+    columns = _snapshot_columns(conn)
+    return all(column in columns for column in SNAPSHOT_METRIC_COLUMNS)
+
+
+def _record_recompute_metrics(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    outcome: str,
+    started_perf: float,
+) -> None:
+    if not _metrics_available(conn):
+        return
+    duration_ms = max(0.0, (time.perf_counter() - started_perf) * 1000.0)
+    conn.execute(
+        f"""UPDATE {SNAPSHOT_TABLE}
+               SET metrics_recompute_duration_total_ms =
+                       metrics_recompute_duration_total_ms + ?,
+                   metrics_recompute_duration_count =
+                       metrics_recompute_duration_count + 1,
+                   metrics_max_recompute_duration_ms = MAX(
+                       metrics_max_recompute_duration_ms, ?
+                   ),
+                   metrics_recomputes_completed = metrics_recomputes_completed + ?,
+                   metrics_recomputes_failed = metrics_recomputes_failed + ?
+             WHERE user_id=?""",
+        (
+            duration_ms,
+            duration_ms,
+            1 if outcome == "completed" else 0,
+            1 if outcome == "failed" else 0,
+            int(user_id),
+        ),
     )
 
 
@@ -156,6 +220,14 @@ def invalidate_behavior_snapshot(
         return False
     now = _now_text()
     _ensure_row(conn, int(user_id), now)
+    current = conn.execute(
+        f"SELECT recompute_state FROM {SNAPSHOT_TABLE} WHERE user_id=?",
+        (int(user_id),),
+    ).fetchone()
+    was_coalesced = bool(current and current[0] in {
+        SNAPSHOT_RECOMPUTE_PENDING,
+        SNAPSHOT_RECOMPUTE_RUNNING,
+    })
     conn.execute(
         f"""UPDATE {SNAPSHOT_TABLE}
             SET status='stale', stale_reason=?, invalidation_version=invalidation_version+1,
@@ -164,6 +236,20 @@ def invalidate_behavior_snapshot(
             WHERE user_id=?""",
         (str(reason)[:120], now, int(user_id)),
     )
+    if _metrics_available(conn):
+        conn.execute(
+            f"""UPDATE {SNAPSHOT_TABLE}
+                SET metrics_invalidations_received = metrics_invalidations_received + 1,
+                    metrics_invalidations_coalesced = metrics_invalidations_coalesced + ?,
+                    metrics_recomputes_avoided_by_coalescing =
+                        metrics_recomputes_avoided_by_coalescing + ?
+                WHERE user_id=?""",
+            (
+                1 if was_coalesced else 0,
+                1 if was_coalesced and current[0] == SNAPSHOT_RECOMPUTE_PENDING else 0,
+                int(user_id),
+            ),
+        )
     return True
 
 
@@ -272,6 +358,13 @@ def _claim_recompute(conn: sqlite3.Connection, user_id: int, now: str) -> int | 
     )
     if cursor.rowcount != 1:
         return None
+    if _metrics_available(conn):
+        conn.execute(
+            f"""UPDATE {SNAPSHOT_TABLE}
+                SET metrics_recomputes_started = metrics_recomputes_started + 1
+                WHERE user_id=?""",
+            (int(user_id),),
+        )
     row = conn.execute(
         f"SELECT invalidation_version FROM {SNAPSHOT_TABLE} WHERE user_id=?", (user_id,)
     ).fetchone()
@@ -285,6 +378,7 @@ def recompute_behavior_snapshot(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Bounded recompute entry point used by a future/background worker."""
+    started_perf = time.perf_counter()
     effective_now = (now or datetime.now()).replace(tzinfo=None)
     started_at = _now_text()
     if not _table_exists(conn, "users"):
@@ -313,6 +407,9 @@ def recompute_behavior_snapshot(
                     SET status='stale', stale_reason='source_changed_during_recompute',
                         recompute_state='pending', updated_at=? WHERE user_id=?""",
                 (_now_text(), int(user_id)),
+            )
+            _record_recompute_metrics(
+                conn, int(user_id), outcome="completed", started_perf=started_perf
             )
             return {"status": "stale", "reason": "source_changed_during_recompute"}
 
@@ -343,6 +440,9 @@ def recompute_behavior_snapshot(
                 claim,
             ),
         )
+        _record_recompute_metrics(
+            conn, int(user_id), outcome="completed", started_perf=started_perf
+        )
         return {"status": "ready", "has_visible_coach_payload": bool(payload)}
     except Exception as exc:  # never persist provider/source data or traceback text
         source_changed = False
@@ -367,6 +467,9 @@ def recompute_behavior_snapshot(
                 WHERE user_id=?""",
             (next_status, next_reason, next_state, type(exc).__name__, _now_text(), int(user_id)),
         )
+        _record_recompute_metrics(
+            conn, int(user_id), outcome="failed", started_perf=started_perf
+        )
         return {
             "status": "stale" if source_changed else "error",
             "reason": next_reason,
@@ -390,6 +493,115 @@ def process_pending_behavior_snapshots(
         {"user_id": int(row[0]), **recompute_behavior_snapshot(conn, int(row[0]), now=now)}
         for row in rows
     ]
+
+
+def _age_seconds(value: object, current: datetime) -> int | None:
+    if not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return max(0, int((current - stamp).total_seconds()))
+
+
+def get_behavior_snapshot_metrics(
+    conn: sqlite3.Connection, now: datetime | None = None
+) -> dict[str, Any]:
+    """Return queue gauges and aggregate counters without recomputing any user."""
+    empty = {
+        "metrics_available": False,
+        "sql_query_count": 0,
+        "pending_users": 0,
+        "running_users": 0,
+        "ready_users": 0,
+        "stale_users": 0,
+        "error_users": 0,
+        "oldest_pending_age_seconds": None,
+        "average_pending_age_seconds": None,
+        "recomputes_started": 0,
+        "recomputes_completed": 0,
+        "recomputes_failed": 0,
+        "average_recompute_duration_ms": None,
+        "max_recompute_duration_ms": None,
+        "invalidations_received": 0,
+        "invalidations_coalesced": 0,
+        "recomputes_avoided_by_coalescing": 0,
+        "coalescing_rate": 0.0,
+    }
+    selected = ["recompute_state", "status", "updated_at", *SNAPSHOT_METRIC_COLUMNS]
+    query_count = 0
+    try:
+        rows = conn.execute(
+            f"SELECT {', '.join(selected)} FROM {SNAPSHOT_TABLE}"
+        ).fetchall()
+        metrics_available = True
+        query_count = 1
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            empty["sql_query_count"] = 1
+            return empty
+        rows = conn.execute(
+            f"SELECT recompute_state, status, updated_at FROM {SNAPSHOT_TABLE}"
+        ).fetchall()
+        metrics_available = False
+        query_count = 2
+    current = now or datetime.now(timezone.utc)
+    pending_ages = [
+        age for row in rows
+        if row[0] == SNAPSHOT_RECOMPUTE_PENDING
+        for age in [_age_seconds(row[2], current)]
+        if age is not None
+    ]
+    result = {
+        **empty,
+        "metrics_available": metrics_available,
+        "sql_query_count": query_count,
+        "pending_users": sum(row[0] == SNAPSHOT_RECOMPUTE_PENDING for row in rows),
+        "running_users": sum(row[0] == SNAPSHOT_RECOMPUTE_RUNNING for row in rows),
+        "ready_users": sum(row[1] == SNAPSHOT_STATUS_READY for row in rows),
+        "stale_users": sum(row[1] == SNAPSHOT_STATUS_STALE for row in rows),
+        "error_users": sum(row[1] == SNAPSHOT_STATUS_ERROR for row in rows),
+        "oldest_pending_age_seconds": max(pending_ages) if pending_ages else None,
+        "average_pending_age_seconds": round(sum(pending_ages) / len(pending_ages), 2)
+        if pending_ages else None,
+    }
+    if not metrics_available:
+        return result
+
+    offsets = {name: 3 + index for index, name in enumerate(SNAPSHOT_METRIC_COLUMNS)}
+    totals = {
+        name: sum(int(row[offsets[name]] or 0) for row in rows)
+        for name in SNAPSHOT_METRIC_COLUMNS
+        if name.endswith(("received", "coalesced", "coalescing", "started", "completed", "failed", "count"))
+    }
+    duration_total = sum(float(row[offsets["metrics_recompute_duration_total_ms"]] or 0) for row in rows)
+    duration_count = sum(int(row[offsets["metrics_recompute_duration_count"]] or 0) for row in rows)
+    max_duration = max(
+        (float(row[offsets["metrics_max_recompute_duration_ms"]] or 0) for row in rows),
+        default=0.0,
+    )
+    received = totals["metrics_invalidations_received"]
+    coalesced = totals["metrics_invalidations_coalesced"]
+    result.update({
+        "recomputes_started": totals["metrics_recomputes_started"],
+        "recomputes_completed": totals["metrics_recomputes_completed"],
+        "recomputes_failed": totals["metrics_recomputes_failed"],
+        "average_recompute_duration_ms": round(duration_total / duration_count, 2)
+        if duration_count else None,
+        "max_recompute_duration_ms": round(max_duration, 2) if duration_count else None,
+        "invalidations_received": received,
+        "invalidations_coalesced": coalesced,
+        "recomputes_avoided_by_coalescing": totals[
+            "metrics_recomputes_avoided_by_coalescing"
+        ],
+        "coalescing_rate": round(coalesced / received, 4) if received else 0.0,
+    })
+    return result
 
 
 def delete_behavior_snapshot(conn: sqlite3.Connection, user_id: int) -> None:

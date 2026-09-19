@@ -19,6 +19,7 @@ from rove_behavior_snapshot import (
     compute_behavior_source_watermark,
     delete_behavior_snapshot,
     ensure_behavior_snapshot_table,
+    get_behavior_snapshot_metrics,
     get_behavior_snapshot_status,
     get_visible_behavior_snapshot,
     invalidate_behavior_snapshot,
@@ -92,6 +93,59 @@ class BehaviorSnapshotTests(unittest.TestCase):
         self.assertEqual(status["status"], SNAPSHOT_STATUS_STALE)
         self.assertEqual(status["recompute_state"], "pending")
 
+    def test_metrics_count_invalidations_and_coalescing_without_recompute(self):
+        invalidate_behavior_snapshot(self.conn, 1, "expense_changed")
+        invalidate_behavior_snapshot(self.conn, 1, "budget_changed")
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        metrics = get_behavior_snapshot_metrics(self.conn, now=self.NOW)
+        self.conn.set_trace_callback(None)
+
+        self.assertEqual(metrics["pending_users"], 1)
+        self.assertEqual(metrics["invalidations_received"], 2)
+        self.assertEqual(metrics["invalidations_coalesced"], 1)
+        self.assertEqual(metrics["recomputes_avoided_by_coalescing"], 1)
+        self.assertEqual(metrics["sql_query_count"], 1)
+        self.assertEqual(len(statements), 1)
+
+    def test_metrics_cover_success_duration_and_failure(self):
+        self.assertEqual(self.recompute()["status"], SNAPSHOT_STATUS_READY)
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["recomputes_started"], 1)
+        self.assertEqual(metrics["recomputes_completed"], 1)
+        self.assertEqual(metrics["recomputes_failed"], 0)
+        self.assertIsNotNone(metrics["average_recompute_duration_ms"])
+        self.assertIsNotNone(metrics["max_recompute_duration_ms"])
+
+        invalidate_behavior_snapshot(self.conn, 1, "expense_changed")
+        with patch.object(behavior_patterns, "build_shadow_inspector", side_effect=RuntimeError("private")):
+            self.assertEqual(
+                recompute_behavior_snapshot(self.conn, 1, now=self.NOW)["status"],
+                SNAPSHOT_STATUS_ERROR,
+            )
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["recomputes_failed"], 1)
+
+    def test_metrics_are_aggregated_across_users(self):
+        self.conn.execute("INSERT INTO users VALUES (2)")
+        invalidate_behavior_snapshot(self.conn, 1, "expense_changed")
+        invalidate_behavior_snapshot(self.conn, 2, "expense_changed")
+        metrics = get_behavior_snapshot_metrics(self.conn, now=self.NOW)
+        self.assertEqual(metrics["pending_users"], 2)
+        self.assertEqual(metrics["invalidations_received"], 2)
+        self.assertGreaterEqual(metrics["oldest_pending_age_seconds"], 0)
+        self.assertGreaterEqual(metrics["average_pending_age_seconds"], 0)
+
+    def test_one_hundred_invalidations_coalesce_to_one_pending_user(self):
+        for index in range(100):
+            invalidate_behavior_snapshot(self.conn, 1, f"change_{index}")
+        metrics = get_behavior_snapshot_metrics(self.conn, now=self.NOW)
+        self.assertEqual(metrics["pending_users"], 1)
+        self.assertEqual(metrics["invalidations_received"], 100)
+        self.assertEqual(metrics["invalidations_coalesced"], 99)
+        self.assertEqual(metrics["recomputes_avoided_by_coalescing"], 99)
+        self.assertEqual(metrics["recomputes_started"], 0)
+
     def test_recompute_publishes_one_versioned_visible_payload(self):
         result = self.recompute()
         self.assertEqual(result["status"], SNAPSHOT_STATUS_READY)
@@ -156,6 +210,10 @@ class BehaviorSnapshotTests(unittest.TestCase):
             "UPDATE app_behavior_snapshot SET recompute_state=? WHERE user_id=1",
             (SNAPSHOT_RECOMPUTE_RUNNING,),
         )
+        invalidate_behavior_snapshot(self.conn, 1, "running_change")
+        metrics = get_behavior_snapshot_metrics(self.conn, now=self.NOW)
+        self.assertEqual(metrics["invalidations_coalesced"], 1)
+        self.assertEqual(metrics["recomputes_avoided_by_coalescing"], 0)
         self.assertEqual(self.recompute()["status"], "already_running")
 
     def test_pending_processor_is_bounded_and_deduplicated(self):
@@ -252,6 +310,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertTrue(first["changed"])
             self.assertTrue(first["table_after"])
             self.assertTrue(first["queue_index_after"])
+            self.assertTrue(first["metrics_after"])
             self.assertEqual(first["integrity_check"], "ok")
             self.assertEqual(first["foreign_key_errors"], 0)
             self.assertTrue(result_is_valid(first, apply=True))
@@ -274,6 +333,54 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertEqual([row for row in before_tables if row[0] != "app_behavior_snapshot"],
                              [row for row in after_tables if row[0] != "app_behavior_snapshot"])
             self.assertEqual(before_expense, after_expense)
+
+    def test_canonical_migration_upgrades_existing_snapshot_metrics(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "legacy-snapshot.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE users (user_id INTEGER PRIMARY KEY);
+                    INSERT INTO users VALUES (1);
+                    CREATE TABLE app_behavior_snapshot (
+                        user_id INTEGER PRIMARY KEY,
+                        snapshot_version INTEGER NOT NULL,
+                        engine_version TEXT NOT NULL,
+                        behavior_contract_version INTEGER NOT NULL,
+                        generated_at TEXT,
+                        source_watermark TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL CHECK(status IN ('ready', 'stale', 'error')),
+                        stale_reason TEXT,
+                        primary_coach_insight_id TEXT,
+                        primary_report_insight_id TEXT,
+                        visible_coach_payload_json TEXT,
+                        recompute_state TEXT NOT NULL DEFAULT 'idle'
+                            CHECK(recompute_state IN ('idle', 'pending', 'running')),
+                        invalidation_version INTEGER NOT NULL DEFAULT 0,
+                        last_error_class TEXT,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX idx_app_behavior_snapshot_queue
+                        ON app_behavior_snapshot(recompute_state, updated_at);
+                    """
+                )
+
+            result = run_snapshot_migration(db_path, apply=True)
+            self.assertTrue(result["changed"])
+            self.assertTrue(result["metrics_after"])
+            self.assertTrue(result_is_valid(result, apply=True))
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(app_behavior_snapshot)")
+                }
+            self.assertIn("metrics_recomputes_started", columns)
+            self.assertIn("metrics_max_recompute_duration_ms", columns)
 
     def test_delete_cleanup_removes_snapshot(self):
         self.recompute()
