@@ -42,6 +42,7 @@ from rove_behavior_snapshot import (
     get_behavior_snapshot_metrics,
     invalidate_behavior_snapshot,
 )
+from rove_visible_coach_v4 import get_visible_coach_v4, get_visible_pilot_metrics
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -3320,6 +3321,9 @@ def current_app_state():
         # The identity is derived from the authenticated HttpOnly session above;
         # expose it only as an additive consistency marker for the frontend.
         state["user_id"] = int(user_id)
+        # V4 remains server-gated and default-off. This nullable additive field is
+        # ignored by the existing frontend until a separately reviewed UI pilot.
+        state["coach_v4_visible"] = get_visible_coach_v4(conn, user_id)
         coach_announcement = claim_coach_announcement(
             conn,
             user_id,
@@ -3515,7 +3519,7 @@ def admin_coach_snapshot_metrics():
         if auth_error:
             return auth_error
         metrics = get_behavior_snapshot_metrics(conn)
-    return jsonify({"ok": True, **metrics})
+    return jsonify({"ok": True, **metrics, "visible_pilot": get_visible_pilot_metrics()})
 
 @app.route("/v1/admin/invitations", methods=["POST"])
 def admin_create_invitation():

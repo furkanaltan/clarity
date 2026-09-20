@@ -135,6 +135,23 @@ Produktiv beobachtete Environment-Dateien:
 
 Die Inhalte wurden nicht gelesen.
 
+### Coach V4 sichtbarer Pilot
+
+Der serverseitige sichtbare V4-Gate ist standardmäßig deaktiviert. Für einen
+kontrollierten Pilot werden ausschließlich diese nicht sensitiven Schalter aus
+der API-Umgebung gelesen:
+
+- `ROVE_COACH_V4_VISIBLE_ENABLED=1` aktiviert den Gate grundsätzlich.
+- `ROVE_COACH_V4_VISIBLE_USER_IDS=123,456` begrenzt ihn auf eine explizite
+  User-Allowlist.
+
+Ohne beide Bedingungen liefert `/v1/state` kein sichtbares V4-DTO. Ein
+Rollback erfolgt durch Entfernen der Allowlist oder Setzen des Flags auf `0`;
+ein Frontend- oder Datenbank-Rollback ist dafür nicht erforderlich. Der Gate
+liest ausschließlich einen aktuellen, versionierten Snapshot und verwirft
+stale, fehlerhafte oder inkompatible Snapshots. Die vorhandene V3-Mentorlogik
+bleibt davon getrennt.
+
 ## Clean-Room-Plan
 
 Die folgenden Schritte sind ein Plan für einen neuen Host, kein aktuell
