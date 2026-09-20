@@ -27,6 +27,22 @@ SNAPSHOT_METRIC_DEFINITIONS = {
     "metrics_recompute_duration_total_ms": "REAL NOT NULL DEFAULT 0",
     "metrics_recompute_duration_count": "INTEGER NOT NULL DEFAULT 0",
     "metrics_max_recompute_duration_ms": "REAL NOT NULL DEFAULT 0",
+    "metrics_patterns_detected": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_insight_candidates": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_coach_eligible": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_coach_suppressed": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_report_eligible": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_report_suppressed": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_primary_coach_candidates": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_primary_report_candidates": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_users_no_eligible_coach": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_users_with_eligible_coach": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_patterns_detected_no_insight": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_insights_with_coach_suppressed": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_coach_eligible_not_primary": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_no_evidence_users": "INTEGER NOT NULL DEFAULT 0",
+    "metrics_suppression_reasons_json": "TEXT NOT NULL DEFAULT '{}'",
+    "metrics_insight_types_json": "TEXT NOT NULL DEFAULT '{}'",
 }
 
 

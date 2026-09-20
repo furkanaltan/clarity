@@ -107,6 +107,187 @@ class BehaviorSnapshotTests(unittest.TestCase):
         self.assertEqual(metrics["recomputes_avoided_by_coalescing"], 1)
         self.assertEqual(metrics["sql_query_count"], 1)
         self.assertEqual(len(statements), 1)
+        self.assertLess(len(json.dumps(metrics)), 4096)
+
+    def test_suppression_metrics_separate_eligibility_and_reasons(self):
+        def inspector(*_args, **_kwargs):
+            return {
+                "patterns": [{"pattern_id": "pattern-1"}],
+                "insight_candidates": [
+                    {
+                        "insight_id": "budget-1",
+                        "insight_type": "budget_attention",
+                        "coach_eligible": False,
+                        "report_eligible": True,
+                        "coach_suppression_reason": "healthy_overall_budget",
+                        "report_suppression_reason": None,
+                        "primary_coach_insight": False,
+                        "primary_report_insight": True,
+                    },
+                    {
+                        "insight_id": "subscription-1",
+                        "insight_type": "subscription_cluster",
+                        "coach_eligible": True,
+                        "report_eligible": False,
+                        "coach_suppression_reason": None,
+                        "report_suppression_reason": "uncertain_activity_status",
+                        "primary_coach_insight": False,
+                        "primary_report_insight": False,
+                    },
+                    {
+                        "insight_id": "trend-1",
+                        "insight_type": "spending_trend_improving",
+                        "coach_eligible": True,
+                        "report_eligible": True,
+                        "coach_suppression_reason": None,
+                        "report_suppression_reason": None,
+                        "primary_coach_insight": True,
+                        "primary_report_insight": True,
+                    },
+                ],
+            }
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector), \
+             patch.object(behavior_patterns, "build_visible_behavior_insight", self.visible):
+            self.assertEqual(
+                recompute_behavior_snapshot(self.conn, 1, now=self.NOW)["status"],
+                SNAPSHOT_STATUS_READY,
+            )
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["patterns_detected"], 1)
+        self.assertEqual(metrics["insight_candidates"], 3)
+        self.assertEqual(metrics["coach_eligible"], 2)
+        self.assertEqual(metrics["coach_suppressed"], 1)
+        self.assertEqual(metrics["report_eligible"], 2)
+        self.assertEqual(metrics["report_suppressed"], 1)
+        self.assertEqual(metrics["primary_coach_candidates"], 1)
+        self.assertEqual(metrics["primary_report_candidates"], 2)
+        self.assertEqual(metrics["coach_eligible_not_primary"], 1)
+        self.assertEqual(metrics["users_with_eligible_coach"], 1)
+        self.assertEqual(metrics["users_no_eligible_coach"], 0)
+        self.assertEqual(
+            metrics["suppression_reasons"]["coach"]["healthy_overall_budget"],
+            1,
+        )
+        self.assertEqual(
+            metrics["suppression_reasons"]["report"]["uncertain_activity_status"],
+            1,
+        )
+        self.assertEqual(metrics["insight_types"]["budget_attention"], 1)
+
+    def test_no_evidence_is_not_counted_as_suppressed_insight(self):
+        def inspector(*_args, **_kwargs):
+            return {"patterns": [], "insight_candidates": []}
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector):
+            self.assertEqual(
+                recompute_behavior_snapshot(self.conn, 1, now=self.NOW)["status"],
+                SNAPSHOT_STATUS_READY,
+            )
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["no_evidence_users"], 1)
+        self.assertEqual(metrics["users_no_eligible_coach"], 1)
+        self.assertEqual(metrics["coach_suppressed"], 0)
+        self.assertEqual(metrics["insight_candidates"], 0)
+
+    def test_pattern_without_insight_is_separate_from_no_evidence(self):
+        def inspector(*_args, **_kwargs):
+            return {
+                "patterns": [{"pattern_id": "observed-only"}],
+                "insight_candidates": [],
+            }
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector):
+            self.assertEqual(
+                recompute_behavior_snapshot(self.conn, 1, now=self.NOW)["status"],
+                SNAPSHOT_STATUS_READY,
+            )
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["patterns_detected_no_insight"], 1)
+        self.assertEqual(metrics["no_evidence_users"], 0)
+        self.assertEqual(metrics["coach_suppressed"], 0)
+
+    def test_superseded_candidate_is_counted_without_changing_eligibility(self):
+        def inspector(*_args, **_kwargs):
+            return {
+                "patterns": [{"pattern_id": "p1"}, {"pattern_id": "p2"}],
+                "insight_candidates": [
+                    {
+                        "insight_id": "winner",
+                        "insight_type": "budget_attention",
+                        "coach_eligible": True,
+                        "report_eligible": False,
+                        "coach_suppression_reason": None,
+                        "report_suppression_reason": None,
+                        "primary_coach_insight": True,
+                        "primary_report_insight": False,
+                    },
+                    {
+                        "insight_id": "superseded",
+                        "insight_type": "spending_trend_worsening",
+                        "coach_eligible": False,
+                        "report_eligible": False,
+                        "coach_suppression_reason": "superseded",
+                        "report_suppression_reason": None,
+                        "primary_coach_insight": False,
+                        "primary_report_insight": False,
+                    },
+                ],
+            }
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector), \
+             patch.object(behavior_patterns, "build_visible_behavior_insight", self.visible):
+            self.assertEqual(
+                recompute_behavior_snapshot(self.conn, 1, now=self.NOW)["status"],
+                SNAPSHOT_STATUS_READY,
+            )
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(metrics["coach_eligible"], 1)
+        self.assertEqual(metrics["coach_suppressed"], 1)
+        self.assertEqual(metrics["primary_coach_candidates"], 1)
+        self.assertEqual(metrics["suppression_reasons"]["coach"]["superseded"], 1)
+
+    def test_suppression_metrics_are_bounded_and_pii_free(self):
+        def inspector(*_args, **_kwargs):
+            return {
+                "patterns": [{"pattern_id": "private-pattern"}],
+                "insight_candidates": [{
+                    "insight_id": "private-insight",
+                    "insight_type": "budget_attention",
+                    "merchant": "Private Merchant",
+                    "source_ids": ["secret-source-id"],
+                    "coach_eligible": False,
+                    "report_eligible": False,
+                    "coach_suppression_reason": "insufficient_history",
+                    "report_suppression_reason": "insufficient_history",
+                }],
+            }
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector):
+            recompute_behavior_snapshot(self.conn, 1, now=self.NOW)
+        metrics = get_behavior_snapshot_metrics(self.conn)
+        serialized = json.dumps(metrics, sort_keys=True)
+        self.assertNotIn("Private Merchant", serialized)
+        self.assertNotIn("secret-source-id", serialized)
+        self.assertNotIn("private-insight", serialized)
+        self.assertNotIn("private-pattern", serialized)
+        self.assertLessEqual(len(metrics["suppression_reasons"]), 2)
+
+    def test_metrics_read_does_not_double_count_or_change_arbitration(self):
+        self.assertEqual(self.recompute()["status"], SNAPSHOT_STATUS_READY)
+        before = get_behavior_snapshot_metrics(self.conn)
+        first = get_behavior_snapshot_metrics(self.conn)
+        second = get_behavior_snapshot_metrics(self.conn)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first["primary_coach_candidates"],
+            before["primary_coach_candidates"],
+        )
+        self.assertEqual(
+            first["recomputes_completed"],
+            before["recomputes_completed"],
+        )
+        self.assertEqual(first["recomputes_completed"], 1)
 
     def test_metrics_cover_success_duration_and_failure(self):
         self.assertEqual(self.recompute()["status"], SNAPSHOT_STATUS_READY)
@@ -381,6 +562,8 @@ class BehaviorSnapshotTests(unittest.TestCase):
                 }
             self.assertIn("metrics_recomputes_started", columns)
             self.assertIn("metrics_max_recompute_duration_ms", columns)
+            self.assertIn("metrics_suppression_reasons_json", columns)
+            self.assertIn("metrics_insight_types_json", columns)
 
     def test_delete_cleanup_removes_snapshot(self):
         self.recompute()

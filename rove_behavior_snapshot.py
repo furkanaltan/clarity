@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ SNAPSHOT_RECOMPUTE_IDLE = "idle"
 SNAPSHOT_RECOMPUTE_PENDING = "pending"
 SNAPSHOT_RECOMPUTE_RUNNING = "running"
 SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
-SNAPSHOT_METRIC_COLUMNS = (
+SNAPSHOT_COUNTER_COLUMNS = (
     "metrics_invalidations_received",
     "metrics_invalidations_coalesced",
     "metrics_recomputes_avoided_by_coalescing",
@@ -36,7 +37,26 @@ SNAPSHOT_METRIC_COLUMNS = (
     "metrics_recompute_duration_total_ms",
     "metrics_recompute_duration_count",
     "metrics_max_recompute_duration_ms",
+    "metrics_patterns_detected",
+    "metrics_insight_candidates",
+    "metrics_coach_eligible",
+    "metrics_coach_suppressed",
+    "metrics_report_eligible",
+    "metrics_report_suppressed",
+    "metrics_primary_coach_candidates",
+    "metrics_primary_report_candidates",
+    "metrics_users_no_eligible_coach",
+    "metrics_users_with_eligible_coach",
+    "metrics_patterns_detected_no_insight",
+    "metrics_insights_with_coach_suppressed",
+    "metrics_coach_eligible_not_primary",
+    "metrics_no_evidence_users",
 )
+SNAPSHOT_MAP_COLUMNS = (
+    "metrics_suppression_reasons_json",
+    "metrics_insight_types_json",
+)
+SNAPSHOT_METRIC_COLUMNS = SNAPSHOT_COUNTER_COLUMNS + SNAPSHOT_MAP_COLUMNS
 
 
 def _now_text(now: datetime | None = None) -> str:
@@ -84,6 +104,22 @@ def ensure_behavior_snapshot_table(conn: sqlite3.Connection) -> None:
             metrics_recompute_duration_total_ms REAL NOT NULL DEFAULT 0,
             metrics_recompute_duration_count INTEGER NOT NULL DEFAULT 0,
             metrics_max_recompute_duration_ms REAL NOT NULL DEFAULT 0,
+            metrics_patterns_detected INTEGER NOT NULL DEFAULT 0,
+            metrics_insight_candidates INTEGER NOT NULL DEFAULT 0,
+            metrics_coach_eligible INTEGER NOT NULL DEFAULT 0,
+            metrics_coach_suppressed INTEGER NOT NULL DEFAULT 0,
+            metrics_report_eligible INTEGER NOT NULL DEFAULT 0,
+            metrics_report_suppressed INTEGER NOT NULL DEFAULT 0,
+            metrics_primary_coach_candidates INTEGER NOT NULL DEFAULT 0,
+            metrics_primary_report_candidates INTEGER NOT NULL DEFAULT 0,
+            metrics_users_no_eligible_coach INTEGER NOT NULL DEFAULT 0,
+            metrics_users_with_eligible_coach INTEGER NOT NULL DEFAULT 0,
+            metrics_patterns_detected_no_insight INTEGER NOT NULL DEFAULT 0,
+            metrics_insights_with_coach_suppressed INTEGER NOT NULL DEFAULT 0,
+            metrics_coach_eligible_not_primary INTEGER NOT NULL DEFAULT 0,
+            metrics_no_evidence_users INTEGER NOT NULL DEFAULT 0,
+            metrics_suppression_reasons_json TEXT NOT NULL DEFAULT '{{}}',
+            metrics_insight_types_json TEXT NOT NULL DEFAULT '{{}}',
             updated_at TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
@@ -135,6 +171,165 @@ def _record_recompute_metrics(
             int(user_id),
         ),
     )
+
+
+def _safe_metric_key(value: object) -> str:
+    key = str(value or "").strip().lower()
+    return key if re.fullmatch(r"[a-z0-9_:-]{1,64}", key) else "__other__"
+
+
+def _decode_metric_map(value: object) -> dict[str, int]:
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, count in decoded.items():
+        try:
+            result[_safe_metric_key(key)] = max(0, int(count))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _merge_metric_maps(
+    current: dict[str, int],
+    increments: dict[str, int],
+    *,
+    max_keys: int = 32,
+) -> dict[str, int]:
+    merged = dict(current)
+    for key, count in increments.items():
+        safe_key = _safe_metric_key(key)
+        merged[safe_key] = merged.get(safe_key, 0) + max(0, int(count))
+    if len(merged) <= max_keys:
+        return dict(sorted(merged.items()))
+    ranked = sorted(
+        ((key, count) for key, count in merged.items() if key != "__other__"),
+        key=lambda item: (-item[1], item[0]),
+    )
+    kept = dict(ranked[: max_keys - 1])
+    kept["__other__"] = sum(
+        count for key, count in merged.items() if key not in kept
+    )
+    return dict(sorted(kept.items()))
+
+
+def summarize_behavior_inspector(inspector: dict[str, Any]) -> dict[str, Any]:
+    """Reduce one shadow inspector result to bounded, non-PII counters."""
+    patterns = inspector.get("patterns") or []
+    insights = inspector.get("insight_candidates") or []
+    patterns = patterns if isinstance(patterns, list) else []
+    insights = insights if isinstance(insights, list) else []
+    suppression_reasons: dict[str, int] = {}
+    insight_types: dict[str, int] = {}
+    coach_eligible = coach_suppressed = 0
+    report_eligible = report_suppressed = 0
+    primary_coach = primary_report = 0
+    insights_with_coach_suppressed = 0
+    coach_eligible_not_primary = 0
+    for insight in insights:
+        if not isinstance(insight, dict):
+            continue
+        insight_type = insight.get("insight_type")
+        if insight_type:
+            safe_type = _safe_metric_key(insight_type)
+            insight_types[safe_type] = insight_types.get(safe_type, 0) + 1
+        coach_reason = insight.get("coach_suppression_reason")
+        report_reason = insight.get("report_suppression_reason")
+        if coach_reason:
+            key = f"coach:{_safe_metric_key(coach_reason)}"
+            suppression_reasons[key] = suppression_reasons.get(key, 0) + 1
+            coach_suppressed += 1
+            insights_with_coach_suppressed += 1
+        if report_reason:
+            key = f"report:{_safe_metric_key(report_reason)}"
+            suppression_reasons[key] = suppression_reasons.get(key, 0) + 1
+            report_suppressed += 1
+        if insight.get("coach_eligible"):
+            coach_eligible += 1
+            if insight.get("primary_coach_insight"):
+                primary_coach += 1
+            else:
+                coach_eligible_not_primary += 1
+        if insight.get("report_eligible"):
+            report_eligible += 1
+            if insight.get("primary_report_insight"):
+                primary_report += 1
+    has_eligible_coach = coach_eligible > 0
+    return {
+        "patterns_detected": len(patterns),
+        "insight_candidates": len(insights),
+        "coach_eligible": coach_eligible,
+        "coach_suppressed": coach_suppressed,
+        "report_eligible": report_eligible,
+        "report_suppressed": report_suppressed,
+        "primary_coach_candidates": primary_coach,
+        "primary_report_candidates": primary_report,
+        "users_no_eligible_coach": int(not has_eligible_coach),
+        "users_with_eligible_coach": int(has_eligible_coach),
+        "patterns_detected_no_insight": int(bool(patterns) and not insights),
+        "insights_with_coach_suppressed": insights_with_coach_suppressed,
+        "coach_eligible_not_primary": coach_eligible_not_primary,
+        "no_evidence_users": int(not patterns and not insights),
+        "suppression_reasons": _merge_metric_maps({}, suppression_reasons),
+        "insight_types": _merge_metric_maps({}, insight_types),
+    }
+
+
+def _record_insight_metrics(
+    conn: sqlite3.Connection,
+    user_id: int,
+    inspector: dict[str, Any],
+) -> None:
+    """Persist only bounded aggregate shadow counters; never source evidence."""
+    if not _metrics_available(conn):
+        return
+    try:
+        summary = summarize_behavior_inspector(inspector)
+        row = conn.execute(
+            f"SELECT metrics_suppression_reasons_json, metrics_insight_types_json "
+            f"FROM {SNAPSHOT_TABLE} WHERE user_id=?",
+            (int(user_id),),
+        ).fetchone()
+        if not row:
+            return
+        suppression_map = _merge_metric_maps(
+            _decode_metric_map(row[0]), summary["suppression_reasons"]
+        )
+        insight_type_map = _merge_metric_maps(
+            _decode_metric_map(row[1]), summary["insight_types"]
+        )
+        columns = (
+            "patterns_detected", "insight_candidates", "coach_eligible",
+            "coach_suppressed", "report_eligible", "report_suppressed",
+            "primary_coach_candidates", "primary_report_candidates",
+            "users_no_eligible_coach", "users_with_eligible_coach",
+            "patterns_detected_no_insight", "insights_with_coach_suppressed",
+            "coach_eligible_not_primary", "no_evidence_users",
+        )
+        assignments = [
+            f"metrics_{column}=metrics_{column}+?" for column in columns
+        ]
+        assignments.extend([
+            "metrics_suppression_reasons_json=?",
+            "metrics_insight_types_json=?",
+        ])
+        values = [summary[column] for column in columns]
+        values.extend([
+            json.dumps(suppression_map, sort_keys=True, separators=(",", ":")),
+            json.dumps(insight_type_map, sort_keys=True, separators=(",", ":")),
+            int(user_id),
+        ])
+        conn.execute(
+            f"UPDATE {SNAPSHOT_TABLE} SET {', '.join(assignments)} WHERE user_id=?",
+            values,
+        )
+    except (sqlite3.Error, TypeError, ValueError):
+        # Observability must never change or block the shadow decision.
+        return
 
 
 def _aggregate(conn: sqlite3.Connection, table: str, user_id: int, time_columns: tuple[str, ...]) -> dict[str, Any]:
@@ -396,6 +591,7 @@ def recompute_behavior_snapshot(
         )
 
         inspector = build_shadow_inspector(conn, int(user_id), now=effective_now)
+        _record_insight_metrics(conn, int(user_id), inspector)
         after = compute_behavior_source_watermark(conn, int(user_id))
         row = conn.execute(
             f"SELECT invalidation_version FROM {SNAPSHOT_TABLE} WHERE user_id=?",
@@ -532,6 +728,29 @@ def get_behavior_snapshot_metrics(
         "invalidations_coalesced": 0,
         "recomputes_avoided_by_coalescing": 0,
         "coalescing_rate": 0.0,
+        "patterns_detected": 0,
+        "insight_candidates": 0,
+        "coach_eligible": 0,
+        "coach_suppressed": 0,
+        "report_eligible": 0,
+        "report_suppressed": 0,
+        "primary_coach_candidates": 0,
+        "primary_report_candidates": 0,
+        "users_no_eligible_coach": 0,
+        "users_with_eligible_coach": 0,
+        "patterns_detected_no_insight": 0,
+        "insights_with_coach_suppressed": 0,
+        "coach_eligible_not_primary": 0,
+        "no_evidence_users": 0,
+        "suppression_reasons": {"coach": {}, "report": {}},
+        "insight_types": {},
+        "coach_eligibility_rate": 0.0,
+        "coach_suppression_rate": 0.0,
+        "report_eligibility_rate": 0.0,
+        "report_suppression_rate": 0.0,
+        "primary_coach_rate": 0.0,
+        "no_eligible_coach_user_rate": 0.0,
+        "top_suppression_reasons": [],
     }
     selected = ["recompute_state", "status", "updated_at", *SNAPSHOT_METRIC_COLUMNS]
     query_count = 0
@@ -576,8 +795,7 @@ def get_behavior_snapshot_metrics(
     offsets = {name: 3 + index for index, name in enumerate(SNAPSHOT_METRIC_COLUMNS)}
     totals = {
         name: sum(int(row[offsets[name]] or 0) for row in rows)
-        for name in SNAPSHOT_METRIC_COLUMNS
-        if name.endswith(("received", "coalesced", "coalescing", "started", "completed", "failed", "count"))
+        for name in SNAPSHOT_COUNTER_COLUMNS
     }
     duration_total = sum(float(row[offsets["metrics_recompute_duration_total_ms"]] or 0) for row in rows)
     duration_count = sum(int(row[offsets["metrics_recompute_duration_count"]] or 0) for row in rows)
@@ -587,6 +805,38 @@ def get_behavior_snapshot_metrics(
     )
     received = totals["metrics_invalidations_received"]
     coalesced = totals["metrics_invalidations_coalesced"]
+    suppression_map: dict[str, int] = {}
+    insight_type_map: dict[str, int] = {}
+    for row in rows:
+        suppression_map = _merge_metric_maps(
+            suppression_map,
+            _decode_metric_map(row[offsets["metrics_suppression_reasons_json"]]),
+        )
+        insight_type_map = _merge_metric_maps(
+            insight_type_map,
+            _decode_metric_map(row[offsets["metrics_insight_types_json"]]),
+        )
+    suppression_reasons = {"coach": {}, "report": {}}
+    for key, count in suppression_map.items():
+        if key.startswith("coach:"):
+            suppression_reasons["coach"][key[6:]] = count
+        elif key.startswith("report:"):
+            suppression_reasons["report"][key[7:]] = count
+    insight_candidates = totals["metrics_insight_candidates"]
+    coach_eligible = totals["metrics_coach_eligible"]
+    coach_suppressed = totals["metrics_coach_suppressed"]
+    report_eligible = totals["metrics_report_eligible"]
+    report_suppressed = totals["metrics_report_suppressed"]
+    user_observations = (
+        totals["metrics_users_no_eligible_coach"]
+        + totals["metrics_users_with_eligible_coach"]
+    )
+    top_suppression_reasons = [
+        {"scope": scope, "reason": reason, "count": count}
+        for scope, values in suppression_reasons.items()
+        for reason, count in values.items()
+    ]
+    top_suppression_reasons.sort(key=lambda item: (-item["count"], item["scope"], item["reason"]))
     result.update({
         "recomputes_started": totals["metrics_recomputes_started"],
         "recomputes_completed": totals["metrics_recomputes_completed"],
@@ -600,6 +850,37 @@ def get_behavior_snapshot_metrics(
             "metrics_recomputes_avoided_by_coalescing"
         ],
         "coalescing_rate": round(coalesced / received, 4) if received else 0.0,
+        "patterns_detected": totals["metrics_patterns_detected"],
+        "insight_candidates": insight_candidates,
+        "coach_eligible": coach_eligible,
+        "coach_suppressed": coach_suppressed,
+        "report_eligible": report_eligible,
+        "report_suppressed": report_suppressed,
+        "primary_coach_candidates": totals["metrics_primary_coach_candidates"],
+        "primary_report_candidates": totals["metrics_primary_report_candidates"],
+        "users_no_eligible_coach": totals["metrics_users_no_eligible_coach"],
+        "users_with_eligible_coach": totals["metrics_users_with_eligible_coach"],
+        "patterns_detected_no_insight": totals["metrics_patterns_detected_no_insight"],
+        "insights_with_coach_suppressed": totals["metrics_insights_with_coach_suppressed"],
+        "coach_eligible_not_primary": totals["metrics_coach_eligible_not_primary"],
+        "no_evidence_users": totals["metrics_no_evidence_users"],
+        "suppression_reasons": suppression_reasons,
+        "insight_types": insight_type_map,
+        "coach_eligibility_rate": round(coach_eligible / insight_candidates, 4)
+        if insight_candidates else 0.0,
+        "coach_suppression_rate": round(coach_suppressed / insight_candidates, 4)
+        if insight_candidates else 0.0,
+        "report_eligibility_rate": round(report_eligible / insight_candidates, 4)
+        if insight_candidates else 0.0,
+        "report_suppression_rate": round(report_suppressed / insight_candidates, 4)
+        if insight_candidates else 0.0,
+        "primary_coach_rate": round(
+            totals["metrics_primary_coach_candidates"] / coach_eligible, 4
+        ) if coach_eligible else 0.0,
+        "no_eligible_coach_user_rate": round(
+            totals["metrics_users_no_eligible_coach"] / user_observations, 4
+        ) if user_observations else 0.0,
+        "top_suppression_reasons": top_suppression_reasons,
     })
     return result
 
