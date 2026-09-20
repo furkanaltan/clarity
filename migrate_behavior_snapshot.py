@@ -54,10 +54,7 @@ def _has_object(conn: sqlite3.Connection, object_type: str, name: str) -> bool:
 
 
 def _schema_state(conn: sqlite3.Connection) -> dict[str, bool]:
-    columns = {
-        str(row[1])
-        for row in conn.execute(f'PRAGMA table_info("{SNAPSHOT_TABLE}")')
-    } if _has_object(conn, "table", SNAPSHOT_TABLE) else set()
+    columns = _snapshot_columns(conn)
     return {
         "table": _has_object(conn, "table", SNAPSHOT_TABLE),
         "queue_index": _has_object(conn, "index", SNAPSHOT_QUEUE_INDEX),
@@ -65,11 +62,35 @@ def _schema_state(conn: sqlite3.Connection) -> dict[str, bool]:
     }
 
 
-def _add_metric_columns(conn: sqlite3.Connection) -> None:
-    columns = {
+def _snapshot_columns(conn: sqlite3.Connection) -> set[str]:
+    if not _has_object(conn, "table", SNAPSHOT_TABLE):
+        return set()
+    return {
         str(row[1])
         for row in conn.execute(f'PRAGMA table_info("{SNAPSHOT_TABLE}")')
     }
+
+
+def _planned_changes(conn: sqlite3.Connection) -> list[str]:
+    """Describe only additive operations the migration would perform."""
+    state = _schema_state(conn)
+    if not state["table"]:
+        return ["create_table_with_metric_columns", "create_queue_index"]
+
+    planned = []
+    if not state["queue_index"]:
+        planned.append("create_queue_index")
+    columns = _snapshot_columns(conn)
+    planned.extend(
+        f"add_column:{name}"
+        for name in SNAPSHOT_METRIC_DEFINITIONS
+        if name not in columns
+    )
+    return planned
+
+
+def _add_metric_columns(conn: sqlite3.Connection) -> None:
+    columns = _snapshot_columns(conn)
     for name, definition in SNAPSHOT_METRIC_DEFINITIONS.items():
         if name not in columns:
             conn.execute(
@@ -99,10 +120,11 @@ def run(db_path: Path, *, apply: bool) -> dict:
 
     with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
         before = _schema_state(conn)
+        planned_changes = _planned_changes(conn)
 
     backup = None
     changed = False
-    if apply and not (before["table"] and before["queue_index"] and before["metrics"]):
+    if apply and planned_changes:
         backup = create_backup(db_path)
         with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
@@ -125,6 +147,7 @@ def run(db_path: Path, *, apply: bool) -> dict:
 
     with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
         after = _schema_state(conn)
+        remaining_changes = _planned_changes(conn)
         integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
         foreign_key_errors = len(conn.execute("PRAGMA foreign_key_check").fetchall())
 
@@ -138,7 +161,9 @@ def run(db_path: Path, *, apply: bool) -> dict:
         "table_after": after["table"],
         "queue_index_after": after["queue_index"],
         "metrics_after": after["metrics"],
-        "changed": changed,
+        "planned_changes": planned_changes,
+        "remaining_changes": remaining_changes,
+        "changed": changed or bool(planned_changes),
         "integrity_check": integrity,
         "foreign_key_errors": foreign_key_errors,
         "schema_version": 1,

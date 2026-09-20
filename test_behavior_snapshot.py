@@ -483,7 +483,11 @@ class BehaviorSnapshotTests(unittest.TestCase):
             dry = run_snapshot_migration(db_path, apply=False)
             self.assertFalse(dry["table_before"])
             self.assertFalse(dry["table_after"])
-            self.assertFalse(dry["changed"])
+            self.assertTrue(dry["changed"])
+            self.assertEqual(
+                dry["planned_changes"],
+                ["create_table_with_metric_columns", "create_queue_index"],
+            )
             self.assertTrue(result_is_valid(dry, apply=False))
 
             first = run_snapshot_migration(db_path, apply=True)
@@ -492,11 +496,17 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertTrue(first["table_after"])
             self.assertTrue(first["queue_index_after"])
             self.assertTrue(first["metrics_after"])
+            self.assertEqual(first["remaining_changes"], [])
             self.assertEqual(first["integrity_check"], "ok")
             self.assertEqual(first["foreign_key_errors"], 0)
             self.assertTrue(result_is_valid(first, apply=True))
             self.assertFalse(second["changed"])
             self.assertEqual(second["backup"], "")
+
+            after_dry = run_snapshot_migration(db_path, apply=False)
+            self.assertFalse(after_dry["changed"])
+            self.assertEqual(after_dry["planned_changes"], [])
+            self.assertEqual(after_dry["remaining_changes"], [])
 
             with sqlite3.connect(db_path) as conn:
                 after_tables = conn.execute(
@@ -550,6 +560,39 @@ class BehaviorSnapshotTests(unittest.TestCase):
                     """
                 )
 
+            dry = run_snapshot_migration(db_path, apply=False)
+            self.assertTrue(dry["changed"])
+            self.assertEqual(
+                set(dry["planned_changes"]),
+                {f"add_column:{name}" for name in (
+                    "metrics_invalidations_received",
+                    "metrics_invalidations_coalesced",
+                    "metrics_recomputes_avoided_by_coalescing",
+                    "metrics_recomputes_started",
+                    "metrics_recomputes_completed",
+                    "metrics_recomputes_failed",
+                    "metrics_recompute_duration_total_ms",
+                    "metrics_recompute_duration_count",
+                    "metrics_max_recompute_duration_ms",
+                    "metrics_patterns_detected",
+                    "metrics_insight_candidates",
+                    "metrics_coach_eligible",
+                    "metrics_coach_suppressed",
+                    "metrics_report_eligible",
+                    "metrics_report_suppressed",
+                    "metrics_primary_coach_candidates",
+                    "metrics_primary_report_candidates",
+                    "metrics_users_no_eligible_coach",
+                    "metrics_users_with_eligible_coach",
+                    "metrics_patterns_detected_no_insight",
+                    "metrics_insights_with_coach_suppressed",
+                    "metrics_coach_eligible_not_primary",
+                    "metrics_no_evidence_users",
+                    "metrics_suppression_reasons_json",
+                    "metrics_insight_types_json",
+                )},
+            )
+
             result = run_snapshot_migration(db_path, apply=True)
             self.assertTrue(result["changed"])
             self.assertTrue(result["metrics_after"])
@@ -564,6 +607,135 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertIn("metrics_max_recompute_duration_ms", columns)
             self.assertIn("metrics_suppression_reasons_json", columns)
             self.assertIn("metrics_insight_types_json", columns)
+
+            after_dry = run_snapshot_migration(db_path, apply=False)
+            self.assertFalse(after_dry["changed"])
+            self.assertEqual(after_dry["planned_changes"], [])
+
+    def test_partial_snapshot_migration_preserves_rows_and_uses_neutral_defaults(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "partial-snapshot.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE users (user_id INTEGER PRIMARY KEY);
+                    INSERT INTO users VALUES (1);
+                    CREATE TABLE app_behavior_snapshot (
+                        user_id INTEGER PRIMARY KEY,
+                        snapshot_version INTEGER NOT NULL,
+                        engine_version TEXT NOT NULL,
+                        behavior_contract_version INTEGER NOT NULL,
+                        generated_at TEXT,
+                        source_watermark TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL CHECK(status IN ('ready', 'stale', 'error')),
+                        stale_reason TEXT,
+                        primary_coach_insight_id TEXT,
+                        primary_report_insight_id TEXT,
+                        visible_coach_payload_json TEXT,
+                        recompute_state TEXT NOT NULL DEFAULT 'idle'
+                            CHECK(recompute_state IN ('pending', 'running', 'idle')),
+                        invalidation_version INTEGER NOT NULL DEFAULT 0,
+                        last_error_class TEXT,
+                        updated_at TEXT NOT NULL,
+                        metrics_recomputes_started INTEGER NOT NULL DEFAULT 0,
+                        metrics_suppression_reasons_json TEXT NOT NULL DEFAULT '{}',
+                        FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    );
+                    INSERT INTO app_behavior_snapshot (
+                        user_id, snapshot_version, engine_version,
+                        behavior_contract_version, generated_at, source_watermark,
+                        status, visible_coach_payload_json, recompute_state,
+                        invalidation_version, updated_at,
+                        metrics_recomputes_started
+                    ) VALUES (
+                        1, 1, 'legacy-engine', 1, '2026-09-18T12:00:00+00:00',
+                        'legacy-watermark', 'ready', '{"legacy":true}', 'idle',
+                        7, '2026-09-18T12:00:00+00:00', 4
+                    );
+                    CREATE INDEX idx_app_behavior_snapshot_queue
+                        ON app_behavior_snapshot(recompute_state, updated_at);
+                    """
+                )
+                before = conn.execute(
+                    "SELECT user_id, snapshot_version, engine_version, "
+                    "behavior_contract_version, generated_at, source_watermark, "
+                    "status, visible_coach_payload_json, recompute_state, "
+                    "invalidation_version, updated_at, metrics_recomputes_started "
+                    "FROM app_behavior_snapshot WHERE user_id=1"
+                ).fetchone()
+
+            dry = run_snapshot_migration(db_path, apply=False)
+            self.assertTrue(dry["changed"])
+            self.assertIn(
+                "add_column:metrics_recomputes_completed",
+                dry["planned_changes"],
+            )
+            self.assertNotIn(
+                "add_column:metrics_recomputes_started",
+                dry["planned_changes"],
+            )
+
+            result = run_snapshot_migration(db_path, apply=True)
+            self.assertTrue(result["changed"])
+            self.assertTrue(result["metrics_after"])
+            self.assertEqual(result["remaining_changes"], [])
+
+            with sqlite3.connect(db_path) as conn:
+                after = conn.execute(
+                    "SELECT user_id, snapshot_version, engine_version, "
+                    "behavior_contract_version, generated_at, source_watermark, "
+                    "status, visible_coach_payload_json, recompute_state, "
+                    "invalidation_version, updated_at, metrics_recomputes_started "
+                    "FROM app_behavior_snapshot WHERE user_id=1"
+                ).fetchone()
+                self.assertEqual(after, before)
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT metrics_recomputes_completed, "
+                        "metrics_suppression_reasons_json, "
+                        "metrics_insight_types_json "
+                        "FROM app_behavior_snapshot WHERE user_id=1"
+                    ).fetchone(),
+                    (0, "{}", "{}"),
+                )
+                self.assertEqual(
+                    conn.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
+                self.assertEqual(
+                    conn.execute("PRAGMA foreign_key_check").fetchall(), []
+                )
+
+            after_dry = run_snapshot_migration(db_path, apply=False)
+            self.assertFalse(after_dry["changed"])
+            self.assertEqual(after_dry["planned_changes"], [])
+
+    def test_migration_rolls_back_schema_changes_on_failure(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "rollback.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+
+            with patch(
+                "migrate_behavior_snapshot._add_metric_columns",
+                side_effect=RuntimeError("forced migration failure"),
+            ), self.assertRaises(RuntimeError):
+                run_snapshot_migration(db_path, apply=True)
+
+            with sqlite3.connect(db_path) as conn:
+                self.assertIsNone(conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='app_behavior_snapshot'"
+                ).fetchone())
+                self.assertEqual(
+                    conn.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
 
     def test_delete_cleanup_removes_snapshot(self):
         self.recompute()
