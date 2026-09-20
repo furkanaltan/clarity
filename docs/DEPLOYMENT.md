@@ -52,6 +52,7 @@ Installationsaktion.
 | `rove-report-enqueue.service` | Reportjobs anlegen | System-Python, `rove_report_worker.py enqueue` | `.env` | root | oneshot |
 | `rove-report-worker.service` | Reportjobs verarbeiten | System-Python, `rove_report_worker.py process` | `.env` | root | oneshot |
 | `rove-report-maintenance.service` | Reports aufräumen/archivieren | System-Python, `rove_report_worker.py maintain` | `.env` | root | oneshot |
+| `rove-behavior-snapshot.service` | Einen Snapshot-User verarbeiten | API-Venv, `rove_behavior_snapshot.py --process-pending --limit 1` | keine | root | oneshot |
 
 ## Timer
 
@@ -64,8 +65,9 @@ Installationsaktion.
 | `rove-report-maintenance.timer` | täglich 03:10 Europe/Berlin | Ja |
 | `rove-report-worker.timer` | 2 Minuten nach Boot, danach 1 Minute nach Ende | Nein |
 | `rove-tracking-reminders.timer` | 3 Minuten nach Boot, danach 10 Minuten nach Ende | Ja |
+| `rove-behavior-snapshot.timer` | alle 15 Minuten, Systemzeitzone | Ja |
 
-Alle neun Services und sieben Timer sind unter `deploy/systemd/` als
+Alle zehn Services und acht Timer sind unter `deploy/systemd/` als
 sanitizierte Templates abgebildet. Produktion nutzt bei API und Bot teilweise
 Drop-ins; die Repository-Templates bilden deren effektive EnvironmentFile-
 Struktur zusammengeführt ab.
@@ -254,6 +256,28 @@ Nach einer späteren, freigegebenen Installation werden mindestens geprüft:
 Rollback trennt Code, Frontend und Daten: Backend auf einen verifizierten
 Commit zurückführen, statische Dateien aus dem Release-Backup wiederherstellen
 und die DB nur über den kontrollierten Restore-Prozess anfassen.
+
+### Coach-V4-Snapshot-Scheduler (Pilot)
+
+Die versionierten Templates
+`deploy/systemd/rove-behavior-snapshot.service` und
+`deploy/systemd/rove-behavior-snapshot.timer` starten ausschließlich den
+kanonischen, auf einen Nutzer begrenzten Snapshot-Worker. Der Worker verarbeitet
+höchstens einen Pending-Nutzer pro Lauf; die CAS-Sperre im Snapshot-Code bleibt
+die zusätzliche Schutzschicht gegen parallele Verarbeitung. Die Templates sind
+kein Produktions-Enablement und dürfen erst nach einem separaten Pilot-Gate
+installiert werden.
+
+Rollback des Piloten:
+
+1. `systemctl stop rove-behavior-snapshot.timer`
+2. `systemctl disable rove-behavior-snapshot.timer`
+3. Prüfen, dass kein `rove-behavior-snapshot.service` mehr läuft.
+4. Die Unit-Dateien erst nach diesem Stop/Disable-Gate aus dem System entfernen.
+
+Der Service bleibt ein inaktiver `oneshot`; es ist kein Datenbank-Rollback nötig,
+weil der Scheduler keine Schemaänderung ausführt. Snapshot-Daten werden nur über
+den bestehenden kontrollierten Restore-Prozess zurückgesetzt.
 
 ## Rebuild Gap Analysis
 

@@ -890,7 +890,53 @@ def delete_behavior_snapshot(conn: sqlite3.Connection, user_id: int) -> None:
         conn.execute(f"DELETE FROM {SNAPSHOT_TABLE} WHERE user_id=?", (int(user_id),))
 
 
-if __name__ == "__main__":
+def _pending_user_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute(
+        f"SELECT COUNT(*) FROM {SNAPSHOT_TABLE} "
+        "WHERE recompute_state='pending'"
+    ).fetchone()[0])
+
+
+def _summarize_pending_results(
+    results: list[dict[str, Any]],
+    *,
+    pending_before: int,
+    pending_after: int,
+    duration_ms: float,
+) -> dict[str, Any]:
+    statuses = [str(result.get("status", "unknown")) for result in results]
+    return {
+        "processed_count": len(results),
+        "completed": statuses.count(SNAPSHOT_STATUS_READY),
+        "stale": statuses.count(SNAPSHOT_STATUS_STALE),
+        "failed": statuses.count(SNAPSHOT_STATUS_ERROR),
+        "already_running": statuses.count("already_running"),
+        "pending_before": pending_before,
+        "pending_after": pending_after,
+        "duration_ms": round(duration_ms, 2),
+    }
+
+
+def run_pending_snapshot_worker(
+    db_path: str, *, limit: int = 20
+) -> dict[str, Any]:
+    """Run one bounded worker pass and return only aggregate, non-PII data."""
+    started = time.perf_counter()
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        ensure_behavior_snapshot_table(connection)
+        pending_before = _pending_user_count(connection)
+        results = process_pending_behavior_snapshots(connection, limit=limit)
+        pending_after = _pending_user_count(connection)
+    return _summarize_pending_results(
+        results,
+        pending_before=pending_before,
+        pending_after=pending_after,
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
     import argparse
     from pathlib import Path
 
@@ -899,13 +945,28 @@ if __name__ == "__main__":
     parser.add_argument("--process-pending", action="store_true")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--user-id", type=int)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.process_pending:
+        try:
+            summary = run_pending_snapshot_worker(str(args.db_path), limit=args.limit)
+        except Exception as exc:
+            print(json.dumps({
+                "status": "error",
+                "error_class": type(exc).__name__,
+            }, sort_keys=True))
+            return 1
+        print(json.dumps(summary, sort_keys=True))
+        return 1 if summary["failed"] else 0
+
     with sqlite3.connect(args.db_path) as connection:
         connection.row_factory = sqlite3.Row
         ensure_behavior_snapshot_table(connection)
-        if args.user_id:
+        if args.user_id is not None:
             print(recompute_behavior_snapshot(connection, args.user_id))
-        elif args.process_pending:
-            print(process_pending_behavior_snapshots(connection, limit=args.limit))
         else:
             print(f"migrated={SNAPSHOT_TABLE}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
