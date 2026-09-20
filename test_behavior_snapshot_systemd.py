@@ -27,7 +27,7 @@ class SnapshotSystemdTests(unittest.TestCase):
         self.assertIn(
             "ExecStart=/root/rove-app-api-venv/bin/python "
             "/root/clarity/rove_behavior_snapshot.py "
-            "/root/clarity/clarity.db --process-pending --limit 1",
+                "/root/clarity/clarity.db --process-pending --limit 3",
             text,
         )
         self.assertIn("UMask=0077", text)
@@ -35,9 +35,9 @@ class SnapshotSystemdTests(unittest.TestCase):
         self.assertIn("TimeoutStartSec=30s", text)
         self.assertNotIn("EnvironmentFile=", text)
 
-    def test_timer_is_persistent_and_runs_every_fifteen_minutes(self):
+    def test_timer_is_persistent_and_runs_every_five_minutes(self):
         text = TIMER.read_text()
-        self.assertIn("OnCalendar=*-*-* *:00/15:00", text)
+        self.assertIn("OnCalendar=*-*-* *:00/5:00", text)
         self.assertIn("Persistent=true", text)
         self.assertIn("AccuracySec=1min", text)
         self.assertIn("Unit=rove-behavior-snapshot.service", text)
@@ -61,10 +61,10 @@ class SnapshotSystemdTests(unittest.TestCase):
                 "rove_behavior_snapshot.process_pending_behavior_snapshots",
                 return_value=[{"user_id": 653187414, "status": "ready"}],
             ) as process:
-                summary = snapshot.run_pending_snapshot_worker(database.name, limit=1)
+                summary = snapshot.run_pending_snapshot_worker(database.name, limit=3)
 
             process.assert_called_once()
-            self.assertEqual(process.call_args.kwargs["limit"], 1)
+            self.assertEqual(process.call_args.kwargs["limit"], 3)
             self.assertEqual(summary["processed_count"], 1)
             self.assertEqual(summary["completed"], 1)
             self.assertNotIn("user_id", json.dumps(summary))
@@ -81,7 +81,7 @@ class SnapshotSystemdTests(unittest.TestCase):
                     database.name,
                     "--process-pending",
                     "--limit",
-                    "1",
+                    "3",
                 ])
 
             self.assertEqual(exit_code, 1)
