@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, jsonify, make_response, request, send_file
+from flask import Flask, g, jsonify, make_response, request, send_file
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type
@@ -220,6 +220,23 @@ ADMIN_USER_IDS = frozenset(
     for value in os.getenv("ROVE_ADMIN_USER_IDS", "").split(",")
     if value.strip().isdigit()
 )
+# These limits protect only privileged admin operations. They are deliberately
+# generous for normal maintenance while bounding accidental or hostile loops.
+ADMIN_RATE_WINDOW_SECONDS = 15 * 60
+ADMIN_RATE_LIMITS = {
+    "invitation_create": int(os.getenv("ROVE_ADMIN_INVITATION_CREATE_LIMIT", "30")),
+    "invitation_delete": int(os.getenv("ROVE_ADMIN_INVITATION_DELETE_LIMIT", "60")),
+    "access_update": int(os.getenv("ROVE_ADMIN_ACCESS_UPDATE_LIMIT", "30")),
+    "coach_inspector_read": int(os.getenv("ROVE_ADMIN_COACH_INSPECTOR_LIMIT", "60")),
+}
+ADMIN_RATE_BUCKETS: dict[tuple[int, str], list[float]] = {}
+ADMIN_EVENT_TABLE = "app_admin_events"
+ADMIN_EVENT_INDEX = "idx_app_admin_events_created"
+ADMIN_EVENT_ADDITIVE_COLUMNS = {
+    "success": "INTEGER NOT NULL DEFAULT 1",
+    "failure_reason": "TEXT NOT NULL DEFAULT ''",
+    "request_correlation": "TEXT NOT NULL DEFAULT ''",
+}
 # Nur fuer interne Server-zu-Server-Hinweise, niemals an den Browser ausliefern.
 INTERNAL_PUSH_SECRET = os.getenv("ROVE_INTERNAL_PUSH_SECRET", "").strip()
 LOGIN_FROM_EMAIL = os.getenv("ROVE_LOGIN_FROM_EMAIL", "info@getrove.de").strip()
@@ -411,6 +428,17 @@ def reject_untrusted_browser_writes():
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin and origin not in ALLOWED_ORIGINS:
         return jsonify({"ok": False, "error": "untrusted_origin"}), 403
+    if request.path.startswith("/v1/admin/"):
+        # Admin writes are cookie-authenticated. A browser must therefore prove
+        # same-origin intent even when it omits the Origin header.
+        fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+        fetch_mode = request.headers.get("Sec-Fetch-Mode", "").strip().lower()
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            return jsonify({"ok": False, "error": "untrusted_fetch_metadata"}), 403
+        if not origin and not (
+            fetch_site == "same-origin" and fetch_mode in {"cors", "same-origin"}
+        ):
+            return jsonify({"ok": False, "error": "admin_origin_required"}), 403
     return None
 
 
@@ -617,21 +645,51 @@ def scalar_count(conn: sqlite3.Connection, query: str, params: tuple = ()) -> in
 
 
 def ensure_admin_tables(conn: sqlite3.Connection) -> None:
-    """Nachvollziehbares Protokoll fuer manuelle Beta-Zugriffsentscheidungen."""
+    """Apply the additive admin audit schema during controlled API startup."""
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS app_admin_events (
+        f"""CREATE TABLE IF NOT EXISTS {ADMIN_EVENT_TABLE} (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             admin_user_id   INTEGER NOT NULL,
             action          TEXT NOT NULL,
             target_user_id  INTEGER,
             target_email    TEXT DEFAULT '',
             details         TEXT DEFAULT '',
-            created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+            success         INTEGER NOT NULL DEFAULT 1,
+            failure_reason  TEXT NOT NULL DEFAULT '',
+            request_correlation TEXT NOT NULL DEFAULT ''
         )"""
     )
+    existing_columns = {
+        str(row[1]) for row in conn.execute(f"PRAGMA table_info({ADMIN_EVENT_TABLE})")
+    }
+    for column, definition in ADMIN_EVENT_ADDITIVE_COLUMNS.items():
+        if column not in existing_columns:
+            conn.execute(
+                f"ALTER TABLE {ADMIN_EVENT_TABLE} ADD COLUMN {column} {definition}"
+            )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_app_admin_events_created ON app_admin_events(created_at)"
+        f"CREATE INDEX IF NOT EXISTS {ADMIN_EVENT_INDEX} "
+        f"ON {ADMIN_EVENT_TABLE}(created_at)"
     )
+
+
+def admin_schema_ready(conn: sqlite3.Connection) -> bool:
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (ADMIN_EVENT_TABLE,),
+    ).fetchone()
+    if not table:
+        return False
+    columns = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({ADMIN_EVENT_TABLE})")
+    }
+    index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (ADMIN_EVENT_INDEX,),
+    ).fetchone()
+    return set(ADMIN_EVENT_ADDITIVE_COLUMNS).issubset(columns) and bool(index)
 
 
 def authenticated_admin(conn: sqlite3.Connection):
@@ -643,7 +701,8 @@ def authenticated_admin(conn: sqlite3.Connection):
     user_id, _session_id = session
     if not is_admin_user(user_id):
         return None, (jsonify({"ok": False, "error": "forbidden"}), 403)
-    ensure_admin_tables(conn)
+    if not admin_schema_ready(conn):
+        return None, (jsonify({"ok": False, "error": "admin_schema_unavailable"}), 503)
     return user_id, None
 
 
@@ -651,6 +710,85 @@ def clean_text(value: object, fallback: str = "") -> str:
     text = str(value or "").strip()
     text = " ".join(text.split())
     return text[:80] if text else fallback
+
+
+def admin_request_correlation() -> str:
+    correlation = getattr(g, "admin_request_correlation", None)
+    if correlation is None:
+        correlation = secrets.token_hex(8)
+        g.admin_request_correlation = correlation
+    return correlation
+
+
+def admin_rate_allowed(admin_user_id: int, bucket: str) -> tuple[bool, int]:
+    """Apply a bounded per-admin, per-operation in-process rate limit."""
+    limit = ADMIN_RATE_LIMITS[bucket]
+    now = time.monotonic()
+    key = (admin_user_id, bucket)
+    attempts = [
+        stamp
+        for stamp in ADMIN_RATE_BUCKETS.get(key, [])
+        if now - stamp < ADMIN_RATE_WINDOW_SECONDS
+    ]
+    if len(attempts) >= limit:
+        ADMIN_RATE_BUCKETS[key] = attempts
+        retry_after = max(1, int(ADMIN_RATE_WINDOW_SECONDS - (now - attempts[0])) + 1)
+        return False, retry_after
+    attempts.append(now)
+    ADMIN_RATE_BUCKETS[key] = attempts
+    return True, 0
+
+
+def record_admin_event(
+    conn: sqlite3.Connection,
+    *,
+    admin_user_id: int,
+    action: str,
+    success: bool,
+    target_user_id: int | None = None,
+    target_email: str = "",
+    failure_reason: str = "",
+    details: dict[str, object] | None = None,
+) -> None:
+    """Store a compact, non-secret audit fact for a privileged operation."""
+    conn.execute(
+        """INSERT INTO app_admin_events
+           (admin_user_id, action, target_user_id, target_email, details,
+            success, failure_reason, request_correlation)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            admin_user_id,
+            action,
+            target_user_id,
+            target_email,
+            json.dumps(details or {}, sort_keys=True, separators=(",", ":")),
+            int(success),
+            clean_text(failure_reason),
+            admin_request_correlation(),
+        ),
+    )
+
+
+def admin_rate_limited_response(
+    conn: sqlite3.Connection,
+    *,
+    admin_user_id: int,
+    action: str,
+    retry_after: int,
+    target_user_id: int | None = None,
+) -> tuple[object, int]:
+    record_admin_event(
+        conn,
+        admin_user_id=admin_user_id,
+        action=action,
+        success=False,
+        target_user_id=target_user_id,
+        failure_reason="rate_limited",
+    )
+    conn.commit()
+    response = jsonify({"ok": False, "error": "admin_rate_limited"})
+    response.headers["Retry-After"] = str(retry_after)
+    return response, 429
 
 
 CONTRACT_TINT_FALLBACK = "#8FA8BC"
@@ -3500,14 +3638,53 @@ def admin_overview():
 def admin_coach_patterns(target_user_id: int):
     """Expose Coach V4 evidence only to authorized internal inspectors."""
     with db() as conn:
-        _, auth_error = authenticated_admin(conn)
+        admin_user_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        allowed, retry_after = admin_rate_allowed(admin_user_id, "coach_inspector_read")
+        if not allowed:
+            return admin_rate_limited_response(
+                conn,
+                admin_user_id=admin_user_id,
+                action="coach_inspector_read",
+                retry_after=retry_after,
+                target_user_id=target_user_id,
+            )
         if not conn.execute(
             "SELECT 1 FROM users WHERE user_id = ?", (target_user_id,)
         ).fetchone():
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="coach_inspector_read",
+                success=False,
+                target_user_id=target_user_id,
+                failure_reason="user_not_found",
+            )
+            conn.commit()
             return jsonify({"ok": False, "error": "user_not_found"}), 404
-        inspector = build_shadow_inspector(conn, target_user_id)
+        try:
+            inspector = build_shadow_inspector(conn, target_user_id)
+        except Exception as exc:
+            conn.rollback()
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="coach_inspector_read",
+                success=False,
+                target_user_id=target_user_id,
+                failure_reason=type(exc).__name__,
+            )
+            conn.commit()
+            raise
+        record_admin_event(
+            conn,
+            admin_user_id=admin_user_id,
+            action="coach_inspector_read",
+            success=True,
+            target_user_id=target_user_id,
+        )
+        conn.commit()
     return jsonify({"ok": True, "user_id": target_user_id, **inspector})
 
 
@@ -3524,22 +3701,54 @@ def admin_coach_snapshot_metrics():
 @app.route("/v1/admin/invitations", methods=["POST"])
 def admin_create_invitation():
     """Bereitet einen zeitlich begrenzten App-only Beta-Zugang vor."""
-    payload = request.get_json(silent=True) or {}
-    email = normalize_email(payload.get("email"))
-    try:
-        valid_days = int(payload.get("days", 14))
-    except (TypeError, ValueError):
-        valid_days = 14
-    if not email:
-        return jsonify({"ok": False, "error": "valid_email_required"}), 400
-    if not 1 <= valid_days <= 90:
-        return jsonify({"ok": False, "error": "invalid_invitation_days"}), 400
-
     with db() as conn:
         admin_user_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        allowed, retry_after = admin_rate_allowed(admin_user_id, "invitation_create")
+        if not allowed:
+            return admin_rate_limited_response(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_created",
+                retry_after=retry_after,
+            )
+        payload = request.get_json(silent=True) or {}
+        email = normalize_email(payload.get("email"))
+        try:
+            valid_days = int(payload.get("days", 14))
+        except (TypeError, ValueError):
+            valid_days = 14
+        if not email:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_created",
+                success=False,
+                failure_reason="valid_email_required",
+            )
+            conn.commit()
+            return jsonify({"ok": False, "error": "valid_email_required"}), 400
+        if not 1 <= valid_days <= 90:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_created",
+                success=False,
+                failure_reason="invalid_invitation_days",
+            )
+            conn.commit()
+            return jsonify({"ok": False, "error": "invalid_invitation_days"}), 400
         if conn.execute("SELECT 1 FROM app_accounts WHERE email = ?", (email,)).fetchone():
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_created",
+                success=False,
+                target_email=email,
+                failure_reason="account_already_exists",
+            )
+            conn.commit()
             return jsonify({"ok": False, "error": "account_already_exists"}), 409
         expires_at = (datetime.now() + timedelta(days=valid_days)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
@@ -3554,11 +3763,13 @@ def admin_create_invitation():
         row = conn.execute(
             "SELECT id, created_at FROM app_invitations WHERE email = ?", (email,)
         ).fetchone()
-        conn.execute(
-            """INSERT INTO app_admin_events
-               (admin_user_id, action, target_email, details)
-               VALUES (?, 'invitation_created', ?, ?)""",
-            (admin_user_id, email, json.dumps({"days": valid_days})),
+        record_admin_event(
+            conn,
+            admin_user_id=admin_user_id,
+            action="invitation_created",
+            success=True,
+            target_email=email,
+            details={"days": valid_days},
         )
         conn.commit()
     return jsonify({
@@ -3577,17 +3788,35 @@ def admin_delete_invitation(invitation_id: int):
         admin_user_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        allowed, retry_after = admin_rate_allowed(admin_user_id, "invitation_delete")
+        if not allowed:
+            return admin_rate_limited_response(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_withdrawn",
+                retry_after=retry_after,
+            )
         row = conn.execute(
             "SELECT email, consumed_at FROM app_invitations WHERE id = ?", (invitation_id,)
         ).fetchone()
         if not row or row["consumed_at"]:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="invitation_withdrawn",
+                success=False,
+                failure_reason="invitation_not_found",
+                details={"invitation_id": invitation_id},
+            )
+            conn.commit()
             return jsonify({"ok": False, "error": "invitation_not_found"}), 404
         conn.execute("DELETE FROM app_invitations WHERE id = ?", (invitation_id,))
-        conn.execute(
-            """INSERT INTO app_admin_events
-               (admin_user_id, action, target_email)
-               VALUES (?, 'invitation_withdrawn', ?)""",
-            (admin_user_id, str(row["email"] or "")),
+        record_admin_event(
+            conn,
+            admin_user_id=admin_user_id,
+            action="invitation_withdrawn",
+            success=True,
+            target_email=str(row["email"] or ""),
         )
         conn.commit()
     return jsonify({"ok": True})
@@ -3596,21 +3825,56 @@ def admin_delete_invitation(invitation_id: int):
 @app.route("/v1/admin/access/<int:target_user_id>", methods=["POST"])
 def admin_update_access(target_user_id: int):
     """Gibt einen vorhandenen Zugang frei oder sperrt ihn mit echter API-Wirkung."""
-    payload = request.get_json(silent=True) or {}
-    action = clean_text(payload.get("action")).lower()
-    if action not in {"approve", "revoke"}:
-        return jsonify({"ok": False, "error": "invalid_admin_action"}), 400
-
     with db() as conn:
         admin_user_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        allowed, retry_after = admin_rate_allowed(admin_user_id, "access_update")
+        if not allowed:
+            return admin_rate_limited_response(
+                conn,
+                admin_user_id=admin_user_id,
+                action="access_update",
+                retry_after=retry_after,
+                target_user_id=target_user_id,
+            )
+        payload = request.get_json(silent=True) or {}
+        action = clean_text(payload.get("action")).lower()
+        if action not in {"approve", "revoke"}:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="access_update",
+                success=False,
+                target_user_id=target_user_id,
+                failure_reason="invalid_admin_action",
+            )
+            conn.commit()
+            return jsonify({"ok": False, "error": "invalid_admin_action"}), 400
         if target_user_id == admin_user_id:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="access_update",
+                success=False,
+                target_user_id=target_user_id,
+                failure_reason="cannot_change_own_access",
+            )
+            conn.commit()
             return jsonify({"ok": False, "error": "cannot_change_own_access"}), 409
         target = conn.execute(
             "SELECT user_id FROM users WHERE user_id = ?", (target_user_id,)
         ).fetchone()
         if not target:
+            record_admin_event(
+                conn,
+                admin_user_id=admin_user_id,
+                action="access_update",
+                success=False,
+                target_user_id=target_user_id,
+                failure_reason="user_not_found",
+            )
+            conn.commit()
             return jsonify({"ok": False, "error": "user_not_found"}), 404
         account = conn.execute(
             """SELECT email, source FROM app_accounts
@@ -3653,11 +3917,14 @@ def admin_update_access(target_user_id: int):
             if table_exists(conn, "app_push_subscriptions"):
                 conn.execute("DELETE FROM app_push_subscriptions WHERE user_id = ?", (target_user_id,))
 
-        conn.execute(
-            """INSERT INTO app_admin_events
-               (admin_user_id, action, target_user_id, target_email)
-               VALUES (?, ?, ?, ?)""",
-            (admin_user_id, f"access_{action}", target_user_id, email),
+        record_admin_event(
+            conn,
+            admin_user_id=admin_user_id,
+            action=f"access_{action}",
+            success=True,
+            target_user_id=target_user_id,
+            target_email=email,
+            details={"operation": action},
         )
         conn.commit()
     return jsonify({"ok": True, "status": next_status if action == "approve" else "revoked"})
@@ -8192,5 +8459,8 @@ def delete_cash_movement(movement_id: int):
 
 
 if __name__ == "__main__":
+    # Schema preparation runs once before the server accepts requests.
+    with db() as conn:
+        ensure_admin_tables(conn)
     port = int(os.getenv("ROVE_APP_API_PORT", "5057"))
     app.run(host="127.0.0.1", port=port)
