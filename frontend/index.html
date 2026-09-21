@@ -1077,16 +1077,17 @@
   #monthlyplansheet .set-row .st .sl{font-weight:760;letter-spacing:-.12px}
   #monthlyplansheet .set-row .st .ss{margin-top:4px;line-height:1.35}
   #monthlyplansheet .set-row .sv{font-size:16px;font-weight:790;color:#eff5f8;font-variant-numeric:tabular-nums}
-  #monthlyplansheet .vd-btn{margin:10px 0 1px!important;min-height:46px;border-color:rgba(137,194,222,.34);border-radius:14px;background:linear-gradient(145deg,rgba(68,153,195,.28),rgba(31,92,125,.14));box-shadow:inset 0 1px 0 rgba(221,244,255,.22),inset 0 -9px 16px rgba(0,0,0,.12),0 7px 15px rgba(0,0,0,.13);color:#d9f3fc;letter-spacing:.01em}
+  #monthlyplansheet .vd-btn{margin:10px 0 1px!important;min-height:46px;border-color:rgba(205,220,228,.2);border-radius:14px;background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.12),inset 0 -9px 16px rgba(0,0,0,.12),0 7px 15px rgba(0,0,0,.13);color:#edf3f5;letter-spacing:.01em}
   #monthlyplansheet .vd-btn:active{transform:scale(.975);filter:brightness(.95)}
   #monthlyplansheet .plan-payday{min-height:38px;margin:0 0 16px;padding:0 13px;border-color:rgba(207,220,229,.19);border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.075),rgba(255,255,255,.022));box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 6px 14px rgba(0,0,0,.1);color:#aebdc6}
-  #monthlyplansheet .plan-payday span{color:#b8e0ef;font-size:17px;line-height:1}
-  #monthlyplansheet .etf-plan-card{margin-top:0;margin-bottom:12px;border-radius:19px}
+  #monthlyplansheet .plan-payday span{color:#c2cdd2;font-size:17px;line-height:1}
+  #monthlyplansheet .etf-plan-card{margin-top:0;margin-bottom:12px;border-radius:19px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018))}
+  #monthlyplansheet .etf-action.primary{color:#edf3f5;border-color:rgba(205,220,228,.2);background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.025))}
   #monthlyplansheet .hint{padding:12px 13px;border:1px solid rgba(205,218,227,.14);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018));box-shadow:inset 0 1px 0 rgba(255,255,255,.065);font-size:12.8px;line-height:1.45}
   #monthlyplansheet .monthly-nothing-due{color:#b9c8d0;background:linear-gradient(145deg,rgba(110,140,157,.12),rgba(255,255,255,.018))}
-  #monthlyplansheet .set-card:has([data-month-close]),#monthlyplansheet .set-card:has([data-etf-due]){border-color:rgba(139,194,221,.34);background:radial-gradient(95% 92% at 0% 0%,rgba(82,167,207,.16),transparent 49%),linear-gradient(145deg,rgba(30,47,60,.96),rgba(9,18,27,.9));box-shadow:inset 0 1px 0 rgba(220,245,255,.15),inset 0 -16px 28px rgba(0,0,0,.13),0 14px 30px rgba(4,36,51,.2)}
+  #monthlyplansheet .set-card:has([data-month-close]),#monthlyplansheet .set-card:has([data-etf-due]){border-color:rgba(205,220,228,.23);background:radial-gradient(95% 92% at 0% 0%,rgba(255,255,255,.075),transparent 49%),linear-gradient(145deg,rgba(32,43,52,.96),rgba(9,18,27,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.13),inset 0 -16px 28px rgba(0,0,0,.13),0 14px 30px rgba(0,0,0,.16)}
   #monthlyplansheet .set-card:has([data-month-close]) .sl,#monthlyplansheet .set-card:has([data-etf-due]) .sl{color:#e2f5fc}
-  #monthlyplansheet .set-card:has([data-month-close]) .ss,#monthlyplansheet .set-card:has([data-etf-due]) .ss{color:#a8cad7}
+  #monthlyplansheet .set-card:has([data-month-close]) .ss,#monthlyplansheet .set-card:has([data-etf-due]) .ss{color:#b5c0c6}
 
   #tab-tx #tx-list>.card{border-color:rgba(207,220,229,.17);border-radius:19px;background:radial-gradient(115% 82% at 0% 0%,rgba(174,211,229,.055),transparent 47%),linear-gradient(145deg,rgba(27,38,49,.9),rgba(9,16,24,.82));box-shadow:inset 0 1px 0 rgba(255,255,255,.085),inset 0 -15px 27px rgba(0,0,0,.11),0 11px 24px rgba(0,0,0,.13)}
   #tab-tx .day{margin:20px 5px 9px;color:#b6c4cc;font-size:11.5px;letter-spacing:.105em}
@@ -1113,7 +1114,9 @@
   /* A budget row opens a sheet, but the shared parent card must stay still while it is pressed. */
   #tab-tx #budget-list>.card:active{transform:none;opacity:1}
   :root[data-theme="light"] #monthlyplansheet .set-card{border-color:rgba(64,88,104,.15);background:radial-gradient(116% 86% at 0% 0%,rgba(255,255,255,.98),transparent 47%),linear-gradient(145deg,rgba(255,255,255,.98),rgba(234,242,246,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.99),0 10px 21px rgba(40,67,84,.07)}
-  :root[data-theme="light"] #monthlyplansheet .vd-btn{color:#176b91;border-color:rgba(54,143,184,.28);background:linear-gradient(145deg,rgba(170,221,244,.7),rgba(226,244,251,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 13px rgba(47,121,159,.09)}
+  :root[data-theme="light"] #monthlyplansheet .vd-btn{color:#31424a;border-color:rgba(67,90,108,.16);background:linear-gradient(145deg,#fff,#edf3f6);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 13px rgba(40,67,84,.07)}
+  :root[data-theme="light"] #monthlyplansheet .etf-plan-card{background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(234,241,245,.9))}
+  :root[data-theme="light"] #monthlyplansheet .etf-action.primary{color:#31424a;border-color:rgba(67,90,108,.16);background:linear-gradient(145deg,#fff,#edf3f6)}
   :root[data-theme="light"] #monthlyplansheet .plan-payday,:root[data-theme="light"] #monthlyplansheet .hint{border-color:rgba(67,90,108,.14);background:linear-gradient(145deg,rgba(255,255,255,.92),rgba(235,242,246,.83));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 5px 12px rgba(40,67,84,.05)}
   :root[data-theme="light"] #tab-tx #tx-list>.card{border-color:rgba(67,90,108,.14);background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(234,241,245,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 9px 20px rgba(40,67,84,.07)}
   :root[data-theme="light"] #tab-tx .tx .amt.pos{color:#23754a;background:rgba(84,179,123,.12);border-color:rgba(62,145,95,.2)}
@@ -1424,12 +1427,13 @@
   .position-plus{display:grid;place-items:center;width:24px;height:24px;border:1px solid var(--line2);border-radius:50%;color:var(--blue);font-size:19px;font-weight:500;line-height:1}
   .position-form{max-height:0;overflow:hidden;opacity:0;pointer-events:none;transition:max-height .28s cubic-bezier(.22,1,.36,1),opacity .18s ease,margin .28s cubic-bezier(.22,1,.36,1)}
   .position-form.on{max-height:1400px;opacity:1;pointer-events:auto;margin-top:2px}
-  .etf-plan-link{display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:18px;padding:13px 2px 2px;border:0;border-top:1px solid var(--line);
-    background:transparent;color:var(--muted);font:inherit;text-align:left;cursor:pointer}
-  .etf-plan-link .label{font-size:13.5px;font-weight:700;color:var(--muted)}
-  .etf-plan-link .value{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:var(--blue);white-space:nowrap}
-  .etf-plan-link .chev{font-size:20px;font-weight:400;line-height:1;color:var(--faint)}
+  .etf-plan-link{display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:18px;padding:12px 13px;border:1px solid var(--line);
+    border-radius:14px;background:linear-gradient(145deg,rgba(255,255,255,.065),rgba(255,255,255,.018));color:var(--ink);font:inherit;text-align:left;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 5px 12px rgba(0,0,0,.08)}
+  .etf-plan-link .label{font-size:13.5px;font-weight:700;color:var(--ink)}
+  .etf-plan-link .value{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap}
+  .etf-plan-link .chev{font-size:20px;font-weight:400;line-height:1;color:var(--muted)}
   .etf-plan-link:active{transform:scale(.985);opacity:.75}
+  :root[data-theme="light"] .etf-plan-link{border-color:rgba(67,90,108,.15);background:linear-gradient(145deg,#fff,#edf3f6);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 5px 11px rgba(40,67,84,.06)}
   .asset-note{margin-top:10px;font-size:13px;line-height:1.5;color:var(--muted)}
 
   /* Detail-Sheets: eine gemeinsame ruhige Hierarchie fuer Konten und Assets. */
