@@ -3491,8 +3491,12 @@ const PIN_INACTIVITY_MS=2*60*1000;
 function apiReady(){
   return !!(ROVE_API?.baseUrl && ROVE_API.authenticated);
 }
-function handleApiSessionStatus(status){
+function handleApiSessionStatus(status,body=null){
   if(status===423){
+    if(body?.error==="fresh_step_up_required"){
+      window.dispatchEvent(new CustomEvent("rove:api-step-up-required"));
+      return;
+    }
     window.dispatchEvent(new CustomEvent("rove:api-locked"));
     return;
   }
@@ -3516,7 +3520,12 @@ async function apiFetch(path,options={}){
     credentials:"include",
     headers
   });
-  handleApiSessionStatus(response.status);
+  if(response.status===423){
+    const statusBody=await response.clone().json().catch(()=>null);
+    handleApiSessionStatus(response.status,statusBody);
+  }else{
+    handleApiSessionStatus(response.status);
+  }
   return response;
 }
 // Budgetwarnungen duerfen erst nach dem aktuellen API-Stand entstehen. Der gespeicherte
@@ -12513,6 +12522,12 @@ function showPinScreen(mode="locked"){
       <div class="pin-card pin-change-card"><div class="pin-change-field"><div class="pin-change-label">Aktuelle PIN</div>${pinField("pinChangeCurrent","Aktuelle PIN",true)}</div><div class="pin-change-field"><div class="pin-change-label">Neue PIN</div>${pinField("pinChangeNew","Neue PIN",true)}</div><div class="pin-change-field"><div class="pin-change-label">PIN wiederholen</div>${pinField("pinChangeConfirm","PIN wiederholen",true)}</div>${pinPad("pinChangeCurrent")}
       <div class="pin-message" id="pinMessage"></div></div>`;
     foot.innerHTML=`<button class="ob-cta" data-pin="change">PIN ändern</button><button class="ob-ghost" data-pin="cancel-change">Abbrechen</button>`;
+  }else if(mode==="step_up_required"){
+    body.innerHTML=`<div class="pin-lock-title">Bestätige deine PIN.</div>
+      <div class="pin-lock-sub">Für diese sensible Aktion ist eine erneute PIN-Bestätigung erforderlich.</div>
+      <div class="pin-card">${pinField("pinUnlock","4-stellige PIN",true)}${pinPad("pinUnlock")}
+      <div class="pin-message" id="pinMessage"></div></div>`;
+    foot.innerHTML=`<div class="pin-forgot"><button type="button" data-pin="forgot">PIN vergessen?</button></div>`;
   }else{
     body.innerHTML=`<div class="pin-lock-title">Gib zum Einloggen deine PIN ein.</div>
       <div class="pin-card">${pinField("pinUnlock","4-stellige PIN",true)}${pinPad("pinUnlock")}
@@ -12687,6 +12702,11 @@ window.addEventListener("rove:api-locked",()=>{
   if(APP_MODE!=="bridge")return;
   document.getElementById("app")?.setAttribute("hidden","");
   fetchPinStatus();
+});
+window.addEventListener("rove:api-step-up-required",()=>{
+  if(APP_MODE!=="bridge")return;
+  document.getElementById("app")?.setAttribute("hidden","");
+  showPinScreen("step_up_required");
 });
 ["pointerdown","keydown","touchstart","scroll"].forEach(type=>window.addEventListener(type,notePinActivity,{passive:true}));
 document.addEventListener("visibilitychange",()=>{

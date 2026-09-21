@@ -183,6 +183,7 @@ PIN_MAX_ATTEMPTS = 3
 # The server remains the authority: an unlocked PIN session expires after two
 # minutes without a protected request or an explicit activity touch.
 PIN_INACTIVITY_SECONDS = 2 * 60
+ADMIN_FRESH_STEP_UP_SECONDS = 60
 PIN_RATE_WINDOW_SECONDS = 15 * 60
 PIN_RATE_LIMIT = 20
 PIN_ATTEMPT_BUCKETS: dict[str, list[float]] = {}
@@ -697,13 +698,55 @@ def authenticated_admin(conn: sqlite3.Connection):
     ensure_auth_tables(conn)
     session = session_user_from_cookie(conn)
     if not session:
-        return None, (jsonify({"ok": False, "error": "reauthentication_required"}), 401)
-    user_id, _session_id = session
+        return None, None, (jsonify({"ok": False, "error": "reauthentication_required"}), 401)
+    user_id, session_id = session
     if not is_admin_user(user_id):
-        return None, (jsonify({"ok": False, "error": "forbidden"}), 403)
+        return None, None, (jsonify({"ok": False, "error": "forbidden"}), 403)
     if not admin_schema_ready(conn):
-        return None, (jsonify({"ok": False, "error": "admin_schema_unavailable"}), 503)
-    return user_id, None
+        return None, None, (jsonify({"ok": False, "error": "admin_schema_unavailable"}), 503)
+    return user_id, session_id, None
+
+
+def fresh_admin_step_up_is_valid(conn: sqlite3.Connection, session_id: int) -> bool:
+    """Return whether the last real PIN verification is still fresh."""
+    row = conn.execute(
+        "SELECT unlocked_at FROM app_session_pins WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        return False
+    age = conn.execute(
+        "SELECT (julianday('now') - julianday(?)) * 86400",
+        (row[0],),
+    ).fetchone()[0]
+    return age is not None and 0 <= float(age) <= ADMIN_FRESH_STEP_UP_SECONDS
+
+
+def require_fresh_admin_step_up(
+    conn: sqlite3.Connection,
+    admin_user_id: int,
+    session_id: int,
+    *,
+    action: str,
+    target_user_id: int | None = None,
+):
+    """Block sensitive admin writes unless the PIN was verified within one minute."""
+    if fresh_admin_step_up_is_valid(conn, session_id):
+        return None
+    record_admin_event(
+        conn,
+        admin_user_id=admin_user_id,
+        action=action,
+        success=False,
+        target_user_id=target_user_id,
+        failure_reason="fresh_step_up_required",
+    )
+    conn.commit()
+    return jsonify({
+        "ok": False,
+        "error": "fresh_step_up_required",
+        "pin_status": "step_up_required",
+    }), 423
 
 
 def clean_text(value: object, fallback: str = "") -> str:
@@ -3497,7 +3540,7 @@ def update_feature_announcement_state(feature_id: str, action: str):
 def admin_overview():
     """Kompakte Betriebsdaten fuer das mobile Admin-Kontrollzentrum."""
     with db() as conn:
-        token_user_id, auth_error = authenticated_admin(conn)
+        token_user_id, _session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
 
@@ -3638,7 +3681,7 @@ def admin_overview():
 def admin_coach_patterns(target_user_id: int):
     """Expose Coach V4 evidence only to authorized internal inspectors."""
     with db() as conn:
-        admin_user_id, auth_error = authenticated_admin(conn)
+        admin_user_id, _session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
         allowed, retry_after = admin_rate_allowed(admin_user_id, "coach_inspector_read")
@@ -3692,7 +3735,7 @@ def admin_coach_patterns(target_user_id: int):
 def admin_coach_snapshot_metrics():
     """Expose aggregate Coach V4 queue metrics to authorized admins only."""
     with db() as conn:
-        _, auth_error = authenticated_admin(conn)
+        _, _session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
         metrics = get_behavior_snapshot_metrics(conn)
@@ -3702,9 +3745,17 @@ def admin_coach_snapshot_metrics():
 def admin_create_invitation():
     """Bereitet einen zeitlich begrenzten App-only Beta-Zugang vor."""
     with db() as conn:
-        admin_user_id, auth_error = authenticated_admin(conn)
+        admin_user_id, session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        step_up_error = require_fresh_admin_step_up(
+            conn,
+            admin_user_id,
+            session_id,
+            action="invitation_created",
+        )
+        if step_up_error:
+            return step_up_error
         allowed, retry_after = admin_rate_allowed(admin_user_id, "invitation_create")
         if not allowed:
             return admin_rate_limited_response(
@@ -3785,9 +3836,17 @@ def admin_create_invitation():
 def admin_delete_invitation(invitation_id: int):
     """Zieht eine noch nicht verwendete Beta-Einladung zurueck."""
     with db() as conn:
-        admin_user_id, auth_error = authenticated_admin(conn)
+        admin_user_id, session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        step_up_error = require_fresh_admin_step_up(
+            conn,
+            admin_user_id,
+            session_id,
+            action="invitation_withdrawn",
+        )
+        if step_up_error:
+            return step_up_error
         allowed, retry_after = admin_rate_allowed(admin_user_id, "invitation_delete")
         if not allowed:
             return admin_rate_limited_response(
@@ -3826,9 +3885,18 @@ def admin_delete_invitation(invitation_id: int):
 def admin_update_access(target_user_id: int):
     """Gibt einen vorhandenen Zugang frei oder sperrt ihn mit echter API-Wirkung."""
     with db() as conn:
-        admin_user_id, auth_error = authenticated_admin(conn)
+        admin_user_id, session_id, auth_error = authenticated_admin(conn)
         if auth_error:
             return auth_error
+        step_up_error = require_fresh_admin_step_up(
+            conn,
+            admin_user_id,
+            session_id,
+            action="access_update",
+            target_user_id=target_user_id,
+        )
+        if step_up_error:
+            return step_up_error
         allowed, retry_after = admin_rate_allowed(admin_user_id, "access_update")
         if not allowed:
             return admin_rate_limited_response(

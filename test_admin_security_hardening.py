@@ -120,6 +120,19 @@ class AdminSecurityHardeningTests(unittest.TestCase):
             conn.commit()
         return raw_token
 
+    def _age_step_up(self, raw_token, seconds=61):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """UPDATE app_session_pins
+                      SET unlocked_at = datetime('now', ?),
+                          last_activity_at = CURRENT_TIMESTAMP
+                    WHERE session_id = (
+                        SELECT id FROM app_sessions WHERE token_hash = ?
+                    )""",
+                (f"-{seconds} seconds", api.keyed_hash(raw_token)),
+            )
+            conn.commit()
+
     @staticmethod
     def _client(token):
         client = api.app.test_client()
@@ -174,6 +187,127 @@ class AdminSecurityHardeningTests(unittest.TestCase):
             response = client.get("/v1/admin/overview")
         self.assertEqual(response.status_code, 423)
         self.assertEqual(response.get_json()["error"], "pin_locked")
+
+    def test_fresh_step_up_allows_sensitive_write_after_real_pin_verification(self):
+        admin = self._session(1, "admin-fresh-unlock-token", unlocked=False)
+        with self._client(admin) as client:
+            unlocked = client.post(
+                "/v1/auth/pin/unlock",
+                json={"pin": "1234"},
+            )
+            created = client.post(
+                "/v1/admin/invitations",
+                json={"email": "fresh-write@example.test"},
+                headers=self._same_origin_headers(),
+            )
+        self.assertEqual(unlocked.status_code, 200, unlocked.get_json())
+        self.assertEqual(created.status_code, 200, created.get_json())
+
+    def test_fresh_step_up_blocks_invitation_write_after_sixty_seconds_and_audits(self):
+        admin = self._session(1, "admin-expired-invitation-token")
+        self._age_step_up(admin)
+        with self._client(admin) as client:
+            response = client.post(
+                "/v1/admin/invitations",
+                json={"email": "expired-write@example.test"},
+                headers=self._same_origin_headers(),
+            )
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.get_json()["error"], "fresh_step_up_required")
+        self.assertEqual(self._audit_rows()[-1]["failure_reason"], "fresh_step_up_required")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM app_invitations WHERE email = ?",
+                    ("expired-write@example.test",),
+                ).fetchone()
+            )
+
+    def test_normal_admin_read_does_not_extend_fresh_step_up(self):
+        admin = self._session(1, "admin-read-does-not-refresh-token")
+        self._age_step_up(admin)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            before = conn.execute(
+                """SELECT p.unlocked_at
+                     FROM app_session_pins p
+                     JOIN app_sessions s ON s.id = p.session_id
+                    WHERE s.token_hash = ?""",
+                (api.keyed_hash(admin),),
+            ).fetchone()[0]
+
+        with patch.object(api, "build_shadow_inspector", return_value={"patterns": []}):
+            with self._client(admin) as client:
+                read_response = client.get("/v1/admin/coach-patterns/2")
+                write_response = client.post(
+                    "/v1/admin/invitations",
+                    json={"email": "read-refresh-write@example.test"},
+                    headers=self._same_origin_headers(),
+                )
+
+        self.assertEqual(read_response.status_code, 200, read_response.get_json())
+        self.assertEqual(write_response.status_code, 423)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            after = conn.execute(
+                """SELECT p.unlocked_at
+                     FROM app_session_pins p
+                     JOIN app_sessions s ON s.id = p.session_id
+                    WHERE s.token_hash = ?""",
+                (api.keyed_hash(admin),),
+            ).fetchone()[0]
+        self.assertEqual(after, before)
+
+    def test_fresh_step_up_reverification_restores_sensitive_write(self):
+        admin = self._session(1, "admin-reverify-token")
+        self._age_step_up(admin)
+        with self._client(admin) as client:
+            blocked = client.post(
+                "/v1/admin/invitations",
+                json={"email": "blocked-before-reverify@example.test"},
+                headers=self._same_origin_headers(),
+            )
+            unlocked = client.post(
+                "/v1/auth/pin/unlock",
+                json={"pin": "1234"},
+            )
+            allowed = client.post(
+                "/v1/admin/invitations",
+                json={"email": "allowed-after-reverify@example.test"},
+                headers=self._same_origin_headers(),
+            )
+
+        self.assertEqual(blocked.status_code, 423)
+        self.assertEqual(unlocked.status_code, 200, unlocked.get_json())
+        self.assertEqual(allowed.status_code, 200, allowed.get_json())
+
+    def test_fresh_step_up_blocks_access_write_and_invitation_delete(self):
+        admin = self._session(1, "admin-sensitive-routes-token")
+        with self._client(admin) as client:
+            created = client.post(
+                "/v1/admin/invitations",
+                json={"email": "delete-after-step-up@example.test"},
+                headers=self._same_origin_headers(),
+            )
+        self.assertEqual(created.status_code, 200, created.get_json())
+        invitation_id = created.get_json()["invitation"]["id"]
+
+        self._age_step_up(admin)
+        with self._client(admin) as client:
+            access = client.post(
+                "/v1/admin/access/2",
+                json={"action": "revoke"},
+                headers=self._same_origin_headers(),
+            )
+            delete = client.delete(
+                f"/v1/admin/invitations/{invitation_id}",
+                headers=self._same_origin_headers(),
+            )
+
+        self.assertEqual(access.status_code, 423)
+        self.assertEqual(delete.status_code, 423)
+        self.assertEqual(
+            [row["failure_reason"] for row in self._audit_rows()[-2:]],
+            ["fresh_step_up_required", "fresh_step_up_required"],
+        )
 
     def test_admin_writes_fail_closed_without_trusted_browser_context(self):
         admin = self._session(1, "admin-origin-token")
