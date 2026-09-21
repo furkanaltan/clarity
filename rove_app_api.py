@@ -6684,6 +6684,9 @@ def delete_investment_position():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        # Cookie auth refreshes last_seen_at and opens an implicit transaction.
+        # Finish that session touch before reserving the deletion transaction.
+        conn.commit()
         begin_write(conn)
 
         if legacy_ref and asset_type == "crypto":
