@@ -735,7 +735,7 @@
      bleibt, das ist der Klick-Anker, keine Größen-Abweichung. */
   .mentor .say .m-nudge{display:block;font-size:12.5px;line-height:1.4;color:var(--muted);font-weight:400;margin-top:3px}
   .mentor .say .m-nudge b{color:var(--blue);font-weight:700}
-  .mentor .mentor-talk{margin-left:auto;color:var(--blue);font-size:18px;line-height:1;opacity:.78;flex-shrink:0}
+  .mentor .mentor-talk{margin-left:auto;color:var(--blue);font-size:18px;line-height:1;opacity:.78;flex-shrink:0;appearance:none;background:transparent;border:0;padding:0;font:inherit;cursor:pointer}
   .brand-logo{height:26px;width:auto;display:block;opacity:.96}
   .greet{font-size:20px;font-weight:800;letter-spacing:-.4px}
   .greet .sub{display:block;font-size:12.5px;font-weight:600;letter-spacing:.02em;color:var(--muted);margin-top:2px}
@@ -2540,7 +2540,7 @@
         </svg>
       </div>
       <div class="say" id="mentorSay"></div>
-      <span class="mentor-talk" aria-hidden="true">›</span>
+      <button class="mentor-talk" type="button" data-mentor-cta data-mentor-target="coach" aria-label="Coach öffnen">›</button>
     </div>
 
     <div class="sec">
@@ -3935,9 +3935,17 @@ function mentorIncomeReminderDue(){
 function daysUntilMonthEnd(today=new Date()){
   return new Date(today.getFullYear(), today.getMonth()+1, 0).getDate() - today.getDate();
 }
+function setMentorCtaTarget(target){
+  const safeTarget=String(target||"").trim()||"coach";
+  const mentor=document.querySelector(".mentor");
+  if(!mentor) return;
+  mentor.dataset.mentorTarget=safeTarget;
+  mentor.querySelector("[data-mentor-cta]")?.setAttribute("data-mentor-target",safeTarget);
+}
 function mentorLine(){
   const el=document.getElementById("mentorSay");
   const mentor=document.querySelector(".mentor");
+  setMentorCtaTarget("coach");
   const dueActions=(DATA.monthlyCheckinActions||[]).filter(action=>action?.due&&!action?.completed);
   mentor?.classList.remove("feature-announcement");
   if(mentor){
@@ -3948,7 +3956,10 @@ function mentorLine(){
   if(serverCandidate){
     mentor?.classList.remove("monthly-due");
     const deepLink=String(serverCandidate.deep_link||"");
-    if(mentor && deepLink) mentor.dataset.mentorDeepLink=deepLink;
+    if(mentor && deepLink){
+      mentor.dataset.mentorDeepLink=deepLink;
+      setMentorCtaTarget(deepLink);
+    }
     el.innerHTML=`<div class="m-free" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.title)}</b></div>`+
       `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
     return;
@@ -4035,6 +4046,7 @@ function mentorLine(){
           ? `<div class="m-free">Noch <b>${eur(free)}</b> im geplanten Ausgabenrahmen.${nudge}</div>`
           : `<div class="m-free">Du hast noch <b>${eur(free)}</b> zur freien Verfügung.${nudge}</div>`)
       : `<div class="m-free">Dein freies Budget ist diesen Monat ausgeschöpft.${nudge}</div>`;
+    setMentorCtaTarget("report");
     return;
   }
 
@@ -4043,9 +4055,12 @@ function mentorLine(){
   const candidates=[];
   if(free>0){
     const monthName=new Date().toLocaleDateString("de-DE",{month:"long"});
-    candidates.push(incomePending
-      ? `<div class="m-free">Für ${monthName} sind noch <b>${eur(free)}</b> als Ausgabenrahmen geplant.</div>`
-      : `<div class="m-free">Du hast noch <b>${eur(free)}</b> zur freien Verfügung.</div>`);
+    candidates.push({
+      html:incomePending
+        ? `<div class="m-free">Für ${monthName} sind noch <b>${eur(free)}</b> als Ausgabenrahmen geplant.</div>`
+        : `<div class="m-free">Du hast noch <b>${eur(free)}</b> zur freien Verfügung.</div>`,
+      target:"coach"
+    });
   }
   // Eine hohe, noch nicht abschliessbare Sparrate ist kein aktueller Handlungshebel.
   // Sie bleibt im Score als unbestaetigte Umsetzung sichtbar, wird aber nicht taeglich
@@ -4053,17 +4068,20 @@ function mentorLine(){
   const savingsAwaitingClose = score.next_lever==="Sparrate" &&
     !score.savings_confirmed && Number(score.savings_ratio||0)>=0.20;
   if(score.value!=null && score.next_lever && !savingsAwaitingClose){
-    candidates.push(`<div class="m-free">Dein Rov.E Score: <b>${score.value} von 100</b>.</div><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`);
+    candidates.push({
+      html:`<div class="m-free">Dein Rov.E Score: <b>${score.value} von 100</b>.</div><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`,
+      target:"score"
+    });
   }
   if(Number(points.value||0)>0){
     const rpNext=Number(points.to_next||0)>0?`Noch <b>${points.to_next} RP</b> bis ${points.next_rank||"zum nächsten Rang"}.`:`<b>${points.rank_name||"Rov.E Fortschritt"}</b> ist dein aktueller Fortschrittsrang.`;
-    candidates.push(`<div class="m-free">Du hast <b>${points.value} Rov.E Punkte</b>.</div><div class="m-note">${rpNext}</div>`);
+    candidates.push({html:`<div class="m-free">Du hast <b>${points.value} Rov.E Punkte</b>.</div><div class="m-note">${rpNext}</div>`,target:"coach"});
   }
   if(activeDays>=3){
-    candidates.push(`<div class="m-free">Du hast in den letzten 90 Tagen an <b>${activeDays} Tagen</b> getrackt.</div><div class="m-note">Konstanz macht dein Monatsbild belastbar.</div>`);
+    candidates.push({html:`<div class="m-free">Du hast in den letzten 90 Tagen an <b>${activeDays} Tagen</b> getrackt.</div><div class="m-note">Konstanz macht dein Monatsbild belastbar.</div>`,target:"coach"});
   }
   if(mentorIncomeReminderDue()){
-    candidates.push(`<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div><div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>`);
+    candidates.push({html:`<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div><div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>`,target:"coach"});
   }
   if(!candidates.length){
     el.innerHTML=free>0
@@ -4073,7 +4091,9 @@ function mentorLine(){
   }
   const todayKey=new Date().toLocaleDateString("sv-SE");
   const dailyIndex=[...todayKey].reduce((sum,char)=>sum+char.charCodeAt(0),0)%candidates.length;
-  el.innerHTML=candidates[dailyIndex];
+  const selected=candidates[dailyIndex];
+  el.innerHTML=selected.html;
+  setMentorCtaTarget(selected.target);
 }
 let reportOpenInFlight=null;
 async function markReportOpened(reportMonth){
@@ -4103,9 +4123,21 @@ async function openMentorCandidate(candidate,route){
   return true;
 }
 mentorLine();
-// Mentor-Aufforderungen antippbar machen (Runde 37, 18.07.) — leitet direkt in die passende Aktion,
-// statt nur Text zu zeigen (sonst wäre "mach deine erste Buchung" ein Lippenbekenntnis).
+// Explizite Mentor-CTAs dürfen ein Zielmodul öffnen; die Kartenfläche bleibt immer beim Coach.
 document.querySelector(".mentor").addEventListener("click",e=>{
+  const cta=e.target.closest("[data-mentor-cta]");
+  if(cta){
+    e.stopImmediatePropagation();
+    const mentor=document.querySelector(".mentor");
+    const target=cta.dataset.mentorTarget||"coach";
+    const deepLink=mentor?.dataset.mentorDeepLink||"";
+    buzz();
+    if(deepLink && target!=="coach") openMentorCandidate(DATA.mentorCandidate,deepLink);
+    else if(target==="score") openScore();
+    else if(target==="report"||target==="reports") openReports();
+    else openTalk();
+    return;
+  }
   const r=e.target.closest("[data-mentoract]"); if(!r) return;
   // Die Mentor-Karte hat schon einen eigenen "ganze Karte antippen öffnet den Chat"-Handler,
   // registriert auf demselben Element (Zeile ~3486, "Kurzweg zum Assistenten"). stopPropagation()
@@ -4118,10 +4150,14 @@ document.querySelector(".mentor").addEventListener("click",e=>{
   const a=r.dataset.mentoract; buzz();
   if(a==="add") openSheet();
   else if(a==="talk") openTalk();
-  else if(a==="budget"){ go("tx"); document.querySelector('#txPills [data-f="budget"]')?.click(); }
+  else if(a==="budget") openTalk();
   else if(a==="monthly") openMonthlyPlan();
   else if(a==="feature") openFeatureAnnouncement(r.dataset.featureId);
-  else if(a==="candidate") openMentorCandidate(DATA.mentorCandidate,mentorCard?.dataset.mentorDeepLink||"");
+  else if(a==="candidate"){
+    const route=mentorCard?.dataset.mentorDeepLink||"";
+    if(route) openMentorCandidate(DATA.mentorCandidate,route);
+    else openTalk();
+  }
 });
 // Chart-Zustand für Scrubbing (Punkt-Positionen, Werte, Datums-Labels)
 const CHART={};
@@ -11840,12 +11876,7 @@ document.getElementById("talkSend").addEventListener("click",()=>{ askRove(talkI
 talkIn.addEventListener("keydown",e=>{ if(e.key==="Enter"){ askRove(talkIn.value); talkIn.value=""; } });
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
-if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>{
-  if(mentorCard.dataset.mentorDeepLink) openMentorCandidate(DATA.mentorCandidate,mentorCard.dataset.mentorDeepLink);
-  else if((DATA.monthlyCheckinActions||[]).some(action=>action?.due&&!action?.completed)) openMonthlyPlan();
-  else if(mentorCard.dataset.featureId) openFeatureAnnouncement(mentorCard.dataset.featureId);
-  else openTalk();
-}); }
+if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>openTalk()); }
 
 // ===================== EMPTY STATES: Verkabelung + Home-Kopf + Demo =====================
 // Home-Kopf im leeren Zustand beruhigen — keine 0,00-€-Wüste, kein leeres Diagramm
