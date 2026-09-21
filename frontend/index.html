@@ -2244,6 +2244,9 @@
   #adminsheet .admin-invite button{border:1px solid rgba(174,210,225,.25);background:linear-gradient(145deg,rgba(87,149,177,.42),rgba(33,82,105,.52));box-shadow:inset 0 1px 0 rgba(230,246,252,.16)}
   #adminsheet .admin-action{border-color:rgba(211,221,229,.18);background:rgba(255,255,255,.035);color:#c4e0eb}
   #adminsheet .admin-action.danger{color:#e8aaa8;border-color:rgba(224,130,126,.28)}
+  #adminsheet .admin-refresh-btn{display:block;width:100%;margin-top:14px;min-height:46px;border-color:rgba(211,221,229,.2);border-radius:14px;background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.12),inset 0 -9px 16px rgba(0,0,0,.12),0 7px 15px rgba(0,0,0,.13);color:#edf3f5}
+  #adminsheet .admin-refresh-btn:active{transform:scale(.975);filter:brightness(.95)}
+  :root[data-theme="light"] #adminsheet .admin-refresh-btn{border-color:rgba(67,90,108,.15);background:linear-gradient(145deg,#fff,#edf3f6);box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 6px 13px rgba(40,67,84,.07);color:#31424a}
 
   /* Profilmenue hinter dem Avatar: dieselbe Materialhierarchie fuer Score, Reports, Zugang,
      Einstellungen und Admin. Die data-open-Ziele und die Menue-Reihenfolge bleiben unveraendert. */
@@ -10770,7 +10773,7 @@ function renderAdminOverview(data){
     </div>
     <div class="set-sec">Reports</div>
     <div class="set-card">${adminStatusRows(data.reports?.status)}</div>
-    <button class="vd-btn" id="adminRefresh" style="width:100%;margin-top:14px">Aktualisieren</button>`;
+    <button class="vd-btn admin-refresh-btn" id="adminRefresh">Aktualisieren</button>`;
 }
 async function loadAdminOverview(){
   const body=document.getElementById("adminbody");
