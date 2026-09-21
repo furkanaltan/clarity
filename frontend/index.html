@@ -1381,7 +1381,16 @@
   .asset-kind-grid .account-type{min-height:76px}
   .account-role-list{margin-top:10px;border:1px solid var(--line);border-radius:15px;padding:2px 14px;background:var(--card)}
   .account-role{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
-  .account-role:last-child{border-bottom:0}.account-role span{font-size:13.5px;font-weight:650}.account-role b{color:var(--blue);font-size:12px}
+  .account-role:last-child{border-bottom:0}.account-role span{font-size:13.5px;font-weight:650}.account-role b{color:var(--muted);font-size:12px}
+  .account-standard-usage{margin-top:8px;padding-top:2px;border-top:1px solid var(--line)}
+  .account-standard-summary{display:flex;align-items:center;gap:11px;min-height:54px;padding:9px 0;cursor:pointer;list-style:none}
+  .account-standard-summary::-webkit-details-marker{display:none}
+  .account-standard-summary:focus-visible{outline:2px solid var(--line2);outline-offset:4px;border-radius:8px}
+  .account-standard-helper{margin-top:2px;font-size:11.5px;line-height:1.35;color:var(--muted)}
+  .account-standard-chevron{transition:transform .18s ease}
+  .account-standard-usage[open] .account-standard-chevron{transform:rotate(180deg)}
+  .account-standard-usage .account-role-list.detail-settings{margin-top:2px}
+  @media (prefers-reduced-motion:reduce){.account-standard-chevron{transition:none}}
   .account-danger{color:var(--red)!important;border-color:rgba(255,107,107,.24)!important;background:rgba(255,107,107,.055)!important}
   /* Offline-Elegance: dezenter grauer Kurs-Stand statt roter Fehler */
   .stale{display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:11px;color:var(--faint);font-weight:600}
@@ -1438,10 +1447,11 @@
   .detail-section:first-child{margin-top:0}
   .detail-section-label{margin:0 2px 9px;color:var(--faint);font-size:11px;font-weight:780;letter-spacing:.12em;text-transform:uppercase}
   .detail-actions{display:grid;gap:9px}
-  .detail-action-card{padding:13px 14px;border:1px solid var(--line);border-radius:17px;background:var(--card)}
-  .detail-action-card.primary{border-color:rgba(42,171,238,.26);background:linear-gradient(145deg,rgba(42,171,238,.11),rgba(255,255,255,.015))}
+  .detail-action-card{padding:16px 15px;border:1px solid var(--line2);border-radius:18px;background:linear-gradient(150deg,var(--card),var(--elevate2));box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 8px 18px rgba(0,0,0,.08)}
+  .detail-action-card.primary{border-color:var(--line2);background:linear-gradient(150deg,var(--card),var(--elevate2))}
   .detail-action-card .field{margin-top:9px}
-  .detail-action-card .vd-btn{margin-top:9px}
+  .detail-action-card .vd-btn{margin-top:10px;min-height:46px;border-color:var(--line2);background:linear-gradient(145deg,rgba(255,255,255,.07),rgba(255,255,255,.018));color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 5px 12px rgba(0,0,0,.08)}
+  .detail-action-card .vd-btn:active{filter:brightness(.96)}
   .detail-action-title{font-size:14.5px;font-weight:750;color:var(--ink)}
   .detail-action-sub{margin-top:3px;font-size:12px;line-height:1.4;color:var(--muted)}
   .detail-settings{border:1px solid var(--line);border-radius:17px;background:var(--card);padding:2px 14px}
@@ -1456,6 +1466,11 @@
   .detail-danger{margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}
   .detail-danger .investment-delete,.detail-danger .vd-btn{margin-top:0}
   .detail-danger .asset-note{margin:8px 2px 0}
+  :root[data-theme="light"] .detail-action-card{border-color:rgba(67,90,108,.15);background:linear-gradient(150deg,rgba(255,255,255,.98),rgba(234,241,245,.9));box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 9px 20px rgba(40,67,84,.07)}
+  :root[data-theme="light"] .detail-action-card.primary{border-color:rgba(67,90,108,.15);background:linear-gradient(150deg,rgba(255,255,255,.98),rgba(234,241,245,.9))}
+  :root[data-theme="light"] .detail-action-card .vd-btn{border-color:rgba(67,90,108,.15);background:linear-gradient(145deg,#fff,#edf3f6);color:#24333c;box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 5px 11px rgba(40,67,84,.06)}
+  #dbody .detail-setting-icon{color:var(--muted);background:rgba(255,255,255,.055);border:1px solid var(--line)}
+  :root[data-theme="light"] #dbody .detail-setting-icon{background:rgba(35,80,112,.045);border-color:rgba(67,90,108,.13)}
   .detail-rows{border:1px solid var(--line);border-radius:17px;background:var(--card);padding:2px 14px}
   .detail-rows .drow{padding:13px 0}
   .detail-rows .drow.big{padding:15px 0}
@@ -5501,7 +5516,6 @@ function openAssetDetail(i){
        <div class="detail-actions">
          ${canTransfer?`<div class="detail-action-card primary">
            <div class="detail-action-title">Umbuchen</div>
-           <div class="detail-action-sub">Geld zwischen deinen Konten verschieben.</div>
          <select id="cashMoveDirection" style="width:100%;margin-top:10px;background:var(--card);border:1px solid var(--line);border-radius:13px;color:var(--ink);padding:12px 13px;font:inherit">
            ${transferTargets}
          </select>
@@ -5513,7 +5527,6 @@ function openAssetDetail(i){
          </div>`:""}
          <div class="detail-action-card">
            <div class="detail-action-title">Kontostand anpassen</div>
-           <div class="detail-action-sub">Nur verwenden, wenn sich der Stand außerhalb von Rov.E geändert hat.</div>
            <div class="field">
              <input id="cashValueAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Neuer Kontostand, z. B. 1.000">
            </div>
@@ -5532,10 +5545,14 @@ function openAssetDetail(i){
            <div class="field"><input id="cashRenameValue" maxlength="60" autocomplete="off" value="${escapeAccountHtml(a.name)}" placeholder="Kontoname"></div>
            <button class="vd-btn" id="cashRenameSend">Name speichern</button>
          </div>
-         ${cashMeta.type==="checking"?`<div class="detail-setting-row" style="margin-top:8px">
-           <div class="detail-setting-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM9 9h6M9 13h6M9 17h3"/></svg></div>
-           <div class="detail-setting-copy"><div class="detail-setting-title">Standards</div><div class="detail-setting-meta">${(financialAccountById(cashMeta.id)?.roles||[]).length} aktiv</div></div>
-         </div><div class="account-role-list detail-settings">${Object.entries(ACCOUNT_ROLE_LABELS).map(([role,label])=>`<button class="account-role" type="button" data-account-role="${role}"><span>${label}</span><b>${(financialAccountById(cashMeta.id)?.roles||[]).includes(role)?"Aktiv":"Hier verwenden"}</b></button>`).join("")}</div>`:""}
+         ${cashMeta.type==="checking"?`<details class="account-standard-usage">
+           <summary class="account-standard-summary">
+             <div class="detail-setting-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM9 9h6M9 13h6M9 17h3"/></svg></div>
+             <div class="detail-setting-copy"><div class="detail-setting-title">Standard-Verwendung</div><div class="account-standard-helper">Lege fest, welches Konto Rov.E standardmäßig verwendet.</div></div>
+             <svg class="detail-setting-chevron account-standard-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+           </summary>
+           <div class="account-role-list detail-settings">${Object.entries(ACCOUNT_ROLE_LABELS).map(([role,label])=>`<button class="account-role" type="button" data-account-role="${role}"><span>${label}</span><b>${(financialAccountById(cashMeta.id)?.roles||[]).includes(role)?"Aktiv":"Hier verwenden"}</b></button>`).join("")}</div>
+         </details>`:""}
        </div>
      </div>
      <div class="detail-danger">
