@@ -7538,7 +7538,8 @@ async function syncGoal(action, payload={}){
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
-    if(Array.isArray(data.goals)) DATA.goals=mergeBotGoals(data.goals);
+    goalStateRevision++;
+    applyServerGoals(data.goals,goalStateRevision,action==="delete"?payload.goal_id:"");
     renderGoals(); mentorLine();
     return true;
   }catch(err){
@@ -8487,7 +8488,18 @@ function mergeBotGoals(serverGoals){
   return merged;
 }
 
-let appDataRefreshInFlight=null, appDataRefreshQueued=false;
+let appDataRefreshInFlight=null, appDataRefreshQueued=false, goalStateRevision=0;
+function applyServerGoals(serverGoals,requestRevision=goalStateRevision,deletedGoalId=""){
+  if(!Array.isArray(serverGoals) || requestRevision!==goalStateRevision) return false;
+  DATA.goals=mergeBotGoals(serverGoals);
+  // Keep local legacy goals during state refreshes, but honor a canonical deletion.
+  const deletedId=String(deletedGoalId||"");
+  if(deletedId && !serverGoals.some(goal=>String(goal.id||"")===deletedId)){
+    DATA.goals=DATA.goals.filter(goal=>String(goal.id||"")!==deletedId);
+  }
+  return true;
+}
+
 function refreshAppDataFromServer(){
   if(!apiReady()) return Promise.resolve(false);
   appDataRefreshQueued=true;
@@ -8501,6 +8513,7 @@ function refreshAppDataFromServer(){
   return appDataRefreshInFlight;
 }
 async function fetchCanonicalAppState(){
+  const goalRevisionAtFetch=goalStateRevision;
   try{
     const res=await apiFetch("/v1/state",{
       headers:{},cache:"no-store"
@@ -8531,7 +8544,7 @@ async function fetchCanonicalAppState(){
     }
     if(Array.isArray(data.assetOrder)) DATA.assetOrder=data.assetOrder;
     if(Array.isArray(data.vertraege)) DATA.vertraege=mergeBotContracts(data.vertraege);
-    if(Array.isArray(data.goals)) DATA.goals=mergeBotGoals(data.goals);
+    applyServerGoals(data.goals,goalRevisionAtFetch);
     if(Array.isArray(data.budgets)) DATA.budgets=data.budgets;
     if(Array.isArray(data.reports)) DATA.reports=data.reports;
     if(data.monthlyPlan) DATA.monthlyPlan=data.monthlyPlan;
@@ -8785,6 +8798,7 @@ quickIn.addEventListener("input",()=>{ setQuickError(""); updateQuickCat(); });
 
 // ===================== TÖPFCHEN: Geld einem Ziel zuweisen =====================
 let gIdx=0;
+let goalWriteInFlight=false, goalDeleteInFlight=false;
 const gIn=document.getElementById("gIn");
 let gMode="assign"; // "assign" = Geld zuweisen · "target" = Zielbetrag ändern
 function goalMonths(g){
@@ -8836,42 +8850,60 @@ function openGoalSheet(i){
   setTimeout(()=>gIn.focus(),340);
 }
 async function assignMoney(){
+  if(goalWriteInFlight) return;
   const amt=Math.abs(parseFloat((gIn.value||"").replace(/\.(\d{3})\b/g,"$1").replace(",",".")));
   if(!amt){ gIn.focus(); return; }
   const g=DATA.goals[gIdx];
+  const sendButton=document.getElementById("gSend"), hint=document.getElementById("gHint");
+  const previousHint=hint.textContent;
   const wasDone=g.cur>=g.tar;
-  if(gMode==="target"){
-    if(APP_MODE==="bridge"){
-      if(!await syncGoal("set_target",{goal_id:g.id,target:amt})) return;
-    } else {
-      g.tar=amt;
-      persistAppState();
+  goalWriteInFlight=true;
+  sendButton.disabled=true;
+  sendButton.setAttribute("aria-busy","true");
+  try{
+    if(gMode==="target"){
+      if(APP_MODE==="bridge"){
+        hint.textContent="Zielbetrag wird gespeichert …";
+        if(!await syncGoal("set_target",{goal_id:g.id,target:amt})){
+          hint.textContent=previousHint;
+          return;
+        }
+      } else {
+        g.tar=amt;
+        persistAppState();
+        renderGoals(); mentorLine();
+      }
+      const savedGoal=DATA.goals.find(goal=>String(goal.id)===String(g.id))||g;
+      closeSheet(); buzz();
+      if(!wasDone && savedGoal.cur>=savedGoal.tar) celebrateGoal(savedGoal);   // niedrigeres Ziel kann jetzt voll sein
+      else showToast(`✓ ${g.t}: Zielbetrag jetzt ${eur(amt)}`);
+      logActivity({t:`Zielbetrag geändert: ${g.t} → ${eur(amt)}`, i:"goal"});
+      return;
     }
-    renderGoals(); mentorLine();
+    // Keep the server as the source of truth; show pending feedback rather than guessing an
+    // optimistic balance while the assignment is still being persisted.
+    // Goal progress is a one-time allocation of existing wealth, never a change to monthly savings.
+    if(APP_MODE==="bridge"){
+      hint.textContent="Zuordnung wird gespeichert …";
+      if(!await syncGoal("assign",{goal_id:g.id,amount:amt})){
+        hint.textContent=previousHint;
+        return;
+      }
+    } else {
+      g.cur=Math.min(g.tar, g.cur+amt);
+      persistAppState();
+      renderGoals(); mentorLine();
+    }
+    const savedGoal=DATA.goals.find(goal=>String(goal.id)===String(g.id))||g;
+    gIn.value="";
     closeSheet(); buzz();
-    if(!wasDone && g.cur>=g.tar) celebrateGoal(g);   // niedrigeres Ziel kann jetzt voll sein
-    else showToast(`✓ ${g.t}: Zielbetrag jetzt ${eur(amt)}`);
-    logActivity({t:`Zielbetrag geändert: ${g.t} → ${eur(amt)}`, i:"goal"});
-    return;
+    if(!wasDone && savedGoal.cur>=savedGoal.tar) celebrateGoal(savedGoal);   // Delight: Topf voll → Feier
+    else showToast(`✓ ${eur(amt)} für ${g.t} zugeordnet`);
+  } finally {
+    goalWriteInFlight=false;
+    sendButton.disabled=false;
+    sendButton.removeAttribute("aria-busy");
   }
-  // sts.sparraten ist die monatliche SPARRATE (wiederkehrend) — eine Geld-Zuweisung zu einem Ziel
-  // ist dagegen eine EINMALIGE Umschichtung von bereits vorhandenem Vermögen (Furkan-Fund 17.07.:
-  // "spare ja 1000 nicht 1100" — jede Ziel-Zuweisung hatte die Sparrate PERMANENT aufaddiert, bis
-  // sie nicht mehr mit dem tatsächlich eingegebenen Wert übereinstimmte). g.cur ist bereits die
-  // alleinige Quelle der Wahrheit für den Ziel-Fortschritt, sts.sparraten bleibt unberührt — genau
-  // symmetrisch zum "Ziel löschen"-Kommentar unten, der das schon immer so vorausgesetzt hatte.
-  if(APP_MODE==="bridge"){
-    if(!await syncGoal("assign",{goal_id:g.id,amount:amt})) return;
-  } else {
-    g.cur=Math.min(g.tar, g.cur+amt);
-    persistAppState();
-  }
-  renderGoals(); mentorLine();
-  document.getElementById("gBar").style.width=pct(g.cur,g.tar)+"%";
-  gIn.value="";
-  closeSheet(); buzz();
-  if(!wasDone && g.cur>=g.tar) celebrateGoal(g);   // Delight: Topf voll → Feier
-  else showToast(`✓ ${eur(amt)} für ${g.t} zugeordnet`);
 }
 document.getElementById("gEdit").addEventListener("click",()=>{
   const g=DATA.goals[gIdx];
@@ -8888,11 +8920,20 @@ document.getElementById("gDel").addEventListener("click",e=>{
   // Nur die Zweckbindung fällt weg — das Angesparte ist Vermögen (liegt z. B. im Tagesgeld),
   // die Monats-Sparrate (sts.sparraten) bleibt unberührt.
   if(APP_MODE==="bridge"){
+    if(goalDeleteInFlight) return;
+    goalDeleteInFlight=true;
+    btn.disabled=true;
+    btn.setAttribute("aria-busy","true");
+    btn.textContent="Ziel wird gelöscht …";
     syncGoal("delete",{goal_id:g.id}).then(ok=>{
-      if(!ok) return;
+      if(!ok){ btn.textContent="Wirklich löschen? Erneut tippen"; return; }
       closeSheet(); buzz();
       showToast(`Ziel „${g.t}“ gelöscht${g.cur?` — ${eur(g.cur)} bleiben dein Erspartes`:""}`);
       logActivity({t:`Ziel gelöscht: ${g.t}`, i:"doc"});
+    }).finally(()=>{
+      goalDeleteInFlight=false;
+      btn.disabled=false;
+      btn.removeAttribute("aria-busy");
     });
     return;
   }
