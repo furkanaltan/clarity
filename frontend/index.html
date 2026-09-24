@@ -1924,19 +1924,49 @@
   /* The goal sheet contains several optional actions. Keep it below the iOS status area and
      scroll its contents instead of letting its header disappear above the viewport. */
   #gsheet{max-height:calc(100dvh - var(--safe-top) - 8px);overflow-y:auto;overscroll-behavior:contain}
-  #gsheet.goal-detail-sheet{background:radial-gradient(120% 86% at 0% 0%,rgba(218,231,239,.08),transparent 48%),linear-gradient(155deg,var(--bg2),var(--bg));border-top-color:rgba(213,224,232,.28);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 -18px 42px rgba(0,0,0,.3)}
-  #gsheet.goal-detail-sheet h3{font-size:24px;letter-spacing:-.45px;margin:4px 0 8px}
-  #gsheet.goal-detail-sheet .bar{background:rgba(255,255,255,.07);border:1px solid rgba(211,221,229,.14);box-shadow:inset 0 1px 3px rgba(0,0,0,.18)}
-  #gsheet.goal-detail-sheet #gInfo{display:grid;gap:8px;margin:2px 0 14px;padding:4px 0}
-  #gsheet.goal-detail-sheet #gInfo .drow{min-height:42px;padding:10px 12px;border:1px solid rgba(211,221,229,.12);border-radius:14px;background:rgba(255,255,255,.035)}
-  #gsheet.goal-detail-sheet #gInfo .drow b{font-variant-numeric:tabular-nums}
-  #gsheet.goal-detail-sheet .field{border-color:rgba(211,221,229,.18);background:rgba(255,255,255,.045);box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
-  #gsheet.goal-detail-sheet .send{width:44px;height:44px;border:1px solid rgba(211,221,229,.2);border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.13),rgba(255,255,255,.045));box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 6px 16px rgba(0,0,0,.12)}
-  #gsheet.goal-detail-sheet .send svg{stroke:var(--ink)}
-  #gsheet.goal-detail-sheet .vd-btn{margin-top:12px;border-color:rgba(211,221,229,.18);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.085),rgba(255,255,255,.03));color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)}
-  #gsheet.goal-detail-sheet #gRateRemove{margin-top:8px;border-color:rgba(211,221,229,.14);background:transparent;color:var(--muted)}
-  #gsheet.goal-detail-sheet #gDel{margin-top:12px;border-color:rgba(244,94,94,.28);border-radius:15px;background:linear-gradient(145deg,rgba(244,94,94,.13),rgba(244,94,94,.035));color:#FF8D8D;box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
-  #gsheet.goal-detail-sheet .chip-q{border-color:rgba(211,221,229,.14)}
+  #gsheet.goal-detail-sheet{background:linear-gradient(155deg,var(--bg2),var(--bg));border-top-color:var(--line2);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 -14px 34px rgba(0,0,0,.24)}
+  #gsheet.goal-detail-sheet h3{font-size:22px;letter-spacing:-.4px;margin:4px 0 8px}
+  #gsheet.goal-detail-sheet #gInfo{margin:2px 0 16px}
+  #gsheet.goal-detail-sheet .goal-status{margin:0}
+  #gsheet.goal-detail-sheet .goal-status-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+  #gsheet.goal-detail-sheet .goal-status-label{margin-bottom:5px;color:var(--muted);font-size:12px;font-weight:650}
+  #gsheet.goal-detail-sheet .goal-status-values{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px;color:var(--ink);font-variant-numeric:tabular-nums}
+  #gsheet.goal-detail-sheet .goal-status-values strong{font-size:clamp(20px,5.8vw,24px);font-weight:800;letter-spacing:-.4px;white-space:nowrap}
+  #gsheet.goal-detail-sheet .goal-status-values span{color:var(--muted);font-size:12px}
+  #gsheet.goal-detail-sheet .goal-status-percent{flex-shrink:0;color:var(--blue);font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+  #gsheet.goal-detail-sheet .goal-status .bar{height:9px;margin:12px 0 10px;border:0;background:var(--track);box-shadow:inset 0 1px 2px rgba(0,0,0,.12)}
+  #gsheet.goal-detail-sheet .goal-status-missing,#gsheet.goal-detail-sheet .goal-plan-row{display:flex;align-items:baseline;justify-content:space-between;gap:14px}
+  #gsheet.goal-detail-sheet .goal-status-missing{padding-top:10px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+  #gsheet.goal-detail-sheet .goal-status-missing strong,#gsheet.goal-detail-sheet .goal-plan-row strong{color:var(--ink);font-size:14px;font-weight:750;font-variant-numeric:tabular-nums;text-align:right}
+  #gsheet.goal-detail-sheet .goal-plan{display:grid;gap:7px;margin-top:12px;padding-top:11px;border-top:1px solid var(--line)}
+  #gsheet.goal-detail-sheet .goal-plan-row{color:var(--muted);font-size:12px}
+  #gsheet.goal-detail-sheet .goal-rate-empty{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
+  #gsheet.goal-detail-sheet .goal-assign{margin-top:17px;padding-top:16px;border-top:1px solid var(--line)}
+  #gsheet.goal-detail-sheet .goal-section-title{color:var(--ink);font-size:15px;font-weight:780}
+  #gsheet.goal-detail-sheet .goal-assign-note{margin-top:2px;color:var(--muted);font-size:11.5px;line-height:1.4}
+  #gsheet.goal-detail-sheet #gHint{margin:9px 0 10px;font-size:12px;line-height:1.45}
+  #gsheet.goal-detail-sheet .goal-assign .field{margin-top:0!important;border-color:var(--line2);background:var(--card);box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
+  #gsheet.goal-detail-sheet .goal-assign .field:focus-within{border-color:rgba(42,171,238,.48)}
+  #gsheet.goal-detail-sheet .send{box-shadow:none}
+  #gsheet.goal-detail-sheet .goal-assign .chip-q{border-color:var(--line);background:var(--card);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+  #gsheet.goal-detail-sheet .goal-manage{margin-top:17px;border-top:1px solid var(--line)}
+  #gsheet.goal-detail-sheet .goal-manage-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;list-style:none;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer}
+  #gsheet.goal-detail-sheet .goal-manage-summary::marker{content:""}
+  #gsheet.goal-detail-sheet .goal-manage-summary::-webkit-details-marker{display:none}
+  #gsheet.goal-detail-sheet .goal-manage-summary:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:8px}
+  #gsheet.goal-detail-sheet .goal-manage-chevron{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:transform .18s ease}
+  #gsheet.goal-detail-sheet .goal-manage[open] .goal-manage-chevron{transform:rotate(180deg)}
+  #gsheet.goal-detail-sheet .goal-manage-content{padding:0 0 8px}
+  #gsheet.goal-detail-sheet .goal-manage .vd-btn{margin:0;min-height:44px;padding:11px 13px;border-color:var(--line);border-radius:13px;background:var(--card);color:var(--ink);font-size:13px;text-align:left;box-shadow:none}
+  #gsheet.goal-detail-sheet .goal-rate-settings{margin-top:15px;padding-top:14px;border-top:1px solid var(--line)}
+  #gsheet.goal-detail-sheet .goal-rate-label{display:block;color:var(--ink);font-size:13px;font-weight:700}
+  #gsheet.goal-detail-sheet .goal-rate-help{margin:3px 0 10px;color:var(--muted);font-size:11.5px;line-height:1.4}
+  #gsheet.goal-detail-sheet #gRateRemove{margin-top:8px;color:var(--muted)}
+  #gsheet.goal-detail-sheet #gDel{width:100%;margin-top:13px;padding:11px 13px;min-height:44px;border-color:rgba(255,107,107,.22);border-radius:13px;background:rgba(255,107,107,.045);color:var(--red);font-size:13px;text-align:left;box-shadow:none}
+  :root[data-theme="light"] #gsheet.goal-detail-sheet #gDel{border-color:rgba(174,64,76,.2);background:rgba(174,64,76,.045);color:#a9434e}
+  @media(max-width:380px){#gsheet.goal-detail-sheet .goal-status-head{gap:8px}#gsheet.goal-detail-sheet .goal-status-percent{font-size:19px}}
+  @media(prefers-reduced-motion:reduce){#gsheet.goal-detail-sheet .goal-manage-chevron{transition:none}}
   #sheet #scanOpen,#importsheet #scanPick{border-color:rgba(211,221,229,.18);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.085),rgba(255,255,255,.03));color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 6px 16px rgba(0,0,0,.08)}
   /* Der Coach ist eine vollwertige Unterhaltung, kein kurzes Eingabe-Sheet. Nur dieses Sheet
      fuellt den Bildschirm; Quick-Add, Ziele und Vertraege behalten ihre kompakte Hoehe. */
@@ -2680,22 +2710,36 @@
   <div class="sheet goal-detail-sheet" id="gsheet">
     <div class="grab"></div>
     <h3 id="gTitle">Ziel</h3>
-    <div class="hint" id="gHint"></div>
-    <div class="bar" style="margin-bottom:16px"><span id="gBar" style="width:0%"></span></div>
     <div id="gInfo"></div>
-    <div class="field" style="margin-top:14px">
-      <input id="gIn" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Betrag, z. B. 100">
-      <button class="send" id="gSend" aria-label="Geld zuweisen"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 6l6 6-6 6"/></svg></button>
+    <div class="goal-assign">
+      <div class="goal-section-title" id="gActionTitle">Geld zuordnen</div>
+      <div class="goal-assign-note" id="gAssignNote">Nur zugeordnet — nicht zusätzlich gebucht.</div>
+      <div class="hint" id="gHint"></div>
+      <div class="field">
+        <input id="gIn" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Betrag, z. B. 100">
+        <button class="send" id="gSend" aria-label="Geld zuweisen"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 6l6 6-6 6"/></svg></button>
+      </div>
+      <div class="chips" id="gChips"></div>
     </div>
-    <div class="chips" id="gChips"></div>
-    <button class="vd-btn" id="gEdit">Zielbetrag ändern</button>
-    <div class="hint" style="margin-top:16px">Optionale Zielrate — nur verwenden, wenn du sie ausdrücklich für dieses Ziel planst.</div>
-    <div class="field" style="margin-top:8px">
-      <input id="gRate" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 200 € / Monat">
-      <button class="send" id="gRateSave" aria-label="Zielrate speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
-    </div>
-    <button class="vd-btn" id="gRateRemove" style="margin-top:8px">Zielrate entfernen</button>
-    <button class="txd-del" id="gDel" style="margin-top:10px">Ziel löschen</button>
+    <details class="goal-manage" id="goalManage">
+      <summary class="goal-manage-summary">
+        <span>Ziel verwalten</span>
+        <svg class="goal-manage-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </summary>
+      <div class="goal-manage-content">
+        <button class="vd-btn" id="gEdit" type="button">Zielbetrag ändern</button>
+        <div class="goal-rate-settings">
+          <label class="goal-rate-label" for="gRate">Zielrate</label>
+          <div class="goal-rate-help">Optional — nur verwenden, wenn du die Rate ausdrücklich für dieses Ziel planst.</div>
+          <div class="field">
+            <input id="gRate" type="text" inputmode="decimal" autocomplete="off" placeholder="z. B. 200 € / Monat">
+            <button class="send" id="gRateSave" aria-label="Zielrate speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
+          </div>
+          <button class="vd-btn" id="gRateRemove" type="button">Zielrate entfernen</button>
+        </div>
+        <button class="txd-del" id="gDel" type="button">Ziel löschen</button>
+      </div>
+    </details>
   </div>
   <!-- Budget-Sheet: eigenes Limit setzen -->
   <div class="sheet" id="bsheet">
@@ -8753,18 +8797,34 @@ function goalMonths(g){
 function openGoalSheet(i){
   gIdx=i; gMode="assign";
   const g=DATA.goals[i], p=pct(g.cur,g.tar);
+  document.getElementById("goalManage").open=false;
   document.getElementById("gTitle").textContent = g.t;
+  document.getElementById("gActionTitle").textContent = "Geld zuordnen";
+  document.getElementById("gAssignNote").textContent = "Nur zugeordnet — nicht zusätzlich gebucht.";
   document.getElementById("gHint").textContent = g.cur>=g.tar
     ? `${eur(g.cur)} zugeordnet. Ziel erreicht.`
     : `Wie viel deines vorhandenen Geldes möchtest du diesem Ziel zuordnen?`;
-  const bar=document.getElementById("gBar");
-  bar.style.background=`linear-gradient(90deg,${g.tint}99,${g.tint})`; bar.style.width=p+"%";
   document.getElementById("gInfo").innerHTML=`
-    <div class="drow"><span class="k">Fortschritt</span><span class="v">${eur(g.cur)} von ${eur(g.tar)} · ${p} %</span></div>
-    <div class="drow"><span class="k">Fehlt noch</span><span class="v">${eur(Math.max(0,g.tar-g.cur))}</span></div>
-    <div class="drow"><span class="k">Zielrate</span><span class="v">${g.rate?`${eur(g.rate)} / Monat`:`Nicht hinterlegt`}</span></div>
-    <div class="drow"><span class="k">Rechnerischer Forecast</span><span class="v">${goalMonths(g)}</span></div>
-    <div class="hint" style="margin-top:10px">Nur zugeordnet — nicht zusätzlich gebucht.</div>`;
+    <div class="goal-status">
+      <div class="goal-status-head">
+        <div>
+          <div class="goal-status-label">Fortschritt</div>
+          <div class="goal-status-values"><strong>${eur(g.cur)}</strong><span>von</span><strong>${eur(g.tar)}</strong></div>
+        </div>
+        <strong class="goal-status-percent">${p} %</strong>
+      </div>
+      <div class="bar"><span id="gBar" style="width:${p}%"></span></div>
+      <div class="goal-status-missing"><span>Fehlt noch</span><strong>${eur(Math.max(0,g.tar-g.cur))}</strong></div>
+      ${g.rate
+        ? `<div class="goal-plan">
+            <div class="goal-plan-row"><span>Zielrate</span><strong>${eur(g.rate)} / Monat</strong></div>
+            <div class="goal-plan-row"><span>Rechnerischer Forecast</span><strong>${goalMonths(g)}</strong></div>
+          </div>`
+        : `<p class="goal-rate-empty">Keine monatliche Zielrate festgelegt</p>`}
+    </div>`;
+  const bar=document.getElementById("gBar");
+  bar.style.background=`linear-gradient(90deg,${g.tint}99,${g.tint})`;
+  bar.style.width=p+"%";
   gIn.value=""; gIn.placeholder="Betrag, z. B. 100";
   document.getElementById("gRate").value=g.rate?String(g.rate).replace(".",","):"";
   document.getElementById("gChips").innerHTML=["50","100","250","500"].map(v=>`<span class="chip-q">+ ${v} €</span>`).join("");
@@ -8816,6 +8876,8 @@ async function assignMoney(){
 document.getElementById("gEdit").addEventListener("click",()=>{
   const g=DATA.goals[gIdx];
   gMode="target";
+  document.getElementById("gActionTitle").textContent="Zielbetrag ändern";
+  document.getElementById("gAssignNote").textContent="Der vorhandene Ziel-Fortschritt bleibt erhalten.";
   document.getElementById("gHint").textContent="Neuen Zielbetrag eingeben — der Fortschritt bleibt erhalten.";
   gIn.value=g.tar; gIn.placeholder="Neuer Zielbetrag";
   gIn.focus(); gIn.select && gIn.select();
