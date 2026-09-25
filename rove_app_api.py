@@ -5389,7 +5389,7 @@ def update_goals():
     """Verwaltet App-Ziele zentral, damit sie App-Neustarts und Geraetewechsel ueberleben."""
     payload = request.get_json(silent=True) or {}
     action = clean_text(payload.get("action")).lower()
-    if action not in {"create", "assign", "set_target", "set_rate", "delete"}:
+    if action not in {"create", "assign", "unassign", "set_target", "set_rate", "delete"}:
         return jsonify({"ok": False, "error": "valid_goal_action_required"}), 400
 
     token = token_from_request()
@@ -5464,11 +5464,20 @@ def update_goals():
                              updated_at = CURRENT_TIMESTAMP""",
                         (user_id, next_rate),
                     )
-                elif action == "assign":
+                elif action in {"assign", "unassign"}:
                     amount = goal_amount(payload.get("amount"))
                     if amount is None or amount <= 0:
                         return jsonify({"ok": False, "error": "valid_goal_amount_required"}), 400
-                    next_amount = round(min(target, current + amount), 2)
+                    if action == "unassign":
+                        if amount > current:
+                            return jsonify({
+                                "ok": False,
+                                "error": "goal_unassign_exceeds_current",
+                                "current_amount": round(max(0.0, current), 2),
+                            }), 409
+                        next_amount = round(current - amount, 2)
+                    else:
+                        next_amount = round(min(target, current + amount), 2)
                     conn.execute(
                         """INSERT INTO app_primary_goal_progress (user_id, current_amount)
                            VALUES (?, ?)
@@ -5517,17 +5526,27 @@ def update_goals():
                         WHERE user_id = ? AND goal_id = ?""",
                     (next_rate, user_id, goal_id),
                 )
-            elif action == "assign":
+            elif action in {"assign", "unassign"}:
                 amount = goal_amount(payload.get("amount"))
                 if amount is None or amount <= 0:
                     return jsonify({"ok": False, "error": "valid_goal_amount_required"}), 400
                 target = float(goal["target_amount"] or 0)
                 current = float(goal["current_amount"] or 0)
+                if action == "unassign":
+                    if amount > current:
+                        return jsonify({
+                            "ok": False,
+                            "error": "goal_unassign_exceeds_current",
+                            "current_amount": round(max(0.0, current), 2),
+                        }), 409
+                    next_amount = round(current - amount, 2)
+                else:
+                    next_amount = round(min(target, current + amount), 2)
                 conn.execute(
                     """UPDATE app_goals
                           SET current_amount = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE user_id = ? AND goal_id = ?""",
-                    (round(min(target, current + amount), 2), user_id, goal_id),
+                    (next_amount, user_id, goal_id),
                 )
             else:  # set_target
                 target = goal_amount(payload.get("target"))

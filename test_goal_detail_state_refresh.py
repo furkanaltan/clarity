@@ -20,7 +20,10 @@ class GoalDetailStateRefreshTests(unittest.TestCase):
         end_at = self.frontend.index(end, start_at)
         return self.frontend[start_at:end_at]
 
-    def run_node(self, body: str, *, initial, server, deferred=False, api_ok=True):
+    def run_node(
+        self, body: str, *, initial, server, deferred=False, api_ok=True,
+        api_error="forced_failure", error_details=None,
+    ):
         node = shutil.which("node")
         self.assertIsNotNone(node, "Node.js is required for the goal state regression tests")
 
@@ -29,6 +32,9 @@ class GoalDetailStateRefreshTests(unittest.TestCase):
         )
         sync_goal = self.js_section(
             "async function syncGoal(action, payload={}){", "\nasync function saveNewGoal()"
+        )
+        allocation_mode = self.js_section(
+            "function renderGoalAllocationMode(){", "\nfunction openGoalSheet("
         )
         assign_money = self.js_section(
             "async function assignMoney(){", '\ndocument.getElementById("gEdit").addEventListener'
@@ -44,12 +50,14 @@ const DATA={{goals:{json.dumps(initial)}}};
 const SERVER_GOALS={json.dumps(server)};
 const APP_MODE="bridge";
 const API_OK={str(api_ok).lower()};
+const API_ERROR={json.dumps(api_error)};
+const API_ERROR_DETAILS={json.dumps(error_details or {})};
 const DEFER_API={str(deferred).lower()};
-let requestCount=0, resolveApi=null, closeCount=0, renderSnapshots=[];
+let requestCount=0, resolveApi=null, closeCount=0, renderSnapshots=[], requestPayloads=[];
 let gIdx=0, gMode="assign", goalWriteInFlight=false, goalDeleteInFlight=false;
 const nodes=Object.create(null);
 function el(id){{
-  if(!nodes[id]) nodes[id]={{id,dataset:{{}},attributes:{{}},style:{{}},disabled:false,textContent:"",
+  if(!nodes[id]) nodes[id]={{id,dataset:{{}},attributes:{{}},style:{{}},disabled:false,hidden:false,textContent:"",innerHTML:"",
     addEventListener(type,fn){{this.listeners=this.listeners||{{}};this.listeners[type]=fn;}},
     setAttribute(name,value){{this.attributes[name]=value;}},
     removeAttribute(name){{delete this.attributes[name];}},
@@ -60,9 +68,9 @@ const document={{getElementById:el}};
 const gIn=el("gIn"); gIn.value="50";
 el("gHint").textContent="Wie viel möchtest du zuordnen?";
 function apiReady(){{return true;}}
-function makeResponse(){{return {{ok:API_OK,json:async()=>API_OK?{{ok:true,goals:SERVER_GOALS}}:{{ok:false,error:"forced_failure"}}}};}}
+function makeResponse(){{const body=API_OK?{{ok:true,goals:SERVER_GOALS}}:{{ok:false,error:API_ERROR,...API_ERROR_DETAILS}};return {{ok:API_OK,status:API_OK?200:409,json:async()=>body}};}}
 function apiFetch(path,options){{
-  assert.equal(path,"/v1/goals"); requestCount++;
+  assert.equal(path,"/v1/goals"); requestCount++; requestPayloads.push(JSON.parse(options.body));
   if(DEFER_API) return new Promise(resolve=>{{resolveApi=()=>resolve(makeResponse());}});
   return Promise.resolve(makeResponse());
 }}
@@ -83,10 +91,11 @@ function buzz(){{}}
 function celebrateGoal(){{}}
 function logActivity(){{}}
 function persistAppState(){{}}
-function eur(value){{return String(value);}}
+function eur(value){{return `${{value}} €`;}}
 function pct(value,total){{return Math.round(value/total*100);}}
 {helpers}
 {sync_goal}
+{allocation_mode}
 {assign_money}
 {delete_handler}
 (async()=>{{
@@ -135,6 +144,7 @@ assert.equal(el("gHint").textContent,"Zuordnung wird gespeichert …");
 assert.equal(DATA.goals[0].cur,50); // No optimistic balance before server confirmation.
 await assignMoney();
 assert.equal(requestCount,1);
+assert.deepEqual(requestPayloads[0],{action:"assign",goal_id:"goal-1",amount:50});
 resolveApi();
 await operation;
 assert.equal(DATA.goals[0].cur,100);
@@ -185,11 +195,139 @@ console.log("PASS");
             server=[updated],
         )
 
+    def test_unassign_sends_positive_amount_and_renders_confirmed_state_without_refresh(self):
+        old = {"id": "goal-1", "t": "Dubai", "cur": 500, "tar": 1000, "source": "app"}
+        updated = {"id": "goal-1", "t": "Dubai", "cur": 400, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+gMode="unassign"; gIn.value="100";
+await assignMoney();
+assert.deepEqual(requestPayloads,[{action:"unassign",goal_id:"goal-1",amount:100}]);
+assert.equal(DATA.goals[0].cur,400);
+assert.equal(renderSnapshots.length,1);
+assert.equal(renderSnapshots[0][0].cur,400);
+assert.equal(requestCount,1);
+assert.equal(closeCount,1);
+assert.match(el("gHint").textContent,/Zuordnung wird reduziert/);
+console.log("PASS");
+""",
+            initial=[old],
+            server=[updated],
+        )
+
+    def test_unassign_busy_state_prevents_duplicate_request(self):
+        old = {"id": "goal-1", "t": "Dubai", "cur": 500, "tar": 1000, "source": "app"}
+        updated = {"id": "goal-1", "t": "Dubai", "cur": 450, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+gMode="unassign"; gIn.value="50";
+const operation=assignMoney();
+assert.equal(el("gSend").disabled,true);
+assert.equal(el("gModeRemove").disabled,true);
+await assignMoney();
+assert.equal(requestCount,1);
+resolveApi();
+await operation;
+assert.deepEqual(requestPayloads,[{action:"unassign",goal_id:"goal-1",amount:50}]);
+assert.equal(DATA.goals[0].cur,450);
+assert.equal(el("gSend").disabled,false);
+assert.equal(el("gModeRemove").disabled,false);
+console.log("PASS");
+""",
+            initial=[old],
+            server=[updated],
+            deferred=True,
+        )
+
+    def test_unassign_is_front_validated_and_quick_amounts_stay_positive(self):
+        old = {"id": "goal-1", "t": "Dubai", "cur": 75, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+gIdx=0;
+setGoalAllocationMode("unassign");
+assert.equal(gMode,"unassign");
+assert.equal(el("gModeRemove").attributes["aria-pressed"],"true");
+assert.match(el("gChips").innerHTML,/−100 €|−50 €/);
+handleGoalQuickAmount({target:{closest:()=>({dataset:{amount:"100"}})}});
+assert.equal(gIn.value,"100");
+await assignMoney();
+assert.equal(requestCount,0);
+assert.equal(el("gHint").textContent,"Du kannst höchstens 75 € aus diesem Ziel lösen.");
+assert.equal(DATA.goals[0].cur,75);
+console.log("PASS");
+""",
+            initial=[old],
+            server=[old],
+        )
+
+    def test_server_unassign_limit_is_shown_without_local_mutation(self):
+        old = {"id": "goal-1", "t": "Dubai", "cur": 75, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+gMode="unassign"; gIn.value="75";
+await assignMoney();
+assert.equal(requestPayloads[0].action,"unassign");
+assert.equal(DATA.goals[0].cur,75);
+assert.equal(renderSnapshots.length,0);
+assert.equal(el("gHint").textContent,"Du kannst höchstens 50 € aus diesem Ziel lösen.");
+assert.equal(el("gSend").disabled,false);
+console.log("PASS");
+""",
+            initial=[old],
+            server=[old],
+            api_ok=False,
+            api_error="goal_unassign_exceeds_current",
+            error_details={"current_amount": 50},
+        )
+
+    def test_allocation_modes_keep_target_edit_presets_neutral(self):
+        goal = {"id": "goal-1", "t": "Dubai", "cur": 75, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+gIdx=0;
+renderGoalAllocationMode();
+assert.ok(el("gChips").innerHTML.includes("+50 €"));
+assert.ok(el("gChips").innerHTML.includes("+500 €"));
+handleGoalModeClick({target:{closest:()=>({dataset:{goalMode:"unassign"}})}});
+assert.equal(el("gModeSwitch").hidden,false);
+assert.equal(el("gModeRemove").attributes["aria-pressed"],"true");
+assert.match(el("gChips").innerHTML,/−250 €/);
+gMode="target"; renderGoalAllocationMode();
+assert.equal(el("gModeSwitch").hidden,true);
+assert.match(el("gChips").innerHTML,/>250 €/);
+assert.doesNotMatch(el("gChips").innerHTML,/[+−] 250/);
+console.log("PASS");
+""",
+            initial=[goal],
+            server=[goal],
+        )
+
+    def test_unassign_revision_protects_new_server_state_from_stale_refresh(self):
+        old = {"id": "goal-1", "t": "Dubai", "cur": 500, "tar": 1000, "source": "app"}
+        updated = {"id": "goal-1", "t": "Dubai", "cur": 400, "tar": 1000, "source": "app"}
+        self.run_node(
+            """
+const oldRefreshRevision=goalStateRevision;
+await syncGoal("unassign",{goal_id:"goal-1",amount:100});
+assert.equal(DATA.goals[0].cur,400);
+assert.equal(applyServerGoals([SERVER_OLD_GOAL],oldRefreshRevision),false);
+assert.equal(DATA.goals[0].cur,400);
+console.log("PASS");
+""".replace("SERVER_OLD_GOAL", json.dumps(old)),
+            initial=[old],
+            server=[updated],
+        )
+
     def test_existing_goal_controls_remain_bound(self):
         self.assertIn('document.getElementById("gSend").addEventListener("click",assignMoney);', self.frontend)
         self.assertIn('if(e.key==="Enter") assignMoney();', self.frontend)
+        self.assertIn('document.getElementById("gModeSwitch").addEventListener("click",handleGoalModeClick);', self.frontend)
         self.assertIn('document.getElementById("gDel").addEventListener("click",e=>{', self.frontend)
-        self.assertIn('document.getElementById("gChips").addEventListener("click",e=>{', self.frontend)
+        self.assertIn('document.getElementById("gChips").addEventListener("click",handleGoalQuickAmount);', self.frontend)
+        self.assertIn('document.getElementById("gRateRemove").addEventListener("click",async()=>{', self.frontend)
+        self.assertIn('syncGoal("set_rate",{goal_id:g.id,goal_monthly_rate:null})', self.frontend)
+        self.assertIn('<div class="goal-plan-row"><span>Rechnerischer Forecast</span>', self.frontend)
+        self.assertIn('document.getElementById("gEdit").addEventListener("click",()=>{', self.frontend)
         self.assertIn('document.getElementById("goalManage").open=false;', self.frontend)
         self.assertIn("const goalRevisionAtFetch=goalStateRevision;", self.frontend)
         self.assertIn("applyServerGoals(data.goals,goalRevisionAtFetch);", self.frontend)

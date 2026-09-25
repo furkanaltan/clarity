@@ -1945,11 +1945,17 @@
   #gsheet.goal-detail-sheet .goal-assign{margin-top:17px;padding-top:16px;border-top:1px solid var(--line)}
   #gsheet.goal-detail-sheet .goal-section-title{color:var(--ink);font-size:15px;font-weight:780}
   #gsheet.goal-detail-sheet .goal-assign-note{margin-top:2px;color:var(--muted);font-size:11.5px;line-height:1.4}
+  #gsheet.goal-detail-sheet .goal-mode-switch{display:inline-grid;grid-template-columns:1fr 1fr;gap:3px;margin-top:11px;padding:3px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+  #gsheet.goal-detail-sheet .goal-mode-switch[hidden]{display:none}
+  #gsheet.goal-detail-sheet .goal-mode-switch button{min-height:32px;padding:6px 12px;border:0;border-radius:9px;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+  #gsheet.goal-detail-sheet .goal-mode-switch button[aria-pressed="true"]{background:var(--bg2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line2)}
+  #gsheet.goal-detail-sheet .goal-mode-switch button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  #gsheet.goal-detail-sheet .goal-mode-switch button:disabled{cursor:default;opacity:.62}
   #gsheet.goal-detail-sheet #gHint{margin:9px 0 10px;font-size:12px;line-height:1.45}
   #gsheet.goal-detail-sheet .goal-assign .field{margin-top:0!important;border-color:var(--line2);background:var(--card);box-shadow:inset 0 1px 0 rgba(255,255,255,.045)}
   #gsheet.goal-detail-sheet .goal-assign .field:focus-within{border-color:rgba(42,171,238,.48)}
   #gsheet.goal-detail-sheet .send{box-shadow:none}
-  #gsheet.goal-detail-sheet .goal-assign .chip-q{border-color:var(--line);background:var(--card);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+  #gsheet.goal-detail-sheet .goal-assign .chip-q{appearance:none;-webkit-appearance:none;border-color:var(--line);background:var(--card);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;font-family:inherit;line-height:1.2}
   #gsheet.goal-detail-sheet .goal-manage{margin-top:17px;border-top:1px solid var(--line)}
   #gsheet.goal-detail-sheet .goal-manage-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;list-style:none;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer}
   #gsheet.goal-detail-sheet .goal-manage-summary::marker{content:""}
@@ -2714,6 +2720,10 @@
     <div class="goal-assign">
       <div class="goal-section-title" id="gActionTitle">Geld zuordnen</div>
       <div class="goal-assign-note" id="gAssignNote">Nur zugeordnet — nicht zusätzlich gebucht.</div>
+      <div class="goal-mode-switch" id="gModeSwitch" role="group" aria-label="Zuordnungsmodus">
+        <button type="button" id="gModeAdd" data-goal-mode="assign" aria-pressed="true">Hinzufügen</button>
+        <button type="button" id="gModeRemove" data-goal-mode="unassign" aria-pressed="false">Abziehen</button>
+      </div>
       <div class="hint" id="gHint"></div>
       <div class="field">
         <input id="gIn" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Betrag, z. B. 100">
@@ -7537,14 +7547,23 @@ async function syncGoal(action, payload={}){
       body:JSON.stringify({action,...payload})
     });
     const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok || !data.ok){
+      const error=new Error(data.error||`HTTP ${res.status}`);
+      error.details=data;
+      throw error;
+    }
     goalStateRevision++;
     applyServerGoals(data.goals,goalStateRevision,action==="delete"?payload.goal_id:"");
     renderGoals(); mentorLine();
     return true;
   }catch(err){
     console.warn("Ziel konnte nicht gespeichert werden:",err);
-    showToast("Ziel konnte noch nicht gespeichert werden");
+    if(action==="unassign" && err.message==="goal_unassign_exceeds_current"){
+      const current=Number(err.details?.current_amount);
+      const message=`Du kannst höchstens ${eur(Number.isFinite(current)?current:0)} aus diesem Ziel lösen.`;
+      document.getElementById("gHint").textContent=message;
+      showToast(message);
+    }else showToast("Ziel konnte noch nicht gespeichert werden");
     return false;
   }
 }
@@ -8800,7 +8819,7 @@ quickIn.addEventListener("input",()=>{ setQuickError(""); updateQuickCat(); });
 let gIdx=0;
 let goalWriteInFlight=false, goalDeleteInFlight=false;
 const gIn=document.getElementById("gIn");
-let gMode="assign"; // "assign" = Geld zuweisen · "target" = Zielbetrag ändern
+let gMode="assign"; // "assign" = hinzufügen · "unassign" = lösen · "target" = Zielbetrag ändern
 function goalMonths(g){
   const rest=Math.max(0,g.tar-g.cur), spar=Number(g.rate||0);
   if(rest<=0) return "Ziel erreicht ✓";
@@ -8808,16 +8827,47 @@ function goalMonths(g){
   const m=Math.ceil(rest/spar);
   return `~ ${fmtMonths(m)}`;
 }
+function renderGoalAllocationMode(){
+  const g=DATA.goals[gIdx];
+  const switcher=document.getElementById("gModeSwitch");
+  const adding=gMode==="assign", removing=gMode==="unassign", editing=gMode==="target";
+  switcher.hidden=editing;
+  document.getElementById("gModeAdd").setAttribute("aria-pressed",String(adding));
+  document.getElementById("gModeRemove").setAttribute("aria-pressed",String(removing));
+  document.getElementById("gActionTitle").textContent=editing?"Zielbetrag ändern":"Geld zuordnen";
+  document.getElementById("gAssignNote").textContent=editing
+    ? "Der vorhandene Ziel-Fortschritt bleibt erhalten."
+    : "Nur zugeordnet — nicht zusätzlich gebucht.";
+  document.getElementById("gSend").setAttribute("aria-label",removing?"Geld abziehen":editing?"Zielbetrag speichern":"Geld hinzufügen");
+  document.getElementById("gHint").textContent=editing
+    ? "Neuen Zielbetrag eingeben — der Fortschritt bleibt erhalten."
+    : removing
+      ? `Du kannst höchstens ${eur(g.cur)} aus diesem Ziel lösen.`
+      : g.cur>=g.tar
+        ? `${eur(g.cur)} zugeordnet. Ziel erreicht.`
+        : "Wie viel deines vorhandenen Geldes möchtest du diesem Ziel zuordnen?";
+  const sign=adding?"+":removing?"−":"";
+  document.getElementById("gChips").innerHTML=[50,100,250,500]
+    .map(value=>`<button type="button" class="chip-q" data-amount="${value}">${sign}${value} €</button>`).join("");
+}
+function setGoalAllocationMode(mode){
+  if(gMode==="target" || !["assign","unassign"].includes(mode)) return;
+  gMode=mode;
+  renderGoalAllocationMode();
+}
+function handleGoalModeClick(event){
+  const button=event.target.closest("[data-goal-mode]");
+  if(button) setGoalAllocationMode(button.dataset.goalMode);
+}
+function handleGoalQuickAmount(event){
+  const chip=event.target.closest(".chip-q");
+  if(chip){ gIn.value=String(Number(chip.dataset.amount)); gIn.focus(); }
+}
 function openGoalSheet(i){
   gIdx=i; gMode="assign";
   const g=DATA.goals[i], p=pct(g.cur,g.tar);
   document.getElementById("goalManage").open=false;
   document.getElementById("gTitle").textContent = g.t;
-  document.getElementById("gActionTitle").textContent = "Geld zuordnen";
-  document.getElementById("gAssignNote").textContent = "Nur zugeordnet — nicht zusätzlich gebucht.";
-  document.getElementById("gHint").textContent = g.cur>=g.tar
-    ? `${eur(g.cur)} zugeordnet. Ziel erreicht.`
-    : `Wie viel deines vorhandenen Geldes möchtest du diesem Ziel zuordnen?`;
   document.getElementById("gInfo").innerHTML=`
     <div class="goal-status">
       <div class="goal-status-head">
@@ -8841,7 +8891,7 @@ function openGoalSheet(i){
   bar.style.width=p+"%";
   gIn.value=""; gIn.placeholder="Betrag, z. B. 100";
   document.getElementById("gRate").value=g.rate?String(g.rate).replace(".",","):"";
-  document.getElementById("gChips").innerHTML=["50","100","250","500"].map(v=>`<span class="chip-q">+ ${v} €</span>`).join("");
+  renderGoalAllocationMode();
   const del=document.getElementById("gDel");
   del.textContent="Ziel löschen"; delete del.dataset.arm;
   sheetBg.classList.add("on"); gsheet.classList.add("on"); syncSheetInteractivity();
@@ -8851,15 +8901,23 @@ function openGoalSheet(i){
 }
 async function assignMoney(){
   if(goalWriteInFlight) return;
-  const amt=Math.abs(parseFloat((gIn.value||"").replace(/\.(\d{3})\b/g,"$1").replace(",",".")));
-  if(!amt){ gIn.focus(); return; }
+  const amt=parseFloat((gIn.value||"").replace(/\.(\d{3})\b/g,"$1").replace(",","."));
+  if(!Number.isFinite(amt) || amt<=0){ gIn.focus(); return; }
+  const actionMode=gMode;
   const g=DATA.goals[gIdx];
   const sendButton=document.getElementById("gSend"), hint=document.getElementById("gHint");
   const previousHint=hint.textContent;
+  if(actionMode==="unassign" && amt>Number(g.cur||0)){
+    hint.textContent=`Du kannst höchstens ${eur(g.cur)} aus diesem Ziel lösen.`;
+    gIn.focus();
+    return;
+  }
   const wasDone=g.cur>=g.tar;
   goalWriteInFlight=true;
   sendButton.disabled=true;
   sendButton.setAttribute("aria-busy","true");
+  document.getElementById("gModeAdd").disabled=true;
+  document.getElementById("gModeRemove").disabled=true;
   try{
     if(gMode==="target"){
       if(APP_MODE==="bridge"){
@@ -8884,33 +8942,37 @@ async function assignMoney(){
     // optimistic balance while the assignment is still being persisted.
     // Goal progress is a one-time allocation of existing wealth, never a change to monthly savings.
     if(APP_MODE==="bridge"){
-      hint.textContent="Zuordnung wird gespeichert …";
-      if(!await syncGoal("assign",{goal_id:g.id,amount:amt})){
-        hint.textContent=previousHint;
+      const action=actionMode==="unassign"?"unassign":"assign";
+      hint.textContent=actionMode==="unassign"?"Zuordnung wird reduziert …":"Zuordnung wird gespeichert …";
+      if(!await syncGoal(action,{goal_id:g.id,amount:amt})){
+        if(actionMode!=="unassign" || hint.textContent==="Zuordnung wird reduziert …") hint.textContent=previousHint;
         return;
       }
     } else {
-      g.cur=Math.min(g.tar, g.cur+amt);
+      g.cur=actionMode==="unassign"
+        ? Math.max(0,Math.round((g.cur-amt)*100)/100)
+        : Math.min(g.tar, g.cur+amt);
       persistAppState();
       renderGoals(); mentorLine();
     }
     const savedGoal=DATA.goals.find(goal=>String(goal.id)===String(g.id))||g;
     gIn.value="";
     closeSheet(); buzz();
-    if(!wasDone && savedGoal.cur>=savedGoal.tar) celebrateGoal(savedGoal);   // Delight: Topf voll → Feier
-    else showToast(`✓ ${eur(amt)} für ${g.t} zugeordnet`);
+    if(actionMode!=="unassign" && !wasDone && savedGoal.cur>=savedGoal.tar) celebrateGoal(savedGoal);   // Delight: Topf voll → Feier
+    else showToast(actionMode==="unassign"?`✓ ${eur(amt)} aus ${g.t} gelöst`:`✓ ${eur(amt)} für ${g.t} zugeordnet`);
   } finally {
     goalWriteInFlight=false;
     sendButton.disabled=false;
     sendButton.removeAttribute("aria-busy");
+    document.getElementById("gModeAdd").disabled=false;
+    document.getElementById("gModeRemove").disabled=false;
   }
 }
+document.getElementById("gModeSwitch").addEventListener("click",handleGoalModeClick);
 document.getElementById("gEdit").addEventListener("click",()=>{
   const g=DATA.goals[gIdx];
   gMode="target";
-  document.getElementById("gActionTitle").textContent="Zielbetrag ändern";
-  document.getElementById("gAssignNote").textContent="Der vorhandene Ziel-Fortschritt bleibt erhalten.";
-  document.getElementById("gHint").textContent="Neuen Zielbetrag eingeben — der Fortschritt bleibt erhalten.";
+  renderGoalAllocationMode();
   gIn.value=g.tar; gIn.placeholder="Neuer Zielbetrag";
   gIn.focus(); gIn.select && gIn.select();
 });
@@ -8966,9 +9028,7 @@ document.getElementById("gRateRemove").addEventListener("click",async()=>{
   showToast("Zielrate entfernt"); openGoalSheet(gIdx);
 });
 gIn.addEventListener("keydown",e=>{ if(e.key==="Enter") assignMoney(); });
-document.getElementById("gChips").addEventListener("click",e=>{
-  const c=e.target.closest(".chip-q"); if(c){ gIn.value=c.textContent.replace(/[^\d]/g,""); gIn.focus(); }
-});
+document.getElementById("gChips").addEventListener("click",handleGoalQuickAmount);
 document.getElementById("addBtn").addEventListener("click",openSheet);
 sheetBg.addEventListener("click",closeSheet);
 quickForm.addEventListener("submit",e=>{ e.preventDefault(); addEntry(); });
