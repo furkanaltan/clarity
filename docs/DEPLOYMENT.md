@@ -9,6 +9,11 @@ Produktion und dem kanonischen Repository erstellt. Es ist kein freigegebener
 Deploy-Lauf. Befehle und Templates werden erst nach einem separaten Gate auf
 einem neuen Host oder in Produktion angewandt.
 
+Die verbindlichen Entwicklungs- und Release-Gates stehen in
+[`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md). Dieses Dokument bleibt
+Runtime-/Pfadinventar und Clean-Room-Referenz; es erteilt keine Production-
+Freigabe.
+
 ## Zielsystem
 
 - Betriebssystem: Ubuntu 24.04, Linux x86_64

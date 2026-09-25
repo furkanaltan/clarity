@@ -58,6 +58,11 @@ Diese Regeln halten Repository und Laufzeit nachvollziehbar.
 
 ## Documentation and deployment
 
+- Verbindliche Entwicklungsmodi, Release-Gates und Rollen stehen in
+  `docs/DEVELOPMENT_WORKFLOW.md`.
+- `docs/DEPLOYMENT.md` ist Runtime-/Pfadinventar; `RUNBOOK.md` ist die
+  operative Server-Checkliste. Keines der beiden Dokumente ersetzt das
+  Workflow- und Freigabe-Gate.
 - Ownership- oder Laufzeitaenderungen werden in Project Map und Architektur
   nachgefuehrt.
 - Kein Deploy aus zufaelligen Work-Kopien.

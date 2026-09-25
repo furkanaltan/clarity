@@ -34,6 +34,7 @@ Systemd-Pfade davon abhaengen.
 - [docs/MIGRATIONS.md](docs/MIGRATIONS.md): Migrationen und Wiederholbarkeit
 - [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md): Laufzeiten und Abhaengigkeiten
 - [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md): dauerhafte Repository- und Ownership-Regeln
+- [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md): verbindliche Entwicklungs-, Release- und Financial-Truth-Gates
 
 ## Lokale Pruefungen
 

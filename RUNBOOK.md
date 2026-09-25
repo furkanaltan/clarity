@@ -8,6 +8,12 @@ Der verifizierte Runtime-Aufbau und der Clean-Room-Plan stehen in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Dieses Runbook beschreibt die
 operativen Gates, nicht die automatische Installation eines neuen Hosts.
 
+Release-Modi, Freigabekriterien und Rollen sind verbindlich in
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md) festgelegt.
+Dieses Runbook bleibt die operative Checkliste; ein Branch-Pull allein ist
+keine Freigabe. Vor dem Update muessen der explizit freigegebene Commit, die
+Commit-Differenz und der Rollback-Stand geprueft sein.
+
 ## Produktionspfade
 
 - Backend-Checkout: `/root/clarity`
@@ -48,9 +54,11 @@ klassifiziert werden.
 ## Backend-Deploy
 
 Backend-Aenderungen werden lokal getestet, im kanonischen Repository committed
-und gepusht. Erst danach zieht der Server den freigegebenen Branch. Abhaengig
-von den geaenderten Entry Points wird `rove-app-api`, `clarity-bot` oder beides
-neu gestartet. Ein reiner Frontend-Deploy benoetigt keinen Service-Neustart.
+und von Furkan gepusht. Der Server wird danach kontrolliert auf den explizit
+freigegebenen Commit gebracht; kein pauschaler Branch-Head-Pull ersetzt die
+Commit- und Scope-Pruefung. Abhaengig von den geaenderten Entry Points wird
+`rove-app-api`, `clarity-bot` oder beides neu gestartet. Ein reiner
+Frontend-Deploy benoetigt keinen Service-Neustart.
 
 Vor jedem Deploy:
 
