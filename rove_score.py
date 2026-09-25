@@ -6,6 +6,7 @@ state. This module keeps the calculation independent from Flask and bot handlers
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from calendar import monthrange
 from datetime import date, timedelta
@@ -64,7 +65,7 @@ def _int(row, key: str) -> int:
 
 
 def _score_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
-    """Use active Financial Accounts as cash truth for opted-in users."""
+    """Use one canonical cash source, with a legacy split-account recovery fallback."""
     enabled = conn.execute(
         """SELECT 1 FROM app_user_features
              WHERE user_id = ? AND feature_key = 'multi_cash_accounts_v1' AND enabled = 1
@@ -72,7 +73,11 @@ def _score_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
         (user_id,),
     ).fetchone()
     if not enabled:
-        return _number(user, "current_cash")
+        current_cash = _value(user, "current_cash", None)
+        if current_cash is not None:
+            return _number(user, "current_cash")
+        legacy_cash = _legacy_account_cash(conn, user_id)
+        return legacy_cash if legacy_cash is not None else 0.0
     try:
         row = conn.execute(
             """SELECT COALESCE(SUM(balance), 0) AS total
@@ -88,6 +93,35 @@ def _score_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
         return float(row["total"] or 0)
     except (TypeError, KeyError, IndexError):
         return float(row[0] or 0)
+
+
+def _legacy_account_cash(conn: sqlite3.Connection, user_id: int) -> float | None:
+    """Recover cash only when legacy split balances exist but current_cash is absent."""
+    try:
+        rows = conn.execute(
+            "SELECT account_key, amount FROM app_account_balances WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    if not rows:
+        return None
+
+    balances: dict[str, float] = {}
+    for row in rows:
+        key = str(_value(row, "account_key", ""))
+        if key not in {"giro", "tagesgeld", "bargeld"}:
+            continue
+        try:
+            amount = float(_value(row, "amount", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(amount):
+            return None
+        balances[key] = round(amount if key == "giro" else max(0.0, amount), 2)
+    if not balances:
+        return None
+    return round(sum(balances.values()), 2)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -604,14 +638,14 @@ def calculate_score(
         tracking_why = f"Du hast {tracking_text}."
         tracking_lever = f"Fuer volle {tracking_target} Tracking-Punkte zaehlen {tracking_target} echte Tage innerhalb von 90 Tagen."
     if buffer_months is None:
-        liquidity_why = "Fuer Monatsausgaben fehlt noch eine belastbare Ausgabenbasis."
+        liquidity_why = "Hinterlegte monatliche Fixkosten fehlen als belastbare Berechnungsbasis."
     elif buffer_months >= 3:
-        liquidity_why = "Dein Cash-Puffer deckt mindestens drei Monate der notwendigen Monatsausgaben."
+        liquidity_why = "Dein Cash-Puffer deckt mindestens drei Monate deiner hinterlegten monatlichen Fixkosten."
     elif buffer_months >= 1:
-        liquidity_why = "Dein Cash-Puffer deckt mindestens einen Monat der notwendigen Monatsausgaben."
+        liquidity_why = "Dein Cash-Puffer deckt mindestens einen Monat deiner hinterlegten monatlichen Fixkosten."
     else:
-        liquidity_why = "Dein Cash-Puffer liegt noch unter einem Monat der notwendigen Monatsausgaben."
-    liquidity_lever = "Eine belastbare Reserve fuer notwendige Monatsausgaben staerkt diesen Faktor."
+        liquidity_why = "Dein Cash-Puffer liegt noch unter einem Monat deiner hinterlegten monatlichen Fixkosten."
+    liquidity_lever = "Mehr Cash im Verhältnis zu deinen monatlichen Fixkosten stärkt diesen Faktor."
     if debt["effective_status"] == DEBT_STATUS_NONE:
         debt_why = "Keine Konsumschulden sind ausdruecklich bestaetigt; eine Hypothek wird separat und moderat bewertet."
     elif debt["consumer_count"]:

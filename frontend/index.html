@@ -7688,7 +7688,7 @@ document.getElementById("txdDel").addEventListener("click",()=>{
 });
 
 // ===================== NEUES ZIEL ANLEGEN — echter Flow statt V2-Toast =====================
-const NG_PRESETS=[["Notgroschen",10000],["Urlaub",3000],["Auto",15000],["Eigenkapital",50000]];
+const NG_PRESETS=[["Urlaub",3000],["Auto",15000],["Eigenkapital",50000]];
 function goalStyle(name){
   const n=name.toLowerCase();
   if(/notgroschen|puffer|reserve|sicherheit/.test(n)) return {icon:"shield", tint:"#2AABEE"};
@@ -11907,7 +11907,7 @@ function ans_scoreinfo(){
   return `Der Rov.E Score bewertet deinen aktuellen Finanzstand von 0 bis 100.<br><br>`+
     `• <b>Budget-Kontrolle:</b> Konsum nach Fixkosten und Sparrate.<br>`+
     `• <b>Sparrate:</b> ETF- und Cash-Anteil wie geplant umgesetzt.<br>`+
-    `• <b>Notgroschen / Liquidität:</b> Cash-Puffer für notwendige Monatsausgaben.<br>`+
+    `• <b>Notgroschen / Liquidität:</b> Cash-Puffer im Verhältnis zu deinen monatlichen Fixkosten.<br>`+
     `• <b>Schuldenstruktur:</b> Konsumschulden und Hypothek getrennt bewertet.<br>`+
     `• <b>Tracking / Datenqualität:</b> Genug echte Trackingtage für ein klares Bild.`;
 }
@@ -14018,7 +14018,6 @@ const OB_WEALTH = [
 // tar = Vorgabe-Zielbetrag: wird beim Antippen des Chips vorbefüllt (änderbar), damit ein Tipp
 // schon ein fertiges Ziel ergibt und niemand versehentlich ohne Betrag durchrutscht.
 const OB_GOALS = [
-  {n:"Notgroschen", icon:"shield", tint:"#35D07F", tar:10000},
   {n:"Urlaub",      icon:"plane",  tint:"#2AABEE", tar:2000},
   {n:"Eigenheim",   icon:"house",  tint:"#D8B66A", tar:50000},
   {n:"Auto",        icon:"bolt",   tint:"#F5A623", tar:15000},

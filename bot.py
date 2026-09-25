@@ -3514,7 +3514,7 @@ def build_score_info_answer() -> str:
         "*Er besteht aus 5 Bereichen:*\n"
         "1. Budget / Cashflow - wie viel freies Monatsbudget übrig bleibt.\n"
         "2. Sparrate - ob du deine Sparrate wirklich umsetzt.\n"
-        "3. Liquidität - wie lange dein Cash-Puffer notwendige Monatsausgaben deckt.\n"
+        "3. Liquidität - wie lange dein Cash-Puffer deine hinterlegten monatlichen Fixkosten abdeckt.\n"
         "4. Schuldenstruktur - Konsumschulden und Hypothek getrennt bewertet.\n"
         "5. Tracking / Datenqualität - wie belastbar deine Finanzdaten sind.\n\n"
         "Hohe Scores entstehen nicht über Nacht. Sie werden über Zeit freigeschaltet, damit der Score wertvoll bleibt.\n\n"

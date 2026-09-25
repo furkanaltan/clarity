@@ -279,6 +279,76 @@ class ScoreV2Tests(unittest.TestCase):
         self.assertEqual(values[0], 0)
         self.assertEqual(values[-1], 20)
 
+    def test_liquidity_explanation_matches_fixed_costs_basis(self):
+        with make_connection() as conn:
+            result = score(conn, user(current_cash=3000, fixed_costs=1000))
+
+        factor = next(item for item in result["factors"] if item["key"] == "liquidity")
+        self.assertIn("hinterlegten monatlichen Fixkosten", factor["why"])
+        self.assertIn("monatlichen Fixkosten", factor["lever"])
+        self.assertNotIn("notwendigen Monatsausgaben", factor["why"])
+
+    def test_legacy_split_cash_recovers_when_current_cash_is_missing(self):
+        with make_connection() as conn:
+            conn.execute(
+                """CREATE TABLE app_account_balances (
+                       user_id INTEGER, account_key TEXT, amount REAL,
+                       PRIMARY KEY(user_id, account_key))"""
+            )
+            conn.executemany(
+                "INSERT INTO app_account_balances VALUES (1, ?, ?)",
+                [("giro", -100), ("tagesgeld", 900), ("bargeld", 100)],
+            )
+            result = score(conn, user(current_cash=None, fixed_costs=1000))
+
+        self.assertEqual(result["liquidity_months"], 0.9)
+
+    def test_legacy_split_cash_does_not_override_explicit_zero_current_cash(self):
+        with make_connection() as conn:
+            conn.execute(
+                """CREATE TABLE app_account_balances (
+                       user_id INTEGER, account_key TEXT, amount REAL,
+                       PRIMARY KEY(user_id, account_key))"""
+            )
+            conn.execute(
+                "INSERT INTO app_account_balances VALUES (1, 'tagesgeld', 900)"
+            )
+            result = score(conn, user(current_cash=0, fixed_costs=1000))
+
+        self.assertEqual(result["liquidity_months"], 0.0)
+        self.assertEqual(result["liquidity"], 0)
+
+    def test_current_cash_remains_fallback_without_account_models(self):
+        with make_connection() as conn:
+            result = score(conn, user(current_cash=2000, fixed_costs=1000))
+
+        self.assertEqual(result["liquidity_months"], 2.0)
+
+    def test_enabled_financial_accounts_are_the_only_score_cash_source(self):
+        with make_connection() as conn:
+            conn.execute(
+                """CREATE TABLE app_financial_accounts (
+                       id INTEGER PRIMARY KEY, user_id INTEGER, account_type TEXT,
+                       name TEXT, currency TEXT, balance REAL, status TEXT)"""
+            )
+            conn.execute(
+                "INSERT INTO app_user_features VALUES (1, 'multi_cash_accounts_v1', 1)"
+            )
+            conn.executemany(
+                """INSERT INTO app_financial_accounts
+                   (user_id, account_type, name, currency, balance, status)
+                   VALUES (1, ?, ?, 'EUR', ?, ?)""",
+                [
+                    ("checking", "Giro", 250, "active"),
+                    ("savings", "Tagesgeld", 300, "active"),
+                    ("wallet", "Bargeld", 50, "active"),
+                    ("savings", "Archiv", 900, "archived"),
+                ],
+            )
+            result = score(conn, user(current_cash=9999, fixed_costs=1000))
+
+        self.assertEqual(result["liquidity_months"], 0.6)
+
     def test_mortgage_is_separate_and_moderate(self):
         with make_connection() as conn:
             conn.execute("INSERT INTO app_properties (user_id, market_value, remaining_debt, monthly_rate) VALUES (1, 300000, 250000, 900)")

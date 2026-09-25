@@ -919,7 +919,7 @@ def build_mentor_candidate(
     )
     if weak_liquidity:
         evidence = (
-            f"Deine Rücklage deckt aktuell nur {float(liquidity_months):.1f} Monatsausgaben ab."
+            f"Dein Cash-Puffer entspricht aktuell {float(liquidity_months):.1f} Monaten deiner hinterlegten monatlichen Fixkosten."
             if liquidity_months is not None
             else f"Deine Liquidität liegt aktuell bei {liquidity_points_value:.0f}/20 Punkten."
         )
