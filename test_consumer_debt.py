@@ -276,11 +276,11 @@ class ConsumerDebtTests(unittest.TestCase):
             self.assertIsNone(old["profile"]["net_worth"])
             self.assertIsNone(old["profile"]["total_consumer_debt"])
 
-    def test_frontend_recalculation_deducts_once_and_profile_is_separate(self):
+    def test_frontend_bridge_preserves_canonical_net_worth_and_profile_is_separate(self):
         html = (ROOT / "frontend/index.html").read_text()
         fn = html.split("function recalcNetWorth(){",1)[1].split("\n}",1)[0]
-        script = "const assert=require('assert');let APP_MODE='bridge';const document={getElementById:()=>null};const DATA={assets:[{value:10000},{value:5000}],consumerDebtTotal:20000,netWorthAvailable:true};\nfunction recalcNetWorth(){"+fn+"\n}\n"
-        script += "recalcNetWorth();assert.equal(DATA.netWorth,-5000);recalcNetWorth();assert.equal(DATA.netWorth,-5000);DATA.netWorthAvailable=false;recalcNetWorth();assert.equal(DATA.netWorth,null);APP_MODE='profile';recalcNetWorth();assert.equal(DATA.netWorth,15000);"
+        script = "const assert=require('assert');let APP_MODE='bridge';const document={getElementById:()=>null};const DATA={assets:[{value:10000},{value:5000},{name:'Sachwerte',value:2000}],consumerDebtTotal:20000,netWorth:-5000,netWorthAvailable:true};\nfunction recalcNetWorth(){"+fn+"\n}\n"
+        script += "recalcNetWorth();assert.equal(DATA.netWorth,-5000);recalcNetWorth();assert.equal(DATA.netWorth,-5000);DATA.netWorthAvailable=false;recalcNetWorth();assert.equal(DATA.netWorth,null);APP_MODE='profile';recalcNetWorth();assert.equal(DATA.netWorth,17000);"
         subprocess.run(["node","-e",script],check=True,capture_output=True,text=True)
         self.assertIn('DATA.consumerDebtTotal = Number(b.consumerDebtTotal||0)', html)
         self.assertIn('escapeAccountHtml(row.name)', html)

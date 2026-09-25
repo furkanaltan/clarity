@@ -836,6 +836,7 @@
   #tab-home .home-value-block{margin-top:2px;margin-bottom:0}
   #tab-home .home-value-block .val{font-size:35px;font-weight:720;letter-spacing:-1.55px;line-height:1.05;font-variant-numeric:tabular-nums;text-shadow:none}
   #tab-home .home-value-block .chip{margin-top:13px;font-size:13px;font-weight:600}
+  #tab-home .home-sachwerte-summary{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums}
   #tab-home .chart-wrap{margin-top:29px;margin-bottom:0}
   #tab-home .ranges{margin-top:15px}
   #tab-home .range{min-height:40px;font-size:12.5px}
@@ -2709,6 +2710,7 @@
         <span id="change">—</span>
       </button>
     </div>
+    <div class="home-sachwerte-summary" id="homeSachwerteSummary" hidden></div>
 
     <div class="chart-wrap">
       <div class="chart-viewport" id="chartViewport">
@@ -3516,11 +3518,10 @@ function emptyCard({icon, title, sub, cta, action}){
 
 // ===================== PROFIL-PERSISTENZ (Onboarding-Fundament) =====================
 // Drei Datenquellen, EINE Struktur: authentifizierte Web-App > eigenes Profil > Demo.
-// (eigene Daten, localStorage) > Mock/Demo. Finanzielle Serverwerte bleiben kanonisch; der
-// Brückenmodus speichert nur den bereits vorhandenen lokalen Tagesverlauf user-scoped zwischen.
+// Finanzielle Serverwerte bleiben kanonisch; Sachwerte sind der einzige lokale Vermögenszusatz.
 const PROFILE_KEY = "rove-profile";
-// Bot-Daten bleiben die Quelle der Wahrheit. Werte, die aktuell nur die App kennt
-// (z. B. Immobilienwert, Bargeld oder Sachwerte), sichern wir pro Nutzer auf diesem Gerät.
+// Serverwerte bleiben Financial Truth. Legacy-Asset-Einträge bleiben im lokalen Snapshot,
+// werden aber nur fuer die explizit lokale Kategorie Sachwerte in den aktiven Zustand geladen.
 const BRIDGE_LOCAL_KEY = "rove-bridge-local-v1";
 let BRIDGE_USER_ID = null;
 function bridgeStorageKey(key){
@@ -3576,6 +3577,16 @@ async function clearRoveBrowserData(userId=null){
 }
 const BRIDGE_BOT_ASSET_NAMES = new Set(["Girokonto", "Tagesgeld", "Bargeld", "ETF & Investments", "Krypto"]);
 const BRIDGE_SERVER_ASSET_NAMES = new Set([...BRIDGE_BOT_ASSET_NAMES, "Immobilie"]);
+const BRIDGE_LOCAL_ASSET_NAMES = new Set(["Sachwerte"]);
+const BRIDGE_LEGACY_ASSET_ALIASES = new Set(["ETF Depot"]);
+function classifyBridgeAsset(asset){
+  if(!asset || typeof asset!=="object") return "unknown";
+  const name=String(asset.name||"").trim();
+  if(asset.source==="financial-account" || BRIDGE_SERVER_ASSET_NAMES.has(name) || asset.real) return "server";
+  if(BRIDGE_LEGACY_ASSET_ALIASES.has(name)) return "legacy-duplicate";
+  if(BRIDGE_LOCAL_ASSET_NAMES.has(name)) return "local-valuables";
+  return "unknown";
+}
 function readBridgeLocal(){
   try{
     const raw=localStorage.getItem(BRIDGE_LOCAL_KEY);
@@ -3600,6 +3611,12 @@ function propertyContractField(item){
 function saveBridgeLocal(){
   if(APP_MODE!=="bridge" || BRIDGE_USER_ID==null) return;
   try{
+    const previousAssets=readBridgeLocal()?.assets;
+    // Keep legacy and unknown entries in storage for a future explicit migration, but never
+    // restore them into live financial state. Sachwerte alone are refreshed from current state.
+    const preservedLegacyAssets=Array.isArray(previousAssets)
+      ? previousAssets.filter(asset=>classifyBridgeAsset(asset)!=="local-valuables") : [];
+    const localAssets=(DATA.assets||[]).filter(asset=>classifyBridgeAsset(asset)==="local-valuables");
     const localContracts=(DATA.vertraege||[]).map(group=>({
       cat:group.cat,
       // Canonical server contracts must never replace their own live copy after reload.
@@ -3610,7 +3627,7 @@ function saveBridgeLocal(){
     const localGoals=(DATA.goals||[]).filter(goal=>goal.source!=="bot" && goal.source!=="app");
     localStorage.setItem(BRIDGE_LOCAL_KEY,JSON.stringify({
       userId:BRIDGE_USER_ID,
-      assets:(DATA.assets||[]).filter(asset=>!BRIDGE_BOT_ASSET_NAMES.has(asset.name)&&asset.source!=="financial-account"),
+      assets:[...preservedLegacyAssets,...localAssets],
       vertraege:localContracts,
       goals:localGoals,
       budgets:DATA.budgets||[],
@@ -3624,13 +3641,9 @@ function saveBridgeLocal(){
 function restoreBridgeLocal(snapshot,userId){
   if(!snapshot || String(snapshot.userId)!==String(userId)) return;
   (snapshot.assets||[]).forEach(asset=>{
-    if(BRIDGE_BOT_ASSET_NAMES.has(asset.name)||asset.source==="financial-account"||asset.name==="Immobilie"||asset.real) return;
-    const index=DATA.assets.findIndex(current=>current.name===asset.name);
-    if(index>=0){
-      // Ein bereits zentral gespeicherter Wert gewinnt. Alte lokale Immobilien bleiben
-      // trotzdem erhalten, solange auf dem Server noch keine Immobilie existiert.
-      if(DATA.assets[index].source!=="app" && DATA.assets[index].source!=="bot") DATA.assets[index]=asset;
-    } else DATA.assets.push(asset);
+    if(classifyBridgeAsset(asset)!=="local-valuables") return;
+    if(DATA.assets.some(current=>current.name===asset.name)) return;
+    DATA.assets.push(asset);
   });
   (snapshot.vertraege||[]).forEach(group=>{
     let target=DATA.vertraege.find(current=>current.cat===group.cat);
@@ -5065,20 +5078,12 @@ const assetOrderKey=asset=>asset?.assetKey||ASSET_ORDER_KEY_BY_NAME[asset?.name]
 function mergeServerAssets(serverAssets,currentAssets,multiCash){
   const server=Array.isArray(serverAssets)?serverAssets:[];
   const current=Array.isArray(currentAssets)?currentAssets:[];
-  if(multiCash){
-    const serverKeys=new Set(server.map(asset=>assetOrderKey(asset)));
-    const localOnly=current.filter(asset=>{
-      const key=assetOrderKey(asset);
-      return asset.source!=="financial-account"
-        && !LEGACY_CASH_ASSET_KEYS.has(key)
-        && !BRIDGE_SERVER_ASSET_NAMES.has(asset.name)
-        && !serverKeys.has(key);
-    });
-    return [...server,...localOnly];
-  }
-  const localOnly=current.filter(asset=>
-    asset.source!=="financial-account" && !BRIDGE_SERVER_ASSET_NAMES.has(asset.name)
-  );
+  const serverKeys=new Set(server.map(asset=>assetOrderKey(asset)));
+  const serverNames=new Set(server.map(asset=>String(asset.name||"")));
+  const localOnly=current.filter(asset=>classifyBridgeAsset(asset)==="local-valuables"
+    && !serverNames.has(String(asset.name||""))
+    && !serverKeys.has(assetOrderKey(asset)));
+  if(multiCash) return [...server,...localOnly];
   return [...new Map([...server,...localOnly].map(asset=>[asset.name,asset])).values()];
 }
 function applyAssetOrder(){
@@ -5093,6 +5098,7 @@ function applyAssetOrder(){
 }
 function renderAssets(){
   ensureAssetPlaceholders();
+  renderHomeSachwerteSummary();
   applyAssetOrder();
   const box=document.getElementById("assets");
   if(!DATA.assets.length){
@@ -5151,6 +5157,19 @@ function assetIcon(asset){
 // Home, detail and account management share the same module geometry.
 function homeAssetIcon(asset){
   return assetIcon(asset);
+}
+function renderHomeSachwerteSummary(){
+  const line=document.getElementById("homeSachwerteSummary");
+  if(!line) return;
+  if(APP_MODE!=="bridge" || !BRIDGE_LIVE_STATE_READY){ line.hidden=true; line.textContent=""; return; }
+  const total=(DATA.assets||[]).reduce((sum,asset)=>{
+    if(classifyBridgeAsset(asset)!=="local-valuables") return sum;
+    const value=Number(asset.value);
+    return sum+(Number.isFinite(value)&&value>0?value:0);
+  },0);
+  if(total<=0){ line.hidden=true; line.textContent=""; return; }
+  line.textContent=`Sachwerte separat: ${eur2(total)} · nicht im Vermögensverlauf`;
+  line.hidden=false;
 }
 // Wer ETF/Krypto beim Onboarding übersprungen hat (Wert leer gelassen), bekam danach nie eine Kachel
 // dafür — obBuildAssets() legt nur an, was dort einen Wert hatte. Ohne Kachel gab es keinen Weg, das
@@ -7460,11 +7479,17 @@ function applyKontoDelta(delta,role="expense"){
   const giro=cashAssetForRole(role);
   if(giro) giro.value += delta;
 }
+function setCanonicalNetWorth(value){
+  const amount=value==null?NaN:Number(value);
+  DATA.netWorth=Number.isFinite(amount)?Math.round(amount*100)/100:null;
+  DATA.netWorthAvailable=DATA.netWorth!==null;
+}
 function recalcNetWorth(){
-  if(APP_MODE==="bridge" && DATA.netWorthAvailable===false){
-    DATA.netWorth=null;
+  if(APP_MODE==="bridge"){
+    if(DATA.netWorthAvailable!==true || !Number.isFinite(Number(DATA.netWorth))) DATA.netWorth=null;
+    else DATA.netWorth=Math.round(Number(DATA.netWorth)*100)/100;
   } else {
-    DATA.netWorth = Math.round((DATA.assets.reduce((s,a)=>s+a.value,0) - (APP_MODE==="bridge"?Number(DATA.consumerDebtTotal||0):0))*100)/100;
+    DATA.netWorth = Math.round(DATA.assets.reduce((s,a)=>s+a.value,0)*100)/100;
   }
   const nw=document.getElementById("networth");
   if(nw && !nw.dataset.lock) nw.textContent=DATA.netWorth==null?"Nicht verfügbar":eur2(DATA.netWorth);   // dataset.lock = Empty-State/Chart-Scrub hat die Anzeige übernommen
@@ -8703,7 +8728,7 @@ async function fetchCanonicalAppState(){
     if(Number.isFinite(data.consumerDebtTotal)) DATA.consumerDebtTotal=data.consumerDebtTotal;
     if(["unknown","none","present"].includes(data.debtStatus)) DATA.debtStatus=data.debtStatus;
     if(Array.isArray(data.vehicleFinancings)) DATA.vehicleFinancings=data.vehicleFinancings.map(normalizeVehicleFinancing);
-    if(Object.prototype.hasOwnProperty.call(data,"netWorth")) DATA.netWorthAvailable=data.netWorth!=null;
+    if(Object.prototype.hasOwnProperty.call(data,"netWorth")) setCanonicalNetWorth(data.netWorth);
     if(Array.isArray(data.assets)){
       DATA.assets=mergeServerAssets(data.assets,DATA.assets,Boolean(data.features?.multi_cash_accounts_v1));
     }
@@ -12207,7 +12232,10 @@ if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("
 // ===================== EMPTY STATES: Verkabelung + Home-Kopf + Demo =====================
 // Home-Kopf im leeren Zustand beruhigen — keine 0,00-€-Wüste, kein leeres Diagramm
 function homeHasFinancialData(){
-  if(Array.isArray(DATA.assets) && DATA.assets.length) return true;
+  if(APP_MODE==="bridge"){
+    if((DATA.assets||[]).some(asset=>classifyBridgeAsset(asset)==="server"
+      && Number.isFinite(Number(asset.value)) && Number(asset.value)!==0)) return true;
+  } else if(Array.isArray(DATA.assets) && DATA.assets.length) return true;
   // Im Bridge-Start darf die eingebettete Demo-Struktur den Empty-State nicht kurz aufheben.
   const liveReady=APP_MODE!=="bridge" || BRIDGE_LIVE_STATE_READY;
   if(!liveReady) return false;
@@ -13074,7 +13102,7 @@ async function loadBridgeState(){
     DATA.consumerDebts = Array.isArray(b.consumerDebts) ? b.consumerDebts : [];
     DATA.consumerDebtTotal = Number(b.consumerDebtTotal||0);
     DATA.debtStatus = ["unknown","none","present"].includes(b.debtStatus) ? b.debtStatus : "unknown";
-    DATA.netWorthAvailable = b.netWorth != null;
+    setCanonicalNetWorth(b.netWorth);
     DATA.assets = DATA.features.multi_cash_accounts_v1
       ? (Array.isArray(b.assets)?b.assets:[])
       : [...new Map((Array.isArray(b.assets)?b.assets:[]).map(asset=>[asset.name,asset])).values()];
