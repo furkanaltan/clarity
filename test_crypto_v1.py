@@ -702,7 +702,7 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('String(position?.providerAssetId||"")==="1"', self.html)
         self.assertIn('class="crypto-header-logo"', self.html)
         self.assertIn("cryptoLogo||`<div class=\"gicon rov-icon detail-header-icon\"", self.html)
-        self.assertIn("cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},ic(a.icon))", self.html)
+        self.assertIn("cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},assetIcon(a))", self.html)
         self.assertIn("width:42px;height:42px", self.html)
 
 
