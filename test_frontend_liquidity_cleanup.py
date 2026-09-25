@@ -23,9 +23,10 @@ class FrontendLiquidityCleanupTests(unittest.TestCase):
         state = (ROOT / "rove_app_state.py").read_text(encoding="utf-8")
 
         self.assertIn("Cash-Puffer im Verhältnis zu deinen monatlichen Fixkosten", self.frontend)
-        self.assertIn("deine hinterlegten monatlichen Fixkosten abdeckt", bot)
+        self.assertIn('factor.get("key") == "liquidity"', bot)
+        self.assertIn("liquidity_explanation_line", bot)
         self.assertIn("hinterlegten monatlichen Fixkosten", score)
-        self.assertIn("hinterlegten monatlichen Fixkosten", state)
+        self.assertIn("format_liquidity_explanation", state)
         for source in (self.frontend, bot, score, state):
             self.assertNotIn("notwendigen Monatsausgaben", source)
 

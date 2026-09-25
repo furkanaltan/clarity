@@ -281,12 +281,35 @@ class ScoreV2Tests(unittest.TestCase):
 
     def test_liquidity_explanation_matches_fixed_costs_basis(self):
         with make_connection() as conn:
+            result = score(conn, user(current_cash=2300, fixed_costs=1000))
+
+        factor = next(item for item in result["factors"] if item["key"] == "liquidity")
+        self.assertEqual(
+            factor["why"],
+            "Dein Cash-Puffer deckt aktuell rund 2,3 Monate deiner hinterlegten monatlichen Fixkosten.",
+        )
+        self.assertIn("monatlichen Fixkosten", factor["lever"])
+        self.assertNotIn("notwendigen Monatsausgaben", factor["why"])
+
+    def test_liquidity_explanation_keeps_one_decimal_at_three_months(self):
+        with make_connection() as conn:
             result = score(conn, user(current_cash=3000, fixed_costs=1000))
 
         factor = next(item for item in result["factors"] if item["key"] == "liquidity")
-        self.assertIn("hinterlegten monatlichen Fixkosten", factor["why"])
-        self.assertIn("monatlichen Fixkosten", factor["lever"])
-        self.assertNotIn("notwendigen Monatsausgaben", factor["why"])
+        self.assertEqual(
+            factor["why"],
+            "Dein Cash-Puffer deckt aktuell rund 3,0 Monate deiner hinterlegten monatlichen Fixkosten.",
+        )
+
+    def test_liquidity_explanation_keeps_missing_cost_basis_fallback(self):
+        with make_connection() as conn:
+            result = score(conn, user(current_cash=3000, fixed_costs=0))
+
+        factor = next(item for item in result["factors"] if item["key"] == "liquidity")
+        self.assertEqual(
+            factor["why"],
+            "Hinterlegte monatliche Fixkosten fehlen als belastbare Berechnungsbasis.",
+        )
 
     def test_legacy_split_cash_recovers_when_current_cash_is_missing(self):
         with make_connection() as conn:

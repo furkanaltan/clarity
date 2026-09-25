@@ -33,7 +33,12 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from rove_score import calculate_score, ensure_debt_status_column, normalize_debt_status
+from rove_score import (
+    calculate_score,
+    ensure_debt_status_column,
+    format_liquidity_explanation,
+    normalize_debt_status,
+)
 from rove_consumer_debt import list_consumer_debt_events, list_consumer_debts, total_consumer_debt, net_worth_total
 from rove_market_data import (
     cached_crypto_metadata,
@@ -919,7 +924,7 @@ def build_mentor_candidate(
     )
     if weak_liquidity:
         evidence = (
-            f"Dein Cash-Puffer entspricht aktuell {float(liquidity_months):.1f} Monaten deiner hinterlegten monatlichen Fixkosten."
+            format_liquidity_explanation(float(liquidity_months))
             if liquidity_months is not None
             else f"Deine Liquidität liegt aktuell bei {liquidity_points_value:.0f}/20 Punkten."
         )

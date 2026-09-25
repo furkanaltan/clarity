@@ -264,6 +264,16 @@ def _liquidity_points(cash: float, fixed_costs: float) -> tuple[int, float | Non
     return _linear_points(months, ((0, 0), (0.5, 4), (1, 8), (2, 13), (3, 17), (6, 20))), months, "fixed_costs_proxy"
 
 
+def format_liquidity_explanation(months: float | None) -> str:
+    if months is None:
+        return "Hinterlegte monatliche Fixkosten fehlen als belastbare Berechnungsbasis."
+    months_text = f"{float(months):.1f}".replace(".", ",")
+    return (
+        f"Dein Cash-Puffer deckt aktuell rund {months_text} Monate deiner "
+        "hinterlegten monatlichen Fixkosten."
+    )
+
+
 def _debt_points(conn: sqlite3.Connection, user_id: int, user, income: float) -> dict:
     status = normalize_debt_status(_value(user, "debt_status", DEBT_STATUS_UNKNOWN))
     rows, consumer_total = _consumer_debt_snapshot(conn, user_id)
@@ -637,14 +647,7 @@ def calculate_score(
     else:
         tracking_why = f"Du hast {tracking_text}."
         tracking_lever = f"Fuer volle {tracking_target} Tracking-Punkte zaehlen {tracking_target} echte Tage innerhalb von 90 Tagen."
-    if buffer_months is None:
-        liquidity_why = "Hinterlegte monatliche Fixkosten fehlen als belastbare Berechnungsbasis."
-    elif buffer_months >= 3:
-        liquidity_why = "Dein Cash-Puffer deckt mindestens drei Monate deiner hinterlegten monatlichen Fixkosten."
-    elif buffer_months >= 1:
-        liquidity_why = "Dein Cash-Puffer deckt mindestens einen Monat deiner hinterlegten monatlichen Fixkosten."
-    else:
-        liquidity_why = "Dein Cash-Puffer liegt noch unter einem Monat deiner hinterlegten monatlichen Fixkosten."
+    liquidity_why = format_liquidity_explanation(buffer_months)
     liquidity_lever = "Mehr Cash im Verhältnis zu deinen monatlichen Fixkosten stärkt diesen Faktor."
     if debt["effective_status"] == DEBT_STATUS_NONE:
         debt_why = "Keine Konsumschulden sind ausdruecklich bestaetigt; eine Hypothek wird separat und moderat bewertet."

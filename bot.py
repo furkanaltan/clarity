@@ -5242,6 +5242,17 @@ def handle_commands(message):
 
 
         score_data = calculate_clarity_score(uid, u, total_exp)
+        liquidity_explanation = next(
+            (
+                factor.get("why")
+                for factor in score_data.get("factors", [])
+                if factor.get("key") == "liquidity"
+            ),
+            "",
+        )
+        liquidity_explanation_line = (
+            f"{liquidity_explanation}\n\n" if liquidity_explanation else ""
+        )
         record_score_history_if_needed(uid, u)
         cp = u.get("clarity_points") or 0
         cp_rank_name, cp_rank_emoji, pts_needed = get_rank(cp)
@@ -5271,6 +5282,7 @@ def handle_commands(message):
             f"├ Liquidität:              {score_data['liquidity']}/20\n"
             f"├ Schuldenstruktur:        {score_data['debt']}/30\n"
             f"└ Tracking / Datenqualität: {score_data['tracking']}/10\n\n"
+            f"{liquidity_explanation_line}"
             f"*Nächster Hebel:*\n{confirm_hint}\n\n"
             f"{cp_rank_emoji} RP-Level: *{cp_rank_name}* · {cp} RP\n"
             f"{cp_rank_line}"

@@ -75,6 +75,10 @@ class MentorV2Tests(unittest.TestCase):
         )
         self.assertEqual(result["type"], "liquidity")
         self.assertEqual(result["deep_link"], "score")
+        self.assertEqual(
+            result["message"],
+            "Dein Cash-Puffer deckt aktuell rund 0,5 Monate deiner hinterlegten monatlichen Fixkosten.",
+        )
 
     def test_unknown_debt_is_honest_and_not_treated_as_none(self):
         result = self.candidate(debt_status="unknown")
