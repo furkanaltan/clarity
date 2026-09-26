@@ -50,6 +50,7 @@ from rove_app_state import (
     PUBLIC_APP_STATE_DIR,
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
+    _crypto_holdings_value,
     _build_tx,
     _build_reports,
     _monthly_budget_truth,
@@ -6905,12 +6906,7 @@ def update_investment_position():
                     "SELECT current_investments FROM users WHERE user_id = ?", (user_id,)
                 ).fetchone()
                 current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
-                crypto_row = conn.execute(
-                    """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
-                         FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
-                    (user_id,),
-                ).fetchone()
-                crypto_total = max(0.0, float(crypto_row["net"] or 0))
+                crypto_total = min(current_total, _crypto_holdings_value(conn, user_id))
                 assigned_total = _assigned_non_crypto_investment_value(conn, user_id)
                 unassigned = max(0.0, current_total - crypto_total - assigned_total)
                 total_delta = round(max(0.0, target_value - unassigned), 2)
@@ -6992,12 +6988,7 @@ def update_investment_position():
         current_total = round(max(0.0, float(total_row["current_investments"] or 0)), 2)
         total_delta = delta
         if asset_type == "stock" and current_value < 0.01:
-            crypto_row = conn.execute(
-                """SELECT COALESCE(SUM(CASE WHEN direction = 'out' THEN -amount ELSE amount END), 0) AS net
-                     FROM investment_events WHERE user_id = ? AND asset_type = 'crypto'""",
-                (user_id,),
-            ).fetchone()
-            crypto_total = max(0.0, float(crypto_row["net"] or 0))
+            crypto_total = min(current_total, _crypto_holdings_value(conn, user_id))
             non_crypto_total = max(0.0, current_total - crypto_total)
             assigned_total = _assigned_non_crypto_investment_value(conn, user_id)
             unassigned = max(0.0, non_crypto_total - assigned_total)
