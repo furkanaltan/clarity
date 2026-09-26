@@ -1822,6 +1822,7 @@
   .wealth-note{display:flex;gap:9px;align-items:flex-start;margin:12px 3px 0;padding:11px 12px;border-radius:14px;
     border:1px solid rgba(216,182,106,.2);background:rgba(216,182,106,.07);color:var(--muted);font-size:11.5px;line-height:1.45}
   .wealth-note b{color:var(--ink)}
+  .wealth-caption{margin:10px 3px 0;color:var(--muted);font-size:11.5px;line-height:1.45;text-align:center}
   .wealth-class-icon{width:38px;height:38px;border-radius:12px;color:var(--cat-color);display:flex;align-items:center;justify-content:center;
     border:1px solid color-mix(in srgb,var(--cat-color) 28%,transparent);background:linear-gradient(145deg,color-mix(in srgb,var(--cat-color) 18%,var(--card)),color-mix(in srgb,var(--cat-color) 6%,var(--elevate2)));
     box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 6px 16px color-mix(in srgb,var(--cat-color) 10%,transparent)}
@@ -7418,9 +7419,10 @@ function wealthAnalysisData(assets=DATA.assets){
   });
   const sortedClasses=[...classes.values()].sort((a,b)=>b.amount-a.amount||a.name.localeCompare(b.name,"de"));
   const positiveTotal=Math.round(sortedClasses.reduce((sum,item)=>sum+item.amount,0)*100)/100;
-  const netTotal=Math.round((Array.isArray(assets)?assets:[]).reduce((sum,asset)=>sum+(Number(asset?.value)||0),0)*100)/100;
+  const rawNetWorth=DATA.netWorth==null?NaN:Number(DATA.netWorth);
+  const canonicalNetWorth=Number.isFinite(rawNetWorth)?Math.round(rawNetWorth*100)/100:null;
   positions.sort((a,b)=>b.value-a.value||a.name.localeCompare(b.name,"de"));
-  return {classes:sortedClasses,positions,negative,positiveTotal,netTotal};
+  return {classes:sortedClasses,positions,negative,positiveTotal,canonicalNetWorth};
 }
 function wealthDisplayShares(classes,total){
   if(!(total>0)||!classes.length)return new Map();
@@ -7434,7 +7436,7 @@ function wealthDisplayShares(classes,total){
   });
   return new Map(rows.map(row=>[row.name,row.base/10]));
 }
-function wealthDonut(classes,total,netTotal){
+function wealthDonut(classes,total,canonicalNetWorth){
   let cursor=0;
   const one=classes.length===1;
   const segments=classes.map(item=>{
@@ -7448,10 +7450,12 @@ function wealthDonut(classes,total,netTotal){
     cursor+=span;return segment;
   }).join("");
   const selected=classes.find(item=>item.name===wealthSelectedClass);
+  const centerAmount=selected?eur(selected.amount):canonicalNetWorth==null?"—":eur(canonicalNetWorth);
+  const centerLabel=selected?.name||(canonicalNetWorth==null?"Nicht verfügbar":"Gesamtvermögen");
   return `<svg class="analysis-donut" viewBox="0 0 180 180" role="img" aria-label="Vermögen nach Anlageklassen">
     <circle class="analysis-track" cx="90" cy="90" r="70"/>${segments}
-    <text class="analysis-total" x="90" y="87">${analysisEsc(eur(selected?.amount??netTotal))}</text>
-    <text class="analysis-total-label" x="90" y="100">${analysisEsc(selected?.name||"Gesamtvermögen")}</text>
+    <text class="analysis-total" x="90" y="87">${analysisEsc(centerAmount)}</text>
+    <text class="analysis-total-label" x="90" y="100">${analysisEsc(centerLabel)}</text>
   </svg>`;
 }
 function wealthAnalysisView(){
@@ -7462,8 +7466,9 @@ function wealthAnalysisView(){
   const visiblePositions=wealthSelectedClass?data.positions.filter(item=>item.className===wealthSelectedClass):data.positions;
   const displayShares=wealthDisplayShares(data.classes,data.positiveTotal);
   return `<div class="analysis-view-head"><h2>Wo steckt dein Vermögen?</h2><p>So verteilt sich dein aktuelles Vermögen.</p></div>
-    <div class="analysis-visual"><div class="analysis-kicker">Vermögensverteilung</div>${wealthDonut(data.classes,data.positiveTotal,data.netTotal)}</div>
-    ${data.negative.length?`<div class="wealth-note"><span>Hinweis:</span><span><b>${analysisEsc(eur2(Math.abs(data.negative.reduce((sum,item)=>sum+item.value,0))))}</b> negative bestehende Vermögenswerte sind im Gesamtvermögen abgezogen. Der Donut zeigt nur positive Werte.</span></div>`:""}
+    <div class="analysis-visual"><div class="analysis-kicker">Vermögensverteilung</div>${wealthDonut(data.classes,data.positiveTotal,data.canonicalNetWorth)}</div>
+    <p class="wealth-caption">Die Segmente zeigen positive Vermögenswerte. In der Mitte steht dein Nettovermögen oder der Wert der ausgewählten Klasse.</p>
+    ${data.negative.length?`<div class="wealth-note"><span>Hinweis:</span><span><b>${analysisEsc(eur2(Math.abs(data.negative.reduce((sum,item)=>sum+item.value,0))))}</b> negative Positionen sind nicht als Donut-Segment dargestellt.</span></div>`:""}
     <section class="analysis-section"><div class="analysis-section-head"><h3>Vermögensklassen</h3><span>${data.classes.length} Klassen</span></div>
       <div class="analysis-detail-list">${data.classes.map(item=>{
         const share=displayShares.get(item.name)||0;
