@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import subprocess
 
 
 FRONTEND_PATH = Path(__file__).resolve().parent / "frontend" / "index.html"
@@ -53,6 +54,30 @@ class AccountDetailUxCleanupTests(unittest.TestCase):
             '#dbody .detail-setting-icon{color:var(--muted)',
             self.frontend,
         )
+
+    def test_cash_set_parser_preserves_only_giro_sign(self):
+        start = self.frontend.index("function appMoney(raw){")
+        end = self.frontend.index("function persistAppState(){", start)
+        script = self.frontend[start:end] + """
+console.log(JSON.stringify({
+  negativeGiro: cashSetAmount({key:"giro"}, "-500"),
+  zeroGiro: cashSetAmount({key:"giro"}, "0"),
+  positiveGiro: cashSetAmount({key:"giro"}, "500"),
+  localizedNegativeGiro: cashSetAmount({key:"giro"}, "-1.000,50"),
+  savingsStillAbsolute: cashSetAmount({key:"tagesgeld"}, "-500"),
+  dynamicGiro: cashSetAmount({dynamic:true}, "-500")
+}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            '{"negativeGiro":-500,"zeroGiro":0,"positiveGiro":500,'
+            '"localizedNegativeGiro":-1000.5,"savingsStillAbsolute":500,"dynamicGiro":-500}',
+        )
+        self.assertIn('inputmode="${cashMeta.dynamic||cashMeta.key!=="giro"?"decimal":"text"}"', self.frontend)
+        self.assertIn('"Neuer Kontostand, z. B. -500"', self.frontend)
 
 
 if __name__ == "__main__":

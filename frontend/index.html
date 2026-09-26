@@ -5875,7 +5875,7 @@ function openAssetDetail(i){
          <div class="detail-action-card">
            <div class="detail-action-title">Kontostand anpassen</div>
            <div class="field">
-             <input id="cashValueAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Neuer Kontostand, z. B. 1.000">
+             <input id="cashValueAmt" type="text" inputmode="${cashMeta.dynamic||cashMeta.key!=="giro"?"decimal":"text"}" enterkeyhint="done" autocomplete="off" placeholder="${!cashMeta.dynamic&&cashMeta.key==="giro"?"Neuer Kontostand, z. B. -500":"Neuer Kontostand, z. B. 1.000"}">
            </div>
            <button class="vd-btn" id="cashSetSend">Kontostand speichern</button>
          </div>
@@ -6070,6 +6070,9 @@ function vehicleMoney(raw){
 function accountMoney(raw){
   const clean=String(raw||"").trim().replace(/\s/g,"").replace(/\.(\d{3})\b/g,"$1").replace(",", ".");
   const value=Number.parseFloat(clean); return Number.isFinite(value)?value:NaN;
+}
+function cashSetAmount(meta,raw){
+  return meta?.dynamic||meta?.key==="giro" ? accountMoney(raw) : appMoney(raw);
 }
 function persistAppState(){
   saveProfile();
@@ -6287,8 +6290,8 @@ document.getElementById("dbody").addEventListener("click",e=>{
   const cashSet=e.target.closest("#cashSetSend");
   if(cashSet){
     const a=DATA.assets[dIdx], meta=cashAccountMeta(a), rawAmount=document.getElementById("cashValueAmt").value;
-    const amount=meta?.dynamic?accountMoney(rawAmount):appMoney(rawAmount);
-    if(!meta || !String(rawAmount).trim()){ document.getElementById("cashValueAmt").focus(); return; }
+    const amount=cashSetAmount(meta,rawAmount);
+    if(!meta || !String(rawAmount).trim() || !Number.isFinite(amount)){ document.getElementById("cashValueAmt").focus(); return; }
     const request=meta.dynamic
       ? financialAccountRequest(`/v1/financial-accounts/${meta.id}`,"PATCH",{action:"set_balance",balance:amount})
       : syncCashAccount("set",{account:meta.key,amount});

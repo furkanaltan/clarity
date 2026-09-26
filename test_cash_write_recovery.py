@@ -128,3 +128,44 @@ class CashWriteRecoveryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(self.query("SELECT id,balance FROM app_financial_accounts"), balances)
         self.assertEqual(len(self.receipts()), 1)
+
+    def test_legacy_giro_set_preserves_negative_zero_and_positive_values_once(self):
+        for value in (-500, 0, 500):
+            with self.subTest(value=value), patch.object(api, "build_live_app_data", return_value={}):
+                response = self.post("/v1/accounts", {
+                    "action": "set", "account": "giro", "amount": value,
+                })
+            self.assertEqual(response.status_code, 200, response.json)
+            self.assertEqual(response.json["accounts"]["giro"], value)
+            self.assertEqual(
+                self.query("SELECT amount FROM app_account_balances WHERE user_id=1 AND account_key='giro'"),
+                [(float(value),)],
+            )
+            expected_total = value + 250
+            self.assertEqual(self.query("SELECT current_cash FROM users WHERE user_id=1"), [(float(expected_total),)])
+            self.assertEqual(
+                self.query("SELECT SUM(amount) FROM app_account_balances WHERE user_id=1"),
+                [(float(expected_total),)],
+            )
+
+    def test_legacy_cash_fallback_preserves_negative_balance_on_first_account_write(self):
+        for current_cash, expected_total in ((-500, -400), (0, 100), (None, 100)):
+            with self.subTest(current_cash=current_cash):
+                with sqlite3.connect(self.path) as conn:
+                    conn.execute("DELETE FROM app_account_balances WHERE user_id=1")
+                    conn.execute("UPDATE users SET current_cash=? WHERE user_id=1", (current_cash,))
+                with patch.object(api, "build_live_app_data", return_value={}):
+                    response = self.post("/v1/accounts", {
+                        "action": "set", "account": "tagesgeld", "amount": 100,
+                    })
+                self.assertEqual(response.status_code, 200, response.json)
+                self.assertEqual(response.json["accounts"]["giro"], current_cash or 0)
+                self.assertEqual(response.json["accounts"]["tagesgeld"], 100)
+                self.assertEqual(
+                    self.query("SELECT current_cash FROM users WHERE user_id=1"),
+                    [(float(expected_total),)],
+                )
+                self.assertEqual(
+                    self.query("SELECT SUM(amount) FROM app_account_balances WHERE user_id=1"),
+                    [(float(expected_total),)],
+                )

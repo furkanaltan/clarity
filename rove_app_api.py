@@ -3097,7 +3097,8 @@ def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float
     # Alte Bot-Profile kannten nur eine Cash-Gesamtsumme. Sie startet sicher im Girokonto;
     # der Nutzer verschiebt danach Tagesgeld oder Bargeld, ohne Vermögen zu erfinden.
     user = conn.execute("SELECT current_cash FROM users WHERE user_id = ?", (user_id,)).fetchone()
-    balances["giro"] = round(max(0.0, float(user["current_cash"] or 0)), 2) if user else 0.0
+    legacy_cash = user["current_cash"] if user else None
+    balances["giro"] = round(float(legacy_cash), 2) if legacy_cash is not None else 0.0
     return balances
 
 
@@ -5758,12 +5759,15 @@ def update_accounts():
         if pilot:
             prepare_multi_cash_write(conn)
         balances = app_cash_accounts(conn, user_id)   # unter der Sperre aus begin_write()
+        set_account = clean_text(payload.get("account")).lower() if action == "set" else ""
+        signed_giro_set = action == "set" and set_account == "giro"
         try:
-            amount = round(abs(float(payload.get("amount") or 0)), 2)
+            raw_amount = float(payload.get("amount") or 0)
+            amount = round(raw_amount if signed_giro_set else abs(raw_amount), 2)
         except (TypeError, ValueError):
             amount = 0.0
 
-        if not 0 <= amount < float("inf"):
+        if not abs(amount) < float("inf") or (amount < 0 and not signed_giro_set):
             conn.rollback()
             return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
         canonical_request = {"action": action, "amount": amount}
@@ -5821,8 +5825,8 @@ def update_accounts():
                         (user_id, amount),
                     )
         elif action == "set":
-            account = clean_text(payload.get("account")).lower()
-            if account not in ACCOUNT_KEYS or amount > 10_000_000:
+            account = set_account
+            if account not in ACCOUNT_KEYS or abs(amount) > 10_000_000:
                 return jsonify({"ok": False, "error": "valid_account_amount_required"}), 400
             balances[account] = amount
             if pilot:
