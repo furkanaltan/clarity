@@ -17,6 +17,7 @@ import telebot
 import openai
 from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
+from rove_app_state import write_legacy_monthly_snapshot
 from rove_expense_domain import begin_expense_write, create_expense_for_user
 from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, is_feature_enabled
 from rove_log_safety import safe_exception_summary
@@ -3870,24 +3871,20 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
     income = (u.get("income") or 0) + (u.get("other_income") or 0)
     free_budget = income - (u.get("fixed_costs") or 0)
     budget_ok = free_budget > 0 and old_expenses <= free_budget
-    property_equity = 0.0
+    net_worth = None
     with get_db() as conn:
         try:
-            property_row = conn.execute(
-                """SELECT market_value, remaining_debt
-                     FROM app_properties WHERE user_id = ?""",
-                (user_id,),
-            ).fetchone()
-            if property_row:
-                property_equity = max(
-                    0.0,
-                    float(property_row["market_value"] or 0) - float(property_row["remaining_debt"] or 0),
-                )
-        except sqlite3.OperationalError:
-            # Bot-only users may not have opened the App yet.
-            pass
-
-    net_worth = (u.get("current_investments") or 0) + (u.get("current_cash") or 0) + property_equity
+            net_worth = write_legacy_monthly_snapshot(
+                conn,
+                user_id,
+                stored_month,
+                score_data["total"],
+                old_expenses,
+                budget_ok,
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error("Snapshot-Fehler User %s (error=%s)", user_id, safe_exception_summary(e))
 
     bonus_lines = []
     latest_points = u.get("clarity_points") or 0
@@ -3899,32 +3896,16 @@ def handle_month_transition(user_id: int, u: dict, bot_instance):
     else:
         bonus_lines.append("Budget überschritten - kein Monats-Bonus.")
 
-    with get_db() as conn:
-        try:
-            conn.execute(
-                """INSERT INTO monthly_snapshots
-                   (user_id, month, clarity_score, total_expenses, budget_ok, net_worth)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(user_id, month) DO UPDATE SET
-                       clarity_score = excluded.clarity_score,
-                       total_expenses = excluded.total_expenses,
-                       budget_ok = excluded.budget_ok,
-                       net_worth = excluded.net_worth""",
-                (user_id, stored_month, score_data["total"], old_expenses, int(budget_ok), net_worth)
-            )
-            conn.commit()
-        except Exception as e:
-            logger.error("Snapshot-Fehler User %s (error=%s)", user_id, safe_exception_summary(e))
-
     update_user_field(user_id, "current_month", current_month)
     rank_name, rank_emoji = score_data["rank_name"], score_data["rank_emoji"]
+    net_worth_display = f"{net_worth:.2f} EUR" if net_worth is not None else "derzeit nicht verfügbar"
 
     bot_instance.send_message(
         user_id,
         f"*{stored_month} - Monatsabschluss*\n\n"
         f"Rov.E Score: *{score_data['total']}/100*\n"
         f"Ausgaben: {old_expenses:.2f} EUR\n"
-        f"Nettovermögen: {net_worth:.2f} EUR\n"
+        f"Nettovermögen: {net_worth_display}\n"
         f"{chr(10).join(bonus_lines)}\n\n"
         f"{rank_emoji} Score-Rang: {rank_name}",
         parse_mode="Markdown"

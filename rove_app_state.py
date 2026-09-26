@@ -2283,6 +2283,54 @@ def get_app_cash_accounts(
     return balances, True
 
 
+def write_legacy_monthly_snapshot(
+    conn: sqlite3.Connection,
+    user_id: int,
+    report_month: str,
+    clarity_score: int,
+    total_expenses: float,
+    budget_ok: bool,
+) -> float | None:
+    """Write a new bot month-close row using the App's current net-worth truth.
+
+    Existing rows are historical evidence and are deliberately never rewritten.
+    """
+    user = conn.execute(
+        "SELECT current_cash, current_investments FROM users WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if not user:
+        return None
+
+    raw_cash = user["current_cash"]
+    bot_cash = None if raw_cash is None else float(raw_cash)
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        accounts = list_financial_accounts(conn, user_id)
+        cash = round(sum(float(account["balance"] or 0) for account in accounts), 2)
+    else:
+        cash_accounts, _ = get_app_cash_accounts(conn, user_id, bot_cash)
+        cash = (
+            round(sum(float(value) for value in cash_accounts.values()), 2)
+            if all(value is not None for value in cash_accounts.values())
+            else None
+        )
+
+    investments = float(user["current_investments"] or 0)
+    property_data = get_app_property(conn, user_id)
+    property_equity = float(property_data["equity"] if property_data else 0)
+    consumer_debt = total_consumer_debt(conn, user_id)
+    net_worth = net_worth_total(cash, investments, property_equity, consumer_debt)
+
+    conn.execute(
+        """INSERT INTO monthly_snapshots
+           (user_id, month, clarity_score, total_expenses, budget_ok, net_worth)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, month) DO NOTHING""",
+        (user_id, report_month, clarity_score, total_expenses, int(budget_ok), net_worth),
+    )
+    return net_worth
+
+
 # ===================== VERMOEGENSVERLAUF FUER DEN CHART =====================
 # Zeitraeume exakt so, wie die App sie beschriftet: seriesDates() in index.html verteilt die Punkte
 # gleichmaessig rueckwaerts ueber die Spanne. Anzahl und Schrittweite muessen dazu passen, sonst
