@@ -1142,7 +1142,9 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     )
 
     contribution_text = (
-        f"{_story_money(contribution_total_raw)} tatsächlich gespart."
+        f"Deine bestätigte Sparleistung lag netto bei {_story_money(contribution_total_raw)}."
+        if savings_truth.get("confirmed") and contribution_total_raw < 0
+        else f"{_story_money(contribution_total_raw)} tatsächlich gespart."
         if savings_truth.get("confirmed") and contribution_total_raw > 0
         else f"{_story_money(contribution_total_raw)} investiert oder zurückgelegt."
         if contribution_total_raw > 0
@@ -1210,15 +1212,20 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         0.0,
         float(primary_goal.get("target_amount") or 0) - float(primary_goal.get("current_amount") or 0),
     ) if goal["available"] else 0.0
-    if goal["available"] and savings_plan > 0 and goal_remaining > 0:
-        goal_months = max(1, math.ceil(goal_remaining / savings_plan))
+    goal_monthly_rate = primary_goal.get("goal_monthly_rate")
+    try:
+        goal_monthly_rate = float(goal_monthly_rate) if goal_monthly_rate is not None else None
+    except (TypeError, ValueError):
+        goal_monthly_rate = None
+    if goal["available"] and goal_monthly_rate and goal_monthly_rate > 0 and goal_remaining > 0:
+        goal_months = max(1, math.ceil(goal_remaining / goal_monthly_rate))
         goal_honest_text = (
-            f"Bei deiner geplanten Sparrate von {_story_money(savings_plan)} pro Monat "
+            f"Bei deiner geplanten Zielrate von {_story_money(goal_monthly_rate)} pro Monat "
             f"entspricht der offene Betrag rechnerisch rund {goal_months} Monaten."
         )
-        goal_honest_subtext = "Deine hinterlegte Sparrate dient dabei als Orientierung."
-        goal_lever_text = f"{_story_money(savings_plan)} pro Monat sind aktuell eingeplant."
-        goal_lever_subtext = "Änderst du die Rate, verändert sich auch der Zeitraum."
+        goal_honest_subtext = "Die Rechnung verwendet ausschließlich deine hinterlegte Zielrate."
+        goal_lever_text = f"{_story_money(goal_monthly_rate)} pro Monat sind für dieses Ziel hinterlegt."
+        goal_lever_subtext = "Änderst du die Zielrate, verändert sich auch der Zeitraum."
     else:
         goal_honest_text = "Für dein Ziel ist noch kein monatlicher Zeitraum hinterlegt."
         goal_honest_subtext = "Sobald du eine Rate festlegst, erhältst du eine zeitliche Orientierung."
@@ -1251,10 +1258,14 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "next_report_delivery_month_name": h(month_label_with_offset((data.get("meta") or {}).get("report_month", ""), 2).split(" ", 1)[0]),
         "month_short": h(month_short),
         "freedom_step_label": "Diesen Monat aufgebaut",
-        "freedom_step_text": f"+{report['contribution_total']}" if contribution_total_raw > 0 else "Kein neuer Beitrag",
+        "freedom_step_text": (
+            f"+{report['contribution_total']}" if contribution_total_raw > 0
+            else report["contribution_total"] if contribution_total_raw < 0
+            else "Kein neuer Beitrag"
+        ),
         "freedom_step_subline": (
             "tatsächlich gespart"
-            if savings_truth.get("confirmed") and contribution_total_raw > 0
+            if savings_truth.get("confirmed") and contribution_total_raw != 0
             else "investiert oder zurückgelegt"
             if contribution_total_raw > 0
             else "kein neuer Beitrag"
@@ -1431,9 +1442,9 @@ def build_render_context(data: dict) -> dict:
     investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
     investment_total = float(investment_summary.get("net_contributions") or 0)
     savings_progress = data["pages"]["wealth_journey"].get("savings_progress", {})
-    full_plan_amount = max(0.0, float(savings_progress.get("full_plan_amount") or 0))
+    full_plan_amount = float(savings_progress.get("full_plan_amount") or 0)
     automatic_etf_amount = max(0.0, float(savings_progress.get("automatic_etf_amount") or 0))
-    full_plan_confirmed = bool(savings_progress.get("full_plan_confirmed")) and full_plan_amount > 0
+    full_plan_confirmed = bool(savings_progress.get("full_plan_confirmed"))
     actual_savings = full_plan_amount if full_plan_confirmed else automatic_etf_amount
     invested_amount_raw = actual_savings
     wealth_copy = wealth_position_copy(net_worth, investments, cash, wealth_total)
@@ -1629,7 +1640,11 @@ def build_render_context(data: dict) -> dict:
         "next_report_delivery_month_name": h(next_report_delivery_month_name),
         "month_short": h(month_short),
         "freedom_step_label": freedom_step_label,
-        "freedom_step_text": f"+{money_text(actual_savings)}" if actual_savings > 0 else "offen",
+        "freedom_step_text": (
+            f"+{money_text(actual_savings)}" if actual_savings > 0
+            else money_text(actual_savings) if actual_savings < 0
+            else "offen"
+        ),
         "freedom_step_subline": freedom_step_subline,
         "development_percent_text": (
             fmt_percent(cover.get("development_percent"), 1)

@@ -20,7 +20,7 @@ from reportlab.lib.colors import HexColor
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
-from rove_score import calculate_score as calculate_live_score
+from rove_score import calculate_score as calculate_live_score, canonical_liquid_cash
 from rove_app_state import get_monthly_financial_snapshot, _monthly_budget_truth
 from rove_consumer_debt import total_consumer_debt, net_worth_total
 from rove_log_safety import safe_exception_summary
@@ -1229,6 +1229,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         consumer_debt = total_consumer_debt(conn, user_id) if is_current_month else (
             financial_snapshot.get("total_consumer_debt") if financial_snapshot else None
         )
+        current_cash = canonical_liquid_cash(conn, user_id, user) if is_current_month else None
     if is_current_month:
         income = row_float(user, "income")
         other_income = row_float(user, "other_income")
@@ -1236,7 +1237,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
         etf_rate = row_float(user, "etf_savings")
         cash_rate = row_float(user, "cash_savings")
         current_investments = row_float(user, "current_investments")
-        cash_reserve = row_float(user, "current_cash")
+        cash_reserve = current_cash
         property_data = get_app_property(user_id)
         property_market_value = property_data["market_value"] if property_data else 0.0
         property_remaining_debt = property_data["remaining_debt"] if property_data else 0.0
@@ -1607,9 +1608,10 @@ def _report_cash_truth(
 
     with get_db() as conn:
         current = conn.execute(
-            "SELECT current_cash FROM users WHERE user_id = ?", (user_id,)
+            "SELECT * FROM users WHERE user_id = ?", (user_id,)
         ).fetchone()
-        current_cash = round(float(current["current_cash"] or 0), 2) if current else 0.0
+        stored_current_cash = round(float(current["current_cash"] or 0), 2) if current else 0.0
+        current_cash = round(canonical_liquid_cash(conn, user_id, current), 2)
         feature_enabled = bool(conn.execute(
             """SELECT 1 FROM app_user_features
                 WHERE user_id = ? AND feature_key = 'multi_cash_accounts_v1' AND enabled = 1
@@ -1637,12 +1639,12 @@ def _report_cash_truth(
             ]
             account_total = round(sum(row["balance"] for row in accounts), 2)
 
-    if feature_enabled and account_total is not None and abs(account_total - current_cash) > 0.01:
+    if feature_enabled and account_total is not None and abs(account_total - stored_current_cash) > 0.01:
         raise ValueError(
             f"report_cash_invariant_failed:user={user_id}:accounts={account_total}:current_cash={current_cash}"
         )
     return {
-        "source": "financial_accounts" if feature_enabled else "legacy_current_cash",
+        "source": "financial_accounts" if feature_enabled else "legacy_cash",
         "current_cash": current_cash,
         "account_total": account_total,
         "accounts": accounts,
@@ -1651,20 +1653,23 @@ def _report_cash_truth(
     }
 
 
-def _report_goal_truth(user_id: int, primary_description: str, primary_target: float,
-                       primary_current: float, primary_rate: float | None = None) -> dict:
+def _report_goal_truth(user_id: int, primary_description: str, primary_target: float | None,
+                       primary_current: float | None, primary_rate: float | None = None,
+                       *, allow_live_goals: bool = True) -> dict:
     goals = []
     primary = None
-    if primary_target > 0:
+    if primary_target is not None and float(primary_target) > 0:
         primary = {
             "id": "primary",
             "name": primary_description or "Dein Ziel",
-            "target_amount": round(primary_target, 2),
-            "current_amount": round(primary_current, 2),
+            "target_amount": round(float(primary_target), 2),
+            "current_amount": round(float(primary_current), 2) if primary_current is not None else None,
             "goal_monthly_rate": primary_rate,
             "is_primary": True,
         }
         goals.append(primary)
+    if not allow_live_goals:
+        return {"primary": primary, "goals": goals}
     with get_db() as conn:
         if table_exists(conn, "app_goals"):
             columns = {row[1] for row in conn.execute("PRAGMA table_info(app_goals)").fetchall()}
@@ -1885,6 +1890,9 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             if is_current_month
             else get_monthly_financial_snapshot(conn, user_id, report_month)
         )
+        previous_financial_snapshot = get_monthly_financial_snapshot(
+            conn, user_id, _report_previous_month(report_month)
+        )
     current_end = str(meta.get("period_end") or month_bounds(report_month)[1])
     comparison_mode = str(meta.get("comparison_mode") or "full")
     cutoff_day = int(meta.get("comparison_cutoff_day") or int(current_end[-2:]))
@@ -2027,7 +2035,7 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         "budget": budget,
         "cash": cash,
         "savings": {
-            "actual_amount": round(max(0.0, savings_amount), 2),
+            "actual_amount": round(savings_amount, 2),
             "confirmed": bool(savings_progress.get("full_plan_confirmed")),
             "automatic_etf_amount": round(
                 max(0.0, float(savings_progress.get("automatic_etf_amount") or 0)), 2
@@ -2047,7 +2055,8 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         },
         "goals": _report_goal_truth(
             user_id, goal.get("description", ""), goal.get("target_amount", 0),
-            goal.get("current_amount", 0), goal.get("goal_monthly_rate")
+            goal.get("current_amount", 0), goal.get("goal_monthly_rate"),
+            allow_live_goals=is_current_month,
         ),
         "score": data.get("pages", {}).get("score", {}),
         "wealth": _report_wealth_truth(profile, cash, investments),
@@ -2059,7 +2068,7 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             "financial_snapshot": previous_financial_snapshot,
             "investment_contributions": previous_investments,
             "savings": {
-                "actual_amount": round(max(0.0, float(previous_savings_amount or 0)), 2),
+                "actual_amount": round(float(previous_savings_amount or 0), 2),
                 "confirmed": bool(previous_savings.get("full_plan_confirmed")),
                 "source": str(previous_savings.get("confirmation_source") or "unconfirmed"),
             },

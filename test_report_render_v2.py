@@ -107,6 +107,39 @@ def july_truth_payload() -> dict:
 
 
 class ReportRenderV2Tests(unittest.TestCase):
+    def test_goal_forecast_uses_only_explicit_goal_rate(self):
+        data = july_truth_payload()
+        data["profile"]["savings_plan"] = 1000.0
+        data["report_truth"]["goals"]["primary"].update({
+            "target_amount": 4000.0,
+            "current_amount": 0.0,
+            "goal_monthly_rate": 50.0,
+        })
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+        self.assertIn("80 Monaten", context["goal_honest_text"])
+        self.assertIn("80 Monaten", render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data))
+        self.assertEqual(len(_render_hell_pages(data)), 10)
+
+        data["report_truth"]["goals"]["primary"]["goal_monthly_rate"] = None
+        data["report_story_v2"] = build_report_story_v2(data)
+        context_without_rate = build_render_context(data)
+        self.assertNotIn("4 Monaten", context_without_rate["goal_honest_text"])
+        self.assertNotIn("80 Monaten", context_without_rate["goal_honest_text"])
+        self.assertEqual(len(_render_hell_pages(data)), 10)
+
+    def test_negative_confirmed_savings_stays_signed_in_web_and_pdf(self):
+        data = july_truth_payload()
+        data["report_truth"]["savings"].update({"actual_amount": -100.0, "confirmed": True})
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+
+        self.assertEqual(context["report"]["contribution_total"], "-100 €")
+        self.assertEqual(context["freedom_step_text"], "-100 €")
+        self.assertIn("-100 €", "".join(_render_hell_pages(data)))
+
     def test_monthly_financial_snapshot_freezes_inputs_and_is_idempotent(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

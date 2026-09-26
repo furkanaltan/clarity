@@ -34,7 +34,12 @@ class ReportSnapshotV2Tests(unittest.TestCase):
                 );
                 CREATE TABLE app_goals (
                     user_id INTEGER, goal_id TEXT, name TEXT,
-                    target_amount REAL, current_amount REAL, is_primary INTEGER
+                    target_amount REAL, current_amount REAL, is_primary INTEGER,
+                    goal_monthly_rate REAL, created_at TEXT
+                );
+                CREATE TABLE monthly_snapshots (
+                    user_id INTEGER, month TEXT, net_worth REAL,
+                    clarity_score INTEGER, budget_ok INTEGER
                 );
                 CREATE TABLE investment_events (
                     id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL,
@@ -152,10 +157,25 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "report_cash_invariant_failed"):
             report_engine._report_cash_truth(1)
 
+    def test_missing_current_cash_uses_legacy_account_fallback(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("CREATE TABLE app_account_balances (user_id INTEGER, account_key TEXT, amount REAL)")
+            conn.execute("UPDATE app_user_features SET enabled = 0 WHERE user_id = 1")
+            conn.execute("UPDATE users SET current_cash = NULL WHERE user_id = 1")
+            conn.execute("INSERT INTO app_account_balances VALUES (1, 'giro', 4600.0)")
+
+        truth = report_engine._report_cash_truth(1)
+
+        self.assertEqual(truth["current_cash"], 4600.0)
+        self.assertEqual(truth["source"], "legacy_cash")
+
+
     def test_goal_truth_preserves_text_goal_id(self):
         with sqlite3.connect(self.db) as conn:
             conn.execute(
-                "INSERT INTO app_goals VALUES (1, 'g_UullDEEJIr', 'Dubai', 5000.0, 900.0, 1)"
+                """INSERT INTO app_goals
+                   (user_id, goal_id, name, target_amount, current_amount, is_primary)
+                   VALUES (1, 'g_UullDEEJIr', 'Dubai', 5000.0, 900.0, 1)"""
             )
 
         truth = report_engine._report_goal_truth(1, "", 0.0, 0.0)
@@ -186,6 +206,43 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(first["data_hash"], second["data_hash"])
         self.assertEqual(json.dumps(first["data"], sort_keys=True), json.dumps(second["data"], sort_keys=True))
+
+    def test_real_pipeline_generates_current_month_without_previous_snapshot(self):
+        from datetime import datetime
+
+        current_month = datetime.now().strftime("%Y-%m")
+        previous_month = report_engine._report_previous_month(current_month)
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("CREATE TABLE app_account_balances (user_id INTEGER, account_key TEXT, amount REAL)")
+            conn.execute("UPDATE app_user_features SET enabled = 0 WHERE user_id = 1")
+            conn.execute("UPDATE users SET current_cash = NULL WHERE user_id = 1")
+            conn.execute("INSERT INTO app_account_balances VALUES (1, 'giro', 4600.0)")
+            conn.executemany(
+                "INSERT INTO app_month_closures VALUES (1, ?, -100.0)",
+                [(current_month,), (previous_month,)],
+            )
+
+        with patch.object(report_engine, "MIN_TRACKING_DAYS", 0), \
+             patch("report_ai_text.generate_ai_narratives", return_value={}):
+            snapshot = report_engine.get_or_create_report_snapshot(1, current_month)
+
+        truth = snapshot["data"]["report_truth"]
+        self.assertEqual(snapshot["status"], "finalized")
+        self.assertIsNone(truth["previous_month"]["financial_snapshot"])
+        self.assertEqual(snapshot["data"]["profile"]["cash_reserve"], 4600.0)
+        self.assertEqual(truth["cash"]["current_cash"], 4600.0)
+        self.assertEqual(truth["savings"]["actual_amount"], -100.0)
+        self.assertEqual(truth["previous_month"]["savings"]["actual_amount"], -100.0)
+
+    def test_real_pipeline_generates_closed_month_without_goal_snapshot(self):
+        with patch.object(report_engine, "MIN_TRACKING_DAYS", 0), \
+             patch("report_ai_text.generate_ai_narratives", return_value={}):
+            snapshot = report_engine.get_or_create_report_snapshot(1, "2026-08")
+
+        truth = snapshot["data"]["report_truth"]
+        self.assertEqual(snapshot["status"], "finalized")
+        self.assertIsNone(truth["goals"]["primary"])
+        self.assertEqual(truth["goals"]["goals"], [])
 
 
 if __name__ == "__main__":
