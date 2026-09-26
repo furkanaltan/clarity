@@ -365,16 +365,23 @@ def draw_money_map(c, data):
 def draw_score(c, data):
     score = data["pages"]["score"]
     parts = score["parts"]
-    score_value = safe_float(score["clarity_score"])
-    begin_page(c, "Rov.E Score", f"{int(score_value)} von 100 - du hast dein Geld im Griff.", 6)
+    score_available = score.get("clarity_score") is not None
+    score_value = safe_float(score["clarity_score"]) if score_available else None
+    score_text = str(int(score_value)) if score_available else "—"
+    rank_name = score.get("rank_name") or "Nicht verfügbar"
+    subtitle = (
+        f"{int(score_value)} von 100 - du hast dein Geld im Griff."
+        if score_available else "Für diesen historischen Monat ist kein Score gespeichert."
+    )
+    begin_page(c, "Rov.E Score", subtitle, 6)
     draw_card(c, 85, 470, 360, 280, "Score", "", accent=False)
-    draw_ring(c, 265, 342, 74, score_value / 100)
+    draw_ring(c, 265, 342, 74, score_value / 100 if score_available else 0)
     c.setFont("Times-Roman", 48)
     c.setFillColor(TEXT)
-    c.drawCentredString(265, 324, str(int(score_value)))
+    c.drawCentredString(265, 324, score_text)
     c.setFont(font("RoveSans-Bold"), 9)
     c.setFillColor(BLUE)
-    c.drawCentredString(265, 286, score.get("rank_name", "Rookie").upper())
+    c.drawCentredString(265, 286, rank_name.upper())
     c.setFont(font("RoveSans-Bold"), 7.5)
     c.drawCentredString(265, 244, "SCORE TEILEN")
     draw_card(c, 485, 470, 500, 280, "Breakdown", "", value_size=10)
@@ -405,7 +412,13 @@ def draw_score(c, data):
         c.setStrokeColor(colors.Color(1, 1, 1, alpha=0.08))
         c.line(520, y - 24, 920, y - 24)
         y -= 55
-    draw_card(c, 85, 152, 900, 92, f"Was {score.get('rank_name', 'Rookie')} bedeutet", "Budget, Liquidität und Schuldenstruktur stehen. Der nächste Hebel ist Datenqualität.", value_size=18)
+    draw_card(
+        c, 85, 152, 900, 92,
+        f"Was {rank_name} bedeutet" if score_available else "Score-Einordnung nicht verfügbar",
+        "Budget, Liquidität und Schuldenstruktur stehen. Der nächste Hebel ist Datenqualität."
+        if score_available else "Für diesen historischen Monat ist kein Score gespeichert.",
+        value_size=18,
+    )
     end_page(c, 6)
 
 

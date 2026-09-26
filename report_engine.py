@@ -1074,7 +1074,7 @@ def get_wealth_history(user_id: int, report_month: str, limit: int = 12) -> list
         {
             "month": row["month"],
             "net_worth": float(row["net_worth"] or 0),
-            "clarity_score": int(row["clarity_score"] or 0),
+            "clarity_score": int(row["clarity_score"]) if row["clarity_score"] is not None else None,
         }
         for row in rows
     ]
@@ -2266,7 +2266,7 @@ def draw_score_page(c, data):
     tracking_line = score.get("tracking_label") or f"{score['proof_days']}d verified"
     proof_line = f"{score['phase']} · {tracking_line}"
     c.drawCentredString(PAGE_W / 2, PAGE_H - 342, proof_line)
-    if score["days_to_unlock"] > 0:
+    if (score.get("days_to_unlock") or 0) > 0:
         unlock = f"Noch {score['days_to_unlock']} Tage bis {score['next_unlock_level']}+ freigeschaltet wird."
         c.drawCentredString(PAGE_W / 2, PAGE_H - 360, unlock)
 

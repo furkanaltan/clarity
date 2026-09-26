@@ -161,10 +161,25 @@ def category_label(value: str) -> str:
 
 
 def data_count_span(value, decimals: int = 0) -> str:
+    if value is None:
+        return "—"
     raw = f"{float(value or 0):.{decimals}f}"
     label = de_number(value, decimals)
     extra = f' data-decimals="{decimals}"' if decimals else ""
     return f'<span data-count="{raw}"{extra}>{label}</span>'
+
+
+def _change_amount_text(item: dict) -> str:
+    raw_delta = item.get("delta_raw")
+    if raw_delta is None:
+        raw_delta = item.get("delta")
+    delta = float(raw_delta or 0)
+    if item.get("type") == "score":
+        return f"{delta:+.0f} Punkte".replace("-", "−")
+    if not delta:
+        return "0 €"
+    sign = "+" if delta > 0 else "−"
+    return f"{sign}{_story_money(abs(delta))}"
 
 
 RANK_BLURBS = {
@@ -198,7 +213,7 @@ def rank_band(score_value: int) -> dict:
 
 
 def milestone_band(net_worth: float, step: int = 5000) -> dict:
-    current = int(net_worth // step) * step
+    current = max(0, int(net_worth // step) * step)
     nxt = current + step
     pct = ((net_worth - current) / step * 100) if step else 0
     return {"from_amount": current, "to_amount": nxt, "pct": max(0.0, min(100.0, pct))}
@@ -671,7 +686,10 @@ def _pre_truth_story_render_context(data: dict) -> dict:
             "progress": fmt_percent(goal_progress, 1),
             "progress_raw": goal_progress,
         },
-        "score": int(score_page.get("clarity_score") or 0),
+        "score": (
+            int(score_page.get("clarity_score"))
+            if score_page.get("clarity_score") is not None else None
+        ),
         "insight": {"type": "legacy_snapshot", "text": "Dieser Report bleibt in seiner ursprünglichen Fassung erhalten.", "tone": "neutral", "safe_to_coach": False},
         "next_steps": [],
         "recap_good": str(recap.get("what_went_well") or ""),
@@ -789,9 +807,10 @@ def build_story_render_context(data: dict) -> dict:
             if delta_percent is not None else "Vergleich"
         )
         changes.append({
+            "type": str(item.get("type") or ""),
             "label": str(item.get("label") or "Veränderung"),
             "context": _localize_story_text(item.get("context")),
-            "amount_text": amount_text,
+            "amount_text": _change_amount_text(item),
             "pct_label": pct_label,
             "delta": _story_money(abs(delta)),
             "delta_raw": delta,
@@ -865,7 +884,10 @@ def build_story_render_context(data: dict) -> dict:
         "progress_raw": goal_progress,
     }
     score = goal_visual.get("score") or {}
-    score_value = int(score.get("clarity_score") or (score.get("parts") or {}).get("total") or 0)
+    score_value = score.get("clarity_score")
+    if score_value is None:
+        score_value = (score.get("parts") or {}).get("total")
+    score_value = int(score_value) if score_value is not None else None
 
     insight = (story.get("insight_engine") or {}).get("selected") or {}
     next_steps = [
@@ -971,14 +993,17 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "budget", "savings", "liquidity", "debt", "tracking"
     }.issubset(factor_keys):
         score_parts_raw = []
-    score_value = int(report["score"] or 0)
-    score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1)
-    band = rank_band(score_value)
+    score_available = report["score"] is not None
+    score_value = int(report["score"]) if score_available else None
+    score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1) if score_available else 540.4
+    band = rank_band(score_value) if score_available else {
+        "prev_name": None, "next_name": None, "low": 0, "high": 0,
+    }
     band_span = max(1, band["high"] - band["low"])
     rank_name = next(
         (name for low, high, name, _icon in SCORE_RANKS if low <= score_value <= high),
-        "Rookie",
-    )
+        "Nicht verfügbar",
+    ) if score_available else "Nicht verfügbar"
 
     categories = report["categories"]
     strongest = categories[0] if categories else {
@@ -1067,7 +1092,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
                 f"{'+' if float(delta_percent) > 0 else ''}{de_number(delta_percent, 1)} %"
                 if delta_percent is not None else "Vergleich"
             ),
-            "amount_text": f"{'+' if delta > 0 else '-'}{_story_money(abs(delta))}" if delta else "0 €",
+            "amount_text": _change_amount_text(item),
             "bar_color": colors["bar_color"],
             "text_color": colors["text_color"],
         })
@@ -1077,12 +1102,13 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         score_parts.append({
             "key": str(item.get("key") or ""),
             "label": str(item.get("n") or item.get("label") or item.get("key") or "Faktor"),
-            "value": int(item.get("points") or 0),
+            "value": int(item["points"]) if item.get("points") is not None else None,
             "max": int(item.get("max") or {"budget": 20, "savings": 20, "liquidity": 20, "debt": 30, "tracking": 10}.get(str(item.get("key") or ""), 10)),
             "warn": False,
         })
-    if score_parts:
-        weakest = min(range(len(score_parts)), key=lambda idx: score_parts[idx]["value"])
+    numeric_score_parts = [item for item in score_parts if item["value"] is not None]
+    if score_available and numeric_score_parts:
+        weakest = min(range(len(score_parts)), key=lambda idx: score_parts[idx]["value"] if score_parts[idx]["value"] is not None else float("inf"))
         score_parts[weakest]["warn"] = True
 
     score_names = {
@@ -1098,14 +1124,16 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         score_parts,
         key=lambda item: item["value"] / max(1, item["max"]),
         default=None,
-    )
+    ) if score_available else None
     strong_parts = [
         score_names.get(item["key"], item["label"])
         for item in score_parts
-        if item["value"] / max(1, item["max"]) >= 0.8
+        if item["value"] is not None and item["value"] / max(1, item["max"]) >= 0.8
     ]
     weakest_name = score_names.get((weakest_part or {}).get("key"), (weakest_part or {}).get("label", "deinem nächsten Teilbereich"))
-    if contribution_total_raw <= 0 and any(item.get("key") == "savings" and item["value"] >= item["max"] for item in score_parts):
+    if not score_available:
+        rank_blurb = "Für diesen historischen Monat ist kein Score gespeichert."
+    elif contribution_total_raw <= 0 and any(item.get("key") == "savings" and item["value"] is not None and item["value"] >= item["max"] for item in score_parts):
         savings_part = next(item for item in score_parts if item.get("key") == "savings")
         rank_blurb = (
             f"Der Spar-Teilscore liegt bei {savings_part['value']}/{savings_part['max']}; in diesem Monat ist jedoch kein neuer "
@@ -1161,10 +1189,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         f"{report['changes'][0]['label']}: {report['changes'][0]['context']}"
         if report["changes"] else "Noch kein belastbarer Vormonatsvergleich verfügbar."
     )
-    development_text = (
-        f"{'+' if float(report['changes'][0].get('delta_raw') or 0) > 0 else '-'}{_story_money(abs(float(report['changes'][0].get('delta_raw') or 0)))}"
-        if report["changes"] else "Kein Vergleich"
-    )
+    development_text = _change_amount_text(report["changes"][0]) if report["changes"] else "Kein Vergleich"
 
     if budget_issue:
         recap_good = "Du hast in diesem Monat aktiv Vermögen aufgebaut." if contribution_total_raw > 0 else "Deine Ausgaben sind klar nach Kategorien aufgeschlüsselt."
@@ -1245,8 +1270,8 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     previous_month_label = month_label_with_offset((data.get("meta") or {}).get("report_month", ""), -1)
     comparison_basis_text = f"{report['month_label']} im Vergleich zu {previous_month_label}."
 
-    mband = milestone_band(wealth_total)
-    milestone_remaining = max(0.0, mband["to_amount"] - wealth_total)
+    mband = milestone_band(net_worth_raw)
+    milestone_remaining = max(0.0, mband["to_amount"] - net_worth_raw)
     milestone_headline = f"Noch {_story_money(milestone_remaining)} bis zum nächsten Meilenstein."
     milestone_fact = f"Dir fehlen noch {_story_money(milestone_remaining)} bis {_story_money(mband['to_amount'])}."
 
@@ -1328,15 +1353,16 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "build_summary_text": h(contribution_text),
         "invest_vs_strongest_text": h(build_detail_text),
         "score_value": score_value,
+        "score_available": score_available,
         "score_span": data_count_span(score_value),
-        "score_headline_suffix": "Rov.E hat den Monat eingeordnet.",
+        "score_headline_suffix": "Rov.E hat den Monat eingeordnet." if score_available else "",
         "score_dash": score_dash,
         "rank_name": h(rank_name),
         "prev_rank_name": h(band["prev_name"]) if band["prev_name"] else "",
         "next_rank_name": h(band["next_name"]) if band["next_name"] else "",
         "rank_band_low": round(band["low"] / 100 * 100, 1),
         "rank_band_high": round((band["high"] + 1) / 100 * 100, 1),
-        "rank_band_text": f"{band['low']}-{band['high']}",
+        "rank_band_text": f"{band['low']}-{band['high']}" if score_available else "",
         "score_parts": score_parts,
         "rank_blurb": h(rank_blurb),
         "next_step_headline": h(score_next_title),
@@ -1360,6 +1386,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
         "milestone_pct_raw": round(mband["pct"], 1),
         "milestone_eta_text": h(comparison_basis_text),
         "milestone_fact_text": h(milestone_fact),
+        "legacy_wealth_basis_note": "",
         "badges": [],
         "recap_good_text": h(recap_good),
         "recap_attention_text": h(recap_attention),
@@ -1410,14 +1437,18 @@ def build_render_context(data: dict) -> dict:
     biggest_name = biggest.get("merchant") or "Noch offen"
     biggest_amount = float(biggest.get("amount") or 0)
 
-    score_value = int(score.get("clarity_score") or 0)
-    score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1)
-    rank_name = score.get("rank_name") or "Rookie"
+    score_raw = score.get("clarity_score")
+    score_available = score_raw is not None
+    score_value = int(score_raw) if score_available else None
+    score_dash = round(540.4 * (100 - max(0, min(100, score_value))) / 100, 1) if score_available else 540.4
     parts = score.get("parts") or {}
-    band = rank_band(score_value)
+    band = rank_band(score_value) if score_available else {
+        "prev_name": None, "next_name": None, "low": 0, "high": 0,
+    }
+    rank_name = (score.get("rank_name") or band["current_name"]) if score_available else "Nicht verfügbar"
     band_span = max(1, band["high"] - band["low"])
     rank_band_low = round(band["low"] / 100 * 100, 1)
-    rank_band_high = round((band["high"] + 1) / 100 * 100, 1)
+    rank_band_high = round((band["high"] + 1) / 100 * 100, 1) if score_available else 0
 
     goal_desc = goal.get("description") or "Dein Ziel"
     months_to_goal = goal.get("months_to_goal")
@@ -1439,9 +1470,10 @@ def build_render_context(data: dict) -> dict:
     cash_pct = round((cash / wealth_total * 100) if wealth_total > 0 else 0, 1)
     property_pct = round((property_equity / wealth_total * 100) if wealth_total > 0 else 0, 1)
 
-    investment_summary = data["pages"]["wealth_journey"].get("investment_summary", {})
+    journey = data["pages"].get("wealth_journey") or {}
+    investment_summary = journey.get("investment_summary") or {}
     investment_total = float(investment_summary.get("net_contributions") or 0)
-    savings_progress = data["pages"]["wealth_journey"].get("savings_progress", {})
+    savings_progress = journey.get("savings_progress") or {}
     full_plan_amount = float(savings_progress.get("full_plan_amount") or 0)
     automatic_etf_amount = max(0.0, float(savings_progress.get("automatic_etf_amount") or 0))
     full_plan_confirmed = bool(savings_progress.get("full_plan_confirmed"))
@@ -1533,11 +1565,15 @@ def build_render_context(data: dict) -> dict:
     invest_story_sub = wealth_copy["story_sub"]
 
     score_headline_suffix = (
-        "du hast dein Geld fest im Griff." if score_value >= 70
+        "Für diesen historischen Monat ist kein Score gespeichert." if not score_available
+        else "du hast dein Geld fest im Griff." if score_value >= 70
         else "du hast dein Geld im Griff." if score_value >= 45
         else "dein Bild wird mit jedem Tracking-Tag klarer."
     )
-    rank_blurb = h(RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"]))
+    rank_blurb = h(
+        "Für diesen historischen Monat ist kein Score gespeichert."
+        if not score_available else RANK_BLURBS.get(rank_name, RANK_BLURBS["Controller"])
+    )
 
     v2_specs = [
         ("budget", "Budget / Cashflow", 20), ("savings", "Savings Rate", 20),
@@ -1545,12 +1581,15 @@ def build_render_context(data: dict) -> dict:
         ("tracking", "Tracking / Data Quality", 10),
     ]
     specs = v2_specs
-    lowest_key, lowest_label = min(specs, key=lambda pair: parts.get(pair[0], 0))
+    lowest_key, lowest_label, _maximum = min(specs, key=lambda pair: parts.get(pair[0], 0)) if score_available else (None, None, None)
     score_parts = [
-        {"label": label, "value": parts.get(key, 0), "max": maximum, "warn": lowest_key == key}
+        {"label": label, "value": parts.get(key) if score_available else None, "max": maximum,
+         "warn": score_available and lowest_key == key}
         for key, label, maximum in specs
     ]
-    if lowest_key == "tracking":
+    if not score_available:
+        next_step_headline = "Für diesen historischen Monat ist kein Score gespeichert."
+    elif lowest_key == "tracking":
         next_step_headline = f"Tracke an mindestens 10 Tagen im {h(next_month_name)}."
     elif lowest_key == "budget":
         next_step_headline = "Halte dein Budget diesen Monat konsequent ein."
@@ -1562,7 +1601,7 @@ def build_render_context(data: dict) -> dict:
         next_step_headline = "Schaffe Klarheit über deine Konsumschulden und halte ihre Belastung klein."
     else:
         next_step_headline = "Baue deinen Cash-Puffer und deine Sparquote weiter aus."
-    next_step_sub = (
+    next_step_sub = "Ein verlässlicher Rang lässt sich daraus nicht ableiten." if not score_available else (
         f"Das allein hebt dich in Richtung {h(band['next_name'])}-Status."
         if band["next_name"] else
         f"Das hält dich stabil im {h(rank_name)}-Status."
@@ -1705,6 +1744,7 @@ def build_render_context(data: dict) -> dict:
         "biggest_share_pct": biggest_share_pct,
         "invest_vs_strongest_text": invest_vs_strongest_text,
         "score_value": score_value,
+        "score_available": score_available,
         "score_span": data_count_span(score_value),
         "score_headline_suffix": score_headline_suffix,
         "score_dash": score_dash,
@@ -1713,7 +1753,7 @@ def build_render_context(data: dict) -> dict:
         "next_rank_name": h(band["next_name"]) if band["next_name"] else "",
         "rank_band_low": rank_band_low,
         "rank_band_high": rank_band_high,
-        "rank_band_text": f"{band['low']}–{band['high']}",
+        "rank_band_text": f"{band['low']}–{band['high']}" if score_available else "",
         "score_parts": score_parts,
         "rank_blurb": rank_blurb,
         "next_step_headline": next_step_headline,
@@ -1737,8 +1777,11 @@ def build_render_context(data: dict) -> dict:
         "recap_good_text": h(humanize_text(recap.get("what_went_well") or "")),
         "recap_attention_text": h(humanize_text(recap.get("needs_attention") or "")),
         "recap_lever_text": h(humanize_text(recap.get("next_lever") or "")),
-        "plan_step1_sub": f"Das allein hebt deinen Rov.E Score über {band['high'] + 1} — in den {h(band['next_name'] or rank_name)}-Status.",
-        "plan_step1_impact": f"Score {band['high'] + 1}+",
+        "plan_step1_sub": (
+            f"Das allein hebt deinen Rov.E Score über {band['high'] + 1} — in den {h(band['next_name'] or rank_name)}-Status."
+            if score_available else "Für diesen historischen Monat ist kein Score gespeichert."
+        ),
+        "plan_step1_impact": f"Score {band['high'] + 1}+" if score_available else "—",
         "plan_step2_target": money_text(plan_step2_target_amount),
         "plan_step2_sub": f"Rund {money_text(freed_up_monthly)} mehr pro Monat fürs {h(goal_desc)} — ohne auf alles zu verzichten.",
         "plan_step2_impact": f"+{money_text(freed_up_yearly)}/Jahr",
@@ -1758,6 +1801,13 @@ def build_render_context(data: dict) -> dict:
             f"{month_savings_sentence} Deine stärkste Kategorie war {strongest_name} mit {money_text(strongest_amount)}."
         ),
         "comparison_rows": [],
+        "legacy_wealth_basis_note": (
+            "Älterer Monatswert · basiert auf der damals verfügbaren Datenbasis."
+            if any(
+                isinstance(point, dict) and point.get("net_worth") is not None
+                for point in (journey.get("points") or [])
+            ) else ""
+        ),
         "comparison_text": "Für diesen Altbericht ist kein V2-Vormonatsvergleich eingefroren.",
         "build_summary_text": h(month_savings_sentence),
         "goal_title_text": h(goal_headline),

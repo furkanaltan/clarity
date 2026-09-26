@@ -8,8 +8,9 @@ from unittest.mock import patch
 from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
-from report_html_renderer import _render_hell_pages, build_html_document
+from report_html_renderer import _render_hell_pages, build_html_document, plan_items, render_777_score
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
+import rove_pdf_report_renderer
 import report_engine
 import rove_app_state
 from rove_financial_accounts import ensure_financial_accounts_schema, set_feature_enabled
@@ -104,6 +105,35 @@ def july_truth_payload() -> dict:
     }
     data["report_story_v2"] = build_report_story_v2(data)
     return data
+
+
+def legacy_archive_payload() -> dict:
+    return {
+        "meta": {"report_month": "2026-07", "tracked_days": 18},
+        "profile": {
+            "savings_plan": 500.0, "current_investments": 9000.0,
+            "cash_reserve": 6000.0, "property_equity": 0.0,
+            "net_worth": 15000.0, "total_consumer_debt": 0.0,
+        },
+        "pages": {
+            "cover": {"freedom_step": 500.0, "development_percent": None},
+            "financial_story": {"net_worth": 15000.0, "cash": 6000.0, "investments": 9000.0},
+            "month": {"total_expenses": 900.0, "tracked_days": 18,
+                      "strongest_category": None, "biggest_expense": None},
+            "score": {"clarity_score": 72, "rank_name": "Controller", "parts": {}},
+            "goal": {"description": "Dubai", "target_amount": 4000.0, "current_amount": 100.0,
+                     "progress_percent": 2.5, "goal_monthly_rate": None},
+            "money_map": {"categories": [], "insights": []},
+            "wealth_journey": {
+                "points": [{"month": "2026-06", "net_worth": 12000.0, "clarity_score": None}],
+                "investment_summary": {"net_contributions": 500.0},
+                "savings_progress": {},
+            },
+            "milestones": {"badges": []},
+            "recap": {},
+            "budget": {},
+        },
+    }
 
 
 class ReportRenderV2Tests(unittest.TestCase):
@@ -554,6 +584,106 @@ class ReportRenderV2Tests(unittest.TestCase):
 
         self.assertNotEqual(comparison["pct_label"], "Vergleich")
         self.assertTrue(comparison["pct_label"].endswith(" %"))
+
+    def test_score_deltas_render_as_points_for_both_signs(self):
+        for current, previous, expected in ((80, 70, "+10 Punkte"), (66, 70, "−4 Punkte")):
+            with self.subTest(expected=expected):
+                data = july_truth_payload()
+                data["report_truth"]["score"]["clarity_score"] = current
+                data["report_truth"]["score"]["parts"]["total"] = current
+                data["report_truth"]["previous_month"]["snapshot"]["clarity_score"] = previous
+                data["report_truth"]["expenses"].update({
+                    "previous_total_consumption": 1856.54, "categories": [], "merchants": [],
+                })
+                data["report_story_v2"] = build_report_story_v2(data)
+
+                score_row = next(
+                    row for row in build_render_context(data)["comparison_rows"]
+                    if row["name"] == "Rov.E Score"
+                )
+                self.assertEqual(score_row["amount_text"], expected)
+
+    def test_missing_historical_score_stays_unavailable_in_web_and_pdf_fallback(self):
+        data = july_truth_payload()
+        data["report_truth"]["score"].update({"clarity_score": None, "parts": {"total": None, "factors": []}})
+        data["report_truth"]["previous_month"]["snapshot"]["clarity_score"] = None
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+        html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        self.assertFalse(context["score_available"])
+        self.assertEqual(context["score_span"], "—")
+        self.assertEqual(context["rank_name"], "Nicht verfügbar")
+        self.assertEqual(context["rank_band_text"], "")
+        self.assertIn("Score nicht verfügbar.", html)
+        self.assertNotIn("0 von 100", html)
+        self.assertNotIn("Was „Rookie“ bedeutet", html)
+
+        pdf_canvas = unittest.mock.MagicMock()
+        with patch.object(rove_pdf_report_renderer, "begin_page"), \
+             patch.object(rove_pdf_report_renderer, "draw_card") as draw_card, \
+             patch.object(rove_pdf_report_renderer, "draw_ring"), \
+             patch.object(rove_pdf_report_renderer, "end_page"), \
+             patch.object(rove_pdf_report_renderer, "font", return_value="Helvetica"):
+            rove_pdf_report_renderer.draw_score(pdf_canvas, {
+                "pages": {"score": {"clarity_score": None, "rank_name": None, "parts": {"factors": []}}}
+            })
+        self.assertIn("—", [call.args[2] for call in pdf_canvas.drawCentredString.call_args_list])
+        self.assertIn("NICHT VERFÜGBAR", [call.args[2] for call in pdf_canvas.drawCentredString.call_args_list])
+        self.assertEqual(draw_card.call_args.args[5], "Score-Einordnung nicht verfügbar")
+
+        legacy = legacy_archive_payload()
+        legacy["pages"]["score"].update({
+            "clarity_score": None, "rank_name": None, "proof_days": None,
+            "days_to_unlock": None, "parts": {"factors": []},
+        })
+        legacy_score_html = render_777_score("", legacy)
+        self.assertIn("Score nicht verfügbar.", legacy_score_html)
+        self.assertIn("Kein gespeicherter historischer Rang", legacy_score_html)
+        self.assertNotIn("Rookie", legacy_score_html)
+        self.assertEqual(plan_items(legacy)[0][2], "Score nicht verfügbar")
+
+    def test_negative_net_worth_keeps_full_milestone_distance(self):
+        data = july_truth_payload()
+        data["report_truth"]["wealth"]["total"] = -15000.0
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+
+        self.assertEqual(context["milestone_to"], "5.000 €")
+        self.assertEqual(context["milestone_headline"], "Noch 20.000 € bis zum nächsten Meilenstein.")
+
+    def test_legacy_archive_preview_discloses_older_wealth_basis_only_when_present(self):
+        legacy_context = build_render_context(legacy_archive_payload())
+        legacy_html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), legacy_archive_payload())
+        self.assertEqual(
+            legacy_context["legacy_wealth_basis_note"],
+            "Älterer Monatswert · basiert auf der damals verfügbaren Datenbasis.",
+        )
+        self.assertIn("Älterer Monatswert · basiert auf der damals verfügbaren Datenbasis.", legacy_html)
+
+        modern = july_truth_payload()
+        modern["pages"]["wealth_journey"]["points"] = [
+            {"month": "2026-06", "net_worth": 12000.0}
+        ]
+        modern["report_story_v2"] = build_report_story_v2(modern)
+        modern_context = build_render_context(modern)
+        modern_html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), modern)
+        self.assertEqual(modern_context["legacy_wealth_basis_note"], "")
+        self.assertNotIn("Älterer Monatswert · basiert auf der damals verfügbaren Datenbasis.", modern_html)
+
+    def test_wealth_history_keeps_missing_historical_score_unavailable(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE monthly_snapshots (id INTEGER PRIMARY KEY, user_id INTEGER, month TEXT, net_worth REAL, clarity_score INTEGER)"
+        )
+        conn.execute("INSERT INTO monthly_snapshots (user_id, month, net_worth, clarity_score) VALUES (1, '2026-06', 12000, NULL)")
+
+        with patch.object(report_engine, "get_db", return_value=conn):
+            points = report_engine.get_wealth_history(1, "2026-07")
+
+        self.assertIsNone(points[0]["clarity_score"])
 
     def test_pdf_keeps_design_shell_and_uses_v2_truth_fields(self):
         data = july_truth_payload()

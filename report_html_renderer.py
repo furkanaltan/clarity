@@ -846,6 +846,8 @@ def has_strong_behavior_data(data: dict) -> bool:
 
 
 def score_summary(score: dict) -> str:
+    if score.get("clarity_score") is None:
+        return "Für diesen historischen Monat ist kein Score gespeichert."
     parts = score["parts"]
     consistency = parts.get("tracking", parts.get("consistency", 0))
     budget = score["parts"].get("budget", 0)
@@ -857,6 +859,8 @@ def score_summary(score: dict) -> str:
 
 
 def score_next_step(score: dict) -> str:
+    if score.get("clarity_score") is None:
+        return "Ein verlässlicher nächster Score-Schritt lässt sich daraus nicht ableiten."
     if score.get("days_to_unlock", 0) > 0:
         return f"Noch {score['days_to_unlock']} Tage bis Score-Level {score['next_unlock_level']}+ freigeschaltet wird."
     parts = score["parts"]
@@ -950,10 +954,14 @@ def plan_items(data: dict) -> list[tuple[str, str, str]]:
     savings_plan = float(data["profile"].get("savings_plan") or 0)
     cat_name = category_label(strongest.get("category"))
     cat_total = float(strongest.get("total") or 0)
-    next_score = score.get("next_unlock_level") or min(100, int(score.get("clarity_score", 0)) + 5)
-    items = [
-        ("Tracke an mindestens 10 Tagen.", f"Aktuell stehen {month['tracked_days']} Tracking-Tage im Report.", f"Score {next_score}+"),
-    ]
+    next_score = score.get("next_unlock_level")
+    if next_score is None and score.get("clarity_score") is not None:
+        next_score = min(100, int(score["clarity_score"]) + 5)
+    items = [(
+        "Tracke an mindestens 10 Tagen.",
+        f"Aktuell stehen {month['tracked_days']} Tracking-Tage im Report.",
+        f"Score {next_score}+" if next_score is not None else "Score nicht verfügbar",
+    )]
     if has_behavior_data(data):
         items.append((f"Halte {cat_name} bewusst.", f"Diese Kategorie liegt aktuell bei {fmt_money(cat_total, 0)}.", "Mehr Kontrolle"))
     else:
@@ -1153,8 +1161,22 @@ def render_777_score(_page_html: str, data: dict) -> str:
     value_text = str(value) if available else "—"
     circumference = 540.4
     offset = circumference - (max(0, min(100, value)) / 100 * circumference)
-    rank_width = max(3, min(100, value))
+    rank_width = max(3, min(100, value)) if available else 0
     rank_text = h(score.get("rank_name") or "Nicht verfügbar")
+    headline = (
+        f"{value_text} von 100 - du hast dein Geld im Blick."
+        if available else "Score nicht verfügbar."
+    )
+    rank_strip = (
+        f'<div class="rank-strip"><div class="rank-labels"><span>Rookie</span><span>Controller</span><span>Manager</span><span>Elite</span></div>'
+        f'<div class="rank-line"><div class="rank-fill" style="width:{rank_width}%"></div></div>'
+        f'<div class="tile-sub" style="text-align:center;">{h(score.get("proof_days"))}d verified</div></div>'
+        if available else '<div class="rank-strip">Kein gespeicherter historischer Rang</div>'
+    )
+    score_note_title = (
+        f"Was {h(score.get('rank_name'))} bedeutet"
+        if available and score.get("rank_name") else "Score-Einordnung nicht verfügbar"
+    )
     score_rows = "\n".join(
         f'<div class="score-row"><div class="score-name">{h(item["label"])}</div>'
         f'<div class="score-value">{h(item["value"] if available and item["value"] is not None else "—")} '
@@ -1164,16 +1186,16 @@ def render_777_score(_page_html: str, data: dict) -> str:
     return f"""
   <section class="page">
     <div class="topline">Rov.E Score · Wie bewusst du steuerst</div>
-    <div class="display">{value_text} von 100 - du hast dein Geld im Blick.</div>
+    <div class="display">{headline}</div>
     <div class="divider"></div>
     <div class="score-layout">
       <div class="card score-card">
         <div class="score-ring"><svg viewBox="0 0 200 200"><circle cx="100" cy="100" r="86" fill="none" stroke="#ececee" stroke-width="13"></circle><circle cx="100" cy="100" r="86" fill="none" stroke="#3d8b5b" stroke-width="13" stroke-linecap="round" stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}" transform="rotate(-90 100 100)"></circle></svg><div class="score-center"><div class="score-number">{value_text}</div><div class="score-rank">{rank_text}</div></div></div>
-        <div class="rank-strip"><div class="rank-labels"><span>Rookie</span><span>Controller</span><span>Manager</span><span>Elite</span></div><div class="rank-line"><div class="rank-fill" style="width:{rank_width}%"></div></div><div class="tile-sub" style="text-align:center;">{h(score["proof_days"])}d verified</div></div>
+        {rank_strip}
       </div>
       <div class="card score-parts">{score_rows}</div>
     </div>
-    <div class="card score-note"><div><div class="score-note-title">Was {h(score["rank_name"])} bedeutet</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>Später kannst du deinen Score teilen, ohne echte Geldbeträge zu zeigen.</p></div></div>
+    <div class="card score-note"><div><div class="score-note-title">{score_note_title}</div><p>{h(score_summary(score))}</p></div><div class="split-left"><div class="score-note-title" style="color:var(--green);">Dein nächster Schritt</div><div class="next">{h(score_next_step(score))}</div><p>Später kannst du deinen Score teilen, ohne echte Geldbeträge zu zeigen.</p></div></div>
 {footer(6)}
   </section>
 """.rstrip()

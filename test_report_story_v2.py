@@ -140,6 +140,33 @@ class ReportStoryV2Tests(unittest.TestCase):
         changes = story["pages"]["page_5"]["supporting_metrics"]
         self.assertNotIn("score", {change["type"] for change in changes})
 
+    def test_score_comparison_uses_points_and_preserves_zero_as_a_real_value(self):
+        data = standard_payload()
+        data["report_truth"]["score"]["clarity_score"] = 10
+        data["report_truth"]["score"]["parts"]["total"] = 10
+        data["report_truth"]["previous_month"]["snapshot"]["clarity_score"] = 0
+        data["report_truth"]["expenses"].update({
+            "previous_total_consumption": 900.0, "categories": [], "merchants": [],
+        })
+
+        story = build_report_story_v2(data)
+
+        score_change = next(
+            item for item in story["pages"]["page_5"]["supporting_metrics"]
+            if item["type"] == "score"
+        )
+        self.assertEqual(score_change["delta"], 10)
+        self.assertIn("10 Punkte", score_change["context"])
+
+    def test_missing_previous_score_does_not_become_zero_comparison(self):
+        data = standard_payload()
+        data["report_truth"]["previous_month"]["snapshot"]["clarity_score"] = None
+
+        story = build_report_story_v2(data)
+
+        changes = story["pages"]["page_5"]["supporting_metrics"]
+        self.assertNotIn("score", {change["type"] for change in changes})
+
     def test_pre_truth_snapshot_keeps_its_embedded_story(self):
         data = {"report_story_v2": build_report_story_v2(standard_payload())}
 
