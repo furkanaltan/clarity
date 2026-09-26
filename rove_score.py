@@ -64,7 +64,7 @@ def _int(row, key: str) -> int:
         return 0
 
 
-def _score_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
+def canonical_liquid_cash(conn: sqlite3.Connection, user_id: int, user) -> float:
     """Use one canonical cash source, with a legacy split-account recovery fallback."""
     enabled = conn.execute(
         """SELECT 1 FROM app_user_features
@@ -556,7 +556,7 @@ def calculate_score(
     # savings after an explicit month close.
     spendable_budget = income - fixed - planned_savings
     remaining = spendable_budget - total_expenses
-    cash = _score_cash(conn, user_id, user)
+    cash = canonical_liquid_cash(conn, user_id, user)
     tracked_days = tracking_days_90(conn, user_id, today)
     days = platform_days(conn, user_id, today)
 

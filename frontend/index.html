@@ -1643,6 +1643,58 @@
   .search-clear.on{display:flex}
   @media (prefers-reduced-motion:reduce){.searchbar.open{animation:none}}
 
+  /* Puffer shares the analysis material; static highlights, no backdrop blur. */
+  #tab-buffer .analysis-title{font-weight:720;letter-spacing:-.5px}
+  #tab-buffer #bufferContent{margin-top:24px;border:1px solid rgba(211,221,229,.2);border-radius:var(--r);
+    background:radial-gradient(125% 82% at 0% 0%,rgba(220,236,245,.1),transparent 52%),linear-gradient(145deg,rgba(30,40,51,.92),rgba(10,17,25,.84));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.12),inset 0 -16px 28px rgba(0,0,0,.1),0 15px 32px rgba(0,0,0,.15)}
+  #tab-buffer #bufferContent>.buffer-copy{margin:0;padding:24px}
+  #tab-buffer .buffer-summary{padding:26px 24px 24px}
+  #tab-buffer .buffer-label{color:var(--muted);font-size:13px;font-weight:600;letter-spacing:.01em;margin:0 0 12px}
+  #tab-buffer .buffer-amount{font:720 clamp(32px,10vw,44px)/1.15 Manrope,sans-serif;letter-spacing:-1.2px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+  #tab-buffer .buffer-copy{font-size:14px;line-height:1.65;color:var(--muted);margin:14px 0 0;max-width:40em}
+  #tab-buffer .buffer-target{padding:22px 24px 24px;border-top:1px solid rgba(211,221,229,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+  #tab-buffer .buffer-target>.buffer-copy:first-child{margin-top:0}
+  #tab-buffer .buffer-track{height:7px;border-radius:99px;background:var(--track);overflow:hidden;margin:0 0 22px;box-shadow:inset 0 1px 2px rgba(0,0,0,.2)}
+  #tab-buffer .buffer-track span{display:block;height:100%;background:linear-gradient(90deg,#237fb3,var(--blue),#83cde9);border-radius:inherit;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+  #tab-buffer .buffer-values{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+  #tab-buffer .buffer-values p{margin:0 0 6px;color:var(--muted);font-size:12px;font-weight:500}
+  #tab-buffer .buffer-values strong{font:680 clamp(19px,5.5vw,22px)/1.3 Manrope,sans-serif;color:var(--ink);letter-spacing:-.3px;overflow-wrap:anywhere}
+  #tab-buffer .buffer-button,#tab-buffer .analysis-back{border:1px solid rgba(211,221,229,.23);border-radius:14px;
+    background:radial-gradient(116% 82% at 50% -18%,rgba(255,255,255,.13),transparent 52%),linear-gradient(145deg,rgba(63,75,87,.6),rgba(18,27,37,.94));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.17),inset 0 -8px 14px rgba(0,0,0,.12),0 5px 12px rgba(0,0,0,.12);color:var(--ink)}
+  #tab-buffer .buffer-button{min-height:44px;padding:11px 16px;font-family:inherit;font-size:13px;font-weight:650;cursor:pointer}
+  #tab-buffer .analysis-back{width:40px;height:40px}
+  #tab-buffer .buffer-edit{margin-top:20px}
+  #tab-buffer .buffer-primary{background:linear-gradient(145deg,#266d94,var(--blue-deep));color:#fff;border-color:rgba(159,212,237,.32)}
+  #tab-buffer .buffer-button:focus-visible,#tab-buffer .analysis-back:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+  #tab-buffer .buffer-button:active:not(:disabled),#tab-buffer .analysis-back:active{transform:none;box-shadow:inset 0 1px 6px rgba(0,0,0,.2)}
+  #tab-buffer .buffer-button:disabled{opacity:.55;cursor:default}
+  #tab-buffer .buffer-form{margin-top:26px;padding:0 4px}
+  #tab-buffer .buffer-form label{display:block;font-size:14px;font-weight:650;margin-bottom:9px}
+  #tab-buffer .buffer-input{display:flex;align-items:center;gap:10px;padding:0 16px;border:1px solid rgba(211,221,229,.2);border-radius:14px;
+    background:linear-gradient(145deg,rgba(255,255,255,.045),rgba(255,255,255,.015));box-shadow:inset 0 1px 3px rgba(0,0,0,.12),0 1px 0 rgba(255,255,255,.04);color:var(--muted)}
+  #tab-buffer .buffer-input input{width:100%;min-width:0;padding:14px 0;border:0;background:transparent;color:var(--ink);font:650 20px Manrope,sans-serif}
+  #tab-buffer .buffer-input:focus-within{outline:2px solid var(--blue);outline-offset:2px}
+  #tab-buffer .buffer-input input:focus{outline:none}
+  #tab-buffer .buffer-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  #tab-buffer #bufferRemove{background:transparent;border-color:transparent;box-shadow:none;color:var(--muted)}
+  #tab-buffer .buffer-status{margin:14px 4px;font-size:13px;color:var(--muted);line-height:1.5}
+  #tab-buffer .buffer-status[data-error="true"]{color:var(--red)}
+  :root[data-theme="light"] #tab-buffer #bufferContent{border-color:rgba(67,90,108,.15);
+    background:radial-gradient(120% 86% at 0% 0%,rgba(255,255,255,.98),transparent 48%),linear-gradient(145deg,rgba(255,255,255,.97),rgba(232,239,244,.9));
+    box-shadow:inset 0 1px 0 #fff,inset 0 -14px 26px rgba(71,94,109,.045),0 11px 24px rgba(40,67,84,.08)}
+  :root[data-theme="light"] #tab-buffer .buffer-target{border-color:rgba(67,90,108,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
+  :root[data-theme="light"] #tab-buffer .buffer-track{box-shadow:inset 0 1px 2px rgba(40,67,84,.07)}
+  :root[data-theme="light"] #tab-buffer .buffer-button:not(.buffer-primary):not(#bufferRemove),:root[data-theme="light"] #tab-buffer .analysis-back{
+    border-color:rgba(83,103,117,.24);background:radial-gradient(116% 82% at 50% -18%,#fff,transparent 52%),linear-gradient(145deg,#fff,#e1e9ef);
+    box-shadow:inset 0 1px 0 #fff,inset 0 -8px 14px rgba(93,112,125,.07),0 5px 12px rgba(55,77,94,.07)}
+  :root[data-theme="light"] #tab-buffer .buffer-input{border-color:var(--line2);background:linear-gradient(145deg,#fff,#f5f8fa);box-shadow:inset 0 1px 3px rgba(40,67,84,.04)}
+  @media(max-width:360px){#tab-buffer .buffer-summary{padding:24px 20px 22px}#tab-buffer .buffer-target{padding:20px}}
+  @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+    #tab-buffer #bufferContent,#tab-buffer .buffer-input,
+    :root[data-theme="light"] #tab-buffer #bufferContent,:root[data-theme="light"] #tab-buffer .buffer-input{background:var(--card);border-color:var(--line2);box-shadow:none}}
+  @media (prefers-reduced-motion:reduce){#tab-buffer{animation:none}}
   /* Cashflow-Analyse: eigene ruhige Ansicht, vollständig aus den geladenen Buchungen berechnet. */
   .analysis-top{display:flex;align-items:center;gap:12px;margin-bottom:5px}
   .analysis-back{width:38px;height:38px;border-radius:12px;border:1px solid var(--line);background:var(--card);
@@ -2772,6 +2824,7 @@
       <button class="pill" data-action="monthly-plan">Monatsplan</button>
       <button class="pill" data-f="budget">Budgets</button>
       <button class="pill" data-action="analysis">Analyse</button>
+      <button class="pill" type="button" data-action="buffer">Puffer</button>
     </div>
     <div class="monthnav" id="monthNav">
       <button class="mnbtn" id="mnPrev" aria-label="Vorheriger Monat"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -2813,6 +2866,28 @@
       </div>
     </div>
     <div id="analysisContent" aria-live="polite"></div>
+  </section>
+
+  <!-- ========== PUFFER ========== -->
+  <section class="screen" id="tab-buffer">
+    <div class="analysis-top">
+      <button class="analysis-back" id="bufferBack" type="button" aria-label="Zurück zum Cashflow">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 class="analysis-title">Dein Puffer</h1>
+    </div>
+    <div id="bufferContent"></div>
+    <form class="buffer-form" id="bufferTargetForm" hidden>
+      <label for="bufferTargetInput">Dein persönliches Puffer-Ziel</label>
+      <div class="buffer-input"><input id="bufferTargetInput" type="text" inputmode="decimal" autocomplete="off" maxlength="16" aria-describedby="bufferTargetHint bufferStatus"><span>€</span></div>
+      <p class="buffer-copy" id="bufferTargetHint">Nur dein persönlicher Richtwert. Es wird kein Geld zugeordnet oder reserviert.</p>
+      <div class="buffer-actions">
+        <button class="buffer-button buffer-primary" type="submit">Speichern</button>
+        <button class="buffer-button" id="bufferCancel" type="button">Abbrechen</button>
+        <button class="buffer-button" id="bufferRemove" type="button">Ziel entfernen</button>
+      </div>
+    </form>
+    <p class="buffer-status" id="bufferStatus" role="status" aria-live="polite"></p>
   </section>
 
   <!-- ========== VERTRÄGE ========== -->
@@ -3258,6 +3333,7 @@ function computeFixRest(){
 }
 // ===================== MOCK-DATEN (Struktur spiegelt späteres Rov.E-Datenmodell) =====================
 const DATA = {
+  buffer:null,
   chartV2:null,
   mentorCandidate:null,
   features:{},
@@ -6789,6 +6865,10 @@ document.getElementById("txPills").addEventListener("click",e=>{
     openAnalysis(); buzz();
     return;
   }
+  if(p.dataset.action==="buffer"){
+    openBuffer(); buzz();
+    return;
+  }
   txFilter=p.dataset.f;
   document.querySelectorAll("#txPills .pill").forEach(x=>x.classList.toggle("on",x===p));
   p.scrollIntoView({behavior:"smooth", inline:"center", block:"nearest"});
@@ -6809,6 +6889,99 @@ document.getElementById("mnNext").addEventListener("click",()=>{
   if(monthOffset>=0) return;    // kein Blick in die Zukunft
   monthOffset++; (txFilter==="budget"?renderBudgets():renderTx()); buzz();
 });
+
+// ===================== PUFFER =====================
+let bufferStateRevision=0, bufferWriteInFlight=false;
+function bufferMonths(value){
+  return Number(value).toLocaleString("de-DE",{minimumFractionDigits:1,maximumFractionDigits:1});
+}
+function bufferStatus(message="",error=false){
+  const node=document.getElementById("bufferStatus");
+  node.textContent=message;node.dataset.error=String(error);
+}
+function renderBuffer(){
+  const b=DATA.buffer;
+  const content=document.getElementById("bufferContent");
+  if(!b){
+    content.innerHTML='<p class="buffer-copy">Dein Puffer ist verfügbar, sobald die aktuellen Kontodaten geladen sind.</p>';
+    return;
+  }
+  const hasTarget=Number.isFinite(b.target_amount)&&b.target_amount>0;
+  const coverage=b.covered_months==null
+    ? "Hinterlege deine monatlichen Fixkosten, damit Rov.E deine Puffer-Reichweite berechnen kann."
+    : b.available_cash<0 ? "Dein Cash-Saldo ist negativ. Aktuell ist kein positiver Puffer verfügbar."
+    : `Deckt aktuell rund ${bufferMonths(b.covered_months)} Monate deiner hinterlegten monatlichen Fixkosten.`;
+  const progress=hasTarget?Math.max(0,Math.min(100,b.available_cash/b.target_amount*100)):0;
+  content.innerHTML=`<div class="buffer-summary">
+    <p class="buffer-label">Verfügbare liquide Mittel</p>
+    <div class="buffer-amount">${eur2(b.available_cash)}</div>
+    <p class="buffer-copy">${coverage}</p>
+  </div><div class="buffer-target">
+    ${hasTarget?`<div class="buffer-track" role="progressbar" aria-label="Persönliches Puffer-Ziel" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>
+      <div class="buffer-values"><div><p>Puffer-Ziel</p><strong>${eur2(b.target_amount)}</strong></div><div><p>Noch offen</p><strong>${eur2(b.gap)}</strong></div></div>
+      ${b.target_months==null?"":`<p class="buffer-copy">Dein Ziel entspricht rund ${bufferMonths(b.target_months)} Monaten deiner hinterlegten monatlichen Fixkosten.</p>`}`
+      : '<p class="buffer-copy">Noch kein persönliches Puffer-Ziel festgelegt.</p>'}
+    <button class="buffer-button buffer-edit" id="bufferEdit" type="button" ${bufferWriteInFlight?"disabled":""}>${hasTarget?"Ziel ändern":"Ziel festlegen"}</button>
+  </div>`;
+}
+function applyServerBuffer(buffer,revision=bufferStateRevision){
+  if(revision!==bufferStateRevision||bufferWriteInFlight) return false;
+  DATA.buffer=buffer||null;
+  if(document.getElementById("tab-buffer")?.classList.contains("active")) renderBuffer();
+  return true;
+}
+async function openBuffer(){
+  if(!bufferWriteInFlight){document.getElementById("bufferTargetForm").hidden=true;bufferStatus();}
+  go("buffer",{history:true});
+  if(!apiReady()){bufferStatus("Verbinde dich mit Rov.E, um deinen aktuellen Puffer zu sehen.");return;}
+  const ok=await refreshAppDataFromServer();
+  if(!ok) bufferStatus("Die aktuellen Daten konnten nicht geladen werden. Bitte öffne den Puffer erneut.",true);
+}
+function editBufferTarget(){
+  if(bufferWriteInFlight||!DATA.buffer) return;
+  const target=DATA.buffer.target_amount;
+  document.getElementById("bufferTargetInput").value=target==null?"":target.toLocaleString("de-DE",{maximumFractionDigits:2});
+  document.getElementById("bufferRemove").hidden=target==null;
+  document.getElementById("bufferTargetForm").hidden=false;
+  bufferStatus();document.getElementById("bufferTargetInput").focus();
+}
+async function saveBufferTarget(remove=false){
+  if(bufferWriteInFlight) return false;
+  if(!apiReady()){bufferStatus("Bitte melde dich an, um dein Puffer-Ziel zu speichern.",true);return false;}
+  const target=remove?null:parseGermanAmount(document.getElementById("bufferTargetInput").value);
+  if(!remove&&(!Number.isFinite(target)||target<=0||target>1000000)){
+    bufferStatus("Bitte gib einen Betrag über 0 € und bis 1.000.000 € ein.",true);return false;
+  }
+  const userId=BRIDGE_USER_ID;
+  bufferWriteInFlight=true;bufferStateRevision++;
+  document.querySelectorAll("#tab-buffer button:not(#bufferBack), #bufferTargetInput").forEach(node=>node.disabled=true);
+  bufferStatus("Wird gespeichert …");
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),10000);
+  try{
+    const response=await apiFetch("/v1/profile",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({buffer_target_amount:target}),signal:controller.signal});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.ok||!data.buffer) throw new Error(data.error||"save_failed");
+    if(userId!==BRIDGE_USER_ID) return false;
+    bufferWriteInFlight=false;bufferStateRevision++;
+    applyServerBuffer(data.buffer);
+    document.getElementById("bufferTargetForm").hidden=true;
+    bufferStatus(remove?"Puffer-Ziel entfernt.":"Puffer-Ziel gespeichert.");
+    return true;
+  }catch(error){
+    bufferStatus(error.message==="valid_buffer_target_required"?"Bitte prüfe deinen Zielbetrag.":"Speichern konnte nicht bestätigt werden. Bitte öffne den Puffer erneut.",true);
+    return false;
+  }finally{
+    clearTimeout(timeout);
+    bufferWriteInFlight=false;
+    document.querySelectorAll("#tab-buffer button, #bufferTargetInput").forEach(node=>node.disabled=false);
+  }
+}
+document.getElementById("bufferBack").addEventListener("click",()=>go("tx"));
+document.getElementById("bufferContent").addEventListener("click",event=>{if(event.target.closest("#bufferEdit"))editBufferTarget();});
+document.getElementById("bufferTargetForm").addEventListener("submit",event=>{event.preventDefault();saveBufferTarget();});
+document.getElementById("bufferCancel").addEventListener("click",()=>{document.getElementById("bufferTargetForm").hidden=true;bufferStatus();});
+document.getElementById("bufferRemove").addEventListener("click",()=>saveBufferTarget(true));
 
 // ===================== CASHFLOW-ANALYSE =====================
 // Keine zweite Finanzlogik: Die Analyse verdichtet ausschliesslich dieselben Monatszeilen,
@@ -8704,6 +8877,7 @@ function refreshAppDataFromServer(){
 }
 async function fetchCanonicalAppState(){
   const goalRevisionAtFetch=goalStateRevision;
+  const bufferRevisionAtFetch=bufferStateRevision;
   try{
     const res=await apiFetch("/v1/state",{
       headers:{},cache:"no-store"
@@ -8741,6 +8915,7 @@ async function fetchCanonicalAppState(){
     if(Array.isArray(data.monthlyCheckinActions)) DATA.monthlyCheckinActions=data.monthlyCheckinActions;
     if(data.etfPlan) DATA.etfPlan=data.etfPlan;
     if(data.score) DATA.score={...DATA.score,...data.score};
+    applyServerBuffer(data.buffer,bufferRevisionAtFetch);
     // Zeitreihe (Furkan-Fund 27.07.): Der Live-Refresh hat sie bisher NICHT übernommen und den
     // Chart nie neu gezeichnet — die Kurve blieb also selbst dann stehen, wenn der Server längst
     // neue Werte lieferte. Gleiche Lücke wie damals bei der Glocke: eine Sequenz vergessen.
@@ -12618,6 +12793,7 @@ function go(tab,options={}){
   if(!target) return;
   document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
   target.classList.add("active");
+  if(tab==="buffer") renderBuffer();
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===tab));
   target.scrollTop=0;
   if(options.history) rovePushState();
@@ -13061,6 +13237,7 @@ setInterval(()=>{
 },15000);
 
 async function loadBridgeState(){
+  const bufferRevisionAtLoad=bufferStateRevision;
   // Zahlen-Ticker SOFORT einfrieren (synchron, vor jedem await) — countUp()s erster Tick sieht
   // den Lock dann garantiert schon und beendet sich selbst permanent, statt später mit dem alten
   // Mock-Zielwert (42.850) über die echten Daten drüberzuschreiben (Race Condition, per Test
@@ -13119,6 +13296,7 @@ async function loadBridgeState(){
     DATA.monthlyPlan = b.monthlyPlan || null;
     DATA.etfPlan = b.etfPlan || null;
     DATA.scheduledSavings = b.scheduledSavings || null;
+    applyServerBuffer(b.buffer,bufferRevisionAtLoad);
     restoreBridgeLocal(readBridgeLocal(), BRIDGE_USER_ID);
     if(!DATA.features.multi_cash_accounts_v1){
       DATA.assets=[...new Map(DATA.assets.map(asset=>[asset.name,asset])).values()];

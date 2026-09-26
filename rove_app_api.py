@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import io
 import logging
+import math
 import os
 import re
 import secrets
@@ -55,6 +56,7 @@ from rove_app_state import (
     build_app_contract_groups,
     build_mentor_candidate,
     build_live_app_data,
+    ensure_buffer_target_column,
     hydrate_crypto_logos,
     ensure_app_account_balances_table,
     ensure_app_asset_order_table,
@@ -5175,6 +5177,19 @@ def update_profile():
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if "buffer_target_amount" in payload:
+            target = payload["buffer_target_amount"]
+            if target is not None:
+                if isinstance(target, bool) or not isinstance(target, (int, float)):
+                    return jsonify({"ok": False, "error": "valid_buffer_target_required"}), 400
+                if not 0 < target <= 1_000_000 or not math.isfinite(target):
+                    return jsonify({"ok": False, "error": "valid_buffer_target_required"}), 400
+                target = round(target, 2)
+                if target <= 0:
+                    return jsonify({"ok": False, "error": "valid_buffer_target_required"}), 400
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+            if "buffer_target_amount" not in columns:
+                return jsonify({"ok": False, "error": "buffer_schema_unavailable"}), 503
         ensure_auth_tables(conn)
         ensure_debt_status_column(conn)
 
@@ -5370,6 +5385,11 @@ def update_profile():
                     (etf_savings, cash_savings, user_id),
                 )
                 invalidate_behavior_snapshot_safely(conn, user_id, "savings_plan_changed")
+        if "buffer_target_amount" in payload:
+            conn.execute(
+                "UPDATE users SET buffer_target_amount = ? WHERE user_id = ?",
+                (target, user_id),
+            )
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 
@@ -8549,5 +8569,6 @@ if __name__ == "__main__":
     # Schema preparation runs once before the server accepts requests.
     with db() as conn:
         ensure_admin_tables(conn)
+        ensure_buffer_target_column(conn)
     port = int(os.getenv("ROVE_APP_API_PORT", "5057"))
     app.run(host="127.0.0.1", port=port)

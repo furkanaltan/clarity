@@ -35,6 +35,7 @@ from pathlib import Path
 
 from rove_score import (
     calculate_score,
+    canonical_liquid_cash,
     ensure_debt_status_column,
     format_liquidity_explanation,
     normalize_debt_status,
@@ -2523,6 +2524,35 @@ def _intraday_chart_points(conn: sqlite3.Connection, user_id: int,
     return points
 
 
+def ensure_buffer_target_column(conn: sqlite3.Connection) -> None:
+    """Prepare the optional personal target at API startup, without backfilling users."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    if "buffer_target_amount" not in columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN buffer_target_amount REAL DEFAULT NULL "
+            "CHECK (buffer_target_amount IS NULL OR "
+            "(buffer_target_amount > 0 AND buffer_target_amount <= 1000000))"
+        )
+
+
+def build_buffer_data(conn: sqlite3.Connection, user_id: int, user) -> dict:
+    """Read-only coverage of the score's cash source; the target never reserves money."""
+    profile = dict(user)
+    cash = canonical_liquid_cash(conn, user_id, profile)
+    basis = float(profile.get("fixed_costs") or 0)
+    target = profile.get("buffer_target_amount")
+    target = float(target) if target is not None else None
+    return {
+        "available_cash": cash,
+        "monthly_basis": basis,
+        "basis_type": "fixed_costs",
+        "covered_months": cash / basis if basis > 0 else None,
+        "target_amount": target,
+        "target_months": target / basis if target is not None and basis > 0 else None,
+        "gap": round(max(0.0, target - cash), 2) if target is not None else None,
+    }
+
+
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -2773,6 +2803,7 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
         "etfPlan": etf_plan,
         "scheduledSavings": scheduled_savings,
         "score": score,
+        "buffer": build_buffer_data(conn, user_id, u),
         "sts": {
             "konto": round(cash, 2) if cash is not None else None,
             "fixRest": round(fixed_costs, 2),

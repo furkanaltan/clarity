@@ -1,5 +1,21 @@
 # Rov.E Migrations
 
+## Personal buffer target (25.09.2026)
+
+`users.buffer_target_amount` is an optional, user-owned amount, not a goal or
+an allocation. `ensure_buffer_target_column()` runs in the existing API startup
+schema-preparation block. The nullable REAL column is additive/idempotent;
+existing users remain NULL, with no backfill and no balance changes. Positive
+targets up to the existing profile-amount limit of EUR 1,000,000 are accepted;
+an explicit JSON null removes the target. The existing `/v1/profile` write and
+`/v1/state` response carry the preference and the derived `buffer` object.
+Requests never add this column; writes fail with 503 if startup preparation
+was omitted. User export/deletion already include the owning `users` row.
+
+Before rollout: DB backup, inspect `PRAGMA table_info(users)`, apply through
+controlled API startup, then integrity/FK checks. A code rollback leaves the
+nullable column and targets intact. Production status: NOT DEPLOYED.
+
 ## Property coverage boundary (12.09.2026)
 
 `app_properties.coverage_started_at` is an additive, user-scoped asset
