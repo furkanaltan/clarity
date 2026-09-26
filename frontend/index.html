@@ -2128,6 +2128,8 @@
     background:var(--card);border:1px solid var(--line);border-radius:999px;padding:8px 13px}
   .livecat .lc b{color:var(--ink);font-weight:700}
   .livecat .lcdot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+  .quick-fixed-cost{display:flex;align-items:center;gap:8px;margin:10px 4px 0;color:var(--muted);font-size:12px;line-height:1.35}
+  .quick-fixed-cost input,.scan-fixed input{accent-color:var(--blue);flex:0 0 auto}
   .quick-error{display:none;color:var(--red);font-size:13px;font-weight:700;line-height:1.35;margin:10px 4px 0}
   .quick-error.on{display:block}
   .scan-launch{width:100%;margin-top:13px;min-height:46px;display:flex;align-items:center;justify-content:center;gap:9px;
@@ -2147,6 +2149,7 @@
   .scan-fields input,.scan-fields select{min-width:0;width:100%;height:40px;border:1px solid var(--line);border-radius:11px;
     background:var(--bg);color:var(--ink);padding:0 10px;font:inherit;font-size:14px;outline:none}
   .scan-fields select,.scan-fields .scan-date{grid-column:span 1;color:var(--muted);font-size:13px}
+  .scan-fixed{grid-column:1/-1;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;line-height:1.35}
   .scan-note{grid-column:1/-1;color:var(--gold);font-size:11.5px;line-height:1.35}
   .scan-actions{position:sticky;bottom:0;padding:10px 0 calc(4px + var(--safe-bot));background:linear-gradient(180deg,transparent 0,var(--bg2) 18px)}
   .scan-confirm{width:100%;min-height:48px;border:0;border-radius:15px;background:var(--blue);color:#04121c;
@@ -2928,6 +2931,7 @@
     </form>
     <div id="quickError" class="quick-error" role="alert"></div>
     <div class="livecat" id="quickCat"></div>
+    <label class="quick-fixed-cost"><input id="quickFixedCost" type="checkbox"> Geplante Fixkostenabbuchung</label>
     <div class="chips" id="quickChips"></div>
     <button type="button" class="scan-launch" id="scanOpen">
       <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="7" y="8" width="10" height="8" rx="2"/><path d="m9 14 2.2-2.2 1.7 1.7 1.3-1.3L17 15"/></svg>
@@ -8199,6 +8203,7 @@ document.getElementById("bConfirmNo").addEventListener("click",()=>{
 
 // ===================== EINGABEZAUBER (Freitext -> Buchung) =====================
 const CAT = [
+  [/gutschrift|r[üu]ckerstattung|erstattung|refund|retoure/i,"Gutschrift","#158A83"],
   // Keyword-Breite 25.07. an bot.py (CATEGORY_KEYWORDS) angeglichen: ein Test-Pass über 82 typische
   // Alltags-Eingaben zeigte, dass 61 % in "Sonstiges" fielen (taxi, kiosk, metzger, kneipe,
   // fitnessstudio, primark, physio, tüv …) — der Bot kannte diese Wörter längst, die App nicht.
@@ -8306,16 +8311,20 @@ function parseEntry(raw){
   // Bot-Parität (bot.py): kein Keyword-Treffer → "Sonstiges" (echte, budgetfähige Kategorie),
   // nicht ein Sackgassen-"Nicht klassifiziert" ohne Farbe/Zuordnung.
   let cat="Sonstiges", col="#BD77B7", income=false;
+  const isRefund=/gutschrift|r[üu]ckerstattung|erstattung|refund|retoure/i.test(t);
   const rule=findCatRule(t.toLowerCase());
-  if(rule){ cat=rule.cat; col=rule.col; }
+  if(isRefund){ cat="Gutschrift"; col="#158A83"; income=true; }
+  else if(rule){ cat=rule.cat; col=rule.col; }
   else for(const [re,c,cl] of CAT){ if(re.test(t)){ cat=c; col=cl; income=(c==="Einnahme"); break; } }
   const e={n:name, cat, a:(income?1:-1)*amt, c:col, i:(name[0]||"?").toUpperCase(), id:TXID++, dayGroup};
+  if(cat==="Gutschrift") e.classification="refund";
   if(cashPaid && !income) e.bar=true;
   return e;
 }
 // Kategorie schon beim Tippen erkennen (ohne Betrag) — für die Live-Vorschau
 function detectCat(t){
   if(isWithdrawal(t)) return {cat:"Bargeld", col:BARGELD_TINT};
+  if(/gutschrift|r[üu]ckerstattung|erstattung|refund|retoure/i.test(t)) return {cat:"Gutschrift",col:"#158A83"};
   const rule=findCatRule((t||"").toLowerCase());
   if(rule) return {cat:rule.cat, col:rule.col};
   for(const [re,c,cl] of CAT){ if(re.test(t)) return {cat:c, col:cl}; }
@@ -8382,6 +8391,8 @@ function closeSheet(options={}){
   const shouldRestore=!options.fromHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
   sheetBg.classList.remove("on"); closeAllSheetsSoft(); document.body.classList.remove("quick-input-keyboard-open");
   sheet.classList.remove("keyboard-open"); sheet.style.removeProperty("--keyboard-cover");
+  const fixedCostInput=document.getElementById("quickFixedCost");
+  if(fixedCostInput) fixedCostInput.checked=false;
   sheet.style.removeProperty("--sheet-viewport-height"); liftTabbar(); dismissKeyboard(); setQuickError("");
   if(shouldRestore) history.back();
 }
@@ -8647,7 +8658,8 @@ async function syncIncomeToServer(e, raw){
     const res=await apiFetch("/v1/income",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({amount:Math.abs(e.a), label:e.n, request_id:requestId})
+      body:JSON.stringify({amount:Math.abs(e.a), label:e.n,
+        movement_type:e.classification==="refund"?"refund":"income", request_id:requestId})
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
@@ -8717,6 +8729,7 @@ async function syncExpenseToServer(e, raw){
         // Portemonnaie und merkt sich das (sonst wäre nach einem Refresh nicht mehr bekannt,
         // dass das Geld aus dem Bargeld kam — und Löschen würde es dem Girokonto gutschreiben).
         paid_cash:!!e.bar,
+        fixed_cost:e.classification==="fixed_cost",
         request_id:requestId,
       })
     });
@@ -9099,6 +9112,8 @@ function addEntry(){
   const raw=quickIn.value;
   const e=parseEntry(raw);
   if(!e){ quickIn.focus(); quickIn.placeholder="Bitte Betrag angeben, z. B. Kaffee 4,50"; return; }
+  if(e.a<0 && document.getElementById("quickFixedCost")?.checked)
+    e.classification="fixed_cost";
   if(e.bar && e.a<0){
     const wallet=legacyCashAsset("bargeld");
     const availableCash=Number(wallet?.value||0), requestedCash=Math.abs(e.a);
@@ -9110,6 +9125,8 @@ function addEntry(){
   }
   setQuickError("");
   commitEntry(e, raw);
+  const fixedCostInput=document.getElementById("quickFixedCost");
+  if(fixedCostInput) fixedCostInput.checked=false;
   quickIn.value=""; updateQuickCat();
   closeSheet(); buzz();
   go("tx");   // Furkan-Feedback 16.07.: nach "+"-Eingabe direkt zur Buchung leiten (vorher blieb
@@ -9162,7 +9179,7 @@ function updateQuickCat(){
   const el=document.getElementById("quickCat"), t=quickIn.value.trim();
   const d = t? detectCat(t) : null;
   if(d){
-    const isIncome = d.cat==="Einnahme";
+    const isIncome = d.cat==="Einnahme"||d.cat==="Gutschrift";
     el.innerHTML = `<span class="lc"><span class="lcdot" style="background:${isIncome?'var(--green)':d.col}"></span>Rov.E erkennt: <b>${d.cat}</b></span>`;
     el.classList.add("on");
   } else { el.classList.remove("on"); }
@@ -9445,16 +9462,17 @@ function resetScreenshotImport(){
 function renderScanRows(){
   if(!scanRows.length){ scanSetState(scanErrorText("screenshot_no_transactions")); return; }
   scanBody.innerHTML=`<div class="scan-list">${scanRows.map((row,index)=>`
-    <label class="scan-row ${row.probableDuplicate?"is-duplicate":""}" data-scan-row="${index}">
+    <div class="scan-row ${row.probableDuplicate?"is-duplicate":""}" data-scan-row="${index}">
       <input class="scan-check" type="checkbox" ${row.selected?"checked":""} aria-label="Buchung auswählen">
       <span class="scan-fields">
         <input class="scan-merchant" value="${scanEsc(row.merchant)}" maxlength="80" aria-label="Händler">
         <input class="scan-amount" value="${Number(row.amount).toFixed(2).replace(".",",")}" inputmode="decimal" aria-label="Betrag">
         <input class="scan-date" type="date" value="${scanEsc(row.date||"")}" aria-label="Datum">
         <select class="scan-category" aria-label="Kategorie">${scanCategories.map(cat=>`<option ${cat===row.category?"selected":""}>${cat}</option>`).join("")}</select>
+        <label class="scan-fixed"><input type="checkbox" ${row.fixedCost?"checked":""}> Geplante Fixkostenabbuchung</label>
         ${row.probableDuplicate?`<span class="scan-note">Möglicherweise bereits vorhanden — nur auswählen, wenn es eine zweite echte Buchung ist.</span>`:""}
       </span>
-    </label>`).join("")}</div>`;
+    </div>`).join("")}</div>`;
   scanConfirm.disabled=!scanRows.some(row=>row.selected);
 }
 async function shrinkScreenshot(file){
@@ -9512,12 +9530,14 @@ scanBody.addEventListener("input",event=>{
   row.amount=Number(card.querySelector(".scan-amount").value.replace(",","."));
   row.date=card.querySelector(".scan-date").value||null;
   row.category=card.querySelector(".scan-category").value;
+  row.fixedCost=card.querySelector(".scan-fixed input").checked;
   scanConfirm.disabled=!scanRows.some(item=>item.selected);
 });
 scanBody.addEventListener("change",event=>event.target.dispatchEvent(new Event("input",{bubbles:true})));
 scanConfirm.addEventListener("click",async()=>{
   const transactions=scanRows.filter(row=>row.selected).map(row=>({
-    importKey:row.importKey,merchant:row.merchant,amount:row.amount,date:row.date,category:row.category
+    importKey:row.importKey,merchant:row.merchant,amount:row.amount,date:row.date,
+    category:row.category,fixed_cost:!!row.fixedCost
   }));
   if(!transactions.length) return;
   if(transactions.some(row=>!row.merchant || !Number.isFinite(row.amount) || row.amount<=0)){
@@ -11864,7 +11884,9 @@ function monthlyIncome(){
   // Mieteinnahmen eingetragen) — vorher fiel so jemand fälschlich auf den tx-Fallback (0 €).
   if(APP_MODE==="profile" && (PROFILE_META.income != null || PROFILE_META.otherIncome != null))
     return (PROFILE_META.income||0) + (PROFILE_META.otherIncome||0);
-  return DATA.tx.flatMap(d=>d.items).filter(i=>i.a>0).reduce((s,i)=>s+i.a,0);
+  return DATA.tx.flatMap(d=>d.items)
+    .filter(i=>i.a>0 && i.classification!=="refund")
+    .reduce((s,i)=>s+i.a,0);
 }
 function totalFixCost(){
   return (DATA.vertraege||[]).flatMap(c=>c.items).reduce((s,it)=>s+Math.abs(it.a||0),0);

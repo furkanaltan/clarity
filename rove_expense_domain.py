@@ -23,7 +23,7 @@ from rove_behavior_snapshot import invalidate_behavior_snapshot
 
 
 NON_CONSUMPTION_MOVEMENTS = {
-    "transfer", "withdrawal", "income", "fixed", "investment", "savings", "contribution"
+    "transfer", "withdrawal", "income", "refund", "fixed", "investment", "savings", "contribution"
 }
 
 
@@ -37,14 +37,20 @@ def canonical_expense_movement_kinds(
     ).fetchone()
     if not table_exists:
         return {}
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(app_cash_movements)")}
+    classification_expr = "classification" if "classification" in columns else "NULL AS classification"
     movements: dict[int, str] = {}
     for movement in conn.execute(
-        """SELECT expense_id, kind FROM app_cash_movements
-            WHERE user_id=? AND expense_id IS NOT NULL ORDER BY id""",
+        f"""SELECT expense_id, kind, {classification_expr} FROM app_cash_movements
+             WHERE user_id=? AND expense_id IS NOT NULL ORDER BY id""",
         (user_id,),
     ):
         expense_id = int(movement["expense_id"])
         kind = str(movement["kind"] or "").strip().casefold()
+        classification = str(movement["classification"] or "").strip().casefold()
+        if classification == "fixed_cost":
+            movements[expense_id] = "fixed_cost"
+            continue
         # An explicit non-consumption movement wins over later card/payment links.
         if expense_id not in movements or kind in NON_CONSUMPTION_MOVEMENTS:
             movements[expense_id] = kind
@@ -66,7 +72,9 @@ def classified_expenses(conn: sqlite3.Connection, user_id: int, month_key: str,
         item = dict(row)
         kind = movements.get(item["id"], "")
         item["movement_kind"] = kind
-        item["classification"] = ("fixed_cost" if kind == "fixed" else kind) if kind in NON_CONSUMPTION_MOVEMENTS else "consumption"
+        item["classification"] = (
+            "fixed_cost" if kind in {"fixed", "fixed_cost"} else kind
+        ) if kind in NON_CONSUMPTION_MOVEMENTS | {"fixed_cost"} else "consumption"
         result.append(item)
     return result
 
@@ -102,7 +110,8 @@ def _legacy_balances(conn: sqlite3.Connection, user_id: int) -> dict[str, float]
                 balances[key] = round(value if key == "giro" else max(0.0, value), 2)
         return balances
     user = conn.execute("SELECT current_cash FROM users WHERE user_id = ?", (user_id,)).fetchone()
-    balances["giro"] = round(max(0.0, float(user["current_cash"] or 0)), 2) if user else 0.0
+    current_cash = user["current_cash"] if user else None
+    balances["giro"] = round(float(current_cash), 2) if current_cash is not None else 0.0
     return balances
 
 
@@ -134,6 +143,7 @@ def create_expense_for_user(
     description: str,
     request_id: str | None = None,
     paid_cash: bool = False,
+    fixed_cost: bool = False,
 ) -> dict:
     """Create one expense and its cash effect in the open write transaction."""
     if not conn.in_transaction:
@@ -206,17 +216,20 @@ def create_expense_for_user(
         )
         conn.execute(
             """INSERT INTO app_cash_movements
-               (user_id, kind, amount, expense_id, source_account_id)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, "payment" if paid_cash else "card", amount, expense_id, account_id),
+               (user_id, kind, amount, expense_id, source_account_id, classification)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, "payment" if paid_cash else "card", amount, expense_id, account_id,
+             "fixed_cost" if fixed_cost else None),
         )
     else:
         balances[key] = round(balances[key] - amount, 2)
         _save_legacy_balances(conn, user_id, balances)
         conn.execute(
-            """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-               VALUES (?, ?, ?, ?)""",
-            (user_id, "payment" if paid_cash else "card", amount, expense_id),
+            """INSERT INTO app_cash_movements
+                   (user_id, kind, amount, expense_id, classification)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, "payment" if paid_cash else "card", amount, expense_id,
+             "fixed_cost" if fixed_cost else None),
         )
 
     user_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(users)")}

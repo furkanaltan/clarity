@@ -4002,6 +4002,128 @@ def admin_update_access(target_user_id: int):
     return jsonify({"ok": True, "status": next_status if action == "approve" else "revoked"})
 
 
+def _fixed_cost_expenses_for_month(conn: sqlite3.Connection, user_id: int, month_key: str) -> float:
+    """Sum only app-expenses explicitly confirmed as a planned fixed-cost debit."""
+    ensure_app_cash_movements_table(conn)
+    row = conn.execute(
+        """SELECT COALESCE(SUM(amount), 0) FROM expenses
+             WHERE user_id=? AND strftime('%Y-%m', created_at)=?
+               AND id IN (
+                   SELECT DISTINCT expense_id FROM app_cash_movements
+                    WHERE user_id=? AND classification='fixed_cost' AND expense_id IS NOT NULL
+               )""",
+        (user_id, month_key, user_id),
+    ).fetchone()
+    return round(float(row[0] or 0), 2)
+
+
+def _reconcile_confirmed_fixed_plan(
+    conn: sqlite3.Connection, user_id: int, amount: float, month_key: str
+) -> float:
+    """Release only the overlapping part of this month's confirmed plan debit."""
+    ensure_app_cash_movements_table(conn)
+    remaining = round(max(0.0, float(amount)), 2)
+    if remaining <= 0:
+        return 0.0
+    rows = conn.execute(
+        """SELECT id, amount, source_account_id FROM app_cash_movements
+             WHERE user_id=? AND kind='fixed'
+               AND strftime('%Y-%m', created_at)=?
+             ORDER BY id""",
+        (user_id, month_key),
+    ).fetchall()
+    released = 0.0
+    pilot = multi_cash_accounts_enabled(conn, user_id)
+    for row in rows:
+        if remaining <= 0:
+            break
+        old_amount = round(max(0.0, float(row["amount"] or 0)), 2)
+        covered = min(old_amount, remaining)
+        if covered <= 0:
+            continue
+        source_id = int(row["source_account_id"] or 0)
+        if not source_id and pilot:
+            source_id = role_financial_account_id(conn, user_id, "fixed_cost")
+        if source_id:
+            adjust_stored_account_balance(conn, user_id, source_id, covered)
+        else:
+            balances = app_cash_accounts(conn, user_id)
+            balances["giro"] = round(balances["giro"] + covered, 2)
+            save_app_cash_accounts(conn, user_id, balances)
+        next_amount = round(old_amount - covered, 2)
+        if next_amount <= 0.005:
+            conn.execute(
+                "DELETE FROM app_cash_movements WHERE id=? AND user_id=?",
+                (row["id"], user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE app_cash_movements SET amount=? WHERE id=? AND user_id=?",
+                (next_amount, row["id"], user_id),
+            )
+        remaining = round(remaining - covered, 2)
+        released = round(released + covered, 2)
+    return released
+
+
+def _restore_confirmed_fixed_plan_after_expense_delete(
+    conn: sqlite3.Connection, user_id: int, month_key: str
+) -> None:
+    """Restore the planned remainder if its explicitly linked actual expense is deleted."""
+    ensure_app_monthly_plan_table(conn)
+    status = conn.execute(
+        """SELECT fixed_costs_status FROM app_monthly_plan_status
+             WHERE user_id=? AND month_key=?""",
+        (user_id, month_key),
+    ).fetchone()
+    if not status or status["fixed_costs_status"] != "confirmed":
+        return
+    ensure_app_cash_movements_table(conn)
+    user = conn.execute("SELECT fixed_costs FROM users WHERE user_id=?", (user_id,)).fetchone()
+    planned = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
+    paid = _fixed_cost_expenses_for_month(conn, user_id, month_key)
+    target_remainder = round(max(0.0, planned - paid), 2)
+    rows = conn.execute(
+        """SELECT id, amount, source_account_id FROM app_cash_movements
+             WHERE user_id=? AND kind='fixed' AND strftime('%Y-%m', created_at)=?
+             ORDER BY id""",
+        (user_id, month_key),
+    ).fetchall()
+    current_remainder = round(sum(float(row["amount"] or 0) for row in rows), 2)
+    missing = round(max(0.0, target_remainder - current_remainder), 2)
+    if missing <= 0:
+        return
+    pilot = multi_cash_accounts_enabled(conn, user_id)
+    source_id = next((int(row["source_account_id"]) for row in rows if row["source_account_id"]), 0)
+    if pilot and not source_id:
+        source_id = role_financial_account_id(conn, user_id, "fixed_cost")
+    if source_id:
+        adjust_stored_account_balance(conn, user_id, source_id, -missing)
+    else:
+        balances = app_cash_accounts(conn, user_id)
+        balances["giro"] = round(balances["giro"] - missing, 2)
+        save_app_cash_accounts(conn, user_id, balances)
+    if rows:
+        row = rows[-1]
+        conn.execute(
+            "UPDATE app_cash_movements SET amount=? WHERE id=? AND user_id=?",
+            (round(float(row["amount"] or 0) + missing, 2), row["id"], user_id),
+        )
+    elif source_id:
+        conn.execute(
+            """INSERT INTO app_cash_movements
+                   (user_id, kind, amount, label, source_account_id)
+               VALUES (?, 'fixed', ?, 'Fixkosten', ?)""",
+            (user_id, missing, source_id),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO app_cash_movements (user_id, kind, amount, label)
+               VALUES (?, 'fixed', ?, 'Fixkosten')""",
+            (user_id, missing),
+        )
+
+
 @app.route("/v1/monthly-plan", methods=["POST"])
 def update_monthly_plan():
     """Bestaetigt oder oeffnet Monatsplan-Posten, ohne Kontobewegungen zu erfinden."""
@@ -4200,6 +4322,7 @@ def update_monthly_plan():
                         )
             else:
                 betrag = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
+                betrag = round(max(0.0, betrag - _fixed_cost_expenses_for_month(conn, user_id, month_key)), 2)
                 schon_da = conn.execute(
                     """SELECT 1 FROM app_cash_movements
                          WHERE user_id = ? AND kind = 'fixed'
@@ -7463,6 +7586,7 @@ def commit_screenshot_import():
             "category": category,
             "import_key": import_key,
             "date": booking_date,
+            "fixed_cost": row.get("fixed_cost") is True,
         })
 
     token = token_from_request()
@@ -7492,6 +7616,14 @@ def commit_screenshot_import():
                 skipped.append({"importKey": row["import_key"], "reason": "already_imported"})
                 continue
 
+            month_key = row["date"][:7] if row["date"] else datetime.now().strftime("%Y-%m")
+            if row["fixed_cost"]:
+                released = _reconcile_confirmed_fixed_plan(
+                    conn, user_id, row["amount"], month_key
+                )
+                if not pilot:
+                    balances["giro"] = round(balances["giro"] + released, 2)
+
             bot_category = category_rule_for_merchant(conn, user_id, row["merchant"])
             bot_category = bot_category or APP_TO_BOT_CATEGORY[row["category"]]
             created_at = (
@@ -7518,16 +7650,19 @@ def commit_screenshot_import():
             if pilot:
                 conn.execute(
                     """INSERT INTO app_cash_movements
-                           (user_id, kind, amount, expense_id, source_account_id)
-                       VALUES (?, 'card', ?, ?, ?)""",
-                    (user_id, row["amount"], expense_id, screenshot_account_id),
+                           (user_id, kind, amount, expense_id, source_account_id, classification)
+                       VALUES (?, 'card', ?, ?, ?, ?)""",
+                    (user_id, row["amount"], expense_id, screenshot_account_id,
+                     "fixed_cost" if row["fixed_cost"] else None),
                 )
             else:
                 balances["giro"] = round(balances["giro"] - row["amount"], 2)
                 conn.execute(
-                    """INSERT INTO app_cash_movements (user_id, kind, amount, expense_id)
-                       VALUES (?, 'card', ?, ?)""",
-                    (user_id, row["amount"], expense_id),
+                    """INSERT INTO app_cash_movements
+                           (user_id, kind, amount, expense_id, classification)
+                       VALUES (?, 'card', ?, ?, ?)""",
+                    (user_id, row["amount"], expense_id,
+                     "fixed_cost" if row["fixed_cost"] else None),
                 )
             award_tracking_points(conn, user_id, expense_id=expense_id)
             inserted.append({
@@ -8212,6 +8347,7 @@ def create_expense():
     # Girokonto. Beides in EINEM Aufruf, damit Buchung und Bargeldstand nie halb gespeichert
     # sind und die App keine zweite Runde ueber /v1/accounts drehen muss.
     paid_cash = bool(payload.get("paid_cash"))
+    fixed_cost = payload.get("fixed_cost") is True
 
     token = token_from_request()
     with db() as conn:
@@ -8222,6 +8358,14 @@ def create_expense():
         ensure_expense_request_id_schema(conn)
         bot_category = category_rule_for_merchant(conn, user_id, merchant) or bot_category
         try:
+            existing_request = conn.execute(
+                "SELECT 1 FROM expenses WHERE user_id=? AND request_id=? LIMIT 1",
+                (user_id, request_id),
+            ).fetchone() if request_id else None
+            if fixed_cost and not existing_request:
+                _reconcile_confirmed_fixed_plan(
+                    conn, user_id, amount, datetime.now().strftime("%Y-%m")
+                )
             result = create_expense_for_user(
                 conn,
                 user_id,
@@ -8231,6 +8375,7 @@ def create_expense():
                 description=description,
                 request_id=request_id,
                 paid_cash=paid_cash,
+                fixed_cost=fixed_cost,
             )
         except (LookupError, ValueError) as exc:
             conn.rollback()
@@ -8276,7 +8421,11 @@ def create_income():
         amount = 0
     if not 0 < amount < float("inf") or round(amount, 2) <= 0:
         return jsonify({"ok": False, "error": "amount_required"}), 400
-    label = clean_text(payload.get("label") or payload.get("name"), "Einnahme")
+    movement_type = clean_text(payload.get("movement_type"), "income").strip().lower()
+    if movement_type not in {"income", "refund"}:
+        return jsonify({"ok": False, "error": "valid_income_movement_type_required"}), 400
+    default_label = "Gutschrift" if movement_type == "refund" else "Einnahme"
+    label = clean_text(payload.get("label") or payload.get("name"), default_label)
     request_id = clean_text(payload.get("request_id") or payload.get("idempotency_key"))[:128] or None
 
     token = token_from_request()
@@ -8286,7 +8435,7 @@ def create_income():
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
-        replay = cash_request_replay(conn, user_id, request_id, "income",
+        replay = cash_request_replay(conn, user_id, request_id, movement_type,
                                     {"amount": round(amount, 2), "label": label})
         if replay is not None:
             return replay
@@ -8303,23 +8452,27 @@ def create_income():
             )
             cur = conn.execute(
                 """INSERT INTO app_cash_movements
-                       (user_id, kind, amount, label, target_account_id)
-                   VALUES (?, 'income', ?, ?, ?)""",
-                (user_id, applied, label, target_account_id),
+                       (user_id, kind, amount, label, target_account_id, classification)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, movement_type, applied, label, target_account_id,
+                 "refund" if movement_type == "refund" else "income"),
             )
         else:
             balances["giro"] = round(balances["giro"] + applied, 2)
             save_app_cash_accounts(conn, user_id, balances)
             cur = conn.execute(
-                """INSERT INTO app_cash_movements (user_id, kind, amount, label)
-                   VALUES (?, 'income', ?, ?)""",
-                (user_id, applied, label),
+                """INSERT INTO app_cash_movements
+                       (user_id, kind, amount, label, classification)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, movement_type, applied, label,
+                 "refund" if movement_type == "refund" else "income"),
             )
         movement_id = cur.lastrowid
         live_data = build_live_app_data(conn, user_id)
-        invalidate_behavior_snapshot_safely(conn, user_id, "income_changed")
+        invalidate_behavior_snapshot_safely(conn, user_id, "refund_received" if movement_type == "refund" else "income_changed")
         finish_cash_request(conn, user_id, request_id, {
             "ok": True, "id": movement_id, "amount": applied, "label": label,
+            "movement_type": movement_type,
             "accounts": balances, "available": live_data["sts"]["available"],
         })
         conn.commit()
@@ -8329,6 +8482,7 @@ def create_income():
         "id": movement_id,
         "amount": applied,
         "label": label,
+        "movement_type": movement_type,
         "accounts": balances,
         "available": live_data["sts"]["available"],
     })
@@ -8394,7 +8548,7 @@ def delete_expense(expense_id: int):
         # Sperre aus begin_write() koennte eine parallele Buchung dazwischenschreiben und
         # die Gutschrift wieder verschlucken.
         cash_movement = conn.execute(
-            """SELECT id, kind, amount, source_account_id FROM app_cash_movements
+            """SELECT id, kind, amount, source_account_id, classification FROM app_cash_movements
                  WHERE user_id = ? AND kind IN ('payment', 'card') AND expense_id = ?""",
             (user_id, expense_id),
         ).fetchone()
@@ -8447,6 +8601,10 @@ def delete_expense(expense_id: int):
                 "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
                 (cash_movement["id"], user_id),
             )
+            if str(cash_movement["classification"] or "").strip().casefold() == "fixed_cost":
+                _restore_confirmed_fixed_plan_after_expense_delete(
+                    conn, user_id, str(expense["created_at"] or "")[:7]
+                )
 
         invalidate_behavior_snapshot_safely(conn, user_id, "expense_deleted")
         balances = app_cash_accounts(conn, user_id)
@@ -8492,7 +8650,7 @@ def delete_cash_movement(movement_id: int):
         if not row:
             return jsonify({"ok": False, "error": "cash_movement_not_found"}), 404
         kind = clean_text(row["kind"]).lower()
-        if kind not in ("withdrawal", "income", "fixed"):
+        if kind not in ("withdrawal", "income", "refund", "fixed"):
             # 'payment'- und 'card'-Zeilen haengen an einer Ausgabe und werden ueber
             # DELETE /v1/expenses/<id> mitgeloescht, nie einzeln.
             return jsonify({"ok": False, "error": "cash_movement_not_reversible"}), 400
@@ -8507,7 +8665,7 @@ def delete_cash_movement(movement_id: int):
                 conn, user_id, source_account_id, amount
             )
             used_financial_reference = True
-        elif kind == "income" and target_account_id:
+        elif kind in {"income", "refund"} and target_account_id:
             balances = adjust_stored_account_balance(
                 conn, user_id, target_account_id, -amount
             )
@@ -8529,7 +8687,7 @@ def delete_cash_movement(movement_id: int):
             # unberuehrt — beim naechsten Bestaetigen greift die Doppelbuchungssperre nicht
             # mehr, weil die Bewegung dann weg ist. Genau so soll es sein.
             balances["giro"] = round(balances["giro"] + amount, 2)
-        elif kind == "income":
+        elif kind in {"income", "refund"}:
             # Einnahme geloescht: das Geld verlaesst das Girokonto wieder. Bewusst OHNE
             # Guthaben-Pruefung — das Giro darf ins Minus, das ist Furkans Entscheidung
             # (der Nutzer verantwortet sein Konto selbst). Andernfalls waere eine
@@ -8548,7 +8706,7 @@ def delete_cash_movement(movement_id: int):
             "DELETE FROM app_cash_movements WHERE id = ? AND user_id = ?",
             (movement_id, user_id),
         )
-        invalidate_behavior_snapshot_safely(conn, user_id, "cash_movement_deleted")
+        invalidate_behavior_snapshot_safely(conn, user_id, "refund_deleted" if kind == "refund" else "cash_movement_deleted")
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
 

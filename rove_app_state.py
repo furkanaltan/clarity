@@ -281,7 +281,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     }
     entries: list[tuple[str, dict]] = []
     for r in rows:
-        cat = _category_label(r["category"])
+        cat = "Fixkosten" if r["classification"] == "fixed_cost" else _category_label(r["category"])
         name = (r["merchant"] or r["description"] or cat).strip() or cat
         item = {
             # "sid" = Server-ID der Zeile in expenses. Bewusst NICHT "id": die App vergibt
@@ -316,15 +316,17 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             item["bar"] = True
         entries.append((r["created_at"] or "", item))
     for m in movements:
-        if m["kind"] == "income":
+        if m["kind"] in {"income", "refund"}:
             # Einnahmen tragen wie Abhebungen eine `csid`, keine `sid` — sie stehen nicht in
             # `expenses`. Ein `sid` wuerde die App beim Loeschen auf DELETE /v1/expenses/<id>
             # schicken und dort eine fremde Ausgabe mit derselben Nummer treffen.
             target_id = m["target_account_id"] if "target_account_id" in m.keys() else None
+            is_refund = m["kind"] == "refund"
             entries.append((m["created_at"] or "", {
                 "csid": m["id"],
-                "n": _movement_label(m, "Einnahme"),
-                "cat": "Einnahme",
+                "n": _movement_label(m, "Gutschrift" if is_refund else "Einnahme"),
+                "cat": "Gutschrift" if is_refund else "Einnahme",
+                "classification": "refund" if is_refund else "income",
                 "a": abs(float(m["amount"] or 0)),
                 "c": INCOME_TINT,
                 "i": "€",
@@ -1335,6 +1337,8 @@ def ensure_app_cash_movements_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE app_cash_movements ADD COLUMN target_account_id INTEGER")
     if "request_id" not in columns:
         conn.execute("ALTER TABLE app_cash_movements ADD COLUMN request_id TEXT")
+    if "classification" not in columns:
+        conn.execute("ALTER TABLE app_cash_movements ADD COLUMN classification TEXT")
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_app_cash_movements_user
              ON app_cash_movements (user_id, created_at)"""
