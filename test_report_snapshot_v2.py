@@ -139,7 +139,110 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         self.assertEqual(truth["free_month_remaining"], -200.0)
 
     def test_corrected_snapshots_use_new_schema_without_rewriting_v2(self):
-        self.assertEqual(report_engine.REPORT_SNAPSHOT_SCHEMA_VERSION, 3)
+        self.assertEqual(report_engine.REPORT_SNAPSHOT_SCHEMA_VERSION, 4)
+
+    def test_wealth_period_requires_compatible_versioned_month_closes(self):
+        wealth = {"available": True, "total": 38620.0}
+        opening = {
+            "source_version": 2, "net_worth": 37200.0,
+            "cash_total": 5000.0, "total_consumer_debt": 0.0,
+            "property_remaining_debt": 0.0,
+        }
+        period = report_engine._report_wealth_period_truth(
+            wealth, None, opening, is_current_month=True, comparison_mode="partial"
+        )
+        self.assertEqual(period["opening_net_worth"], 37200.0)
+        self.assertEqual(period["closing_net_worth"], 38620.0)
+        self.assertEqual(period["change_amount"], 1420.0)
+        self.assertEqual(period["change_percent"], 3.82)
+        self.assertEqual(period["closing_label"], "Stand aktuell")
+
+        legacy = dict(opening, source_version=1)
+        unavailable = report_engine._report_wealth_period_truth(
+            wealth, None, legacy, is_current_month=True, comparison_mode="partial"
+        )
+        self.assertFalse(unavailable["available"])
+        self.assertIsNone(unavailable["opening_net_worth"])
+        self.assertIsNone(unavailable["change_amount"])
+
+    def test_historical_investment_end_uses_matching_month_close(self):
+        period = report_engine._report_investment_period_truth(
+            {"available": True, "investments": 9000.0},
+            {"source_version": 2, "net_worth": 12000.0, "investment_market_value": 6100.0},
+            is_current_month=False,
+        )
+        self.assertEqual(period, {
+            "amount": 6100.0,
+            "available": True,
+            "source": "monthly_financial_snapshot",
+        })
+
+        unavailable = report_engine._report_investment_period_truth(
+            {"available": True, "investments": 9000.0},
+            {"source_version": 2, "net_worth": 12000.0, "investment_market_value": None},
+            is_current_month=False,
+        )
+        self.assertIsNone(unavailable["amount"])
+        self.assertFalse(unavailable["available"])
+
+        current = report_engine._report_investment_period_truth(
+            {"available": True, "investments": 9000.0}, None, is_current_month=True
+        )
+        self.assertEqual(current["amount"], 9000.0)
+        self.assertEqual(current["source"], "live_canonical")
+
+    def test_build_components_preserve_negative_confirmed_savings_without_double_count(self):
+        result = report_engine._report_build_truth(
+            {"confirmed": True, "actual_amount": -100.0},
+            {"contributions": {"events_count": 1, "net_contributions": 500.0},
+             "market_movement": {"amount": None, "available": False}},
+            {"available": True, "closing_source": "monthly_financial_snapshot"},
+            {"net_debt_reduction": 300.0},
+            {"current_cash": 4000.0},
+            {"source_version": 2, "cash_total": 4100.0},
+            None,
+            is_current_month=False,
+        )
+        self.assertEqual(result["components"], [{
+            "key": "confirmed_savings", "label": "Bestätigte Sparleistung", "amount": -100.0,
+        }])
+        self.assertFalse(result["market_movement"]["available"])
+
+    def test_unconfirmed_build_exposes_only_independent_evidence(self):
+        result = report_engine._report_build_truth(
+            {"confirmed": False, "actual_amount": 0.0},
+            {"contributions": {"events_count": 1, "net_contributions": 500.0},
+             "market_movement": {"amount": None, "available": False}},
+            {"available": True, "closing_source": "monthly_financial_snapshot"},
+            {"net_debt_reduction": 300.0},
+            {"current_cash": 9000.0},
+            {"source_version": 2, "net_worth": 4100.0, "cash_total": 4100.0},
+            {"source_version": 2, "net_worth": 4100.0, "cash_total": 4000.0},
+            is_current_month=False,
+        )
+        self.assertEqual(
+            [item["key"] for item in result["components"]],
+            ["cash_change", "investment_contributions", "net_debt_reduction"],
+        )
+        self.assertEqual(
+            [item["amount"] for item in result["components"]], [-100.0, 500.0, 300.0]
+        )
+        self.assertNotIn("total", result)
+
+    def test_historical_buffer_requires_canonical_snapshot_inputs_and_has_no_target(self):
+        from rove_app_state import build_buffer_data_from_monthly_snapshot
+
+        self.assertIsNone(build_buffer_data_from_monthly_snapshot({
+            "source_version": 1, "cash_total": 4600.0, "fixed_costs": 2000.0,
+        }))
+        buffer = build_buffer_data_from_monthly_snapshot({
+            "source_version": 2, "cash_total": 4600.0, "fixed_costs": 2000.0,
+        })
+        self.assertEqual(buffer["available_cash"], 4600.0)
+        self.assertEqual(buffer["covered_months"], 2.3)
+        self.assertEqual(buffer["basis_type"], "fixed_costs")
+        self.assertIsNone(buffer["target_amount"])
+        self.assertIsNone(buffer["gap"])
 
     def test_open_month_window_uses_same_day_in_previous_month(self):
         window = report_engine.report_period_window("2026-08", date(2026, 8, 21))
@@ -231,6 +334,7 @@ class ReportSnapshotV2Tests(unittest.TestCase):
         self.assertIsNone(truth["previous_month"]["financial_snapshot"])
         self.assertEqual(snapshot["data"]["profile"]["cash_reserve"], 4600.0)
         self.assertEqual(truth["cash"]["current_cash"], 4600.0)
+        self.assertEqual(truth["buffer"]["available_cash"], truth["cash"]["current_cash"])
         self.assertEqual(truth["savings"]["actual_amount"], -100.0)
         self.assertEqual(truth["previous_month"]["savings"]["actual_amount"], -100.0)
 

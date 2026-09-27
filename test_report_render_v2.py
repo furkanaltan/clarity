@@ -10,6 +10,7 @@ from weasyprint import CSS, HTML
 from report_story_v2 import build_report_story_v2
 from report_html_renderer import _render_hell_pages, build_html_document, plan_items, render_777_score
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
+from rove_consumer_debt import net_worth_total
 import rove_pdf_report_renderer
 import report_engine
 import rove_app_state
@@ -83,6 +84,7 @@ def july_truth_payload() -> dict:
         "automatic_etf_amount": 0.0, "source": "unconfirmed",
     }
     truth["investments"]["holdings"] = []
+    truth["cash"].update({"current_cash": 9142.0, "account_total": 9142.0})
     truth["wealth"] = {
         "total": 38991.0, "cash": 9142.0, "investments": 20849.0,
         "property_equity": 9000.0, "allocation": [], "reconciles": True,
@@ -102,6 +104,63 @@ def july_truth_payload() -> dict:
             {"key": "debt", "n": "Debt Structure", "points": 15, "max": 30},
             {"key": "tracking", "n": "Tracking / Data Quality", "points": 10, "max": 10},
         ]},
+    }
+    data["report_story_v2"] = build_report_story_v2(data)
+    return data
+
+
+def july_review_payload() -> dict:
+    data = july_truth_payload()
+    truth = data["report_truth"]
+    data["profile"].update({
+        "current_investments": 20478.0,
+        "property_equity": 10500.0,
+        "property_remaining_debt": 80000.0,
+        "total_consumer_debt": 1500.0,
+    })
+    truth["property"]["equity"] = 10500.0
+    truth["wealth"].update({
+        "total": 38620.0,
+        "investments": 20478.0,
+        "property_equity": 10500.0,
+        "total_consumer_debt": 1500.0,
+        "reconciles": False,
+    })
+    truth["wealth_period"] = {
+        "opening_net_worth": 37200.0,
+        "closing_net_worth": 38620.0,
+        "change_amount": 1420.0,
+        "change_percent": 3.8,
+        "available": True,
+        "closing_source": "live_canonical",
+        "closing_label": "Stand aktuell",
+    }
+    truth["investment_period"] = {
+        "amount": 20478.0, "available": True,
+        "source": "live_canonical",
+    }
+    truth["buffer"] = {
+        "available_cash": 9142.0, "monthly_basis": 4000.0,
+        "basis_type": "fixed_costs", "covered_months": 9142.0 / 4000.0,
+        "target_amount": 10000.0, "gap": 858.0,
+        "previous_covered_months": 2.1, "source": "canonical_current",
+    }
+    truth["debts"] = {
+        "consumer_current": 1500.0, "mortgage_current": 80000.0,
+        "net_debt_reduction": 300.0, "has_relevant_debt": True,
+    }
+    truth["investments"]["contributions"] = {
+        "net_contributions": 500.0, "events_count": 1,
+        "recurring_in": 500.0, "one_time_in": 0.0, "out": 0.0, "by_asset": [],
+    }
+    truth["build"] = {
+        "available": True,
+        "components": [
+            {"key": "cash_change", "label": "Cash-Veränderung", "amount": -100.0},
+            {"key": "investment_contributions", "label": "Belegte Investmentbeiträge, netto", "amount": 500.0},
+            {"key": "net_debt_reduction", "label": "Netto-Schuldenveränderung", "amount": 300.0},
+        ],
+        "market_movement": {"amount": None, "available": False},
     }
     data["report_story_v2"] = build_report_story_v2(data)
     return data
@@ -149,6 +208,9 @@ class ReportRenderV2Tests(unittest.TestCase):
 
         context = build_render_context(data)
         self.assertIn("80 Monaten", context["goal_honest_text"])
+        self.assertEqual(context["plan_step3_impact"], "Sparziel 50 €")
+        self.assertEqual(context["plan_step3_target"], "50 €")
+        self.assertIn("Rate für Dubai Urlaub von 50 €", context["plan_step3_title"])
         self.assertIn("80 Monaten", render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data))
         self.assertEqual(len(_render_hell_pages(data)), 10)
 
@@ -157,6 +219,17 @@ class ReportRenderV2Tests(unittest.TestCase):
         context_without_rate = build_render_context(data)
         self.assertNotIn("4 Monaten", context_without_rate["goal_honest_text"])
         self.assertNotIn("80 Monaten", context_without_rate["goal_honest_text"])
+        self.assertEqual(context_without_rate["plan_step3_impact"], "Zielrate")
+        self.assertEqual(context_without_rate["plan_step3_target"], "—")
+        self.assertEqual(context_without_rate["plan_step3_title"], "Lege eine monatliche Rate für dein Ziel fest.")
+        self.assertNotIn("1.000 €", context_without_rate["plan_step3_title"])
+        self.assertNotIn("Sparziel 1.000 €", context_without_rate["plan_step3_impact"])
+        no_rate_web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        no_rate_pdf = "".join(_render_hell_pages(data))
+        for rendered in (no_rate_web, no_rate_pdf):
+            self.assertIn("Lege eine monatliche Rate für dein Ziel fest.", rendered)
+            self.assertNotIn("geplante Sparrate von 1.000 €", rendered)
+            self.assertNotIn("Sparziel 1.000 €", rendered)
         self.assertEqual(len(_render_hell_pages(data)), 10)
 
     def test_negative_confirmed_savings_stays_signed_in_web_and_pdf(self):
@@ -509,27 +582,28 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["merchant_rows"][1]["average"], "60 €")
         self.assertEqual(context["merchant_rows"][1]["category"], "Lebensmittel")
         self.assertNotIn(" · Sonstiges", html)
-        self.assertIn("24 Tage getrackt", html)
-        self.assertIn("Shopping mit 733 €", html)
-        self.assertIn(
-            "Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
-            html,
-        )
+        self.assertIn("24 Tage erfasst", html)
+        self.assertIn("Shopping", html)
+        self.assertNotIn("Deine stärkste Kategorie war Shopping mit 733 €", html)
+        self.assertNotIn("Zieltöpfe zeigen nur, wofür Geld reserviert ist", html)
         self.assertNotIn("Zieltöpfe sind Zweckbindungen", html)
         self.assertIn("533 € über deinem gesetzten Budget von 200 €", context["recap_attention_text"])
         self.assertEqual(context["freedom_step_text"], "Kein neuer Beitrag")
-        self.assertIn("kein neuer Investment- oder Sparbeitrag", context["build_summary_text"])
+        self.assertIn("keine Veränderungen erfasst", context["build_summary_text"])
         self.assertIn("Spar-Teilscore liegt bei 20/20", context["rank_blurb"])
-        self.assertEqual(context["goal_title_text"], "Dein Ziel: Dubai Urlaub.")
+        self.assertEqual(context["goal_title_text"], "Dubai Urlaub")
         self.assertEqual(html.count("Dubai Urlaub"), 1)
         self.assertNotIn("Dein Ziel: Dubai Urlaub.", html)
         self.assertIn("Noch offen", html)
         self.assertIn("white-space: nowrap;", html)
         self.assertIn("Noch 1.009 €", context["milestone_headline"])
         self.assertIn("Shopping-Budget von 200 €", context["plan_step2_title"])
-        self.assertIn("geplante Sparrate von 1.000 €", context["plan_step3_title"])
-        self.assertEqual(context["comparison_rows"][0]["name"], "Shopping")
-        self.assertEqual(context["comparison_rows"][0]["amount_text"], "+533 €")
+        self.assertEqual(context["plan_step3_title"], "Lege eine monatliche Rate für dein Ziel fest.")
+        self.assertEqual(context["plan_step3_impact"], "Zielrate")
+        shopping_comparison = next(
+            row for row in context["comparison_rows"] if row["name"] == "Shopping"
+        )
+        self.assertEqual(shopping_comparison["amount_text"], "+533 €")
         self.assertIn('class="report-merchant-row"', html)
         self.assertIn('class="report-comparison-row"', html)
         self.assertIn('class="report-comparison-badge"', html)
@@ -562,6 +636,144 @@ class ReportRenderV2Tests(unittest.TestCase):
             "dringend",
         ):
             self.assertNotIn(forbidden, html)
+
+    def test_v2_overview_shows_only_reliable_wealth_buffer_and_debt_truth_in_web_and_pdf(self):
+        data = july_review_payload()
+
+        context = build_render_context(data)
+        web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        pdf = "".join(_render_hell_pages(data))
+
+        self.assertEqual(context["net_worth_amount"], "38.620 €")
+        self.assertEqual(context["investment_overview_note"], "Die genaue Kursentwicklung lässt sich für diesen Monat noch nicht getrennt ausweisen.")
+        self.assertEqual(context["investment_contribution_text"], "+500 € investiert")
+        overview_web = web.split('data-screen-label="02 Überblick"', 1)[1].split('data-screen-label="03 ', 1)[0]
+        overview_pdf = _render_hell_pages(data)[1]
+        for overview in (overview_web, overview_pdf):
+            self.assertIn("Die genaue Kursentwicklung lässt sich für diesen Monat noch nicht getrennt ausweisen.", overview)
+            self.assertNotIn("Eine vollständige Trennung zwischen Einzahlungen und Marktwertentwicklung", overview)
+
+        self.assertEqual(context["wealth_opening_amount"], "37.200 €")
+        self.assertEqual(context["wealth_closing_amount"], "38.620 €")
+        self.assertEqual(context["wealth_change_amount"], "+1.420 €")
+        self.assertEqual(context["investment_end_amount"], "20.478 €")
+        self.assertEqual(context["investment_end_amount"], context["investments_amount"])
+        wealth = data["report_truth"]["wealth"]
+        self.assertEqual(wealth["total"], net_worth_total(
+            wealth["cash"], wealth["investments"], wealth["property_equity"],
+            wealth["total_consumer_debt"],
+        ))
+        allocation = context["report"]["allocation"]
+        self.assertAlmostEqual(sum(item["share_raw"] for item in allocation), 100.0)
+        self.assertAlmostEqual(allocation[0]["share_raw"], 9142.0 / 40120.0 * 100)
+        self.assertEqual(data["report_truth"]["buffer"]["available_cash"], data["report_truth"]["cash"]["current_cash"])
+        self.assertAlmostEqual(data["report_truth"]["buffer"]["covered_months"], 9142.0 / 4000.0)
+        self.assertEqual(data["report_truth"]["buffer"]["gap"], 10000.0 - 9142.0)
+        self.assertEqual(context["buffer_cash_amount"], context["cash_amount"])
+        self.assertEqual(context["consumer_debt_display"], "1.500 €")
+        self.assertEqual(context["mortgage_debt_display"], "80.000 €")
+        self.assertEqual(context["buffer_coverage_text"], "Deckt aktuell rund 2,3 Monate deiner hinterlegten monatlichen Fixkosten.")
+        self.assertEqual(context["money_map_summary_text"], "1.856,54 € Konsum · 23 Buchungen · 6 Kategorien")
+        self.assertEqual(context["money_map_total_amount"], "1.856,54 €")
+        self.assertEqual(context["money_map_summary_meta"], "23 Buchungen · 6 Kategorien")
+        for rendered in (web, pdf):
+            self.assertIn("37.200 €", rendered)
+            self.assertIn("38.620 €", rendered)
+            self.assertIn("+1.420 €", rendered)
+            self.assertIn("2,3 Monate", rendered)
+            self.assertIn("Ziel 10.000 € · noch 858 €", rendered)
+            self.assertIn("1.500 €", rendered)
+            self.assertIn("Konsumschulden", rendered)
+            self.assertIn("80.000 €", rendered)
+            self.assertIn("Hypothek", rendered)
+            self.assertIn("−100 €", rendered)
+            self.assertIn("+500 € investiert", rendered)
+            self.assertIn("Schulden reduziert", rendered)
+            self.assertIn("300 € weniger als im Vormonat", rendered)
+            self.assertIn("Datenqualität", rendered)
+            self.assertIn("Zielrate", rendered)
+            self.assertNotIn("Sparziel 1.000 €", rendered)
+            self.assertNotIn("7.100 €", rendered)
+            self.assertEqual(rendered.count("Die genaue Kursentwicklung lässt sich für diesen Monat noch nicht getrennt ausweisen."), 1)
+            self.assertIn("1.856,54 € Konsum", rendered)
+            self.assertIn("23 Buchungen · 6 Kategorien", rendered)
+            self.assertNotIn("1.856,54 € Konsum · 23 Buchungen · 6 Kategorien", rendered)
+            self.assertIn("Dein Nettovermögen ist diesen Monat um 1.420 € gestiegen.", rendered)
+            self.assertNotIn("Belegte Investmentbeiträge, netto", rendered)
+            self.assertNotIn("Aufbau · belegte Bestandteile", rendered)
+            self.assertNotIn("700 € aufgebaut", rendered)
+        self.assertIn("1 Buchung · Ø", pdf)
+        self.assertNotIn("1 Buchungen", pdf)
+        self.assertNotIn("Nettovermögen: 1.420 € mehr als im Vormonat", pdf)
+        self.assertIn("Vermögensbild", pdf)
+        self.assertIn("Belegte Vermögensbewegungen", pdf)
+        self.assertIn("Nicht alle Veränderungen lassen sich für diesen Monat einzeln zuordnen.", web)
+        self.assertIn("Nicht alle Veränderungen lassen sich für diesen Monat einzeln zuordnen.", pdf)
+        self.assertIn("Aktuell", pdf)
+
+    def test_incomplete_wealth_movement_is_disclosed_without_estimating_a_residual(self):
+        data = july_review_payload()
+        context = build_render_context(data)
+        web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        pdf = "".join(_render_hell_pages(data))
+
+        self.assertTrue(context["wealth_movement_incomplete"])
+        for rendered in (web, pdf):
+            self.assertIn("Belegte Vermögensbewegungen", rendered)
+            self.assertIn("Cash", rendered)
+            self.assertIn("Investiert", rendered)
+            self.assertIn("Schulden reduziert", rendered)
+            self.assertIn(
+                "Nicht alle Veränderungen lassen sich für diesen Monat einzeln zuordnen.",
+                rendered,
+            )
+            self.assertNotIn("720 € Marktgewinn", rendered)
+            self.assertNotIn("720 € aufgebaut", rendered)
+
+        data["report_truth"]["wealth_period"]["change_amount"] = 700.0
+        data["report_story_v2"] = build_report_story_v2(data)
+        complete_context = build_render_context(data)
+        complete_web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        complete_pdf = "".join(_render_hell_pages(data))
+        self.assertFalse(complete_context["wealth_movement_incomplete"])
+        self.assertNotIn("Nicht alle Veränderungen lassen sich für diesen Monat einzeln zuordnen.", complete_web)
+        self.assertNotIn("Nicht alle Veränderungen lassen sich für diesen Monat einzeln zuordnen.", complete_pdf)
+
+    def test_mortgage_is_visually_connected_to_available_property_equity(self):
+        data = july_review_payload()
+        data["report_truth"]["property"] = {
+            "market_value": 90500.0,
+            "remaining_debt": 80000.0,
+            "equity": 10500.0,
+        }
+        data["profile"].update({
+            "property_market_value": 90500.0,
+            "property_remaining_debt": 80000.0,
+        })
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        context = build_render_context(data)
+        web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        pdf = "".join(_render_hell_pages(data))
+
+        self.assertTrue(context["mortgage_property_context_available"])
+        self.assertIn("Immobilienwert 90.500 € · Eigenkapital 10.500 €", web)
+        self.assertIn("Immobilien-Eigenkapital", pdf)
+        self.assertIn("Marktwert 90.500 € · Restschuld 80.000 €", pdf)
+        self.assertEqual(data["report_truth"]["wealth"]["total"], 38620.0)
+        self.assertIn("Nächste Etappe", pdf)
+        self.assertIn("40.000 €", pdf)
+
+    def test_debt_and_buffer_blocks_are_omitted_without_source_values(self):
+        data = july_truth_payload()
+        data["report_truth"].pop("buffer", None)
+        data["report_truth"].pop("debts", None)
+        data["report_story_v2"] = build_report_story_v2(data)
+
+        html = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+
+        self.assertNotIn("Dein Puffer ·", html)
+        self.assertNotIn("Schulden · aktueller Stand", html)
 
     def test_money_map_stays_complete_without_merchant_data(self):
         with_merchants = july_truth_payload()
@@ -687,7 +899,8 @@ class ReportRenderV2Tests(unittest.TestCase):
 
     def test_pdf_keeps_design_shell_and_uses_v2_truth_fields(self):
         data = july_truth_payload()
-        html = build_html_document(_render_hell_pages(data))
+        pages = _render_hell_pages(data)
+        html = build_html_document(pages)
 
         self.assertEqual(html.count('data-screen-label="'), 10)
         self.assertIn("#EAF3FB", html)
@@ -708,15 +921,20 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertIn("+533 €", html)
         self.assertIn("+266,5 %", html)
         self.assertIn("Kein neuer Beitrag", html)
-        self.assertEqual(html.count("38.991 €"), 1)
+        self.assertIn("38.991 €", pages[1])
+        self.assertIn("38.991 €", pages[7])
         self.assertIn("9.142 €", html)
         self.assertIn("20.849 €", html)
         self.assertIn("9.000 €", html)
         self.assertIn("Controller", html)
-        self.assertIn("Budget / Cashflow", html)
+        self.assertNotIn("Budget / Cashflow", html)
         self.assertIn(">6<span", html)
         self.assertIn(">/20</span>", html)
-        self.assertIn("Savings Rate", html)
+        self.assertIn("Sparquote", html)
+        self.assertIn("Budget & Cashflow", html)
+        self.assertIn("Schuldenstruktur", html)
+        self.assertIn("Datenqualität", html)
+        self.assertNotIn("Savings Rate", html)
         self.assertIn(">20<span", html)
         self.assertIn("Dubai Urlaub", html)
         self.assertIn("51 €", html)

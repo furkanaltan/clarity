@@ -291,11 +291,81 @@ class ReportStoryV2Tests(unittest.TestCase):
             "actual_amount": 0.0, "confirmed": False,
             "automatic_etf_amount": 800.0, "source": "app_etf_plan",
         }
+        data["report_truth"]["build"] = {
+            "available": True,
+            "components": [{
+                "key": "investment_contributions",
+                "label": "Belegte Investmentbeiträge, netto",
+                "amount": 800.0,
+            }],
+            "market_movement": {"amount": None, "available": False},
+        }
         story = build_report_story_v2(data)
         page = story["pages"]["page_7"]
-        self.assertEqual(page["primary_metric"]["value"], 800.0)
-        self.assertIn("keine belastbare Marktbewegung", page["text"])
+        self.assertIsNone(page["primary_metric"]["value"])
+        self.assertEqual(page["supporting_metrics"][0]["amount"], 800.0)
+        self.assertEqual(page["title"], "Was dein Vermögen bewegt hat")
+        self.assertEqual(page["supporting_metrics"][0]["label"], "Investiert")
+        self.assertEqual(page["text"], "")
         self.assertNotIn("Kursanstieg", page["text"])
+
+    def test_build_story_shows_actual_debt_balance_direction_in_plain_language(self):
+        data = standard_payload()
+        data["report_truth"]["build"] = {
+            "available": True,
+            "components": [{
+                "key": "net_debt_reduction",
+                "label": "Netto-Schuldenveränderung",
+                "amount": 300.0,
+            }],
+            "market_movement": {"amount": None, "available": False},
+        }
+
+        page = build_report_story_v2(data)["pages"]["page_7"]
+
+        self.assertEqual(page["supporting_metrics"][0]["label"], "Schulden reduziert")
+        self.assertEqual(page["supporting_metrics"][0]["amount"], 300.0)
+
+        data["report_truth"]["build"]["components"][0]["amount"] = -250.0
+        increased = build_report_story_v2(data)["pages"]["page_7"]["supporting_metrics"][0]
+        self.assertEqual(increased["label"], "Schulden erhöht")
+        self.assertEqual(increased["amount"], 250.0)
+
+    def test_wealth_change_is_prioritized_and_merchant_does_not_repeat_category(self):
+        data = standard_payload()
+        truth = data["report_truth"]
+        truth["wealth_period"] = {
+            "opening_net_worth": 10000.0,
+            "closing_net_worth": 12000.0,
+            "change_amount": 2000.0,
+            "change_percent": 20.0,
+            "available": True,
+        }
+        truth["expenses"].update({
+            "total_consumption": 1000.0,
+            "previous_total_consumption": 600.0,
+            "categories": [{
+                "category": "SHOPPING", "amount": 500.0, "previous_amount": 200.0,
+                "transaction_count": 3, "previous_transaction_count": 1,
+                "transaction_count_delta": 2,
+            }],
+            "merchants": [{
+                "merchant": "Shop Beispiel", "category": "SHOPPING",
+                "amount": 500.0, "previous_amount": 200.0,
+                "transaction_count": 3, "previous_transaction_count": 1,
+            }],
+        })
+
+        story = build_report_story_v2(data)
+
+        changes = story["pages"]["page_5"]["supporting_metrics"]
+        self.assertEqual(changes[0]["type"], "wealth")
+        self.assertNotIn("merchant", {item["type"] for item in changes})
+
+    def test_goal_reservation_explanation_is_not_repeated(self):
+        story = build_report_story_v2(standard_payload())
+        self.assertEqual(story["pages"]["page_6"]["text"], "")
+        self.assertEqual(story["pages"]["page_8"]["text"], "")
 
     def test_without_investments_page_seven_degrades(self):
         data = standard_payload()
@@ -310,7 +380,7 @@ class ReportStoryV2Tests(unittest.TestCase):
         }
         story = build_report_story_v2(data)
         self.assertFalse(story["pages"]["page_7"]["available"])
-        self.assertIn("Keine bestätigte Sparleistung", story["pages"]["page_7"]["empty_state"])
+        self.assertIn("keine Spar- oder Investmentbeiträge erfasst", story["pages"]["page_7"]["empty_state"])
 
     def test_without_goals_no_random_primary_is_selected(self):
         data = standard_payload()

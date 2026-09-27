@@ -2587,22 +2587,45 @@ def ensure_buffer_target_column(conn: sqlite3.Connection) -> None:
         )
 
 
-def build_buffer_data(conn: sqlite3.Connection, user_id: int, user) -> dict:
-    """Read-only coverage of the score's cash source; the target never reserves money."""
-    profile = dict(user)
-    cash = canonical_liquid_cash(conn, user_id, profile)
-    basis = float(profile.get("fixed_costs") or 0)
-    target = profile.get("buffer_target_amount")
+def _buffer_data_from_values(cash, basis, target) -> dict:
+    cash = float(cash) if cash is not None else None
+    basis = float(basis or 0)
     target = float(target) if target is not None else None
     return {
         "available_cash": cash,
         "monthly_basis": basis,
         "basis_type": "fixed_costs",
-        "covered_months": cash / basis if basis > 0 else None,
+        "covered_months": cash / basis if cash is not None and basis > 0 else None,
         "target_amount": target,
         "target_months": target / basis if target is not None and basis > 0 else None,
-        "gap": round(max(0.0, target - cash), 2) if target is not None else None,
+        "gap": round(max(0.0, target - cash), 2)
+        if target is not None and cash is not None else None,
     }
+
+
+def build_buffer_data(conn: sqlite3.Connection, user_id: int, user) -> dict:
+    """Read-only coverage of the score's cash source; the target never reserves money."""
+    profile = dict(user)
+    cash = canonical_liquid_cash(conn, user_id, profile)
+    return _buffer_data_from_values(
+        cash, profile.get("fixed_costs"), profile.get("buffer_target_amount")
+    )
+
+
+def build_buffer_data_from_monthly_snapshot(snapshot: dict | None) -> dict | None:
+    """Reuse the canonical buffer math only for complete, versioned month-close inputs."""
+    if not snapshot:
+        return None
+    try:
+        source_version = int(snapshot.get("source_version") or 0)
+    except (TypeError, ValueError):
+        return None
+    if source_version < MONTHLY_FINANCIAL_SNAPSHOT_VERSION:
+        return None
+    cash = snapshot.get("cash_total")
+    if cash is None:
+        return None
+    return _buffer_data_from_values(cash, snapshot.get("fixed_costs"), None)
 
 
 def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:

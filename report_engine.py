@@ -21,7 +21,12 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from rove_score import calculate_score as calculate_live_score, canonical_liquid_cash
-from rove_app_state import get_monthly_financial_snapshot, _monthly_budget_truth
+from rove_app_state import (
+    build_buffer_data,
+    build_buffer_data_from_monthly_snapshot,
+    get_monthly_financial_snapshot,
+    _monthly_budget_truth,
+)
 from rove_consumer_debt import total_consumer_debt, net_worth_total
 from rove_log_safety import safe_exception_summary
 
@@ -411,7 +416,7 @@ def ensure_net_worth_column():
             conn.commit()
 
 
-REPORT_SNAPSHOT_SCHEMA_VERSION = 3
+REPORT_SNAPSHOT_SCHEMA_VERSION = 4
 
 
 def ensure_report_snapshots_v2_table(conn: sqlite3.Connection | None = None) -> None:
@@ -1881,6 +1886,213 @@ def _report_wealth_truth(profile: dict, cash: dict, investments: dict) -> dict:
     }
 
 
+def _has_reliable_financial_snapshot(snapshot: dict | None) -> bool:
+    if not snapshot or snapshot.get("net_worth") is None:
+        return False
+    try:
+        return int(snapshot.get("source_version") or 0) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
+def _report_wealth_period_truth(
+    wealth: dict,
+    current_snapshot: dict | None,
+    previous_snapshot: dict | None,
+    *,
+    is_current_month: bool,
+    comparison_mode: str,
+) -> dict:
+    """Compare only compatible, versioned month-close net-worth values."""
+    opening_available = _has_reliable_financial_snapshot(previous_snapshot)
+    if is_current_month:
+        closing_value = wealth.get("total") if wealth.get("available") else None
+        closing_available = closing_value is not None
+        closing_source = "live_canonical" if closing_available else "unavailable"
+    else:
+        closing_available = _has_reliable_financial_snapshot(current_snapshot)
+        closing_value = (
+            float(current_snapshot["net_worth"])
+            if closing_available else None
+        )
+        closing_source = "monthly_financial_snapshot" if closing_available else "unavailable"
+
+    opening_value = (
+        float(previous_snapshot["net_worth"])
+        if opening_available else None
+    )
+    available = opening_value is not None and closing_value is not None
+    change = round(float(closing_value) - opening_value, 2) if available else None
+    change_percent = (
+        round(change / opening_value * 100.0, 2)
+        if available and opening_value > 0 else None
+    )
+    return {
+        "opening_net_worth": opening_value,
+        "closing_net_worth": float(closing_value) if closing_value is not None else None,
+        "change_amount": change,
+        "change_percent": change_percent,
+        "available": available,
+        "opening_source": "monthly_financial_snapshot" if opening_available else "unavailable",
+        "closing_source": closing_source,
+        "closing_label": "Stand aktuell" if comparison_mode == "partial" else "Monatsende",
+    }
+
+
+def _report_investment_period_truth(
+    wealth: dict,
+    current_snapshot: dict | None,
+    *,
+    is_current_month: bool,
+) -> dict:
+    """Use live canonical investment value now and the matching close historically."""
+    if is_current_month:
+        amount = wealth.get("investments") if wealth.get("available") else None
+        source = "live_canonical" if amount is not None else "unavailable"
+    elif (
+        _has_reliable_financial_snapshot(current_snapshot)
+        and current_snapshot.get("investment_market_value") is not None
+    ):
+        amount = float(current_snapshot["investment_market_value"])
+        source = "monthly_financial_snapshot"
+    else:
+        amount = None
+        source = "unavailable"
+    return {
+        "amount": round(float(amount), 2) if amount is not None else None,
+        "available": amount is not None,
+        "source": source,
+    }
+
+
+def _report_debt_truth(
+    profile: dict,
+    current_snapshot: dict | None,
+    previous_snapshot: dict | None,
+    *,
+    is_current_month: bool,
+) -> dict:
+    consumer_current = profile.get("total_consumer_debt")
+    mortgage_current = profile.get("property_remaining_debt")
+    if is_current_month:
+        consumer_current = float(consumer_current) if consumer_current is not None else None
+        mortgage_current = float(mortgage_current) if mortgage_current is not None else None
+    else:
+        consumer_current = (
+            float(current_snapshot["total_consumer_debt"])
+            if current_snapshot and current_snapshot.get("total_consumer_debt") is not None else None
+        )
+        mortgage_current = (
+            float(current_snapshot["property_remaining_debt"])
+            if current_snapshot and current_snapshot.get("property_remaining_debt") is not None else None
+        )
+
+    previous_available = _has_reliable_financial_snapshot(previous_snapshot)
+    current_available = (
+        is_current_month and consumer_current is not None and mortgage_current is not None
+    ) or (
+        not is_current_month and _has_reliable_financial_snapshot(current_snapshot)
+        and consumer_current is not None and mortgage_current is not None
+    )
+    debt_reduction = None
+    if previous_available and current_available:
+        previous_consumer = previous_snapshot.get("total_consumer_debt")
+        previous_mortgage = previous_snapshot.get("property_remaining_debt")
+        if previous_consumer is not None and previous_mortgage is not None:
+            debt_reduction = round(
+                float(previous_consumer) + float(previous_mortgage)
+                - float(consumer_current) - float(mortgage_current), 2
+            )
+
+    return {
+        "consumer_current": consumer_current,
+        "mortgage_current": mortgage_current,
+        "net_debt_reduction": debt_reduction,
+        "available": consumer_current is not None or mortgage_current is not None,
+        "has_relevant_debt": bool(
+            (consumer_current is not None and consumer_current > 0)
+            or (mortgage_current is not None and mortgage_current > 0)
+            or (debt_reduction is not None and abs(debt_reduction) > 0.01)
+        ),
+    }
+
+
+def _report_build_truth(
+    savings: dict,
+    investment_truth: dict,
+    wealth_period: dict,
+    debt_truth: dict,
+    cash_truth: dict,
+    previous_snapshot: dict | None,
+    current_snapshot: dict | None,
+    *,
+    is_current_month: bool,
+) -> dict:
+    """Expose substantiated build components without summing overlapping evidence."""
+    investment_events = investment_truth.get("contributions") or {}
+    market_movement = investment_truth.get("market_movement") or {
+        "amount": None, "available": False,
+    }
+    if savings.get("confirmed"):
+        actual = savings.get("actual_amount")
+        components = (
+            [{"key": "confirmed_savings", "label": "Bestätigte Sparleistung", "amount": float(actual)}]
+            if actual is not None else []
+        )
+        return {
+            "available": bool(components),
+            "basis": "confirmed_month_close",
+            "components": components,
+            "has_confirmed_total": bool(components),
+            "market_movement": market_movement,
+        }
+
+    components = []
+    previous_snapshot_reliable = _has_reliable_financial_snapshot(previous_snapshot)
+    current_cash = (
+        cash_truth.get("current_cash")
+        if is_current_month
+        else current_snapshot.get("cash_total")
+        if _has_reliable_financial_snapshot(current_snapshot)
+        else None
+    )
+    cash_change_available = (
+        previous_snapshot_reliable
+        and previous_snapshot.get("cash_total") is not None
+        and current_cash is not None
+        and (is_current_month or wealth_period.get("closing_source") == "monthly_financial_snapshot")
+    )
+    if cash_change_available:
+        cash_change = round(
+            float(current_cash) - float(previous_snapshot["cash_total"]), 2
+        )
+        if abs(cash_change) > 0.01:
+            components.append({"key": "cash_change", "label": "Cash-Veränderung", "amount": cash_change})
+
+    if int(investment_events.get("events_count") or 0) > 0:
+        components.append({
+            "key": "investment_contributions",
+            "label": "Belegte Investmentbeiträge, netto",
+            "amount": float(investment_events.get("net_contributions") or 0),
+        })
+
+    debt_reduction = debt_truth.get("net_debt_reduction")
+    if debt_reduction is not None and abs(float(debt_reduction)) > 0.01:
+        components.append({
+            "key": "net_debt_reduction",
+            "label": "Netto-Schuldenveränderung",
+            "amount": float(debt_reduction),
+        })
+
+    return {
+        "available": bool(components),
+        "basis": "documented_components" if components else "unavailable",
+        "components": components,
+        "has_confirmed_total": False,
+        "market_movement": market_movement,
+    }
+
+
 def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
     meta = data.get("meta", {})
     is_current_month = report_month == datetime.now().strftime("%Y-%m")
@@ -1892,6 +2104,10 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         )
         previous_financial_snapshot = get_monthly_financial_snapshot(
             conn, user_id, _report_previous_month(report_month)
+        )
+        current_user = (
+            conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            if is_current_month else None
         )
     current_end = str(meta.get("period_end") or month_bounds(report_month)[1])
     comparison_mode = str(meta.get("comparison_mode") or "full")
@@ -1999,6 +2215,53 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
         if savings_progress.get("full_plan_confirmed")
         else float(savings_progress.get("automatic_etf_amount") or 0)
     )
+    wealth = _report_wealth_truth(profile, cash, investments)
+    wealth_period = _report_wealth_period_truth(
+        wealth,
+        financial_snapshot,
+        previous_financial_snapshot,
+        is_current_month=is_current_month,
+        comparison_mode=comparison_mode,
+    )
+    investment_period = _report_investment_period_truth(
+        wealth,
+        financial_snapshot,
+        is_current_month=is_current_month,
+    )
+    debts = _report_debt_truth(
+        profile,
+        financial_snapshot,
+        previous_financial_snapshot,
+        is_current_month=is_current_month,
+    )
+    if is_current_month and current_user is not None:
+        with get_db() as conn:
+            buffer = build_buffer_data(conn, user_id, current_user)
+        if buffer is not None:
+            buffer["source"] = "canonical_current"
+    else:
+        buffer = build_buffer_data_from_monthly_snapshot(financial_snapshot)
+        if buffer is not None:
+            buffer["source"] = "monthly_financial_snapshot"
+    previous_buffer = build_buffer_data_from_monthly_snapshot(previous_financial_snapshot)
+    if buffer is not None:
+        buffer = dict(buffer)
+        buffer["previous_covered_months"] = (
+            previous_buffer.get("covered_months") if previous_buffer else None
+        )
+    build = _report_build_truth(
+        {
+            "confirmed": bool(savings_progress.get("full_plan_confirmed")),
+            "actual_amount": savings_amount,
+        },
+        investments,
+        wealth_period,
+        debts,
+        cash,
+        previous_financial_snapshot,
+        financial_snapshot,
+        is_current_month=is_current_month,
+    )
     return {
         "schema_version": REPORT_SNAPSHOT_SCHEMA_VERSION,
         "period": data.get("meta", {}),
@@ -2059,7 +2322,12 @@ def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> di
             allow_live_goals=is_current_month,
         ),
         "score": data.get("pages", {}).get("score", {}),
-        "wealth": _report_wealth_truth(profile, cash, investments),
+        "wealth": wealth,
+        "wealth_period": wealth_period,
+        "investment_period": investment_period,
+        "debts": debts,
+        "buffer": buffer,
+        "build": build,
         "previous_month": {
             "report_month": previous_month,
             "comparison_mode": comparison_mode,

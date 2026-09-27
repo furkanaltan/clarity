@@ -9,7 +9,7 @@
 {%- endmacro %}
 {% macro heading(kicker, title, accent='') -%}
 <div style="font-size:11px;font-weight:600;letter-spacing:.28em;text-transform:uppercase;color:#155681;">{{ kicker }}</div>
-<div style="font-family:'Newsreader',serif;font-size:58px;line-height:1.03;font-weight:400;letter-spacing:-.025em;color:#16161A;margin-top:28px;max-width:680px;">{{ title }}{% if accent %}<br><span style="font-style:italic;color:#155681;">{{ accent }}</span>{% endif %}</div>
+<div style="font-family:'Newsreader',serif;font-size:58px;line-height:1.03;font-weight:400;letter-spacing:-.025em;color:#16161A;margin-top:22px;max-width:680px;">{{ title }}{% if accent %}<br><span style="font-style:italic;color:#155681;">{{ accent }}</span>{% endif %}</div>
 {%- endmacro %}
 {% macro small_card(label, value, note='', accent=false, value_size=42, value_margin='36px', note_size=14) -%}
 <div style="flex:1;min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid {{ '#BFDFF3' if accent else '#D9D8D4' }};border-radius:22px;padding:25px;min-height:190px;display:flex;flex-direction:column;">
@@ -36,20 +36,52 @@
 
 {{ page_start('02 Überblick') }}
   {{ heading('Überblick', 'Dein Monat auf einen', 'Blick.') }}
-  <div style="display:flex;gap:14px;margin-top:62px;">
-    {{ small_card('Nettovermögen', net_worth_amount, 'Konsumschulden: ' ~ consumer_debt_amount) }}
-    {{ small_card('Investments', investments_amount, 'im Portfolio', true) }}
-    {{ small_card('Cash', cash_amount, 'liquide verfügbar') }}
+  <div style="margin-top:42px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:24px 28px;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Nettovermögen</div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-top:10px;">
+      <div style="font-family:'Newsreader',serif;font-size:50px;line-height:1;color:#16161A;font-variant-numeric:tabular-nums;white-space:nowrap;">{{ net_worth_amount }}</div>
+      {% if wealth_period_available %}<div style="display:flex;gap:12px;flex:1 1 300px;max-width:370px;">
+        <div style="flex:1;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#155681;">Anfang</div><div style="font-family:'Newsreader',serif;font-size:22px;line-height:1.1;margin-top:6px;white-space:nowrap;">{{ wealth_opening_amount }}</div></div>
+        <div style="flex:1;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#155681;">{{ wealth_closing_label }}</div><div style="font-family:'Newsreader',serif;font-size:22px;line-height:1.1;margin-top:6px;white-space:nowrap;">{{ wealth_closing_amount }}</div></div>
+        <div style="flex:1;"><div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#155681;">Veränderung</div><div style="font-family:'Newsreader',serif;font-size:22px;line-height:1.1;margin-top:6px;white-space:nowrap;">{{ wealth_change_amount }}</div>{% if wealth_change_percent_available %}<div style="font-size:12px;color:#555E65;margin-top:3px;">{{ wealth_change_percent }}</div>{% endif %}</div>
+      </div>{% endif %}
+    </div>
+    {% if legacy_wealth_basis_note %}<div style="font-size:11px;color:#75757B;margin-top:8px;">{{ legacy_wealth_basis_note }}</div>{% endif %}
+    <div style="border-top:1px solid #E8E6E1;margin-top:16px;padding-top:12px;font-size:15px;line-height:1.45;color:#555E65;">{{ month_summary_text }}</div>
   </div>
-  <div style="display:flex;gap:14px;margin-top:14px;">
-    {{ small_card('Top-Händler', biggest_name, biggest_amount) }}
-    {{ small_card('Stärkste Kategorie', strongest_name, strongest_amount) }}
-    {{ small_card('Tracking-Tage', tracked_days, 'Tage im Monat') }}
+  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px;">
+    <div style="background:#FFFFFF;border:1px solid #D9D8D4;border-radius:16px;padding:15px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#555E65;">Investments</div>
+      <div style="font-family:'Newsreader',serif;font-size:27px;margin-top:6px;color:#16161A;font-variant-numeric:tabular-nums;">{% if investment_end_available %}{{ investment_end_amount }}{% else %}—{% endif %}</div>
+      {% if investment_contribution_available %}<div style="font-size:16px;font-weight:600;color:#155681;line-height:1.35;margin-top:6px;">{{ investment_contribution_text }}</div>{% endif %}
+    </div>
+    <div style="background:#FFFFFF;border:1px solid #D9D8D4;border-radius:16px;padding:15px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#555E65;">Cash</div>
+      <div style="font-family:'Newsreader',serif;font-size:27px;margin-top:6px;font-variant-numeric:tabular-nums;">{{ cash_amount }}</div>
+    </div>
+    <div style="background:#FFFFFF;border:1px solid #D9D8D4;border-radius:16px;padding:15px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#555E65;">Tracking</div>
+      <div style="font-family:'Newsreader',serif;font-size:27px;margin-top:6px;font-variant-numeric:tabular-nums;">{{ tracked_days }} Tage</div>
+    </div>
   </div>
-  <div style="margin-top:30px;border-top:1px solid #D9D8D4;padding-top:24px;">
-    <div style="font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#75757B;">Monatsfazit</div>
-    <div style="font-family:'Newsreader',serif;font-size:24px;line-height:1.42;margin-top:12px;max-width:670px;">{{ month_summary_text }}</div>
-  </div>
+  {% if investment_note_available %}<div style="font-size:10px;color:#75757B;line-height:1.35;margin-top:7px;padding:0 2px;">{{ investment_overview_note }}</div>{% endif %}
+  {% if buffer_available or has_debt_section %}<div style="display:flex;gap:10px;margin-top:10px;align-items:stretch;">
+    {% if buffer_available %}<div style="flex:1;min-width:0;box-sizing:border-box;background:#F8FBFD;border:1px solid #BFDFF3;border-radius:16px;padding:18px 20px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#155681;">Puffer</div>
+      {% if buffer_has_basis %}<div style="font-family:'Newsreader',serif;font-size:29px;line-height:1.05;margin-top:8px;">{{ buffer_months_amount }}</div>{% else %}<div style="font-size:12px;color:#16161A;line-height:1.4;margin-top:8px;">{{ buffer_coverage_text }}</div>{% endif %}
+      <div style="font-family:'Newsreader',serif;font-size:21px;color:#155681;margin-top:6px;font-variant-numeric:tabular-nums;">{{ buffer_cash_amount }}</div>
+      {% if buffer_change_text or buffer_target_available %}<div style="border-top:1px solid #D9E5EC;margin-top:11px;padding-top:8px;font-size:16px;font-weight:500;color:#33434E;line-height:1.4;">
+        {% if buffer_change_text %}<div>{{ buffer_change_text }}</div>{% endif %}
+        {% if buffer_target_available %}<div style="margin-top:3px;">Ziel {{ buffer_target_amount }} · noch {{ buffer_gap_amount }}</div>{% endif %}
+      </div>{% endif %}
+    </div>{% endif %}
+    {% if has_debt_section %}<div style="flex:1;min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:16px;padding:18px 20px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#3F484F;">Schulden</div>
+      {% if has_consumer_debt %}<div style="font-family:'Newsreader',serif;font-size:22px;line-height:1.05;color:#16161A;margin-top:9px;font-variant-numeric:tabular-nums;">{{ consumer_debt_display }}</div><div style="font-size:11px;color:#555E65;margin-top:2px;">Konsumschulden</div>{% endif %}
+      {% if has_mortgage_debt %}<div style="font-family:'Newsreader',serif;font-size:22px;line-height:1.05;color:#16161A;margin-top:7px;font-variant-numeric:tabular-nums;">{{ mortgage_debt_display }}</div><div style="font-size:11px;color:#555E65;margin-top:2px;">Hypothek</div>{% if mortgage_property_context_available %}<div style="font-size:12px;color:#33434E;line-height:1.4;margin-top:6px;">{{ mortgage_property_context_text }}</div>{% endif %}{% endif %}
+      {% if debt_change_available %}<div style="border-top:1px solid #E8E6E1;padding-top:8px;font-size:16px;font-weight:500;color:#33434E;margin-top:11px;line-height:1.4;">{{ debt_change_text }}</div>{% endif %}
+    </div>{% endif %}
+  </div>{% endif %}
   {{ footer(2) }}
 </div>
 
@@ -61,7 +93,7 @@
     {% for item in comparison_rows[:3] %}
     <div style="flex:1;min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #BFDFF3;border-radius:22px;padding:26px;min-height:250px;display:flex;flex-direction:column;">
       <div style="font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">{{ item.name }}</div>
-      <div style="margin-top:86px;font-family:'Newsreader',serif;font-size:44px;color:#155681;white-space:nowrap;">{{ item.amount_text }}</div>
+      <div style="margin-top:86px;font-family:'Newsreader',serif;font-size:36px;color:#155681;white-space:nowrap;">{{ item.amount_text }}</div>
       <div style="font-size:17px;color:#75757B;margin-top:9px;white-space:nowrap;">{{ item.pct_label }}</div>
     </div>
     {% endfor %}
@@ -69,39 +101,47 @@
   {% else %}
   <div style="margin-top:70px;background:#FFFFFF;border:1px solid #BFDFF3;border-radius:22px;padding:38px;font-family:'Newsreader',serif;font-size:30px;line-height:1.35;">Noch kein belastbarer Vormonatsvergleich verfügbar.</div>
   {% endif %}
-  <div style="margin-top:42px;border-left:3px solid #155681;padding:8px 0 8px 24px;font-family:'Newsreader',serif;font-size:28px;line-height:1.35;max-width:650px;">{{ comparison_text }}</div>
+  <div style="margin-top:42px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:18px;padding:20px 24px;">
+    <div style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">Belegte Vermögensbewegungen</div>
+    {% if build_summary_text %}<div style="font-size:12px;color:#75757B;line-height:1.4;margin-top:7px;">{{ build_summary_text }}</div>{% endif %}
+    {% if build_components %}<div style="display:flex;flex-direction:column;gap:7px;margin-top:12px;">
+      {% for component in build_components %}<div style="display:flex;justify-content:space-between;gap:12px;border-top:1px solid #E8E6E1;padding-top:7px;font-size:14px;color:#555E65;"><span>{{ component.label }}</span><strong style="color:#16161A;white-space:nowrap;">{{ component.signed_amount }}</strong></div>{% endfor %}
+    </div>{% endif %}
+    {% if wealth_movement_incomplete %}<div style="font-size:12px;color:#75757B;line-height:1.45;margin-top:10px;">{{ wealth_movement_incomplete_text }}</div>{% endif %}
+  </div>
   {{ footer(3) }}
 </div>
 
 {{ page_start('04 Vermögensstruktur') }}
-  {{ heading('Financial Story', 'So ist dein Vermögen', 'aufgestellt.') }}
-  <div style="margin-top:48px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:30px;">
+  {{ heading('Vermögensbild', 'So ist dein Vermögen', 'aufgestellt.') }}
+  <div style="margin-top:76px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:42px 38px;min-height:235px;">
     <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Vermögensstruktur · {{ report.month_label }}</div>
-    <div style="font-family:'Newsreader',serif;font-size:46px;margin-top:18px;">Deine Aufteilung</div>
-    <div style="display:flex;height:14px;border-radius:12px;overflow:hidden;background:#E3E1DC;margin-top:34px;">
+    <div style="font-family:'Newsreader',serif;font-size:50px;margin-top:20px;">Deine Aufteilung</div>
+    <div style="display:flex;height:22px;border-radius:12px;overflow:hidden;background:#E3E1DC;margin-top:44px;">
       {% for item in report.allocation %}<div style="width:{{ item.share_raw }}%;background:{{ ['#155681','#65B6E7','#A6C9DE','#B9B5AE','#7C98A8'][loop.index0 % 5] }};"></div>{% endfor %}
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat({{ report.allocation|length if report.allocation|length < 4 else 3 }},minmax(0,1fr));gap:14px;margin-top:14px;min-width:0;">
+  <div style="display:grid;grid-template-columns:repeat({{ report.allocation|length if report.allocation|length < 4 else 3 }},minmax(0,1fr));gap:14px;margin-top:18px;min-width:0;">
     {% for item in report.allocation %}
-    <div style="min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:20px;min-height:135px;">
+    <div style="min-width:0;box-sizing:border-box;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:26px;min-height:180px;">
       <div style="font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">{{ item.label }}</div>
-      <div style="font-family:'Newsreader',serif;font-size:28px;margin-top:20px;white-space:nowrap;">{{ item.amount }}</div>
-      <div style="font-size:13px;color:#75757B;margin-top:6px;">{{ item.share }}</div>
+      <div style="font-family:'Newsreader',serif;font-size:36px;margin-top:26px;white-space:nowrap;">{{ item.amount }}</div>
+      <div style="font-size:14px;color:#75757B;margin-top:9px;">{{ item.share }}</div>
+      {% if item.property_detail %}<div style="font-size:12px;color:#555E65;line-height:1.4;margin-top:10px;">{{ item.property_detail }}</div>{% endif %}
     </div>
     {% endfor %}
   </div>
-  <div style="font-size:15px;color:#75757B;line-height:1.55;margin-top:26px;">Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.</div>
   {{ footer(4) }}
 </div>
 
 {{ page_start('05 Money Map') }}
-  {{ heading('Money Map', 'Wohin dein Geld', 'geflossen ist.') }}
-  <div style="margin-top:18px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:14px 26px;">
+  {{ heading('Kategorien', 'Wohin dein Geld', 'geflossen ist.') }}
+  <div style="margin-top:20px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-variant-numeric:tabular-nums;">{% if money_map_total_amount is defined %}<span style="font-family:'Newsreader',serif;font-size:19px;font-weight:500;color:#16161A;">{{ money_map_total_amount }} Konsum</span><span style="font-size:13px;color:#75757B;">{{ money_map_summary_meta }}</span>{% else %}<span style="font-size:13px;color:#75757B;">{{ money_map_summary_text }}</span>{% endif %}</div>
+  <div style="margin-top:12px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:14px 26px;">
     {% for item in report.categories %}
     <div style="display:grid;grid-template-columns:25px 155px minmax(80px,1fr) 95px;gap:14px;align-items:center;padding:9px 0;border-bottom:{{ '0' if loop.last else '1px solid #E5E3DE' }};">
       <div style="font-size:11px;color:#9A9994;">{{ '%02d'|format(item.rank) }}</div>
-      <div><div style="font-size:15px;font-weight:600;">{{ item.name }}</div><div style="font-size:11px;color:#75757B;margin-top:3px;">{{ item.count }} Buchungen · Ø {{ item.average }}</div></div>
+      <div><div style="font-size:15px;font-weight:600;">{{ item.name }}</div><div style="font-size:11px;color:#75757B;margin-top:3px;">{{ item.count }} {{ 'Buchung' if item.count == 1 else 'Buchungen' }} · Ø {{ item.average }}</div></div>
       <div style="height:8px;border-radius:8px;background:#E8E6E1;overflow:hidden;"><div style="height:100%;width:{{ item.bar }}%;background:#155681;"></div></div>
       <div style="text-align:right;font-family:'Newsreader',serif;font-size:20px;white-space:nowrap;">{{ item.amount }}<div style="font-family:'Space Grotesk',sans-serif;font-size:11px;color:#75757B;margin-top:2px;">{{ item.share }}</div></div>
     </div>
@@ -109,7 +149,8 @@
   </div>
   <div style="display:flex;gap:14px;margin-top:10px;">
     <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:18px 24px;">
-      <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Top 3 Händler</div>
+      <div style="font-size:10px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#155681;">HÄNDLER</div>
+      <div style="font-family:'Newsreader',serif;font-size:21px;line-height:1.12;margin-top:7px;color:#16161A;">Deine größten Händler.</div>
       {% for item in merchant_rows %}<div style="display:grid;grid-template-columns:22px 1fr auto;gap:10px;padding:8px 0;border-bottom:{{ '0' if loop.last else '1px solid #E5E3DE' }};"><div style="color:#9A9994;">{{ item.rank }}</div><div><div style="font-size:14px;font-weight:600;">{{ item.name }}</div><div style="font-size:10px;color:#75757B;margin-top:3px;">{{ item.count_text }} · Ø {{ item.average }} · {{ item.category }}</div></div><div style="font-family:'Newsreader',serif;font-size:18px;white-space:nowrap;">{{ item.amount }}</div></div>{% endfor %}
     </div>
     <div style="width:250px;background:#EAF3FB;border:1px solid #BFDFF3;border-radius:22px;padding:18px 24px;display:flex;flex-direction:column;">
@@ -121,8 +162,9 @@
 </div>
 
 {{ page_start('06 Rov.E Score', '#EAF3FB') }}
-  {{ heading('Rov.E Score', 'Wie bewusst du', 'steuerst.') }}
-  <div style="display:flex;gap:22px;margin-top:50px;align-items:stretch;">
+  {{ heading('Rov.E Score', 'So steht dein Monat da.') }}
+  <div style="font-size:16px;line-height:1.45;color:#555E65;margin-top:10px;">{% if score_available %}{{ score_value }} von 100 Punkten.{% else %}Score nicht verfügbar.{% endif %}</div>
+  <div style="display:flex;gap:22px;margin-top:34px;align-items:stretch;">
     <div style="width:270px;background:#FFFFFF;border:1px solid #BFDFF3;border-radius:22px;padding:30px;text-align:center;">
       <div style="width:184px;height:184px;margin:0 auto;border:3px solid #155681;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Newsreader',serif;font-size:94px;line-height:1;color:#155681;">{{ score_value }}</div>
       <div style="font-size:18px;font-weight:600;margin-top:14px;">{{ rank_name }}</div><div style="font-size:12px;color:#75757B;margin-top:5px;">von 100 Punkten</div>
@@ -136,40 +178,45 @@
 </div>
 
 {{ page_start('07 Dein Ziel') }}
-  {{ heading('Dein Ziel', goal_desc) }}
+  {{ heading('DEIN ZIEL', goal_desc) }}
   {% if report.goal.available %}
-  <div style="margin-top:48px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:32px;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-end;"><div><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Fortschritt</div><div style="font-family:'Newsreader',serif;font-size:68px;color:#155681;margin-top:12px;">{{ report.goal.progress }}</div></div><div style="font-family:'Newsreader',serif;font-size:34px;">{{ report.goal.current }}</div></div>
-    <div style="height:12px;border-radius:12px;background:#E8E6E1;overflow:hidden;margin-top:28px;"><div style="height:100%;width:{{ report.goal.progress_raw }}%;background:#155681;"></div></div>
+  <div style="margin-top:42px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:42px;min-height:220px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;"><div><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Fortschritt</div><div style="font-family:'Newsreader',serif;font-size:82px;color:#155681;margin-top:16px;">{{ report.goal.progress }}</div></div><div style="font-family:'Newsreader',serif;font-size:40px;">{{ report.goal.current }}</div></div>
+    <div style="height:16px;border-radius:12px;background:#E8E6E1;overflow:hidden;margin-top:34px;"><div style="height:100%;width:{{ report.goal.progress_raw }}%;background:#155681;"></div></div>
   </div>
-  <div style="display:flex;gap:14px;margin-top:14px;">{{ small_card('Zielbetrag', report.goal.target) }}{{ small_card('Aktueller Stand', report.goal.current, '', true) }}{{ small_card('Noch offen', report.goal.remaining) }}</div>
+  <div style="display:flex;gap:14px;margin-top:20px;height:220px;align-items:stretch;">{{ small_card('Zielbetrag', report.goal.target, value_size=46, value_margin='45px') }}{{ small_card('Aktueller Stand', report.goal.current, '', true, value_size=46, value_margin='45px') }}{{ small_card('Noch offen', report.goal.remaining, value_size=46, value_margin='45px') }}</div>
   {% else %}<div style="margin-top:60px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:36px;font-family:'Newsreader',serif;font-size:30px;">Noch kein primäres Ziel ausgewählt.</div>{% endif %}
   {{ footer(7) }}
 </div>
 
 {{ page_start('08 Meilensteine') }}
-  {{ heading('Meilensteine', 'Deine nächste', 'Etappe.') }}
-  <div style="margin-top:48px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:32px;">
-    <div style="font-family:'Newsreader',serif;font-size:42px;line-height:1.2;">{{ milestone_headline }}</div>
-    <div style="height:12px;border-radius:12px;background:#E8E6E1;overflow:hidden;margin-top:38px;"><div style="height:100%;width:{{ milestone_pct_raw }}%;background:#155681;"></div></div>
-    <div style="display:flex;justify-content:space-between;font-size:12px;color:#75757B;margin-top:10px;"><span>{{ milestone_from }}</span><span>{{ milestone_pct_text }} %</span><span>{{ milestone_to }}</span></div>
+  {{ heading('Meilensteine', 'Deine nächste Etappe.') }}
+  <div style="font-size:17px;line-height:1.45;color:#555E65;margin-top:10px;">{{ milestone_headline }}</div>
+  <div style="margin-top:34px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:42px;min-height:360px;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Aktuell</div>
+    <div style="font-family:'Newsreader',serif;font-size:68px;line-height:1;color:#155681;margin-top:13px;">{{ net_worth_amount }}</div>
+    {% if wealth_available %}<div style="height:18px;border-radius:12px;background:#E8E6E1;overflow:hidden;margin-top:38px;"><div style="height:100%;width:{{ milestone_pct_raw }}%;background:#155681;"></div></div>{% endif %}
+    {% if wealth_available %}<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:34px;">
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Nächste Etappe</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ milestone_to }}</strong></div>
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Noch</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ milestone_remaining }}</strong></div>
+      {% if wealth_period_available %}<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Diesen Monat</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ wealth_change_amount }}</strong></div>{% endif %}
+    </div>{% endif %}
   </div>
-  <div style="margin-top:24px;background:#EAF3FB;border:1px solid #BFDFF3;border-radius:22px;padding:28px;font-size:19px;line-height:1.5;">{{ milestone_fact_text }}</div>
   {% if badges %}<div style="display:flex;gap:14px;margin-top:18px;">{% for badge in badges %}<div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:18px;padding:20px;"><div style="font-size:14px;font-weight:600;">{{ badge.label }}</div><div style="font-size:11px;color:#75757B;margin-top:8px;">{{ badge.date }}</div></div>{% endfor %}</div>{% endif %}
   {{ footer(8) }}
 </div>
 
 {{ page_start('09 Recap') }}
-  {{ heading('Recap', 'Ehrlich', 'zusammengefasst.') }}
-  <div style="display:flex;gap:14px;margin-top:50px;">
-    <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:30px;min-height:330px;"><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#155681;">Gut gelaufen</div><div style="font-family:'Newsreader',serif;font-size:29px;line-height:1.36;margin-top:44px;">{{ recap_good_text }}</div></div>
-    <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:30px;min-height:330px;"><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Nächster Fokus</div><div style="font-family:'Newsreader',serif;font-size:29px;line-height:1.36;margin-top:44px;">{{ recap_lever_text }}</div></div>
+  {{ heading('Recap', 'Ehrlich zusammengefasst.') }}
+  <div style="display:flex;gap:18px;margin-top:106px;">
+    <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:38px;min-height:420px;"><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#155681;">Gut gelaufen</div><div style="font-family:'Newsreader',serif;font-size:31px;line-height:1.36;margin-top:62px;">{{ recap_good_text }}</div></div>
+    <div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:38px;min-height:420px;"><div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Nächster Fokus</div><div style="font-family:'Newsreader',serif;font-size:31px;line-height:1.36;margin-top:62px;">{{ recap_lever_text }}</div></div>
   </div>
   {{ footer(9) }}
 </div>
 
 {{ page_start('10 Plan', '#EAF3FB') }}
-  {{ heading('Next Month Plan', 'Dein Plan für', next_month_name + '.') }}
+  {{ heading('Nächster Monat', 'Dein Plan für', next_month_name + '.') }}
   <div style="font-size:16px;color:#75757B;line-height:1.55;margin-top:22px;">Drei klare Schritte. Mehr brauchst du nicht.</div>
   <div style="margin-top:42px;">
     {% set steps = [(plan_step1_title, plan_step1_sub, plan_step1_impact), (plan_step2_title, plan_step2_sub, plan_step2_impact), (plan_step3_title, plan_step3_sub, plan_step3_impact)] %}

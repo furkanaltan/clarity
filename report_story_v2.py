@@ -485,6 +485,22 @@ def _comparison_changes(truth: dict, categories: list[dict], merchants: list[dic
         quality = "partial"
     threshold = max(20.0, max(current_total, previous_total) * 0.05)
     changes = []
+    wealth_period = truth.get("wealth_period") or {}
+    if wealth_period.get("available"):
+        wealth_delta = _money(wealth_period.get("change_amount"))
+        opening = _number(wealth_period.get("opening_net_worth"))
+        wealth_threshold = max(100.0, abs(opening) * 0.01)
+        if abs(wealth_delta) >= wealth_threshold:
+            closing = _number(wealth_period.get("closing_net_worth"))
+            changes.append({
+                "type": "wealth",
+                "label": "Nettovermögen",
+                "current": closing,
+                "previous": opening,
+                "delta": wealth_delta,
+                "delta_percent": wealth_period.get("change_percent"),
+                "context": _change_label(closing, opening),
+            })
     total_delta = round(current_total - previous_total, 2)
     if abs(total_delta) >= threshold:
         changes.append({
@@ -570,8 +586,14 @@ def _comparison_changes(truth: dict, categories: list[dict], merchants: list[dic
                 "transaction_count_delta": item["transaction_count_delta"],
                 "context": _change_label(item["amount"], item["previous_amount"]),
             })
+    changed_category_keys = {
+        str(item["label"]).strip().casefold()
+        for item in changes if item.get("type") == "category"
+    }
     for item in merchants[:5]:
         if abs(item["delta"]) >= threshold:
+            if str(item.get("category") or "").strip().casefold() in changed_category_keys:
+                continue
             changes.append({
                 "type": "merchant",
                 "label": item["merchant"],
@@ -581,7 +603,16 @@ def _comparison_changes(truth: dict, categories: list[dict], merchants: list[dic
                 "delta_percent": item["delta_percent"],
                 "context": _change_label(item["amount"], item["previous_amount"]),
             })
-    changes.sort(key=lambda item: abs(item["delta"]), reverse=True)
+    priority = {
+        "wealth": 0,
+        "confirmed_savings": 1,
+        "investment_contribution": 1,
+        "total_consumption": 2,
+        "category": 3,
+        "merchant": 4,
+        "score": 5,
+    }
+    changes.sort(key=lambda item: (priority.get(item.get("type"), 6), -abs(item["delta"])))
     return [{**item, "comparison_quality": quality} for item in changes[:5]]
 
 
@@ -696,6 +727,7 @@ def build_report_story_v2(report_data: dict) -> dict:
     contributions = ((truth.get("investments") or {}).get("contributions") or {})
     invested = _money(contributions.get("net_contributions"))
     savings = truth.get("savings") or {}
+    build = truth.get("build") or {}
     saved = _money(savings.get("actual_amount"))
     difference = round(income - fixed - consumption - saved, 2) if income > 0 else None
     wealth = _wealth(truth, report_data)
@@ -713,17 +745,37 @@ def build_report_story_v2(report_data: dict) -> dict:
     goals = truth.get("goals") or {}
     primary_goal = goals.get("primary")
     other_goals = [goal for goal in goals.get("goals") or [] if not goal.get("is_primary")][:4]
-    holding_contributions = [
-        {
-            "holding_id": holding.get("id"),
-            "name": holding.get("instrument_label") or "Investment",
-            "asset_type": holding.get("instrument_type") or "investment",
-            "amount": _money(holding.get("contribution")),
-        }
-        for holding in (truth.get("investments") or {}).get("holdings") or []
-        if _money(holding.get("contribution")) != 0
-    ]
-    contribution_breakdown = holding_contributions or contributions.get("by_asset") or []
+    build_component_labels = {
+        "cash_change": "Cash",
+        "investment_contributions": "Investiert",
+        "confirmed_savings": "Gespart",
+    }
+    build_components = []
+    for item in build.get("components") or []:
+        component = dict(item)
+        key = str(component.get("key") or "")
+        component["label"] = build_component_labels.get(key, "Veränderung")
+        if key == "net_debt_reduction" and component.get("amount") is not None:
+            reduction = float(component["amount"])
+            component["label"] = (
+                "Schulden reduziert" if reduction > 0
+                else "Schulden erhöht" if reduction < 0
+                else "Schuldenstand"
+            )
+            component["amount"] = abs(reduction)
+        build_components.append(component)
+    if savings.get("confirmed"):
+        build_label = "Gespart"
+        build_value = saved
+        build_text = f"Diesen Monat hast du {saved:.2f} EUR gespart."
+    elif build_components:
+        build_label = "Vermögensveränderungen"
+        build_value = None
+        build_text = ""
+    else:
+        build_label = "Vermögensveränderungen"
+        build_value = None
+        build_text = "Für diesen Monat sind keine Veränderungen erfasst."
     facts = _select_month_facts(report_data, truth, categories, changes)
     merchant_patterns = []
     for item in merchants:
@@ -770,28 +822,20 @@ def build_report_story_v2(report_data: dict) -> dict:
         "page_6": _page(6, "Dein Vermögen", "Wo steckt dein Vermögen heute?",
             {"semantic_key": "net_worth", "label": "Gesamtvermögen", "value": wealth.get("total")},
             supporting_metrics=wealth.get("allocation") or [], visual={"type": "wealth_allocation", "data": wealth.get("allocation") or []},
-            text="Zieltöpfe zeigen nur, wofür Geld reserviert ist. Sie erhöhen dein Vermögen nicht zusätzlich.",
+            text="",
             empty_state="Historische Vermögenswerte sind für diesen Monat nicht vollständig gespeichert." if not wealth.get("available", True) else "Noch keine Vermögenswerte erfasst.",
             available=bool(wealth.get("available")) and wealth.get("total") is not None),
-        "page_7": _page(7, "Was hast du aufgebaut?", "Was hast du wirklich gespart oder investiert?",
+        "page_7": _page(7, "Was dein Vermögen bewegt hat", "Welche Veränderungen sind erfasst?",
             {
-                "semantic_key": "confirmed_savings" if savings.get("confirmed") else "investment_contributions",
-                "label": "Bestätigte Sparleistung" if savings.get("confirmed") else "Dokumentierte Beiträge",
-                "value": saved if savings.get("confirmed") else invested,
+                "semantic_key": "confirmed_savings" if savings.get("confirmed") else "documented_build_components",
+                "label": build_label,
+                "value": build_value,
             },
-            supporting_metrics=contribution_breakdown,
-            visual={"type": "contribution_breakdown", "data": contribution_breakdown},
-            text=(
-                f"Du hast {saved:.2f} EUR als tatsächliche Sparleistung bestätigt."
-                if savings.get("confirmed")
-                else (
-                    f"Du hast {invested:.2f} EUR investiert. Es ist keine belastbare Marktbewegung verfügbar."
-                    if invested
-                    else "Für diesen Monat sind keine belastbaren Investmentbeiträge dokumentiert."
-                )
-            ),
-            empty_state="Keine bestätigte Sparleistung oder Investmentbeiträge dokumentiert.",
-            available=bool(savings.get("confirmed")) or invested != 0),
+            supporting_metrics=build_components,
+            visual={"type": "documented_build_components", "data": build_components},
+            text=build_text,
+            empty_state="Diesen Monat sind keine Spar- oder Investmentbeiträge erfasst.",
+            available=bool(savings.get("confirmed")) or bool(build_components)),
         "page_8": _page(8, "Score & Ziele", "Wie steht deine finanzielle Struktur und wie weit bist du bei deinen Zielen?",
             {"semantic_key": "rove_score", "label": "Rov.E Score", "value": score_value},
             supporting_metrics=[
@@ -800,7 +844,7 @@ def build_report_story_v2(report_data: dict) -> dict:
                 {"key": "primary_goal", "value": primary_goal},
                 {"key": "other_goals", "value": other_goals},
             ], visual={"type": "score_goal", "data": {"score": score, "primary_goal": primary_goal, "other_goals": other_goals}},
-            text="Zielstände zeigen zugeordnetes Geld, keinen zusätzlichen Vermögensaufbau.",
+            text="",
             empty_state="Für diesen Monat ist kein gespeicherter Score verfügbar." if score_value is None and not primary_goal else "Noch kein primäres Ziel ausgewählt.",
             available=score_value is not None or bool(primary_goal)),
         "page_9": _page(9, "Rov.E Insight", "Welcher Zusammenhang war diesen Monat wirklich relevant?",
