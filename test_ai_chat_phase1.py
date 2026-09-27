@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +25,21 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 );
                 CREATE TABLE user_access (user_id INTEGER PRIMARY KEY, status TEXT NOT NULL);
                 CREATE TABLE app_user_features (user_id INTEGER, feature_key TEXT, enabled INTEGER);
-                CREATE TABLE expenses (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT, created_at TEXT);
+                CREATE TABLE expenses (
+                    id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT,
+                    merchant TEXT, description TEXT, booking_date TEXT, transaction_date TEXT,
+                    created_at TEXT
+                );
+                CREATE TABLE app_cash_movements (
+                    id INTEGER PRIMARY KEY, user_id INTEGER, expense_id INTEGER,
+                    kind TEXT, classification TEXT,
+                    created_at DATETIME DEFAULT '2000-01-01 00:00:00'
+                );
+                CREATE TABLE app_financial_accounts (
+                    id INTEGER PRIMARY KEY, user_id INTEGER, account_type TEXT, name TEXT,
+                    currency TEXT, balance REAL, legacy_key TEXT, source TEXT, status TEXT,
+                    created_at TEXT, updated_at TEXT, archived_at TEXT
+                );
                 CREATE TABLE portfolio_holdings (
                     id INTEGER PRIMARY KEY, user_id INTEGER, instrument_label TEXT, instrument_type TEXT,
                     quantity REAL, total_invested REAL, market_value REAL, valuation_enabled INTEGER,
@@ -298,6 +312,93 @@ class AiChatPhaseOneTests(unittest.TestCase):
         for question in ("Wie läuft mein Budget?", "Welche Kategorie ist über Plan?"):
             self.assertIsNone(api.ai_mentor_question_mode(question), question)
             self.assertEqual(api.ai_chat_intent(question), "spending", question)
+
+    def test_general_cash_and_wallet_questions_use_separate_canonical_sources(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO app_user_features VALUES (1, ?, 1)",
+                (api.FEATURE_MULTI_CASH_ACCOUNTS_V1,),
+            )
+            conn.executemany(
+                """INSERT INTO app_financial_accounts
+                   (id, user_id, account_type, name, currency, balance, source, status)
+                   VALUES (?, 1, ?, ?, 'EUR', ?, 'manual', 'active')""",
+                (
+                    (1, "checking", "Girokonto", 2000),
+                    (2, "savings", "Tagesgeld", 2100),
+                    (3, "wallet", "Bargeld", 500),
+                ),
+            )
+            conn.commit()
+
+        self.assertEqual(api.ai_chat_intent("Wie viel Cash habe ich?"), "available_cash")
+        self.assertEqual(api.ai_chat_intent("Wie viel Geld habe ich verfügbar?"), "available_cash")
+        self.assertEqual(api.ai_chat_intent("Wie viel Bargeld habe ich?"), "wallet_cash")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("cash truth is deterministic")):
+            cash = self.post(self.client_for(token="cash-total"), "Wie viel Cash habe ich?")
+            available = self.post(self.client_for(token="cash-available"), "Wie viel Geld habe ich verfügbar?")
+            wallet = self.post(self.client_for(token="cash-wallet"), "Wie viel Bargeld habe ich?")
+        self.assertEqual(cash.status_code, 200, cash.get_json())
+        self.assertIn("4.600,00 €", cash.get_json()["answer"])
+        self.assertEqual(cash.get_json()["intent"], "available_cash")
+        self.assertIn("4.600,00 €", available.get_json()["answer"])
+        self.assertEqual(available.get_json()["intent"], "available_cash")
+        self.assertIn("500,00 €", wallet.get_json()["answer"])
+        self.assertEqual(wallet.get_json()["intent"], "wallet_cash")
+
+    def test_spending_context_reuses_classification_and_booking_month(self):
+        month_key = api.business_month_key()
+        current_month = date.fromisoformat(f"{month_key}-01")
+        previous_month_day = (current_month - timedelta(days=1)).isoformat()
+        current_booking_day = api.business_today().isoformat()
+        created_current_month = f"{month_key}-20 12:00:00"
+        rows = (
+            (1, 1, 40, "Shopping", "Store", current_booking_day, previous_month_day + " 23:30:00"),
+            (2, 1, 50, "Fixkosten", "Provider", current_booking_day, created_current_month),
+            (3, 1, 75, "Transfer", "Eigenes Konto", current_booking_day, created_current_month),
+            (4, 1, 20, "Shopping", "Refund", current_booking_day, created_current_month),
+            (5, 1, 90, "Shopping", "Late import", previous_month_day, created_current_month),
+        )
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executemany(
+                """INSERT INTO expenses
+                   (id, user_id, amount, category, merchant, booking_date, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+            conn.executemany(
+                "INSERT INTO app_cash_movements (user_id, expense_id, kind, classification) VALUES (1, ?, ?, ?)",
+                (
+                    (2, "fixed", "fixed_cost"),
+                    (3, "transfer", "transfer"),
+                    (4, "refund", "refund"),
+                ),
+            )
+            conn.commit()
+            intent, context = api.build_ai_chat_context(conn, 1, "Warum war Shopping so hoch?")
+
+        self.assertEqual(intent, "spending")
+        self.assertEqual(context["month"], month_key)
+        self.assertEqual(context["monthly_consumption_eur"], 40.0)
+        self.assertEqual(context["categories"], [{"category": "Shopping", "amount_eur": 40.0}])
+        self.assertFalse(context["causal_analysis_available"])
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("why-answer must be evidence-bound")):
+            response = self.post(self.client_for(token="why-shopping"), "Warum war Shopping so hoch?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertIn("40,00 €", response.get_json()["answer"])
+        self.assertIn("nicht eindeutig ableiten", response.get_json()["answer"])
+
+    def test_personal_trade_requests_are_refused_before_provider(self):
+        questions = ("Welche Aktie soll ich kaufen?", "Soll ich XRP kaufen?", "Verkauf ich NEAR?")
+        for index, question in enumerate(questions):
+            with patch.object(api, "ai_chat_provider", side_effect=AssertionError("provider must not run")):
+                response = self.post(self.client_for(token=f"trade-boundary-{index}"), question)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            payload = response.get_json()
+            self.assertEqual(payload["kind"], "rove")
+            self.assertEqual(payload["intent"], "investment_advice_boundary")
+            self.assertTrue(payload["deterministic"])
 
     def test_mentor_prompt_preserves_debt_status_and_mortgage_rules(self):
         self.assertIn('"unknown"', api.AI_CHAT_SYSTEM_PROMPT)

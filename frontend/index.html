@@ -3978,6 +3978,7 @@ function writeActivitySeenTs(ts){
 function announcementEscape(value){
   return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 }
+function chatText(value){ return announcementEscape(value); }
 function mentorFactorLabel(value){
   return String(value??"")
     .replaceAll("Liquiditaet","Liquidität")
@@ -6245,7 +6246,7 @@ async function addContractFromText(t){
     persistAppState();
   }
   DATA.sts.fixRest=computeFixRest(); renderVertraege(); renderBudgets(); mentorLine(); buzz();
-  return `<b>${name}</b> ist gespeichert.<br>Kategorie: ${cat} · ${eur2(amt)}/Monat.`;
+  return `<b>${chatText(name)}</b> ist gespeichert.<br>Kategorie: ${chatText(cat)} · ${eur2(amt)}/Monat.`;
 }
 async function addAssetPosition(){
   const a=DATA.assets[dIdx];
@@ -7770,11 +7771,13 @@ async function ans_cash_expense(t, raw){
   }
   commitEntry(e, raw||t);
   const rest=wallet ? `<br>Im Portemonnaie liegen jetzt ${eur2(Math.max(0,wallet.value))}.` : "";
-  return `Gebucht: <b>${e.n}</b> · ${eur2(Math.abs(e.a))} · ${e.cat}.<br>Bezahlt aus dem Portemonnaie.${rest}`;
+  return `Gebucht: <b>${chatText(e.n)}</b> · ${eur2(Math.abs(e.a))} · ${chatText(e.cat)}.<br>Bezahlt aus dem Portemonnaie.${rest}`;
 }
 
 async function ans_cash_income(t){
   if(!/(gewonnen|geschenkt|bekommen|erhalten|gutschrift|geld hinzu|guthaben hinzu|auf mein.*konto)/.test(t)) return null;
+  if(isChatQuestionOrHypothesis(t)) return null;
+  if(!/\b(?:buch\w*|verbuch\w*|erfass\w*|füge\w*|fuege\w*|eintrag\w*|addier\w*|erhöh\w*|erhoeh\w*)\b/.test(t)) return null;
   const amount=Math.round(extractAmt(t)); if(!amount) return null;
   const account=/tagesgeld/.test(t) ? "tagesgeld"
     : /bargeld|portemonnaie|geldbeutel|geldbörse/.test(t) ? "bargeld" : "giro";
@@ -7802,7 +7805,7 @@ async function ans_set_investment(t){
   }
   if(!position && cryptoIntent && positions.length===1) position=positions[0];
   if(!position && cryptoIntent && positions.length>1)
-    return `Welche Position möchtest du ändern? Aktuell sehe ich: ${positions.map(p=>p.n).join(", ")}.`;
+    return `Welche Position möchtest du ändern? Aktuell sehe ich: ${positions.map(p=>chatText(p.n)).join(", ")}.`;
   let name=position?.n||"";
   if(stockIntent && !name){
     name=t.replace(/\d+(?:[\.,]\d{1,2})?\s*(?:€|euro|eur)?/gi," ")
@@ -7815,7 +7818,7 @@ async function ans_set_investment(t){
   if(APP_MODE!=="bridge") return `Das kann ich dauerhaft speichern, sobald dein Profil mit Rov.E verbunden ist.`;
   const ok=await syncInvestmentPosition(name,value,stockIntent?"stock":"crypto");
   return ok
-    ? `<b>${name}</b>: ${eur(value)}.`
+    ? `<b>${chatText(name)}</b>: ${eur(value)}.`
     : `Investment-Wert konnte gerade nicht gespeichert werden. Versuch es gleich erneut.`;
 }
 document.getElementById("txdDel").addEventListener("click",()=>{
@@ -11627,9 +11630,9 @@ function ans_score(t){
   const s=DATA.score, sorted=[...s.factors].sort((a,b)=>a.p-b.p);
   const weak=sorted[0], strong=sorted[sorted.length-1];
   if(/stratege|besser|verbesser|höher|hoch|steiger|nächst|aufsteig|mehr punkte|hebel/.test(t))
-    return `Größter Hebel: <b>${weak.n}</b>.<br>Dort entsteht aktuell der schnellste Score-Fortschritt.`;
-  const confidence=s.data_confidence?` · Datengrundlage: ${s.data_confidence}`:"";
-  return `Rov.E Score: <b>${s.value}/100</b> · <b>${s.label}</b>${confidence}.<br>Stärkster Faktor: ${strong.n}. Nächster Hebel: ${weak.n}.`;
+    return `Größter Hebel: <b>${chatText(weak.n)}</b>.<br>Dort entsteht aktuell der schnellste Score-Fortschritt.`;
+  const confidence=s.data_confidence?` · Datengrundlage: ${chatText(s.data_confidence)}`:"";
+  return `Rov.E Score: <b>${s.value}/100</b> · <b>${chatText(s.label)}</b>${confidence}.<br>Stärkster Faktor: ${chatText(strong.n)}. Nächster Hebel: ${chatText(weak.n)}.`;
 }
 function ans_contracts(t){
   const items=DATA.vertraege.flatMap(c=>c.items);
@@ -11637,23 +11640,23 @@ function ans_contracts(t){
     return t.includes(base) || base.split(/\s+/).some(w=>w.length>3 && t.includes(w)); });
   if(named){
     const abo = named.cancel ? `kündbar` : `Basis-Vertrag`;
-    return `<b>${named.n}</b><br>${eur2(named.a)}/Monat · ${eur2(named.a*12)} im Jahr.<br>Status: ${abo}.${named.warn?` ${named.warn}.`:""}`;
+    return `<b>${chatText(named.n)}</b><br>${eur2(named.a)}/Monat · ${eur2(named.a*12)} im Jahr.<br>Status: ${abo}.${named.warn?` ${chatText(named.warn)}.`:""}`;
   }
   const cuts=items.filter(v=>v.cancel);
   if(!cuts.length) return `Ich sehe aktuell keinen kündbaren Vertrag.`;
   const sum=cuts.reduce((s,i)=>s+i.a,0), warnItem=items.find(v=>v.warn);
-  return `Kündbar: <b>${cuts.map(c=>c.n).join(", ")}</b>.<br>Mögliches Potenzial: ${eur2(sum)}/Monat.${warnItem?`<br>${warnItem.n}: ${warnItem.warn}.`:""}`;
+  return `Kündbar: <b>${cuts.map(c=>chatText(c.n)).join(", ")}</b>.<br>Mögliches Potenzial: ${eur2(sum)}/Monat.${warnItem?`<br>${chatText(warnItem.n)}: ${chatText(warnItem.warn)}.`:""}`;
 }
 function ans_asset(a){
   // Sachwerte haben kein chg/Kurs (manuell eingetragen) — eigener Zweig VOR dem generischen
   // positions-Fall, sonst zeigt die Antwort wörtlich "undefined" (kein chg-Feld vorhanden).
   if(a.manual) return a.positions.length
-    ? `<b>${a.name}</b>: <b>${eur(a.value)}</b>.<br>${a.positions.map(p=>`${p.n} (${eur(p.v)})`).join(", ")}.`
-    : `<b>${a.name}</b> ist noch leer.<br>Du kannst den Wert unter „Vermögenswerte" eintragen.`;
-  if(a.positions) return `Dein <b>${a.name}</b> steht bei <b>${eur(a.value)}</b>${a.chg?` (${a.chg})`:""}. Positionen: ${a.positions.map(p=>`${p.n}${p.chg?` ${p.chg}`:` (${eur(p.v)})`}`).join(", ")}.`;
+    ? `<b>${chatText(a.name)}</b>: <b>${eur(a.value)}</b>.<br>${a.positions.map(p=>`${chatText(p.n)} (${eur(p.v)})`).join(", ")}.`
+    : `<b>${chatText(a.name)}</b> ist noch leer.<br>Du kannst den Wert unter „Vermögenswerte" eintragen.`;
+  if(a.positions) return `Dein <b>${chatText(a.name)}</b> steht bei <b>${eur(a.value)}</b>${a.chg?` (${chatText(a.chg)})`:""}. Positionen: ${a.positions.map(p=>`${chatText(p.n)}${p.chg?` ${chatText(p.chg)}`:` (${eur(p.v)})`}`).join(", ")}.`;
   if(a.real){ const r=a.real;
     return `<b>Immobilie</b><br>Marktwert: ${eur(r.marktwert)} · Restschuld: ${eur(r.restschuld)}.<br>Eigenkapital: <b>${eur(r.eigenkapital)}</b>. Rate: ${eur(r.rate)}/Monat.`; }
-  return `<b>${a.name}</b>: <b>${eur(a.value)}</b>${a.chg?` (${a.chg})`:""} — ${a.sub}.`;
+  return `<b>${chatText(a.name)}</b>: <b>${eur(a.value)}</b>${a.chg?` (${chatText(a.chg)})`:""} — ${chatText(a.sub)}.`;
 }
 // „Wie viel Schulden habe ich?" — bewusst NICHT als eine erschreckende Gesamtsumme (Furkan-Vorgabe
 // 17.07.: eine vermietete Immobilie ist Kapitalanlage, kein Minus — der Assistent darf nicht
@@ -11684,15 +11687,15 @@ function ans_debt(){
   }
   if(raten.length){
     const sum=raten.reduce((s,it)=>s+Math.abs(it.a),0);
-    parts.push(`Laufende Raten: ${raten.map(it=>`<b>${it.n}</b> (${eur(Math.abs(it.a))}/Mon.)`).join(", ")}.<br>Zusammen: <b>${eur(sum)}/Monat</b>. Restschulden dazu sind noch nicht hinterlegt.`);
+    parts.push(`Laufende Raten: ${raten.map(it=>`<b>${chatText(it.n)}</b> (${eur(Math.abs(it.a))}/Mon.)`).join(", ")}.<br>Zusammen: <b>${eur(sum)}/Monat</b>. Restschulden dazu sind noch nicht hinterlegt.`);
   }
   if(!parts.length) return `Keine Immobilienfinanzierung oder Kreditrate hinterlegt.`;
   return parts.join("<br><br>");
 }
 function ans_goal(g){
   const p=pct(g.cur,g.tar);
-  if(p>=100) return `„<b>${g.t}</b>“ ist erreicht.<br>${eur(g.cur)} zugeordnet.`;
-  return `Ziel „<b>${g.t}</b>“: ${eur(g.cur)} von ${eur(g.tar)} — <b>${p} %</b>. Es fehlen noch ${eur(g.tar-g.cur)}.`;
+  if(p>=100) return `„<b>${chatText(g.t)}</b>“ ist erreicht.<br>${eur(g.cur)} zugeordnet.`;
+  return `Ziel „<b>${chatText(g.t)}</b>“: ${eur(g.cur)} von ${eur(g.tar)} — <b>${p} %</b>. Es fehlen noch ${eur(g.tar-g.cur)}.`;
 }
 function ans_budgets(){
   const b=DATA.budgets||[];
@@ -11700,7 +11703,7 @@ function ans_budgets(){
   const over=b.filter(x=>catSpent(x.cat)>x.limit);
   if(!over.length) return `Alle Budgetkategorien sind im Plan.`;
   const o=over[0];
-  return `<b>${o.cat}</b> liegt ${eur(catSpent(o.cat)-o.limit)} über Plan.<br>Details findest du im Cashflow.`;
+  return `<b>${chatText(o.cat)}</b> liegt ${eur(catSpent(o.cat)-o.limit)} über Plan.<br>Details findest du im Cashflow.`;
 }
 // Volle Übersicht (Furkan-Wunsch 17.07., Vorbild bot.py maybe_answer_budget_status "zeig"-Zweig:
 // build_budget_frame Zeile 2266+) — pro Topf Frei/Rahmen/Genutzt + Freier Puffer, statt nur des
@@ -11714,7 +11717,7 @@ function budgetBreakdownLines(){
     const sp=catSpent(x.cat), left=x.limit-sp, over=sp>x.limit, near=!over&&x.limit>0&&sp/x.limit>=0.75;
     allocOpen+=Math.max(0,left);
     const col=over?"var(--red)":near?"var(--gold)":"var(--green)";
-    lines.push(`<b>${x.cat}</b>`);
+    lines.push(`<b>${chatText(x.cat)}</b>`);
     lines.push(`Frei: <span style="color:${col};font-weight:700">${eur(left)}</span> · Rahmen: ${eur(x.limit)}`);
     if(sp>0) lines.push(`Genutzt: ${eur(sp)}`);
     lines.push(``);
@@ -11728,7 +11731,7 @@ function budgetBreakdownLines(){
 function budgetProposalLines(list){
   return (list||[]).map(x=>{
     const sp=catSpent(x.cat), left=x.limit-sp;
-    return `<b>${x.cat}</b>: ${eur(sp)} genutzt · ${eur(x.limit)} Rahmen · ${eur(left)} frei`;
+    return `<b>${chatText(x.cat)}</b>: ${eur(sp)} genutzt · ${eur(x.limit)} Rahmen · ${eur(left)} frei`;
   });
 }
 function ans_budgets_detail(){
@@ -11808,7 +11811,7 @@ function ans_set_budget(t){
   }
   renderBudgets(); mentorLine(); buzz();
   syncBudgetUpdates([b]);
-  return `<b>${cat}</b> ist jetzt auf ${eur(amt)} pro Monat gesetzt.`;
+  return `<b>${chatText(cat)}</b> ist jetzt auf ${eur(amt)} pro Monat gesetzt.`;
 }
 function ans_wealth(){
   const s=DATA.series["1J"], d=(s[s.length-1]-s[0])*1000;
@@ -11820,7 +11823,7 @@ function ans_overview(){
   const monthLine=free<0
     ? `Über verfügbar: <b>${eur(Math.abs(free))}</b>`
     : incomePending ? `Geplanter Ausgabenrahmen: <b>${eur(free)}</b>` : `Frei diesen Monat: <b>${eur(free)}</b>`;
-  return `Vermögen: <b>${eur(DATA.netWorth)}</b><br>${monthLine}<br>Konsumausgaben: <b>${eur(monthDiscretionarySpent())}</b><br>Score: ${DATA.score.value} · ${DATA.score.label}${hot?`<br>Eine Budgetkategorie braucht Aufmerksamkeit.`:``}`;
+  return `Vermögen: <b>${eur(DATA.netWorth)}</b><br>${monthLine}<br>Konsumausgaben: <b>${eur(monthDiscretionarySpent())}</b><br>Score: ${DATA.score.value} · ${chatText(DATA.score.label)}${hot?`<br>Eine Budgetkategorie braucht Aufmerksamkeit.`:``}`;
 }
 function ans_month_status(){
   const free=freeBudget(), spent=monthDiscretionarySpent(), plan=monthlyPlanBudget();
@@ -11828,8 +11831,8 @@ function ans_month_status(){
   const incomePending=APP_MODE==="bridge" && (DATA.monthlyPlan||{}).incomeStatus!=="confirmed";
   const over=(DATA.budgets||[]).filter(b=>catSpent(b.cat)>b.limit).sort((a,b)=>(catSpent(b.cat)-b.limit)-(catSpent(a.cat)-a.limit))[0];
   const top=trackedOuts().reduce((best,item)=>Math.abs(item.a)>Math.abs(best?.a||0)?item:best,null);
-  const topLine=top ? `<br>Größte Buchung bisher: <b>${top.n}</b> · ${eur(Math.abs(top.a))}.` : ``;
-  const budgetLine=over ? `<br><b>${over.cat}</b> liegt ${eur(catSpent(over.cat)-over.limit)} über Plan.` : ``;
+  const topLine=top ? `<br>Größte Buchung bisher: <b>${chatText(top.n)}</b> · ${eur(Math.abs(top.a))}.` : ``;
+  const budgetLine=over ? `<br><b>${chatText(over.cat)}</b> liegt ${eur(catSpent(over.cat)-over.limit)} über Plan.` : ``;
   if(incomePending){
     return `Geplanter Ausgabenrahmen: <b>${eur(Math.max(0,plan))}</b>.<br>Bisher ausgegeben: <b>${eur(spent)}</b>.<br>Dein Gehalt ist noch nicht bestätigt.${budgetLine}`;
   }
@@ -11952,15 +11955,23 @@ const CAT_ALIASES=[
   [/drogerie/, ["Drogerie"]],
   [/gesundheit|apotheke/, ["Gesundheit"]],
 ];
+function ans_category_why(t){
+  if(!/\b(?:warum|wieso|weshalb)\b/.test(t)) return null;
+  const hit=CAT_ALIASES.find(([rx])=>rx.test(t)); if(!hit) return null;
+  const cats=hit[1], sum=cats.reduce((total,cat)=>total+catSpent(cat),0);
+  const label=cats.length>1?cats.join(" & "):cats[0];
+  if(!sum) return `Für ${chatText(label)} sind diesen Monat keine Konsumausgaben erfasst. Eine Ursache lässt sich daraus nicht ableiten.`;
+  return `<b>${chatText(label)}</b> lag diesen Monat bei ${eur2(sum)}. Warum sich die Summe so ergeben hat, lässt sich aus den vorhandenen Daten nicht eindeutig ableiten.`;
+}
 function ans_catSpent(t){
   if(!/wie viel|wieviel|ausgegeben|ausgaben|kosten|summe|bisher/.test(t)) return null;
   const hit=CAT_ALIASES.find(([rx])=>rx.test(t)); if(!hit) return null;
   const cats=hit[1], sum=cats.reduce((s,c)=>s+catSpent(c),0);
-  if(!sum) return `Für ${cats.join(" & ")} ist diesen Monat noch keine Ausgabe erfasst.`;
+  if(!sum) return `Für ${chatText(cats.join(" & "))} ist diesen Monat noch keine Ausgabe erfasst.`;
   const label=cats.length>1?cats.join(" & "):cats[0];
   const b=DATA.budgets.find(x=>cats.includes(x.cat));
-  const bnote=b?` Dein ${b.cat}-Budget liegt bei ${eur(b.limit)}.`:``;
-  return `<b>${label}</b>: ${eur2(sum)} diesen Monat.${bnote}`;
+  const bnote=b?` Dein ${chatText(b.cat)}-Budget liegt bei ${eur(b.limit)}.`:``;
+  return `<b>${chatText(label)}</b>: ${eur2(sum)} diesen Monat.${bnote}`;
 }
 // Ausgaben-Gesamtübersicht (Bot-Pendant: build_expense_overview) — Summe + größte Posten +
 // Verweis auf den Cashflow-Tab (dort liegt die volle Liste, die im Bot als Text kam).
@@ -11969,13 +11980,13 @@ function ans_expenses(){
   // ohne diesen Ausschluss wäre die Ausgabensumme um jede Abhebung zu hoch (Budgets und
   // trackedOuts() filtern sie schon über fixedMerchantSet()).
   const items=DATA.tx.flatMap(d=>d.items).filter(t=>t.a<0 && !t.transfer);
-  const consumption=items.filter(t=>!isFixedExpense(t));
+  const consumption=items.filter(isConsumptionExpense);
   const fixed=items.filter(isFixedExpense);
   const total=consumption.reduce((s,t)=>s+Math.abs(t.a),0);
   const fixedTotal=fixed.reduce((s,t)=>s+Math.abs(t.a),0);
   if(!total && !fixedTotal) return `Diesen Monat ist noch keine Ausgabe erfasst.<br>Neue Buchungen erscheinen hier und im Cashflow.`;
   const byCat=CATS.map(([c])=>[c,catSpent(c)]).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,3);
-  const top=byCat.length?`<br>Größte Posten: `+byCat.map(([c,v])=>`${c} ${eur2(v)}`).join(", ")+`.`:``;
+  const top=byCat.length?`<br>Größte Posten: `+byCat.map(([c,v])=>`${chatText(c)} ${eur2(v)}`).join(", ")+`.`:``;
   const consumptionLine=total ? `Konsumausgaben diesen Monat: <b>${eur2(total)}</b> · ${consumption.length} Buchungen.` : `Diesen Monat sind noch keine Konsumausgaben erfasst.`;
   const fixedLine=fixedTotal ? `<br>Fixkosten: <b>${eur2(fixedTotal)}</b> · separat geführt.` : ``;
   return `${consumptionLine}${fixedLine}${top}`;
@@ -11987,7 +11998,7 @@ function ans_abos(){
   );
   const sum=abos.reduce((s,i)=>s+Math.abs(i.a||0),0);
   if(!abos.length) return `Keine Abos hinterlegt.`;
-  return `Abos: <b>${abos.map(a=>a.n).join(", ")}</b>.<br>Zusammen: <b>${eur2(sum)}/Monat</b>.`;
+  return `Abos: <b>${abos.map(a=>chatText(a.n)).join(", ")}</b>.<br>Zusammen: <b>${eur2(sum)}/Monat</b>.`;
 }
 // Nur getrackte (diskretionäre) Ausgaben — Fixkosten laufen im Bot gar nicht durch die expenses-Tabelle,
 // „größte Ausgabe = Miete" wäre eine nutzlose Antwort. Gleiche Ausnahme wie beim Budget-Lernen.
@@ -11999,7 +12010,7 @@ function ans_largest(){
   const outs=trackedOuts();
   if(!outs.length) return `Diesen Monat ist noch keine Konsumausgabe erfasst.<br>Fixkosten zähle ich hier nicht mit.`;
   const top=outs.reduce((m,i)=>Math.abs(i.a)>Math.abs(m.a)?i:m);
-  return `Größte Konsumausgabe: <b>${eur2(Math.abs(top.a))}</b><br>${top.n} · ${top.cat}.`;
+  return `Größte Konsumausgabe: <b>${eur2(Math.abs(top.a))}</b><br>${chatText(top.n)} · ${chatText(top.cat)}.`;
 }
 // „Was ist meine größte Kategorie?" (Bot: asks_top_category)
 function ans_topcat(){
@@ -12007,7 +12018,7 @@ function ans_topcat(){
   trackedOuts().forEach(i=>{ sums[i.cat]=(sums[i.cat]||0)+Math.abs(i.a); });
   const top=Object.entries(sums).sort((a,b)=>b[1]-a[1])[0];
   if(!top) return `Diesen Monat ist noch keine Konsumausgabe erfasst.`;
-  return `Größte Kategorie: <b>${top[0]}</b> · ${eur2(top[1])}.`;
+  return `Größte Kategorie: <b>${chatText(top[0])}</b> · ${eur2(top[1])}.`;
 }
 // Sparrate direkt setzen ("Setz meine Sparrate auf 1000€") — Nachtrag-Weg für bereits onboardete
 // Profile: der Onboarding-Kachel-Bug (Furkan-Fund 17.07., siehe data-sf/data-fix/data-wf-Fix oben)
@@ -12060,19 +12071,20 @@ async function ans_set_sparrate(t){
 async function ans_etf_plan(t){
   if(!/\betf\b|sparplan/.test(t)) return null;
   if(!/(paus|stop|aussetz|weiter|fortsetz|aktiv|ausführ|ausfuehr|buch|erfass|wann|status|läuft|laeuft)/.test(t)) return null;
+  const canMutate=!isChatQuestionOrHypothesis(t);
   const plan=DATA.etfPlan||{};
   const amount=Number(DATA.sts?.sparratenParts?.etf||0);
   if(!amount) return `Kein ETF-Sparplan hinterlegt.`;
   if(plan.setupRequired || !plan.configured) return `ETF-Sparplan noch nicht eingerichtet.<br>Öffne <b>ETF & Investments</b> und lege Tag, Quellkonto und Ablauf fest.`;
-  if(/paus|stop|aussetz/.test(t)){
+  if(canMutate && /paus|stop|aussetz/.test(t)){
     const ok=await syncEtfPlanAction("pause");
     return ok ? `ETF-Sparplan pausiert.<br>Für diesen Monat wird nichts mehr automatisch erfasst.` : `ETF-Sparplan konnte gerade nicht pausiert werden.`;
   }
-  if(/weiter|fortsetz|aktiv/.test(t)){
+  if(canMutate && /weiter|fortsetz|aktiv/.test(t)){
     const ok=await syncEtfPlanAction("resume");
     return ok ? `ETF-Sparplan wieder aktiv.` : `ETF-Sparplan konnte gerade nicht aktiviert werden.`;
   }
-  if(/ausführ|ausfuehr|buch|erfass/.test(t) && plan.mode==="confirm"){
+  if(canMutate && /ausführ|ausfuehr|buch|erfass/.test(t) && plan.mode==="confirm"){
     const ok=await syncEtfPlanAction("execute");
     return ok ? `ETF-Sparplan über ${eur(amount)} ist erfasst.` : `Nicht erfasst. Prüfe bitte den Kontostand des Quellkontos.`;
   }
@@ -12113,7 +12125,7 @@ function ans_forecast(t){
   const g=named || [...open].sort((a,b)=>(b.cur/b.tar)-(a.cur/a.tar))[0];
   if(!g) return `Alle Ziele sind erreicht.`;
   const rest=Math.max(0,g.tar-g.cur), progress=g.tar>0 ? Math.min(100,Math.max(0,g.cur/g.tar*100)) : 0;
-  return `„<b>${g.t}</b>“: <b>${eur(g.cur)}</b> von ${eur(g.tar)} zugeordnet (${progress.toFixed(1).replace(".",",")} %).<br>Noch offen: <b>${eur(rest)}</b>.<br>Eine Zeitprognose gibt es erst mit einer ausdrücklich für dieses Ziel hinterlegten Monatsrate.`;
+  return `„<b>${chatText(g.t)}</b>“: <b>${eur(g.cur)}</b> von ${eur(g.tar)} zugeordnet (${progress.toFixed(1).replace(".",",")} %).<br>Noch offen: <b>${eur(rest)}</b>.<br>Eine Zeitprognose gibt es erst mit einer ausdrücklich für dieses Ziel hinterlegten Monatsrate.`;
 }
 // „Was ist der Score?" (Bot: build_score_info_answer) — erklärt, statt nur den Stand zu nennen
 function ans_scoreinfo(){
@@ -12196,9 +12208,49 @@ function isMentorImprovementQuestion(t){
 function isMentorAnalysisQuestion(t){
   return isMentorPriorityQuestion(t) || isMentorExplanationQuestion(t) || isMentorImprovementQuestion(t);
 }
+function isChatQuestionOrHypothesis(t){
+  const text=String(t||"").trim().toLowerCase();
+  return /\?/.test(text)
+    || /^(?:wie|was|warum|wieso|weshalb|wer|wo|wann|habe ich|hab ich|hatte ich|bekam ich|bekomme ich|ist .{0,70} eingegangen|war das)\b/.test(text)
+    || /\b(?:was wäre wenn|was waere wenn|angenommen|vielleicht|ich vermute|ich glaube|unter der annahme)\b/.test(text);
+}
+function isPersonalTradeRecommendationQuestion(t){
+  const text=String(t||"").toLowerCase();
+  const action=/(?:kauf\w*|verkauf\w*|veräußer\w*|veraeusser\w*|abstoß\w*|abstoss\w*)/;
+  return (/\b(?:soll(?:te)? ich|würde ich|wuerde ich|empfiehl\w*|rat\w* mir)\b/.test(text) && action.test(text))
+    || (/\b(?:was|welche\w*|welcher\w*)\b/.test(text) && action.test(text))
+    || /\b(?:kauf|verkauf) ich\b/.test(text)
+    || (/\bempfehl\w*\b/.test(text) && /\b(?:aktie|aktien|etf|krypto|coin|investment|depot)\b/.test(text));
+}
+function ans_available_cash(){
+  const amount=Number(DATA.buffer?.available_cash);
+  if(!Number.isFinite(amount)) return `Dein verfügbarer Cash-Stand ist gerade nicht verfügbar.`;
+  return `Verfügbarer Cash-Stand: <b>${eur(amount)}</b>.`;
+}
+function ans_wallet_cash(){
+  const wallet=(DATA.assets||[]).find(asset=>asset.accountType==="wallet" || /^(bargeld|bargeld \/ wallet)$/i.test(String(asset.name||"")));
+  return wallet ? ans_asset(wallet) : `Dein Bargeld im Portemonnaie ist gerade nicht verfügbar.`;
+}
+function isExplicitWalletCashQuestion(t){
+  return /\b(?:bargeld|portemonnaie|geldbeutel|geldbörse|geldboerse|wallet)\b/.test(t)
+    && /wie viel|wieviel|wie hoch|kontostand|stand|zeig|zeige|nenn mir/.test(t);
+}
+function isAvailableCashQuestion(t){
+  return /\b(?:cash|liquid\w*\s+mittel|liquidität|liquiditaet|verfügbares geld|verfuegbares geld|geld verfügbar|geld verfuegbar|geld.{0,24}verfügbar|geld.{0,24}verfuegbar)\b/.test(t)
+    && !/\b(?:sparrate|sparquote|cash sparen|cash-sparen)\b/.test(t)
+    && /wie viel|wieviel|wie hoch|kontostand|stand|verfügbar|verfuegbar|zeig|zeige/.test(t);
+}
 // Dispatcher: Thema + konkrete Entität aus dem Text erkennen
 async function roveAnswer(raw){
   const t=(raw||"").toLowerCase();
+  const canMutate=!isChatQuestionOrHypothesis(t);
+  if(isPersonalTradeRecommendationQuestion(t))
+    return `Ich kann deine bestehenden Investments und deren Entwicklung erklären, aber dir nicht sagen, was du kaufen oder verkaufen sollst.`;
+  if(/\b(?:habe ich|hab ich|hatte ich|bekam ich|bekomme ich|ist .{0,60} eingegangen|war das)\b/.test(t)
+     && /gutschrift|rückerstattung|rueckerstattung|erstattet|refund/.test(t))
+    return `Ich kann aus der Frage allein keine Gutschrift bestätigen. Prüfe dafür bitte die Buchungen in der App.`;
+  if(isExplicitWalletCashQuestion(t)) return ans_wallet_cash();
+  if(isAvailableCashQuestion(t)) return ans_available_cash();
   // Mentor-Fakten, Erklärungen und Verbesserungsfragen müssen vor lokalen Budget-/Score-Fallbacks
   // zur API gelangen, damit dort dieselben kanonischen Mentor-/Score-Daten verwendet werden.
   if(isMentorAnalysisQuestion(t)) return null;
@@ -12211,14 +12263,14 @@ async function roveAnswer(raw){
   // Begrüßung / Small-Talk NIE in den Fallback (Furkan 24.07.: Rov.E darf nie „kann ich noch nicht"
   // sagen). Nur greifen, wenn die GANZE Nachricht der Gruß ist (sonst würde „Hey, was kann ich
   // ausgeben?" fälschlich als Gruß enden). Warm + immer zum konkreten Wert führen.
-  const _nm=(typeof PROFILE_META!=="undefined"&&PROFILE_META.name)?" "+PROFILE_META.name:"";
+  const _nm=(typeof PROFILE_META!=="undefined"&&PROFILE_META.name)?" "+chatText(PROFILE_META.name):"";
   if(/^(hi+|hey+|hallo( rove)?|hey rove|moin|servus|hallöchen|halli hallo|na|jo|yo|guten (morgen|tag|abend)|grüß (dich|gott))[\s!.,-]*$/.test(t))
     return `Hallo${_nm}. Ich bin Rov.E, dein Finanzassistent.<br>Was soll ich prüfen?`;
   if(/^(na,? )?(und,? )?wie (geht'?s|gehts|läuft'?s|läuft es|steht'?s)( dir| bei dir| so| denn| eigentlich)?\??[\s!.,]*$|^alles (gut|klar|fit) bei dir\??[\s!.,]*$/.test(t))
     return `System ruhig. Dein Stand:<br>`+ans_overview();
-  if(pendingBudgetSuggestion && /(budget|vorschlag|rahmen).{0,25}(übernehm|uebernehm|speicher|akzept|passt|okay|ok)|^(passt|okay|ok|übernehmen|uebernehmen|speichern|akzeptieren)[\s!.,]*$/.test(t))
+  if(canMutate && pendingBudgetSuggestion && /(budget|vorschlag|rahmen).{0,25}(übernehm|uebernehm|speicher|akzept|passt|okay|ok)|^(passt|okay|ok|übernehmen|uebernehmen|speichern|akzeptieren)[\s!.,]*$/.test(t))
     return ans_accept_budget();
-  if(pendingBudgetSuggestion && /(budget|vorschlag|rahmen).{0,25}(verwerf|abbruch|abbrechen|nicht|nein)|^(nein|abbrechen|verwerfen|weg damit)[\s!.,]*$/.test(t))
+  if(canMutate && pendingBudgetSuggestion && /(budget|vorschlag|rahmen).{0,25}(verwerf|abbruch|abbrechen|nicht|nein)|^(nein|abbrechen|verwerfen|weg damit)[\s!.,]*$/.test(t))
     return ans_reject_budget();
   if(/^(danke\w*|merci|thx|dankeschön|top|super|cool|nice|perfekt|geil|mega|stark|alles klar|okay?|ok|passt|verstanden)[\s!.,]*$/.test(t))
     return `Gerne.`;
@@ -12226,7 +12278,7 @@ async function roveAnswer(raw){
   if(/(kann|könnte|koennte) ich mir|leisten|passt (das|es) noch|\bdrin\b/.test(t) || (/kann ich/.test(t)&&/kaufen|ausgeben|holen|gönnen/.test(t))){
     const amt=extractAmt(t); if(amt) return ans_afford(amt);
   }
-  if(/immobilie|haus gekauft|wohnung gekauft|eigentumswohnung/.test(t) && /(gekauft|eintragen|hinterlegen|erfassen|neu)/.test(t)){
+  if(canMutate && /immobilie|haus gekauft|wohnung gekauft|eigentumswohnung/.test(t) && /(gekauft|eintragen|hinterlegen|erfassen|neu)/.test(t)){
     setTimeout(openImmoSheet, 700);
     return `Ich öffne die Immobilien-Erfassung.<br>Bitte Marktwert und Restschuld eintragen.`;
   }
@@ -12243,29 +12295,30 @@ async function roveAnswer(raw){
     return ans_savings_feasibility();
   // Sparraten vor Bargeld pruefen: "Cash-Sparrate 700" ist eine Planung,
   // keine Bar-Ausgabe aus dem Portemonnaie.
-  const ss=await ans_set_sparrate(t); if(ss) return ss;
+  const ss=canMutate?await ans_set_sparrate(t):null; if(ss) return ss;
   const etfPlanAnswer=await ans_etf_plan(t); if(etfPlanAnswer) return etfPlanAnswer;
   // Abhebung VOR allen anderen Cash-Antworten: „abgehoben" ist eindeutig eine Umbuchung,
   // und weiter unten würde die Namenssuche das Wort „Bargeld" als reine Auskunft abfangen.
-  const cashWithdrawal=await ans_cash_withdrawal(t); if(cashWithdrawal) return cashWithdrawal;
+  const cashWithdrawal=canMutate?await ans_cash_withdrawal(t):null; if(cashWithdrawal) return cashWithdrawal;
   // Bar bezahlt direkt danach: „bar bezahlt" ist eine echte Ausgabe und muss VOR allen
   // Auskunfts-Antworten stehen, sonst fängt weiter unten „bargeld" die Namenssuche ab.
-  const cashExpense=await ans_cash_expense(t, raw); if(cashExpense) return cashExpense;
-  const cashIncome=await ans_cash_income(t); if(cashIncome) return cashIncome;
-  const investmentUpdate=await ans_set_investment(t); if(investmentUpdate) return investmentUpdate;
-  const addContract=await addContractFromText(t); if(addContract) return addContract;
+  const cashExpense=canMutate?await ans_cash_expense(t, raw):null; if(cashExpense) return cashExpense;
+  const cashIncome=canMutate?await ans_cash_income(t):null; if(cashIncome) return cashIncome;
+  const investmentUpdate=canMutate?await ans_set_investment(t):null; if(investmentUpdate) return investmentUpdate;
+  const addContract=canMutate?await addContractFromText(t):null; if(addContract) return addContract;
   // Tages-/Wochenbudget VOR dem Budgets-Check („wochenbudget" enthält „budget")
   if(/tagesbudget|tageslimit|wochenbudget|wochenlimit|pro tag|pro woche|am tag ausgeben|diese woche ausgeben|(heute|heut).{0,32}(ausgeben|drin|verfügbar|uebrig|übrig|leisten)|was.*heute.*drin/.test(t)) return ans_daybudget(t);
   if(/score/.test(t) && /was ist|was bedeutet|erklär|erklaer|wie funktioniert|wie wird|wofür|wofuer|was sagt/.test(t)) return ans_scoreinfo();
   if(/score|controller|stratege|rang|einstufung|verfassung|punkte/.test(t)) return ans_score(t);
   if(/abo(s|nnement)/.test(t) && /wie viel|wieviel|zahle|kosten|liste|zeig|übersicht/.test(t)) return ans_abos();
+  const whyCategory=ans_category_why(t); if(whyCategory) return whyCategory;
   const cs=ans_catSpent(t); if(cs) return cs;
   // Ausgaben-Gesamt/Liste (Bot: is_expense_overview_request) — NACH der Kategorie-Frage, damit
   // „wie viel für Essen" gezielt bleibt; hier die kategorielose Gesamt-/Übersichts-/Listen-Frage.
   if(/ausgabe|ausgaben|ausgegeben|buchung|buchungen/.test(t) && /zeig|übersicht|uebersicht|auflist|aufstell|\balle\b|liste|detail|wie ?viel|was habe|gib mir|gesamt/.test(t)) return ans_expenses();
   if(/(größte|groesste|teuerste|höchste|hoechste).{0,12}ausgabe/.test(t)) return ans_largest();
   if(/(größte|groesste|stärkste|staerkste|top).{0,3}kategorie/.test(t)) return ans_topcat();
-  const cashTransfer=await ans_cash_transfer(t); if(cashTransfer) return cashTransfer;
+  const cashTransfer=canMutate?await ans_cash_transfer(t):null; if(cashTransfer) return cashTransfer;
   if(/sparrate|sparquote|wie ?viel spare ich/.test(t)) return ans_savings();
   if(/wie lange (brauche|dauert|noch)|wann (erreiche|schaffe|bin ich)|prognose/.test(t)) return ans_forecast(t);
   // Eine echte Kündigungserinnerung braucht serverseitige Fristen und Benachrichtigungen.
@@ -12273,7 +12326,7 @@ async function roveAnswer(raw){
   if(/erinner/.test(t)){
     const v=DATA.vertraege.flatMap(c=>c.items).find(x=>x.cancel && t.includes(x.n.toLowerCase().replace(/·.*/,"").trim().split(/\s+/)[0]));
     if(v){
-      return `<b>${v.n}</b>: Die Glocke zeigt die nächsten Abbuchungen. Kündigungserinnerungen kommen später.`;
+      return `<b>${chatText(v.n)}</b>: Die Glocke zeigt die nächsten Abbuchungen. Kündigungserinnerungen kommen später.`;
     }
     return `Die Glocke zeigt die nächsten Abbuchungen. Kündigungserinnerungen kommen später.`;
   }
@@ -12281,17 +12334,17 @@ async function roveAnswer(raw){
   // Budget-Zweigen — regeneriert IMMER neu aus dem aktuellen Frei, auch wenn schon Budgets existieren
   // (das ist die angeforderte Aktion selbst, kein versehentliches Überschreiben). 2. Alternative fängt
   // das trennbare Verb "vorschlagen" ("schlag ... vor") — gleiches Muster wie bei "leg ... an" oben.
-  if((/vorschlag/.test(t) || /\bschlag\w*\b.{0,30}\bvor\b/.test(t)) && /budget|topf|töpfe/.test(t)) return ans_suggest_budget();
+  if(canMutate && (/vorschlag/.test(t) || /\bschlag\w*\b.{0,30}\bvor\b/.test(t)) && /budget|topf|töpfe/.test(t)) return ans_suggest_budget();
   // Konkrete Kategorie + Betrag ("Setz Lebensmittel auf 300€") VOR der pauschalen Anfrage prüfen —
   // das ist die gezielte Aktion, die generische "leg ein Budget an"-Sätze nicht abdecken können.
-  const sb=ans_set_budget(t); if(sb) return sb;
+  const sb=canMutate?ans_set_budget(t):null; if(sb) return sb;
   // Aktive Anfrage ("erstell/mach/plan mir ein Budget") VOR der reinen Auskunft prüfen —
   // sonst würde "budget" allein immer nur ans_budgets() (Informationsantwort) treffen.
   // 3. Zeile fängt trennbare Verben ab ("leg mir ein Budget an", "stell mir ein Budget auf") —
   // Verb und Partikel liegen dort am Satzanfang/-ende, nicht direkt nebeneinander wie bei "leg an".
-  if(/(erstell|mach|leg.{0,4}an|plan|schlag|errechne|berechne|setz).{0,20}(budget|topf|töpfe)/.test(t)
+  if(canMutate && (/(erstell|mach|leg.{0,4}an|plan|schlag|errechne|berechne|setz).{0,20}(budget|topf|töpfe)/.test(t)
      || /(budget|topf|töpfe).{0,20}(erstell|mach|plan|vorschlag|anleg|fest)/.test(t)
-     || /^(leg|setz|stell)\w*\b.{0,30}\b(budget|topf|töpfe)\b.{0,15}\b(an|fest|auf)\b/.test(t)) return ans_create_budget();
+     || /^(leg|setz|stell)\w*\b.{0,30}\b(budget|topf|töpfe)\b.{0,15}\b(an|fest|auf)\b/.test(t))) return ans_create_budget();
   // Volle Übersicht ("zeig meine budgets") vs. nur der kritischste Topf (reines "budget"-Erwähnen) —
   // gleiche Unterscheidung wie im Bot (maybe_answer_budget_status: "zeig/übersicht/meine budgets").
   if(/zeig|übersicht|uebersicht|meine budgets|alle budgets|budgetrahmen|wie sehen/.test(t) && /budget|topf|töpfe/.test(t)) return ans_budgets_detail();
@@ -12308,7 +12361,7 @@ async function roveAnswer(raw){
   if(/überblick|zusammenfassung|status|wie.*(steh|geht|läuft|lauf|liegt).*(finanz|ich|mir)|wie.*gehts/.test(t)) return ans_overview();
   // Konto-Korrektur ("Setz mein Girokonto auf 3.500€") VOR der reinen Auskunft prüfen — sonst würde
   // "Girokonto" allein immer nur ans_asset() (Informationsantwort) treffen.
-  const sa=await ans_set_asset(t); if(sa) return sa;
+  const sa=canMutate?await ans_set_asset(t):null; if(sa) return sa;
   // Allgemeine Finanzbildung darf nicht durch die alte Asset-Schlagwortregel als persönlicher
   // Snapshot enden. Nur klarer persönlicher Bezug bleibt deterministisch in Rov.E.
   const investmentTerms=/\betfs?\b|depot|\baktien?\b|portfolio|investments?|msci|nasdaq|s ?& ?p|s&p|\bfond/.test(t);
@@ -12361,6 +12414,28 @@ const SUGGESTIONS = [
 let pendingBudgetSuggestion=null;
 let aiConversationId=null;
 const chatEl=()=>document.getElementById("chat");
+function appendSafeChatMarkup(parent,node){
+  if(node.nodeType===Node.TEXT_NODE){ parent.appendChild(document.createTextNode(node.nodeValue||"")); return; }
+  if(node.nodeType!==Node.ELEMENT_NODE) return;
+  const tag=node.tagName.toLowerCase();
+  if(!["b","br","span"].includes(tag)){
+    parent.appendChild(document.createTextNode(node.outerHTML||node.textContent||""));
+    return;
+  }
+  const clean=document.createElement(tag);
+  if(tag==="span"){
+    const style=String(node.getAttribute("style")||"").replace(/\s+/g,"").toLowerCase();
+    if(style==="color:var(--muted)" || /^color:var\(--(?:red|gold|green)\);font-weight:700$/.test(style))
+      clean.setAttribute("style",style);
+  }
+  node.childNodes.forEach(child=>appendSafeChatMarkup(clean,child));
+  parent.appendChild(clean);
+}
+function renderSafeChatMarkup(parent,html){
+  const template=document.createElement("template");
+  template.innerHTML=String(html??"");
+  template.content.childNodes.forEach(node=>appendSafeChatMarkup(parent,node));
+}
 function pushBub(who, content, options={}){
   const c=chatEl(), d=document.createElement("div");
   d.className="bub "+who;
@@ -12368,7 +12443,7 @@ function pushBub(who, content, options={}){
     const label=document.createElement("span"); label.className="ai-label"; label.textContent="Rov.E AI"; d.appendChild(label);
   }
   if(options.text) d.appendChild(document.createTextNode(content));
-  else d.innerHTML=content;
+  else renderSafeChatMarkup(d,content);
   c.appendChild(d); c.scrollTop=c.scrollHeight; return d;
 }
 function rovReply(html){

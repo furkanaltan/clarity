@@ -51,12 +51,15 @@ from rove_app_state import (
     REPORTS_ARCHIVE_DIR,
     REPORTS_DIR,
     _crypto_holdings_value,
+    _category_label,
     _build_tx,
     _build_reports,
     _monthly_budget_truth,
     build_app_contract_groups,
     build_mentor_candidate,
     build_live_app_data,
+    build_buffer_data,
+    get_app_cash_accounts,
     ensure_buffer_target_column,
     hydrate_crypto_logos,
     ensure_app_account_balances_table,
@@ -1951,6 +1954,17 @@ def ai_chat_intent(message: str) -> str:
     text = message.casefold()
     if any(word in text for word in ("buche", "buchen", "erfasse", "überweis", "ueberweis", "lösche", "loesche", "ändere", "aendere", "setze mein", "erstelle ein")):
         return "action"
+    if re.search(r"\b(?:bargeld|portemonnaie|geldbeutel|geldbörse|geldboerse|wallet)\b", text):
+        return "wallet_cash"
+    if (
+        re.search(
+            r"\b(?:cash|liquid\w*\s+mittel|liquidität|liquiditaet|verfügbares geld|verfuegbares geld|"
+            r"geld verfügbar|geld verfuegbar|geld.{0,24}verfügbar|geld.{0,24}verfuegbar)\b",
+            text,
+        )
+        and not re.search(r"\b(?:sparrate|sparquote|cash sparen|cash-sparen)\b", text)
+    ):
+        return "available_cash"
     if ai_mentor_question_mode(text):
         return "mentor_priority"
     if any(phrase in text for phrase in (
@@ -1963,7 +1977,7 @@ def ai_chat_intent(message: str) -> str:
         return "score"
     if any(word in text for word in ("vertrag", "verträge", "vertraege", "fixkosten", "kündbar", "kuendbar")):
         return "fixed_costs"
-    if any(word in text for word in ("ausgabe", "ausgaben", "mehr ausgegeben", "kategorie", "budget")):
+    if any(word in text for word in ("ausgabe", "ausgaben", "mehr ausgegeben", "kategorie", "budget", "shopping")):
         return "spending"
     if any(word in text for word in ("ziel", "ziele", "sparziel", "prognose", "wie lange brauche")) or re.search(r"\bund\s+mit\s+\d", text):
         return "goals"
@@ -1977,6 +1991,51 @@ def ai_chat_intent(message: str) -> str:
     if any(word in text for word in ("flugzeug", "kochrezept", "rezept", "fußball", "fussball", "fußballregel", "fussballregel")):
         return "off_topic"
     return "general_knowledge"
+
+
+def ai_chat_is_personal_trade_recommendation(message: str) -> bool:
+    """Recognize personal buy/sell advice requests before any provider call."""
+    text = " ".join(str(message or "").casefold().split())
+    action = r"(?:kauf\w*|verkauf\w*|veräußer\w*|veraeusser\w*|abstoß\w*|abstoss\w*)"
+    return bool(
+        re.search(rf"\b(?:soll(?:te)? ich|würde ich|wuerde ich|empfiehl\w*|rat\w* mir)\b.{{0,80}}\b{action}\b", text)
+        or re.search(rf"\b(?:was|welche\w*|welcher\w*)\b.{{0,60}}\b{action}\b", text)
+        or re.search(rf"\b{action}\s+ich\b", text)
+        or ("empfehl" in text and re.search(r"\b(?:aktie|aktien|etf|krypto|coin|investment|depot)\b", text))
+    )
+
+
+def _ai_format_eur(value: object) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return f"{amount:,.2f}".replace(",", "\0").replace(".", ",").replace("\0", ".")
+
+
+def _ai_spending_why_answer(message: str, context: dict) -> str:
+    """Report the observed category total without inventing its cause."""
+    text = str(message or "").casefold()
+    categories = context.get("categories") or []
+    match = next(
+        (row for row in sorted(categories, key=lambda item: len(str(item.get("category") or "")), reverse=True)
+         if str(row.get("category") or "").casefold() in text),
+        None,
+    )
+    if not match:
+        return "Aus den vorhandenen Ausgabendaten lässt sich die Ursache nicht eindeutig ableiten."
+    category = str(match.get("category") or "")
+    amount = float(match.get("amount_eur") or 0)
+    if amount <= 0:
+        return f"Für {category} sind diesen Monat keine Konsumausgaben erfasst. Eine Ursache lässt sich daraus nicht ableiten."
+    return (
+        f"{category} lag diesen Monat bei {_ai_format_eur(amount)} €. "
+        "Warum sich die Summe so ergeben hat, lässt sich aus den vorhandenen Daten nicht eindeutig ableiten."
+    )
+
+
+def _ai_spending_why_requested(message: str) -> bool:
+    return bool(re.search(r"\b(?:warum|wieso|weshalb)\b", str(message or "").casefold()))
 
 
 def _ai_table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -2090,6 +2149,33 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
         return intent, {"context_type": intent, "available": False}
     if intent == "mentor_priority":
         return intent, _ai_mentor_priority_context(conn, user_id, user, message)
+    if intent == "available_cash":
+        buffer = build_buffer_data(conn, user_id, dict(user))
+        return intent, {
+            "context_type": "available_cash",
+            "available": buffer.get("available_cash") is not None,
+            "available_cash_eur": buffer.get("available_cash"),
+            "source": "canonical_buffer_cash",
+        }
+    if intent == "wallet_cash":
+        profile = dict(user)
+        if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+            wallet_cash = round(sum(
+                float(account["balance"] or 0)
+                for account in list_financial_accounts(conn, user_id)
+                if account["account_type"] == "wallet" and account["status"] == "active"
+            ), 2)
+        else:
+            accounts, _has_accounts = get_app_cash_accounts(
+                conn, user_id, profile.get("current_cash")
+            )
+            wallet_cash = accounts.get("bargeld")
+        return intent, {
+            "context_type": "wallet_cash",
+            "available": wallet_cash is not None,
+            "wallet_cash_eur": wallet_cash,
+            "source": "canonical_wallet_balance",
+        }
     if intent == "score":
         try:
             score = calculate_score(conn, user_id, user)
@@ -2106,11 +2192,24 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
         return intent, {"context_type": "fixed_costs", "fixed_costs_eur": round(float(user["fixed_costs"] or 0), 2),
                         "contracts": [{"name": item["n"], "category": item["category"], "amount_eur": item["a"], "cancelable": item["cancel"]} for item in contracts]}
     if intent == "spending":
-        rows = conn.execute(
-            """SELECT category, ROUND(SUM(amount), 2) AS amount_eur FROM expenses
-               WHERE user_id = ? AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', 'localtime')
-               GROUP BY category ORDER BY amount_eur DESC LIMIT 8""", (user_id,)
-        ).fetchall() if _ai_table_exists(conn, "expenses") else []
+        month_key = business_month_key()
+        classified = classified_expenses(conn, user_id, month_key) if _ai_table_exists(conn, "expenses") else []
+        totals: dict[str, float] = {}
+        for row in classified:
+            if row.get("classification") != "consumption":
+                continue
+            try:
+                amount = float(row.get("amount") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            category = _category_label(str(row.get("category") or ""))
+            totals[category] = totals.get(category, 0.0) + amount
+        rows = [
+            {"category": category, "amount_eur": round(amount, 2)}
+            for category, amount in sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:8]
+        ]
         income = float(user["income"] or 0) + float(user["other_income"] or 0)
         fixed_costs = float(user["fixed_costs"] or 0)
         savings = float(user["etf_savings"] or 0) + float(user["cash_savings"] or 0)
@@ -2122,7 +2221,7 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
             budget_rows = conn.execute(
                 """SELECT category, monthly_limit, source FROM category_budgets
                    WHERE user_id = ? AND active_month = ? ORDER BY category LIMIT 20""",
-                (user_id, datetime.now().strftime("%Y-%m")),
+                (user_id, month_key),
             ).fetchall()
             budgets = [
                 {
@@ -2134,7 +2233,10 @@ def build_ai_chat_context(conn: sqlite3.Connection, user_id: int, message: str) 
             ]
         return intent, {
             "context_type": "spending_current_month",
-            "categories": [dict(row) for row in rows],
+            "month": month_key,
+            "monthly_consumption_eur": round(sum(row["amount_eur"] for row in rows), 2),
+            "categories": rows,
+            "causal_analysis_available": False,
             "budget": {
                 "free_month_remaining_eur": round(float(budget_truth["free_month_remaining"]), 2),
                 "financial_month_budget_eur": round(float(budget_truth["financial_month_budget"]), 2),
@@ -2289,6 +2391,14 @@ def ai_chat():
         intent = ai_chat_intent(message)
         if intent == "action":
             return jsonify({"ok": True, "kind": "rove", "answer": "Dafür nutzt du bitte die normale Rov.E-Funktion. Ich kann deine Finanzdaten nicht verändern."})
+        if ai_chat_is_personal_trade_recommendation(message):
+            return jsonify({
+                "ok": True,
+                "kind": "rove",
+                "deterministic": True,
+                "intent": "investment_advice_boundary",
+                "answer": "Ich kann deine bestehenden Investments und deren Entwicklung erklären, aber dir nicht sagen, was du kaufen oder verkaufen sollst.",
+            })
         if intent == "mentor_priority" and ai_mentor_question_mode(message) in {"weakness", "action", "combined"}:
             _intent, context = build_ai_chat_context(conn, user_id, message)
             return jsonify({
@@ -2297,6 +2407,25 @@ def ai_chat():
                 "deterministic": True,
                 "intent": intent,
                 "answer": _ai_deterministic_mentor_answer(context),
+            })
+        if intent in {"available_cash", "wallet_cash"}:
+            _intent, context = build_ai_chat_context(conn, user_id, message)
+            amount_key = "available_cash_eur" if intent == "available_cash" else "wallet_cash_eur"
+            label = "verfügbarer Cash-Stand" if intent == "available_cash" else "Bargeld im Portemonnaie"
+            answer = (
+                f"Dein {label} liegt bei {_ai_format_eur(context[amount_key])} €."
+                if context.get("available")
+                else f"Dein {label} ist aktuell nicht verfügbar."
+            )
+            return jsonify({"ok": True, "kind": "rove", "deterministic": True, "intent": intent, "answer": answer})
+        if intent == "spending" and _ai_spending_why_requested(message):
+            _intent, context = build_ai_chat_context(conn, user_id, message)
+            return jsonify({
+                "ok": True,
+                "kind": "rove",
+                "deterministic": True,
+                "intent": intent,
+                "answer": _ai_spending_why_answer(message, context),
             })
         ensure_ai_chat_tables(conn)
         cleanup_ai_chat_data(conn)
