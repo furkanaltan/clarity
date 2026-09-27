@@ -10,6 +10,11 @@ import math
 import sqlite3
 from calendar import monthrange
 from datetime import date, timedelta
+from rove_dates import (
+    business_today,
+    effective_business_date,
+    select_rows_for_business_month,
+)
 
 
 SCORE_RANKS = [
@@ -380,14 +385,20 @@ def platform_days(conn: sqlite3.Connection, user_id: int, today: date | None = N
 
 
 def tracking_days_90(conn: sqlite3.Connection, user_id: int, today: date | None = None) -> int:
-    since = ((today or date.today()) - timedelta(days=89)).isoformat()
-    row = conn.execute(
-        """SELECT COUNT(DISTINCT DATE(created_at)) AS days
-             FROM expenses
-             WHERE user_id = ? AND DATE(created_at) >= DATE(?)""",
-        (user_id, since),
-    ).fetchone()
-    return _int(row, "days") if row else 0
+    end_date = today or business_today()
+    since = end_date - timedelta(days=89)
+    month_keys = []
+    cursor = since.replace(day=1)
+    while cursor <= end_date:
+        month_keys.append(cursor.strftime("%Y-%m"))
+        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    tracking_dates = set()
+    for month_key in month_keys:
+        for row in select_rows_for_business_month(conn, "expenses", user_id, month_key):
+            effective = effective_business_date(row)
+            if effective and since <= effective <= end_date:
+                tracking_dates.add(effective)
+    return len(tracking_dates)
 
 
 def savings_confirmed(conn: sqlite3.Connection, user_id: int, report_month: str) -> bool:
@@ -536,7 +547,7 @@ def calculate_score(
                 # the additive status field when older callers omit it.
                 user = dict(user)
                 user["debt_status"] = refreshed["debt_status"]
-    today = today or date.today()
+    today = today or business_today()
     report_month = report_month or today.strftime("%Y-%m")
     if total_expenses is None:
         from rove_expense_domain import classified_expenses

@@ -20,6 +20,7 @@ from rove_financial_accounts import (
 )
 from rove_score import award_tracking_points
 from rove_behavior_snapshot import invalidate_behavior_snapshot
+from rove_dates import effective_business_date, select_rows_for_business_month
 
 
 NON_CONSUMPTION_MOVEMENTS = {
@@ -60,16 +61,15 @@ def canonical_expense_movement_kinds(
 def classified_expenses(conn: sqlite3.Connection, user_id: int, month_key: str,
                         cutoff_date: str | None = None) -> list[dict]:
     """Classify concrete payments by their user-scoped movement, never by category."""
-    rows = conn.execute(
-        """SELECT * FROM expenses WHERE user_id = ?
-           AND strftime('%Y-%m', created_at) = ?
-           AND (? IS NULL OR DATE(created_at) <= DATE(?)) ORDER BY created_at DESC""",
-        (user_id, month_key, cutoff_date, cutoff_date),
-    ).fetchall()
+    rows = select_rows_for_business_month(
+        conn, "expenses", user_id, month_key, cutoff_date=cutoff_date
+    )
     movements = canonical_expense_movement_kinds(conn, user_id)
     result = []
     for row in rows:
         item = dict(row)
+        effective_date = effective_business_date(row)
+        item["effective_date"] = effective_date.isoformat() if effective_date else None
         kind = movements.get(item["id"], "")
         item["movement_kind"] = kind
         item["classification"] = (

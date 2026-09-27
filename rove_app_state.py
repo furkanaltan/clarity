@@ -32,6 +32,12 @@ import sqlite3
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from rove_dates import (
+    business_month_key,
+    business_today,
+    effective_business_date,
+    select_rows_for_business_month,
+)
 
 from rove_score import (
     calculate_score,
@@ -237,12 +243,9 @@ def _cash_movements_for_month(conn: sqlite3.Connection, user_id: int, month_key:
     unten haette dann ALLE Bewegungen des Monats verschluckt, also auch die Abhebungen.
     """
     try:
-        return conn.execute(
-            """SELECT * FROM app_cash_movements
-                 WHERE user_id = ? AND strftime('%Y-%m', created_at) = ?
-                 ORDER BY created_at DESC""",
-            (user_id, month_key),
-        ).fetchall()
+        return select_rows_for_business_month(
+            conn, "app_cash_movements", user_id, month_key
+        )
     except sqlite3.OperationalError:
         return []
 
@@ -262,7 +265,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
     Der Cashflow kann damit vergangene Monate anzeigen, ohne sie editierbar zu machen.
     Fehlt month_key, bleibt das bisherige Verhalten erhalten und liefert den laufenden Monat.
     """
-    month_key = month_key or date.today().strftime("%Y-%m")
+    month_key = month_key or business_month_key()
     from rove_expense_domain import classified_expenses
     rows = classified_expenses(conn, user_id, month_key)
     account_names = {
@@ -279,7 +282,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
         for m in movements
         if m["kind"] == "payment" and m["expense_id"] is not None
     }
-    entries: list[tuple[str, dict]] = []
+    entries: list[tuple[str, str, dict]] = []
     for r in rows:
         cat = "Fixkosten" if r["classification"] == "fixed_cost" else _category_label(r["category"])
         name = (r["merchant"] or r["description"] or cat).strip() or cat
@@ -314,7 +317,7 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # aus dem Portemonnaie kam — die App wuerde sie beim Loeschen dem Girokonto
             # zurueckgeben statt dem Bargeld.
             item["bar"] = True
-        entries.append((r["created_at"] or "", item))
+        entries.append((r.get("effective_date") or "", str(r["created_at"] or ""), item))
     for m in movements:
         if m["kind"] in {"income", "refund"}:
             # Einnahmen tragen wie Abhebungen eine `csid`, keine `sid` — sie stehen nicht in
@@ -322,7 +325,8 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # schicken und dort eine fremde Ausgabe mit derselben Nummer treffen.
             target_id = m["target_account_id"] if "target_account_id" in m.keys() else None
             is_refund = m["kind"] == "refund"
-            entries.append((m["created_at"] or "", {
+            effective = effective_business_date(m)
+            entries.append((effective.isoformat() if effective else "", str(m["created_at"] or ""), {
                 "csid": m["id"],
                 "n": _movement_label(m, "Gutschrift" if is_refund else "Einnahme"),
                 "cat": "Gutschrift" if is_refund else "Einnahme",
@@ -340,7 +344,8 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # Fixkosten sind dort also schon abgezogen. Stuenden sie zusaetzlich in `expenses`,
             # wuerden sie doppelt zaehlen und Budget, Bot und Report verfaelschen. Hier bewegen sie
             # nur das Konto — und werden sichtbar, damit der Kontostand nachvollziehbar bleibt.
-            entries.append((m["created_at"] or "", {
+            effective = effective_business_date(m)
+            entries.append((effective.isoformat() if effective else "", str(m["created_at"] or ""), {
                 "csid": m["id"],
                 "n": _movement_label(m, "Fixkosten"),
                 "cat": "Fixkosten",
@@ -354,7 +359,8 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
         if m["kind"] == "transfer":
             source_id = m["source_account_id"]
             target_id = m["target_account_id"]
-            entries.append((m["created_at"] or "", {
+            effective = effective_business_date(m)
+            entries.append((effective.isoformat() if effective else "", str(m["created_at"] or ""), {
                 "csid": m["id"], "n": _movement_label(m, "Umbuchung"),
                 "cat": "Umbuchung", "a": -abs(float(m["amount"] or 0)),
                 "c": "#2AABEE", "i": "↔", "transfer": True,
@@ -366,7 +372,8 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             continue
         if m["kind"] != "withdrawal":
             continue
-        entries.append((m["created_at"] or "", {
+        effective = effective_business_date(m)
+        entries.append((effective.isoformat() if effective else "", str(m["created_at"] or ""), {
             # "csid" statt "sid": diese Zeile steht in app_cash_movements, nicht in expenses.
             # Ein "sid" hier waere gefaehrlich — die App wuerde beim Loeschen
             # DELETE /v1/expenses/<id> aufrufen und damit eine fremde Ausgabe mit derselben
@@ -380,13 +387,12 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             "transfer": True,
             "account": "giro",
         }))
-    entries.sort(key=lambda entry: entry[0], reverse=True)
+    entries.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
 
     days: dict[str, list] = {}
     order: list[str] = []
-    today_iso = date.today().isoformat()
-    for created, item in entries:
-        day_key = (created or "")[:10]
+    today_iso = business_today().isoformat()
+    for day_key, _created, item in entries:
         # Maschinenlesbares Datum fuer faire Zeitvergleiche in der App. Das sichtbare
         # Tageslabel bleibt unveraendert; alte Clients ignorieren das additive Feld.
         item["date"] = day_key if len(day_key) == 10 else ""
@@ -412,7 +418,7 @@ def _build_budgets(
     Buchungen ableiten. Vergangene Monate sind reine Historie; ein Rahmen wird nie
     automatisch in den Folgemonat kopiert.
     """
-    month_key = month_key or date.today().strftime("%Y-%m")
+    month_key = month_key or business_month_key()
     try:
         rows = conn.execute(
             """SELECT category, monthly_limit, source
@@ -448,7 +454,7 @@ def _monthly_budget_truth(
     month_key: str | None = None,
 ) -> dict[str, float]:
     """Return category-envelope and whole-month truth from one server calculation."""
-    month_key = month_key or date.today().strftime("%Y-%m")
+    month_key = month_key or business_month_key()
     budgets = _build_budgets(conn, user_id, month_key)
     limits = {
         str(budget["cat"]).strip().casefold(): float(budget["limit"] or 0)
@@ -1031,7 +1037,7 @@ def build_mentor_candidate(
 
 def _previous_month_keys(count: int = 3) -> list[str]:
     """Liefert die letzten abgeschlossenen Monats-Schluessel, neuester zuerst."""
-    cursor = date.today().replace(day=1)
+    cursor = business_today().replace(day=1)
     months: list[str] = []
     for _ in range(count):
         cursor = (cursor - timedelta(days=1)).replace(day=1)
@@ -1054,7 +1060,7 @@ def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
     nach der serverseitigen Komprimierung liegt es als .pdf.gz vor und wird von der API
     bei Bedarf wieder ausgeliefert.
     """
-    current_month = datetime.now().strftime("%Y-%m")
+    current_month = business_month_key()
     reports = [{
         "month": current_month,
         "m": _report_month_label(current_month),
@@ -1730,7 +1736,7 @@ def ensure_app_scheduled_savings_table(conn: sqlite3.Connection) -> None:
 def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict | None:
     """Aktiviert eine fällige Vormerkung genau einmal und gibt sie zurueck."""
     ensure_app_scheduled_savings_table(conn)
-    month_key = date.today().strftime("%Y-%m")
+    month_key = business_month_key()
     row = conn.execute(
         """SELECT effective_month, etf_savings, cash_savings
              FROM app_scheduled_savings WHERE user_id = ?""",
@@ -1751,7 +1757,7 @@ def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict 
 def get_app_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict | None:
     """Liefert eine noch nicht aktive Sparrate fuer die transparente App-Anzeige."""
     ensure_app_scheduled_savings_table(conn)
-    month_key = date.today().strftime("%Y-%m")
+    month_key = business_month_key()
     row = conn.execute(
         """SELECT effective_month, etf_savings, cash_savings
              FROM app_scheduled_savings
@@ -2132,7 +2138,7 @@ def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
                          fixed_costs: float, sparraten: float) -> dict:
     """Liefert Planung und explizite Bestaetigungen getrennt von echten Buchungen."""
     ensure_app_monthly_plan_table(conn)
-    month_key = date.today().strftime("%Y-%m")
+    month_key = business_month_key()
     row = conn.execute(
         """SELECT income_status, fixed_costs_status, savings_status
              FROM app_monthly_plan_status

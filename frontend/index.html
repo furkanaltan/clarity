@@ -6732,9 +6732,17 @@ function transactionRowElement(t,isCurrent){
   return row;
 }
 let txFilter="all", txQuery="", txSearchOpen=false, monthOffset=0;   // 0 = aktueller (echt editierbarer) Monat
-function monthAt(offset){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset); return d; }
-function monthKey(offset){ const d=monthAt(offset); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
-function monthLabel(offset){ return monthAt(offset).toLocaleDateString("de-DE",{month:"long",year:"numeric"}); }
+function berlinCalendarParts(value=new Date()){
+  return Object.fromEntries(new Intl.DateTimeFormat("en-CA",{
+    timeZone:"Europe/Berlin",year:"numeric",month:"2-digit",day:"2-digit"
+  }).formatToParts(value).filter(part=>part.type!=="literal").map(part=>[part.type,part.value]));
+}
+function monthAt(offset){
+  const parts=berlinCalendarParts();
+  return new Date(Date.UTC(Number(parts.year),Number(parts.month)-1+Number(offset),1,12));
+}
+function monthKey(offset){ const d=monthAt(offset); return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`; }
+function monthLabel(offset){ return monthAt(offset).toLocaleDateString("de-DE",{month:"long",year:"numeric",timeZone:"UTC"}); }
 function monthlyPlanNeedsAttention(){
   return APP_MODE==="bridge" && (DATA.monthlyCheckinActions||[])
     .some(action=>action?.due&&!action?.completed);
@@ -7048,12 +7056,12 @@ function analysisMonthSource(offset=analysisMonthOffset){
 }
 function analysisDateFromGroup(label,offset){
   if(label==="Heute"){
-    const today=new Date();
-    return `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+    const today=berlinCalendarParts();
+    return `${today.year}-${today.month}-${today.day}`;
   }
   const match=String(label||"").match(/^(\d{2})\.(\d{2})\./);
   if(!match)return "";
-  return `${monthAt(offset).getFullYear()}-${match[2]}-${match[1]}`;
+  return `${monthAt(offset).getUTCFullYear()}-${match[2]}-${match[1]}`;
 }
 function analysisOutflows(source=analysisMonthSource(),offset=analysisMonthOffset){
   return source.flatMap(day=>(day.items||[]).map(item=>({
@@ -7064,7 +7072,7 @@ function analysisAccountKey(item){
   return item.account || (item.bar?"bargeld":"giro");
 }
 function analysisFilteredOutflows(offset=analysisMonthOffset){
-  const cutoffDay=analysisMonthOffset===0?new Date().getDate():null;
+  const cutoffDay=analysisMonthOffset===0?Number(berlinCalendarParts().day):null;
   return analysisOutflows(analysisMonthSource(offset),offset).filter(item=>{
     if(analysisExcludedAccounts.has(analysisAccountKey(item)))return false;
     if(!cutoffDay||!item._analysisDate)return true;

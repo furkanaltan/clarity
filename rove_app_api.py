@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from contextlib import contextmanager, closing
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -107,7 +107,14 @@ from rove_investment_contributions import (
 )
 from rove_expense_domain import (
     begin_expense_write,
+    classified_expenses,
     create_expense_for_user,
+)
+from rove_dates import (
+    business_month_key,
+    business_today,
+    effective_business_date,
+    select_rows_for_business_month,
 )
 from rove_feature_announcements import (
     claim_coach_announcement,
@@ -879,7 +886,7 @@ def parse_screenshot_date(value: object) -> str | None:
     except ValueError:
         return None
     # Ein Bank-Screenshot darf keine erfundene Zukunftsbuchung erzeugen.
-    if parsed.date() > (datetime.now().date() + timedelta(days=1)):
+    if parsed.date() > (business_today() + timedelta(days=1)):
         return None
     return parsed.strftime("%Y-%m-%d")
 
@@ -906,7 +913,7 @@ def request_screenshot_analysis(image_bytes: bytes, mime_type: str) -> dict:
     if not OPENAI_API_KEY:
         raise RuntimeError("screenshot_import_not_configured")
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = business_today().isoformat()
     prompt = f"""Du liest einen Screenshot mit Bankumsaetzen fuer eine deutsche Finanz-App.
 Heute ist {today}.
 
@@ -1079,13 +1086,18 @@ def normalize_crypto_screenshot_rows(raw: object, user_id: int, image_digest: st
 def probable_expense_duplicate(
     conn: sqlite3.Connection, user_id: int, row: dict
 ) -> bool:
-    booking_date = row.get("date") or datetime.now().strftime("%Y-%m-%d")
-    candidates = conn.execute(
-        """SELECT merchant FROM expenses
-            WHERE user_id = ? AND ABS(amount - ?) < 0.005
-              AND date(created_at) = date(?)""",
-        (user_id, float(row["amount"]), booking_date),
-    ).fetchall()
+    booking_date = row.get("date") or business_today().isoformat()
+    try:
+        booking_day = date.fromisoformat(str(booking_date))
+    except ValueError:
+        return False
+    candidates = [
+        candidate for candidate in select_rows_for_business_month(
+            conn, "expenses", user_id, booking_day.strftime("%Y-%m")
+        )
+        if abs(float(candidate["amount"] or 0) - float(row["amount"])) < 0.005
+        and effective_business_date(candidate) == booking_day
+    ]
     wanted = normalize_category_rule_alias(row.get("merchant"))
     return any(normalize_category_rule_alias(item["merchant"]) == wanted for item in candidates)
 
@@ -4005,16 +4017,11 @@ def admin_update_access(target_user_id: int):
 def _fixed_cost_expenses_for_month(conn: sqlite3.Connection, user_id: int, month_key: str) -> float:
     """Sum only app-expenses explicitly confirmed as a planned fixed-cost debit."""
     ensure_app_cash_movements_table(conn)
-    row = conn.execute(
-        """SELECT COALESCE(SUM(amount), 0) FROM expenses
-             WHERE user_id=? AND strftime('%Y-%m', created_at)=?
-               AND id IN (
-                   SELECT DISTINCT expense_id FROM app_cash_movements
-                    WHERE user_id=? AND classification='fixed_cost' AND expense_id IS NOT NULL
-               )""",
-        (user_id, month_key, user_id),
-    ).fetchone()
-    return round(float(row[0] or 0), 2)
+    expenses = classified_expenses(conn, user_id, month_key)
+    return round(sum(
+        float(row["amount"] or 0) for row in expenses
+        if row["classification"] == "fixed_cost"
+    ), 2)
 
 
 def _reconcile_confirmed_fixed_plan(
@@ -4025,13 +4032,12 @@ def _reconcile_confirmed_fixed_plan(
     remaining = round(max(0.0, float(amount)), 2)
     if remaining <= 0:
         return 0.0
-    rows = conn.execute(
-        """SELECT id, amount, source_account_id FROM app_cash_movements
-             WHERE user_id=? AND kind='fixed'
-               AND strftime('%Y-%m', created_at)=?
-             ORDER BY id""",
-        (user_id, month_key),
-    ).fetchall()
+    rows = sorted(
+        (row for row in select_rows_for_business_month(
+            conn, "app_cash_movements", user_id, month_key
+        ) if row["kind"] == "fixed"),
+        key=lambda row: int(row["id"]),
+    )
     released = 0.0
     pilot = multi_cash_accounts_enabled(conn, user_id)
     for row in rows:
@@ -4083,12 +4089,12 @@ def _restore_confirmed_fixed_plan_after_expense_delete(
     planned = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
     paid = _fixed_cost_expenses_for_month(conn, user_id, month_key)
     target_remainder = round(max(0.0, planned - paid), 2)
-    rows = conn.execute(
-        """SELECT id, amount, source_account_id FROM app_cash_movements
-             WHERE user_id=? AND kind='fixed' AND strftime('%Y-%m', created_at)=?
-             ORDER BY id""",
-        (user_id, month_key),
-    ).fetchall()
+    rows = sorted(
+        (row for row in select_rows_for_business_month(
+            conn, "app_cash_movements", user_id, month_key
+        ) if row["kind"] == "fixed"),
+        key=lambda row: int(row["id"]),
+    )
     current_remainder = round(sum(float(row["amount"] or 0) for row in rows), 2)
     missing = round(max(0.0, target_remainder - current_remainder), 2)
     if missing <= 0:
@@ -4156,7 +4162,10 @@ def update_monthly_plan():
         pilot = multi_cash_accounts_enabled(conn, user_id)
         if pilot:
             prepare_multi_cash_write(conn)
-        month_key = datetime.now().strftime("%Y-%m")
+        month_key = business_month_key()
+        monthly_cash_movements = select_rows_for_business_month(
+            conn, "app_cash_movements", user_id, month_key
+        )
         field, status = field_by_action[action]
 
         # ===== Gehalt und Fixkosten wirklich buchen (27.07.) =====
@@ -4176,25 +4185,16 @@ def update_monthly_plan():
         # Knopf eine Luege.
         if action in ("reopen_income", "reopen_fixed_costs", "reopen_savings"):
             if action == "reopen_income":
-                zeile = conn.execute(
-                    """SELECT id, amount, source_account_id, target_account_id
-                         FROM app_cash_movements
-                         WHERE user_id = ? AND kind = 'income'
-                           AND strftime('%Y-%m', created_at) = ?
-                           AND lower(COALESCE(label, '')) LIKE '%gehalt%'
-                         ORDER BY id DESC LIMIT 1""",
-                    (user_id, month_key),
-                ).fetchone()
+                matches = [
+                    movement for movement in monthly_cash_movements
+                    if movement["kind"] == "income"
+                    and "gehalt" in str(movement["label"] or "").casefold()
+                ]
+                zeile = max(matches, key=lambda movement: int(movement["id"])) if matches else None
                 richtung = -1        # Gehalt zurueckgenommen: Geld verlaesst das Giro wieder
             elif action == "reopen_fixed_costs":
-                zeile = conn.execute(
-                    """SELECT id, amount, source_account_id, target_account_id
-                         FROM app_cash_movements
-                         WHERE user_id = ? AND kind = 'fixed'
-                           AND strftime('%Y-%m', created_at) = ?
-                         ORDER BY id DESC LIMIT 1""",
-                    (user_id, month_key),
-                ).fetchone()
+                matches = [movement for movement in monthly_cash_movements if movement["kind"] == "fixed"]
+                zeile = max(matches, key=lambda movement: int(movement["id"])) if matches else None
                 richtung = 1         # Fixkosten zurueckgenommen: Geld kommt aufs Giro zurueck
             else:
                 # Sparrate ist keine neue Einnahme. Sie verschiebt bereits vorhandenes Geld
@@ -4292,14 +4292,11 @@ def update_monthly_plan():
 
             if action == "confirm_income":
                 betrag = round(float(user["income"] or 0) + float(user["other_income"] or 0), 2) if user else 0.0
-                schon_da = conn.execute(
-                    """SELECT 1 FROM app_cash_movements
-                         WHERE user_id = ? AND kind = 'income'
-                           AND strftime('%Y-%m', created_at) = ?
-                           AND lower(COALESCE(label, '')) LIKE '%gehalt%'
-                         LIMIT 1""",
-                    (user_id, month_key),
-                ).fetchone()
+                schon_da = any(
+                    movement["kind"] == "income"
+                    and "gehalt" in str(movement["label"] or "").casefold()
+                    for movement in monthly_cash_movements
+                )
                 if not schon_da and betrag > 0:
                     if pilot:
                         target_account_id = role_financial_account_id(conn, user_id, "income")
@@ -4323,13 +4320,7 @@ def update_monthly_plan():
             else:
                 betrag = round(float(user["fixed_costs"] or 0), 2) if user else 0.0
                 betrag = round(max(0.0, betrag - _fixed_cost_expenses_for_month(conn, user_id, month_key)), 2)
-                schon_da = conn.execute(
-                    """SELECT 1 FROM app_cash_movements
-                         WHERE user_id = ? AND kind = 'fixed'
-                           AND strftime('%Y-%m', created_at) = ?
-                         LIMIT 1""",
-                    (user_id, month_key),
-                ).fetchone()
+                schon_da = any(movement["kind"] == "fixed" for movement in monthly_cash_movements)
                 if not schon_da and betrag > 0:
                     # Bewusst OHNE Deckungspruefung: die Abbuchung hat real stattgefunden, der
                     # Nutzer bestaetigt sie nur. Wir erfinden kein Geld und blockieren auch nicht
@@ -4453,7 +4444,7 @@ def confirm_month_close():
         actual_savings = round(float(payload.get("actual_savings")), 2)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "valid_actual_savings_required"}), 400
-    current_month = datetime.now().strftime("%Y-%m")
+    current_month = business_month_key()
     if not re.fullmatch(r"\d{4}-\d{2}", month_key) or month_key >= current_month:
         return jsonify({"ok": False, "error": "completed_month_required"}), 400
     if not -1_000_000 <= actual_savings <= 1_000_000:
@@ -5795,7 +5786,7 @@ def update_budgets():
         return jsonify({"ok": False, "error": "valid_budget_updates_required"}), 400
 
     token = token_from_request()
-    active_month = datetime.now().strftime("%Y-%m")
+    active_month = business_month_key()
     with db() as conn:
         begin_write(conn)
         user_id = user_from_token(conn, token)
@@ -7616,7 +7607,7 @@ def commit_screenshot_import():
                 skipped.append({"importKey": row["import_key"], "reason": "already_imported"})
                 continue
 
-            month_key = row["date"][:7] if row["date"] else datetime.now().strftime("%Y-%m")
+            month_key = row["date"][:7] if row["date"] else business_month_key()
             if row["fixed_cost"]:
                 released = _reconcile_confirmed_fixed_plan(
                     conn, user_id, row["amount"], month_key
@@ -7628,7 +7619,7 @@ def commit_screenshot_import():
             bot_category = bot_category or APP_TO_BOT_CATEGORY[row["category"]]
             created_at = (
                 f"{row['date']} 12:00:00" if row["date"]
-                else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             )
             if pilot:
                 cur = conn.execute(
@@ -8364,7 +8355,7 @@ def create_expense():
             ).fetchone() if request_id else None
             if fixed_cost and not existing_request:
                 _reconcile_confirmed_fixed_plan(
-                    conn, user_id, amount, datetime.now().strftime("%Y-%m")
+                    conn, user_id, amount, business_month_key()
                 )
             result = create_expense_for_user(
                 conn,

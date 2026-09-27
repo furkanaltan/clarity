@@ -29,6 +29,13 @@ from rove_app_state import (
 )
 from rove_consumer_debt import total_consumer_debt, net_worth_total
 from rove_log_safety import safe_exception_summary
+from rove_dates import (
+    business_month_key,
+    business_today,
+    effective_business_date,
+    parse_business_date,
+    select_rows_for_business_month,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -466,7 +473,7 @@ def report_period_window(report_month: str, as_of: date | None = None) -> dict:
     start, month_end, label = month_bounds(report_month)
     start_date = date.fromisoformat(start)
     month_end_date = date.fromisoformat(month_end)
-    today = as_of or date.today()
+    today = as_of or business_today()
     is_partial = start_date <= today <= month_end_date
     period_end = today if is_partial else month_end_date
     return {
@@ -584,29 +591,31 @@ def _historical_score_parts(score: int | None) -> dict:
 def get_platform_days(user_id: int) -> int:
     with get_db() as conn:
         row = conn.execute(
-            "SELECT MIN(DATE(created_at)) AS first_day FROM expenses WHERE user_id = ?",
+            "SELECT MIN(created_at) AS first_created_at FROM expenses WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    first_day = row["first_day"] if row else None
-    if not first_day:
+    first_date = parse_business_date(row["first_created_at"]) if row else None
+    if not first_date:
         return 0
-    try:
-        first_date = date.fromisoformat(first_day)
-    except ValueError:
-        return 0
-    return max(1, (date.today() - first_date).days + 1)
+    return max(1, (business_today() - first_date).days + 1)
 
 
 def get_tracking_days_90(user_id: int) -> int:
-    since = (date.today() - timedelta(days=89)).isoformat()
+    today = business_today()
+    since = today - timedelta(days=89)
+    month_keys = []
+    cursor = since.replace(day=1)
+    while cursor <= today:
+        month_keys.append(cursor.strftime("%Y-%m"))
+        cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+    tracking_dates = set()
     with get_db() as conn:
-        row = conn.execute(
-            """SELECT COUNT(DISTINCT DATE(created_at)) AS days
-               FROM expenses
-               WHERE user_id = ? AND DATE(created_at) >= DATE(?)""",
-            (user_id, since),
-        ).fetchone()
-    return int(row["days"] or 0) if row else 0
+        for month_key in month_keys:
+            for row in select_rows_for_business_month(conn, "expenses", user_id, month_key):
+                effective = effective_business_date(row)
+                if effective and since <= effective <= today:
+                    tracking_dates.add(effective)
+    return len(tracking_dates)
 
 
 def has_confirmed_investment_for_month(user_id: int, month_key: str) -> bool:
@@ -739,7 +748,7 @@ def get_report_expense_rows(user_id: int, report_month: str, cutoff_date: str | 
     from rove_expense_domain import classified_expenses
     with get_db() as conn:
         rows = classified_expenses(conn, user_id, report_month, end)
-        rows.sort(key=lambda row: (str(row["created_at"])[:10], row["id"]))
+        rows.sort(key=lambda row: (row.get("effective_date") or "", row["id"]))
 
     result = []
     for row in rows:
@@ -754,6 +763,7 @@ def get_report_expense_rows(user_id: int, report_month: str, cutoff_date: str | 
             "merchant_key": merchant.casefold(),
             "description": str(row["description"] or ""),
             "created_at": row["created_at"],
+            "effective_date": row.get("effective_date"),
             "movement_kind": movement_kind,
             "classification": classification,
         })
@@ -764,7 +774,7 @@ def get_expense_stats(user_id: int, report_month: str, cutoff_date: str | None =
     rows = get_report_expense_rows(user_id, report_month, cutoff_date)
     consumption = [row for row in rows if row["classification"] == "consumption"]
     total = sum(row["amount"] for row in consumption)
-    tracked_days = len({str(row["created_at"]).split(" ", 1)[0] for row in rows})
+    tracked_days = len({row["effective_date"] for row in rows if row.get("effective_date")})
     category_totals: dict[str, float] = {}
     for row in consumption:
         category_totals[row["category"]] = category_totals.get(row["category"], 0.0) + row["amount"]
@@ -1219,7 +1229,7 @@ def build_report_data(user_id: int, report_month: str) -> dict:
     snapshot = get_snapshot(user_id, report_month)
     prev_snapshot = get_prev_snapshot(user_id, report_month)
 
-    is_current_month = report_month == datetime.now().strftime("%Y-%m")
+    is_current_month = report_month == business_month_key()
     with get_db() as conn:
         financial_snapshot = (
             None
@@ -2095,7 +2105,7 @@ def _report_build_truth(
 
 def _build_report_truth_layer(user_id: int, report_month: str, data: dict) -> dict:
     meta = data.get("meta", {})
-    is_current_month = report_month == datetime.now().strftime("%Y-%m")
+    is_current_month = report_month == business_month_key()
     with get_db() as conn:
         financial_snapshot = (
             None
