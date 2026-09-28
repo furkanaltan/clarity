@@ -109,6 +109,41 @@ assert.equal(isPersonalTradeRecommendationQuestion("Wie hat sich mein Portfolio 
 '''
         self.run_node(script)
 
+    def test_evidence_bound_questions_bypass_local_fallbacks(self):
+        dispatcher = self._function("roveAnswer", "// Vorschlags-Chips zeigen die Bandbreite")
+        script = f'''const assert=require("node:assert/strict");
+function isChatQuestionOrHypothesis(){{return true;}}
+{dispatcher}
+(async()=>{{
+  const questions=[
+    "Was hat mein Vermögen diesen Monat bewegt?",
+    "Warum ist mein Score gesunken?",
+    "Wie groß ist mein Puffer?",
+    "Was war das Wichtigste in meinem letzten Report?",
+    "Wie hoch sind meine Schulden?",
+    "Wie viel habe ich diesen Monat für Shopping ausgegeben?",
+    "Warum war Shopping so hoch?"
+  ];
+  for(const question of questions) assert.equal(await roveAnswer(question),null,question);
+}})().catch(error=>{{console.error(error);process.exitCode=1;}});
+'''
+        self.run_node(script)
+
+    def test_frontend_consumption_filter_matches_classified_server_contract(self):
+        consumption = self._function("isConsumptionExpense", "// Beobachtete Ausgaben")
+        script = f'''const assert=require("node:assert/strict");
+{consumption}
+const items=[
+  {{a:-40,classification:"consumption"}},
+  {{a:-50,classification:"fixed_cost"}},
+  {{a:-75,classification:"transfer"}},
+  {{a:-20,classification:"refund"}},
+  {{a:15,classification:"income"}}
+];
+assert.equal(items.filter(isConsumptionExpense).reduce((sum,item)=>sum+Math.abs(item.a),0),40);
+'''
+        self.run_node(script)
+
 
 if __name__ == "__main__":
     unittest.main()

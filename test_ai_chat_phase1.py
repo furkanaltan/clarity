@@ -28,7 +28,7 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 CREATE TABLE expenses (
                     id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT,
                     merchant TEXT, description TEXT, booking_date TEXT, transaction_date TEXT,
-                    created_at TEXT
+                    created_at TEXT, account_id INTEGER
                 );
                 CREATE TABLE app_cash_movements (
                     id INTEGER PRIMARY KEY, user_id INTEGER, expense_id INTEGER,
@@ -155,11 +155,14 @@ class AiChatPhaseOneTests(unittest.TestCase):
             response = self.post(self.client_for(), "Wie baut man ein Flugzeug?")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["kind"], "ai")
-        self.assertIn("Finanzen", response.get_json()["answer"])
+        self.assertEqual(response.get_json()["answer"], "Ich helfe dir bei Fragen zu deinen Finanzen und Rov.E.")
 
     def test_system_prompt_requires_plain_text_without_markdown(self):
         self.assertIn("keine Sternchen", api.AI_CHAT_SYSTEM_PROMPT)
         self.assertIn("keine Markdown-Syntax", api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("zuerst die Antwort", api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("Was möchtest du zu deinen Finanzen wissen?", api.AI_CHAT_SYSTEM_PROMPT)
+        self.assertIn("Bei kurzem Smalltalk antworte kurz und menschlich", api.AI_CHAT_SYSTEM_PROMPT)
 
     def test_mentor_priority_questions_use_personal_v2_context(self):
         questions = (
@@ -377,17 +380,144 @@ class AiChatPhaseOneTests(unittest.TestCase):
             )
             conn.commit()
             intent, context = api.build_ai_chat_context(conn, 1, "Warum war Shopping so hoch?")
+            frontend_state_rows = api._build_tx(conn, 1, month_key)
 
         self.assertEqual(intent, "spending")
         self.assertEqual(context["month"], month_key)
         self.assertEqual(context["monthly_consumption_eur"], 40.0)
         self.assertEqual(context["categories"], [{"category": "Shopping", "amount_eur": 40.0}])
+        frontend_total = round(sum(abs(float(item["a"])) for group in frontend_state_rows for item in group["items"]
+                                   if item.get("classification") == "consumption"), 2)
+        self.assertEqual(frontend_total, context["monthly_consumption_eur"])
         self.assertFalse(context["causal_analysis_available"])
         with patch.object(api, "ai_chat_provider", side_effect=AssertionError("why-answer must be evidence-bound")):
             response = self.post(self.client_for(token="why-shopping"), "Warum war Shopping so hoch?")
         self.assertEqual(response.status_code, 200, response.get_json())
         self.assertIn("40,00 €", response.get_json()["answer"])
-        self.assertIn("nicht eindeutig ableiten", response.get_json()["answer"])
+        self.assertIn("Buchungen zeigen nicht eindeutig", response.get_json()["answer"])
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("spending totals are deterministic")):
+            total_response = self.post(self.client_for(token="spending-total"), "Wie viel habe ich diesen Monat ausgegeben?")
+            category_response = self.post(self.client_for(token="spending-shopping"), "Wie viel habe ich diesen Monat für Shopping ausgegeben?")
+        self.assertIn("40,00 € Konsumausgaben", total_response.get_json()["answer"])
+        self.assertIn("Shopping", category_response.get_json()["answer"])
+        self.assertIn("40,00 €", category_response.get_json()["answer"])
+
+    def test_month_wealth_uses_versioned_month_close_and_never_12m_fallback(self):
+        month = api.business_month_key()
+        previous = api._ai_previous_month_key(month)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("ALTER TABLE users ADD COLUMN buffer_target_amount REAL")
+            conn.execute("""CREATE TABLE monthly_financial_snapshots (
+                user_id INTEGER, report_month TEXT, net_worth REAL, source_version INTEGER,
+                PRIMARY KEY(user_id, report_month))""")
+            conn.execute("INSERT INTO monthly_financial_snapshots VALUES (1, ?, 2000, 2)", (previous,))
+            conn.execute("UPDATE users SET current_cash=250 WHERE user_id=1")
+            conn.commit()
+        question = "Was hat mein Vermögen diesen Monat bewegt?"
+        self.assertEqual(api.ai_chat_intent(question), "month_wealth")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("month truth is deterministic")):
+            response = self.post(self.client_for(token="wealth-month"), question)
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200, payload)
+        self.assertEqual(payload["intent"], "month_wealth")
+        self.assertIn("um 350,00 € gestiegen", payload["answer"])
+        self.assertIn("Ursachen lassen sich mit den vorhandenen Daten nicht vollständig zuordnen", payload["answer"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("DELETE FROM monthly_financial_snapshots")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("no 1Y fallback")):
+            unavailable = self.post(self.client_for(token="wealth-no-snapshot"), question)
+        self.assertIn("Vergleich mit dem Vormonatsabschluss", unavailable.get_json()["answer"])
+
+    def test_score_change_has_no_historical_causal_claim(self):
+        question = "Warum ist mein Score gesunken?"
+        self.assertEqual(api.ai_chat_intent(question), "score_change")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("score change is deterministic")):
+            response = self.post(self.client_for(token="score-change"), question)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertIn("Für deinen Score fehlt ein historischer Vergleich", response.get_json()["answer"])
+        self.assertIn("aktueller Score liegt bei", response.get_json()["answer"])
+        self.assertEqual(api.ai_chat_intent("Was bedeutet mein aktueller Score?"), "score")
+
+    def test_buffer_answers_reuse_canonical_data_and_do_not_invent_target(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("ALTER TABLE users ADD COLUMN buffer_target_amount REAL")
+            conn.execute("UPDATE users SET current_cash=4600, fixed_costs=2000 WHERE user_id=1")
+            conn.commit()
+        question = "Für wie viele Monate reicht mein Puffer?"
+        self.assertEqual(api.ai_chat_intent(question), "buffer")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("buffer uses canonical state")):
+            response = self.post(self.client_for(token="buffer-months"), question)
+        self.assertIn("2,3 Monate", response.get_json()["answer"])
+        target_question = "Wie viel fehlt mir bis zu meinem Pufferziel?"
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("buffer target is deterministic")):
+            no_target = self.post(self.client_for(token="buffer-no-target"), target_question)
+        self.assertIn("Ein persönliches Ziel ist noch nicht festgelegt", no_target.get_json()["answer"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("UPDATE users SET buffer_target_amount=6000 WHERE user_id=1")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("buffer gap is deterministic")):
+            gap = self.post(self.client_for(token="buffer-gap"), target_question)
+        self.assertIn("1.400,00 €", gap.get_json()["answer"])
+
+    def test_latest_report_answers_only_saved_finalized_snapshot(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("""CREATE TABLE report_snapshots_v2 (
+                id INTEGER PRIMARY KEY, user_id INTEGER, report_month TEXT, schema_version INTEGER,
+                status TEXT, finalized_at TEXT, report_data_json TEXT)""")
+            saved = {"pages": {
+                "financial_story": {"delta": 125.0},
+                "month": {"best_decision": "Fixkosten geprüft", "strongest_category": "Shopping"},
+                "recap": {"next_lever": "Budget im Blick behalten"},
+                "money_map": {"categories": []},
+            }}
+            conn.execute("INSERT INTO report_snapshots_v2 VALUES (1,1,'2026-07',4,'finalized','2026-08-01',?)",
+                         (json.dumps(saved),))
+            conn.execute("INSERT INTO report_snapshots_v2 VALUES (2,1,'2026-08',4,'draft',NULL,?)",
+                         (json.dumps({"pages": {"month": {"best_decision": "DRAFT MUST NOT LEAK"}}}),))
+            conn.commit()
+        question = "Was war das Wichtigste in meinem letzten Report?"
+        self.assertEqual(api.ai_chat_intent(question), "latest_report")
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("report answer must use stored snapshot")):
+            response = self.post(self.client_for(token="report-finalized"), question)
+        self.assertIn("Fixkosten geprüft", response.get_json()["answer"])
+        self.assertNotIn("DRAFT", response.get_json()["answer"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("DELETE FROM report_snapshots_v2")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("missing report is deterministic")):
+            missing = self.post(self.client_for(token="report-missing"), question)
+        self.assertIn("Ein finalisierter Monatsreport liegt noch nicht vor", missing.get_json()["answer"])
+
+    def test_debt_answer_marks_partial_data_and_separates_mortgage(self):
+        question = "Wie hoch sind meine Schulden?"
+        self.assertEqual(api.ai_chat_intent(question), "debt")
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("ALTER TABLE users ADD COLUMN debt_status TEXT DEFAULT 'unknown'")
+            conn.execute("CREATE TABLE app_consumer_debts (id INTEGER, user_id INTEGER, outstanding_balance REAL, active INTEGER)")
+            conn.execute("INSERT INTO app_consumer_debts VALUES (1,1,1500,1)")
+            conn.execute("CREATE TABLE app_properties (user_id INTEGER, market_value REAL, remaining_debt REAL, monthly_rate REAL, house_fee REAL, management_fee REAL)")
+            conn.execute("INSERT INTO app_properties VALUES (1,100000,80000,500,0,0)")
+            conn.execute("UPDATE users SET debt_status='present' WHERE user_id=1")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("debt summary must be deterministic")):
+            complete = self.post(self.client_for(token="debt-complete"), question)
+        self.assertIn("Deine erfassten Konsumschulden betragen 1.500,00 €", complete.get_json()["answer"])
+        self.assertIn("Hypothek beträgt 80.000,00 € Restschuld und wird separat geführt", complete.get_json()["answer"])
+        self.assertIn("Monatsraten sind laufende Zahlungen, nicht die Restschuld", complete.get_json()["answer"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("DELETE FROM app_consumer_debts WHERE user_id=1")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("missing debt balance is partial")):
+            missing_balance = self.post(self.client_for(token="debt-missing-balance"), question)
+        self.assertIn("nicht vollständig erfasst", missing_balance.get_json()["answer"])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("UPDATE users SET debt_status='unknown' WHERE user_id=1")
+            conn.commit()
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("unknown debt is not zero")):
+            partial = self.post(self.client_for(token="debt-partial"), question)
+        self.assertIn("nicht vollständig erfasst", partial.get_json()["answer"])
+        self.assertNotIn("Keine Konsumschulden", partial.get_json()["answer"])
 
     def test_personal_trade_requests_are_refused_before_provider(self):
         questions = ("Welche Aktie soll ich kaufen?", "Soll ich XRP kaufen?", "Verkauf ich NEAR?")

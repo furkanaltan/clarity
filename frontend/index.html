@@ -12225,11 +12225,11 @@ function isPersonalTradeRecommendationQuestion(t){
 function ans_available_cash(){
   const amount=Number(DATA.buffer?.available_cash);
   if(!Number.isFinite(amount)) return `Dein verfügbarer Cash-Stand ist gerade nicht verfügbar.`;
-  return `Verfügbarer Cash-Stand: <b>${eur(amount)}</b>.`;
+  return `Du hast aktuell <b>${eur(amount)}</b> verfügbar.`;
 }
 function ans_wallet_cash(){
   const wallet=(DATA.assets||[]).find(asset=>asset.accountType==="wallet" || /^(bargeld|bargeld \/ wallet)$/i.test(String(asset.name||"")));
-  return wallet ? ans_asset(wallet) : `Dein Bargeld im Portemonnaie ist gerade nicht verfügbar.`;
+  return wallet ? ans_asset(wallet) : `Dein Bargeldbestand ist gerade nicht verfügbar.`;
 }
 function isExplicitWalletCashQuestion(t){
   return /\b(?:bargeld|portemonnaie|geldbeutel|geldbörse|geldboerse|wallet)\b/.test(t)
@@ -12244,8 +12244,18 @@ function isAvailableCashQuestion(t){
 async function roveAnswer(raw){
   const t=(raw||"").toLowerCase();
   const canMutate=!isChatQuestionOrHypothesis(t);
+  // These evidence-bound questions use the authenticated API's canonical state,
+  // not local chart ranges or browser-only debt/report summaries.
+  if(/\b(?:diesen monat|im aktuellen monat|seit monatsanfang)\b/.test(t) && /\b(?:vermögen|vermoegen|nettovermögen|nettovermoegen)\b/.test(t)) return null;
+  if(/\b(?:score|punkte)\b/.test(t) && /\b(?:gesunken|gestiegen|verändert|veraendert|veränderung|veraenderung|warum|wieso|weshalb|wodurch|ursache|einfluss)\b/.test(t)) return null;
+  if(/\b(?:puffer|pufferziel|puffer-ziel)\b/.test(t)) return null;
+  if(/report/.test(t) && /\b(?:letzten|letzter|letzte|wichtigste|entwickelt|vermögen|vermoegen|kategorie|beachten|nächsten monat|naechsten monat)\b/.test(t)) return null;
+  if(/\b(?:schulden|konsumschulden|hypothek|restschuld)\b/.test(t)) return null;
+  if(/\b(?:wie viel|wieviel|gesamt|insgesamt)\b.{0,50}\b(?:ausgegeben|konsumausgaben|shopping|restaurant|lebensmittel|mobilität|mobilitaet|abos|freizeit|drogerie|gesundheit|pflege|sonstiges)\b/.test(t)
+     || /\b(?:welche kategorie|welche kategorien)\b.{0,40}\b(?:über plan|ueber plan|budget)\b/.test(t)
+     || /\b(?:warum|wieso|weshalb)\b.{0,60}\b(?:shopping|restaurant|lebensmittel|mobilität|mobilitaet|abos|freizeit|drogerie|gesundheit|pflege|sonstiges|ausgaben)\b/.test(t)) return null;
   if(isPersonalTradeRecommendationQuestion(t))
-    return `Ich kann deine bestehenden Investments und deren Entwicklung erklären, aber dir nicht sagen, was du kaufen oder verkaufen sollst.`;
+    return `Ich kann deine Investments und ihre Entwicklung erklären. Eine Kauf- oder Verkaufsempfehlung gebe ich nicht.`;
   if(/\b(?:habe ich|hab ich|hatte ich|bekam ich|bekomme ich|ist .{0,60} eingegangen|war das)\b/.test(t)
      && /gutschrift|rückerstattung|rueckerstattung|erstattet|refund/.test(t))
     return `Ich kann aus der Frage allein keine Gutschrift bestätigen. Prüfe dafür bitte die Buchungen in der App.`;
@@ -12394,7 +12404,7 @@ async function roveAnswer(raw){
   if(/spar|reduzier|weniger/.test(t)) return ans_contracts(t);
   // Off-Topic ehrlich ablehnen statt vertrösten (Bot: is_off_topic_request)
   if(/wetter|gedicht|rezept|witz|politik|fußball|fussball|schreib mir|übersetze|uebersetze|hausaufgabe/.test(t))
-    return `Dafür bin ich nicht zuständig. Ich bleibe bei deinen Finanzen.`;
+    return `Ich helfe dir bei Fragen zu deinen Finanzen und Rov.E.`;
   return null;
 }
 // Vorschlags-Chips zeigen die Bandbreite
