@@ -18,6 +18,7 @@ class RepairReportMonthTests(unittest.TestCase):
         self.conn = sqlite3.connect(self.db)
         self.conn.executescript(
             """
+            CREATE TABLE users (user_id INTEGER PRIMARY KEY);
             CREATE TABLE app_accounts (user_id INTEGER, verified_at TEXT);
             CREATE TABLE user_access (user_id INTEGER, status TEXT);
             CREATE TABLE report_jobs (
@@ -36,6 +37,7 @@ class RepairReportMonthTests(unittest.TestCase):
             );
             CREATE TABLE expenses (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL);
             INSERT INTO app_accounts VALUES (1, '2026-01-01'), (2, '');
+            INSERT INTO users VALUES (1), (2);
             INSERT INTO user_access VALUES (1, 'approved'), (2, 'approved');
             INSERT INTO report_jobs VALUES
                 (1, 1, '2026-08', '2026-09-01 10:00:00', 'sent', 1, '', '2026-09-01'),

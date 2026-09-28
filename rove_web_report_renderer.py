@@ -15,7 +15,13 @@ from tempfile import TemporaryDirectory
 import jinja2
 from dotenv import load_dotenv
 
-from report_engine import build_report_data, calculate_goal_projection, format_month_duration, SCORE_RANKS
+from report_engine import (
+    build_report_data,
+    calculate_goal_projection,
+    format_month_duration,
+    require_report_user_exists,
+    SCORE_RANKS,
+)
 from report_html_renderer import fmt_money, fmt_percent, humanize_text
 from report_story_v2 import get_report_wealth, story_from_snapshot_data, valid_report_merchant
 from rove_consumer_debt import net_worth_total
@@ -2116,22 +2122,26 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
     token = secrets.token_urlsafe(18)
     expires_at = datetime.now() + timedelta(days=REPORT_LINK_TTL_DAYS)
     output_dir = PUBLIC_REPORT_DIR / token
+    staging_dir = PUBLIC_REPORT_DIR / f".{token}.pending"
     output_created = False
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_created = True
-        # Nginx needs traverse permission for the opaque, public report URL.
-        output_dir.chmod(0o755)
-        output_path = output_dir / "index.html"
-
         template = TEMPLATE_PATH.read_text(encoding="utf-8")
         doc = render_template(template, report_data)
         doc = inject_expiry_meta(doc, expires_at)
-        output_path.write_text(doc, encoding="utf-8")
-        output_path.chmod(0o644)
 
         public_url = f"{PUBLIC_REPORT_BASE_URL}/{token}/" if PUBLIC_REPORT_BASE_URL else ""
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            require_report_user_exists(conn, user_id)
+            PUBLIC_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            staging_dir.mkdir()
+            # Nginx needs traverse permission for the opaque, public report URL.
+            staging_dir.chmod(0o755)
+            staged_file = staging_dir / "index.html"
+            staged_file.write_text(doc, encoding="utf-8")
+            staged_file.chmod(0o644)
+            os.replace(staging_dir, output_dir)
+            output_created = True
             conn.execute(
                 """UPDATE report_links
                       SET status = 'superseded'
@@ -2146,7 +2156,7 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
                     token,
                     user_id,
                     report_month,
-                    str(output_path),
+                    str(output_dir / "index.html"),
                     public_url,
                     expires_at.strftime("%Y-%m-%d %H:%M:%S"),
                 ),
@@ -2155,11 +2165,13 @@ def build_web_report(user_id: int, report_month: str, report_data: dict | None =
 
         return {
             "token": token,
-            "path": output_path,
+            "path": output_dir / "index.html",
             "url": public_url,
             "expires_at": expires_at,
         }
     except Exception:
+        if staging_dir.exists():
+            remove_unregistered_report_dir(staging_dir)
         if output_created:
             remove_unregistered_report_dir(output_dir)
         raise

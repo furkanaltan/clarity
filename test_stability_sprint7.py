@@ -72,8 +72,8 @@ class DeleteCleanupTests(unittest.TestCase):
         api.queue_account_cleanup_failures([failed, successful])
         remove = cleanup.remove_path
 
-        def retry(path, roots):
-            return "PermissionError" if path == failed else remove(path, roots)
+        def retry(path, roots, **kwargs):
+            return "PermissionError" if path == failed else remove(path, roots, **kwargs)
 
         with patch.object(cleanup, "remove_path", side_effect=retry):
             self.assertEqual(api.retry_account_delete_file_cleanup(), 1)

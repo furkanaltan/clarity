@@ -385,25 +385,22 @@ def cash_request_replay(conn, user_id, request_id, operation, payload):
     """Reserve a durable receipt under the caller's BEGIN IMMEDIATE lock."""
     if not request_id:
         return None
-    conn.execute("""CREATE TABLE IF NOT EXISTS app_cash_request_receipts (
-        user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-        request_id TEXT NOT NULL,
-        operation TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        response TEXT,
-        PRIMARY KEY(user_id, request_id)
-    )""")
+    account_delete_cleanup.ensure_cash_request_receipts_schema(conn)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
     row = conn.execute(
-        "SELECT operation,payload,response FROM app_cash_request_receipts WHERE user_id=? AND request_id=?",
+        "SELECT operation,payload,response,expired_at FROM app_cash_request_receipts WHERE user_id=? AND request_id=?",
         (user_id, request_id),
     ).fetchone()
     if row:
+        if row["expired_at"]:
+            return jsonify({"ok": False, "error": "cash_request_expired"}), 409
         if row["operation"] != operation or row["payload"] != canonical:
             return jsonify({"ok": False, "error": "cash_request_conflict"}), 409
+        if row["response"] is None:
+            return jsonify({"ok": False, "error": "cash_request_incomplete"}), 409
         return jsonify(json.loads(row["response"]))
     conn.execute(
-        "INSERT INTO app_cash_request_receipts(user_id,request_id,operation,payload) VALUES (?,?,?,?)",
+        "INSERT INTO app_cash_request_receipts(user_id,request_id,operation,payload,created_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
         (user_id, request_id, operation, canonical),
     )
     return None
@@ -1885,13 +1882,7 @@ def ensure_ai_chat_tables(conn: sqlite3.Connection) -> None:
 
 def cleanup_ai_chat_data(conn: sqlite3.Connection) -> None:
     """Idempotently removes expired language context and old aggregate-only operational metrics."""
-    expired = conn.execute(
-        "SELECT conversation_id FROM app_ai_conversations WHERE datetime(expires_at) < datetime('now', 'localtime')"
-    ).fetchall()
-    for row in expired:
-        conn.execute("DELETE FROM app_ai_conversation_messages WHERE conversation_id = ?", (row["conversation_id"],))
-    conn.execute("DELETE FROM app_ai_conversations WHERE datetime(expires_at) < datetime('now', 'localtime')")
-    conn.execute("DELETE FROM app_ai_usage WHERE datetime(created_at) < datetime('now', 'localtime', '-30 days')")
+    account_delete_cleanup.cleanup_ai_chat_data(conn)
 
 
 def ai_chat_allowed(user_id: int) -> bool:
@@ -8413,16 +8404,28 @@ def ensure_account_delete_cleanup_table(conn: sqlite3.Connection) -> None:
     account_delete_cleanup.ensure_table(conn)
 
 
-def account_delete_cleanup_roots() -> tuple[Path, Path, Path, Path]:
-    return (PUBLIC_APP_STATE_DIR, PUBLIC_REPORT_DIR, REPORTS_DIR, REPORTS_ARCHIVE_DIR)
+GENERATED_REPORT_DIR = APP_DIR / "report_html" / "report-main" / "generated"
+
+
+def account_delete_cleanup_roots() -> tuple[Path, ...]:
+    return (PUBLIC_APP_STATE_DIR, PUBLIC_REPORT_DIR, REPORTS_DIR, REPORTS_ARCHIVE_DIR, GENERATED_REPORT_DIR)
 
 
 def _cleanup_path_allowed(path: Path) -> bool:
     return account_delete_cleanup.path_allowed(path, account_delete_cleanup_roots())
 
 
-def _remove_cleanup_path(path: Path) -> str | None:
-    return account_delete_cleanup.remove_path(path, account_delete_cleanup_roots())
+def _remove_cleanup_path(
+    path: Path,
+    expected_owner_user_id: int | None = None,
+    expected_sha256: str | None = None,
+) -> str | None:
+    return account_delete_cleanup.remove_path(
+        path,
+        account_delete_cleanup_roots(),
+        expected_owner_user_id=expected_owner_user_id,
+        expected_sha256=expected_sha256,
+    )
 
 
 def queue_account_cleanup_failures(paths: list[Path]) -> None:
@@ -8559,6 +8562,10 @@ def account_delete_cleanup_paths(user_id: int, state_tokens: list[str], html_pat
             paths.append(Path(html_path))
     paths.extend(REPORTS_DIR.glob(f"rove_report_{user_id}_*.pdf"))
     paths.extend(REPORTS_ARCHIVE_DIR.glob(f"rove_report_{user_id}_*.pdf.gz"))
+    generated_paths, _preview_owners = account_delete_cleanup.generated_report_paths(
+        GENERATED_REPORT_DIR, user_id
+    )
+    paths.extend(generated_paths)
     return paths
 
 
@@ -8584,6 +8591,27 @@ def remove_deleted_account_files(user_id: int, state_tokens: list[str], html_pat
         if _remove_cleanup_path(pdf_path): errors.append(pdf_path)
     for archive_path in REPORTS_ARCHIVE_DIR.glob(f"rove_report_{user_id}_*.pdf.gz"):
         if _remove_cleanup_path(archive_path): errors.append(archive_path)
+    generated_paths, preview_owners = account_delete_cleanup.generated_report_paths(
+        GENERATED_REPORT_DIR, user_id
+    )
+    for generated_path in generated_paths:
+        ownership = preview_owners.get(generated_path)
+        if ownership is not None:
+            expected_owner, expected_sha256 = ownership
+            # The shared preview can be replaced by another user's renderer; hold
+            # SQLite's existing writer lock across ownership check and unlink.
+            with db() as conn:
+                begin_write(conn)
+                error = account_delete_cleanup.remove_path(
+                    generated_path,
+                    account_delete_cleanup_roots(),
+                    expected_owner_user_id=expected_owner,
+                    expected_sha256=expected_sha256,
+                )
+        else:
+            error = _remove_cleanup_path(generated_path)
+        if error:
+            errors.append(generated_path)
     return errors
 
 
@@ -8660,10 +8688,14 @@ def delete_account():
             conn.rollback()
             return jsonify({"ok": False, "error": "delete_protection_unavailable"}), 503
 
+        _generated_paths, preview_owners = account_delete_cleanup.generated_report_paths(
+            GENERATED_REPORT_DIR, token_user_id
+        )
         account_delete_cleanup.queue_paths_in_conn(
             conn,
             account_delete_cleanup_roots(),
             account_delete_cleanup_paths(token_user_id, state_tokens, html_paths),
+            conditional_owner_by_path=preview_owners,
         )
 
         conn.execute("PRAGMA defer_foreign_keys = ON")

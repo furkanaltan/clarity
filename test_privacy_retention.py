@@ -104,7 +104,7 @@ class PrivacyRetentionTests(unittest.TestCase):
                 "expenses", "category_budgets", "app_account_balances", "app_cash_movements",
                 "app_contracts", "app_consumer_debts", "app_properties", "portfolio_holdings",
                 "report_jobs", "report_snapshots_v2", "app_ai_conversations", "app_ai_usage",
-                "app_push_subscriptions", "app_push_preferences", "app_state_links", "user_access",
+                "app_push_subscriptions", "app_push_preferences", "app_state_links", "app_cash_request_receipts", "user_access",
             )
             for table in user_scoped_tables:
                 conn.execute(f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY, user_id INTEGER, value TEXT)')

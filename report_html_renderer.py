@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import html
+import os
 import re
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from report_engine import GERMAN_MONTHS, build_report_data
+from report_engine import (
+    GERMAN_MONTHS,
+    build_report_data,
+    get_db,
+    require_report_user_exists,
+)
 
 
 REPORT_BUNDLE_DIR = Path(__file__).resolve().parent / "report_html" / "report-main"
@@ -1371,13 +1378,45 @@ def render_page(page_filename: str, data: dict) -> str:
 
 def build_html_report(user_id: int, report_month: str, report_data: dict | None = None) -> Path:
     report_data = report_data or build_report_data(user_id, report_month)
-    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     rendered_pages = _render_hell_pages(report_data)
     doc = build_html_document(rendered_pages)
     output_path = GENERATED_DIR / f"clarity_report_{user_id}_{report_month}.html"
-    output_path.write_text(doc, encoding="utf-8")
     latest_path = GENERATED_DIR / "latest_preview.html"
-    latest_path.write_text(doc, encoding="utf-8")
+    marker = f"<!-- rove-preview-owner:{int(user_id)} -->"
+    doc = doc.replace("</head>", f"{marker}</head>", 1)
+
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        require_report_user_exists(conn, user_id)
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        output_tmp = output_path.with_name(f".{output_path.name}.{secrets.token_hex(8)}.tmp")
+        latest_tmp = latest_path.with_name(f".{latest_path.name}.{secrets.token_hex(8)}.tmp")
+        previous_latest = latest_path.read_bytes() if latest_path.is_file() else None
+        output_published = False
+        latest_published = False
+        try:
+            output_tmp.write_text(doc, encoding="utf-8")
+            latest_tmp.write_text(doc, encoding="utf-8")
+            os.replace(output_tmp, output_path)
+            output_published = True
+            os.replace(latest_tmp, latest_path)
+            latest_published = True
+            conn.commit()
+        except Exception:
+            if output_published:
+                output_path.unlink(missing_ok=True)
+            if latest_published:
+                if previous_latest is None:
+                    latest_path.unlink(missing_ok=True)
+                else:
+                    restore_tmp = latest_path.with_name(f".{latest_path.name}.{secrets.token_hex(8)}.restore")
+                    restore_tmp.write_bytes(previous_latest)
+                    os.replace(restore_tmp, latest_path)
+            conn.rollback()
+            raise
+        finally:
+            output_tmp.unlink(missing_ok=True)
+            latest_tmp.unlink(missing_ok=True)
     return output_path
 
 
@@ -1411,9 +1450,6 @@ def build_html_document(pages: list[str]) -> str:
 def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_data: dict | None = None) -> Path:
     """Render the premium HTML report and convert it into a sendable PDF."""
     report_data = report_data or build_report_data(user_id, report_month)
-    html_path = build_html_report(user_id, report_month, report_data=report_data)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     try:
         from weasyprint import HTML
     except ModuleNotFoundError as exc:
@@ -1421,9 +1457,22 @@ def build_pdf_report(user_id: int, report_month: str, output_path: Path, report_
             "WeasyPrint fehlt. Installiere es mit: python3 -m pip install weasyprint"
         ) from exc
 
-    # The fixed screen wrappers have explicit page breaks. Rendering the complete
-    # document preserves the reference geometry without an optional PDF merger.
-    HTML(filename=str(html_path), base_url=str(html_path.parent)).write_pdf(str(output_path))
+    rendered_pages = _render_hell_pages(report_data)
+    doc = build_html_document(rendered_pages)
+    with TemporaryDirectory(prefix="rove-report-html-") as tmp_dir:
+        html_path = Path(tmp_dir) / "report.html"
+        pdf_path = Path(tmp_dir) / "report.pdf"
+        html_path.write_text(doc, encoding="utf-8")
+        # The fixed screen wrappers have explicit page breaks. Rendering the complete
+        # document preserves the reference geometry without an optional PDF merger.
+        HTML(filename=str(html_path), base_url=str(html_path.parent)).write_pdf(str(pdf_path))
+
+        with get_db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            require_report_user_exists(conn, user_id)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(pdf_path, output_path)
+            conn.commit()
     return output_path
 
 

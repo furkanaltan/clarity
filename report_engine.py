@@ -8,6 +8,7 @@ import hashlib
 import math
 import re
 import logging
+import tempfile
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -413,6 +414,14 @@ def get_db():
         conn.commit()
     finally:
         conn.close()
+
+
+def require_report_user_exists(conn: sqlite3.Connection, user_id: int) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM users WHERE user_id = ? LIMIT 1", (int(user_id),)
+    ).fetchone()
+    if not row:
+        raise ReportSkipped("App-Konto wurde geloescht")
 
 
 def ensure_net_worth_column():
@@ -2385,6 +2394,7 @@ def get_or_create_report_snapshot(user_id: int, report_month: str) -> dict:
     """Return one immutable V2 snapshot and never rebuild a finalized report."""
     ensure_report_snapshots_v2_table()
     with get_db() as conn:
+        require_report_user_exists(conn, user_id)
         existing = conn.execute(
             """SELECT id, status, report_data_json, data_hash, schema_version
                  FROM report_snapshots_v2
@@ -2421,6 +2431,7 @@ def get_or_create_report_snapshot(user_id: int, report_month: str) -> dict:
 
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        require_report_user_exists(conn, user_id)
         existing = conn.execute(
             """SELECT id, status, report_data_json, data_hash, schema_version
                  FROM report_snapshots_v2
@@ -2677,20 +2688,40 @@ def build_pdf(user_id: int, report_month: str, report_data: dict = None):
     report_data = report_data or build_report_data(user_id, report_month)
     file_path = REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf"
 
-    # Bestehendes helles PDF-Design aus report_html/report-main verwenden.
-    # Der PDF-Sprint darf den etablierten Rov.E-Report nicht durch eine neue
-    # Designsprache ersetzen. Bei einem Renderer-Fehler bleibt der alte
-    # ReportLab-Fallback fuer die Service-Stabilitaet erhalten.
-    try:
-        from report_html_renderer import build_pdf_report
-        build_pdf_report(user_id, report_month, file_path, report_data=report_data)
-    except Exception as exc:
-        logger.warning(
-            "Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer (error=%s)",
-            safe_exception_summary(exc),
-        )
-        from rove_pdf_report_renderer import build_pdf_report as build_pdf_legacy
-        build_pdf_legacy(user_id, report_month, file_path, report_data=report_data)
+    # Render away from the final path. The last existence check, atomic replace,
+    # and account deletion all serialize through SQLite's existing write lock.
+    with tempfile.TemporaryDirectory(prefix="rove-report-render-") as temp_dir:
+        rendered_path = Path(temp_dir) / file_path.name
+        try:
+            from report_html_renderer import build_pdf_report
+            build_pdf_report(user_id, report_month, rendered_path, report_data=report_data)
+        except ReportSkipped:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Helles PDF fehlgeschlagen - Fallback auf ReportLab-Renderer (error=%s)",
+                safe_exception_summary(exc),
+            )
+            from rove_pdf_report_renderer import build_pdf_report as build_pdf_legacy
+            build_pdf_legacy(user_id, report_month, rendered_path, report_data=report_data)
+
+        with get_db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            require_report_user_exists(conn, user_id)
+            previous_copy = Path(temp_dir) / "previous.pdf"
+            had_previous = file_path.is_file()
+            if had_previous:
+                shutil.copy2(file_path, previous_copy)
+            try:
+                os.replace(rendered_path, file_path)
+                conn.commit()
+            except Exception:
+                if had_previous and previous_copy.exists():
+                    os.replace(previous_copy, file_path)
+                elif file_path.exists():
+                    file_path.unlink()
+                conn.rollback()
+                raise
     return file_path, report_data["meta"]["tracked_days"]
 
 
@@ -2798,6 +2829,8 @@ def send_report_to_user(user_id: int, report_month: str, bot=None):
             report_month,
             report_data=report_data,
         )
+    except ReportSkipped:
+        raise
     except Exception as e:
         logger.warning("Rov.E Web-Report konnte nicht erzeugt werden (error=%s)", safe_exception_summary(e))
 

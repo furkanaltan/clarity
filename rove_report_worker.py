@@ -308,6 +308,11 @@ def cleanup_auth_artifacts() -> dict:
         )
 
         if table_exists("app_state_links"):
+            removed["legacy_state_files_queued"] = account_delete_cleanup.queue_expired_legacy_state_files(
+                conn,
+                account_delete_cleanup_roots(),
+                AUTH_RETENTION_GRACE_DAYS,
+            )
             cursor = conn.execute(
                 """DELETE FROM app_state_links
                    WHERE (
@@ -317,6 +322,12 @@ def cleanup_auth_artifacts() -> dict:
                 (cutoff,),
             )
             removed["state_links"] = int(cursor.rowcount or 0)
+
+        ai_cleanup = account_delete_cleanup.cleanup_ai_chat_data(conn)
+        removed["ai_conversations"] = ai_cleanup["conversations"]
+        removed["ai_messages"] = ai_cleanup["messages"]
+        removed["ai_usage"] = ai_cleanup["usage"]
+        removed["cash_receipts_redacted"] = account_delete_cleanup.cleanup_cash_request_receipts(conn)
 
         if table_exists("app_auth_login_limits"):
             cursor = conn.execute(
