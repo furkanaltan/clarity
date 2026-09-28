@@ -1,5 +1,39 @@
 # Rov.E Migrations
 
+## Contract cancellation finalization V3 (28.09.2026)
+
+The API-owned savepoint migration extends case/event CHECK constraints for
+`FOLLOW_UP_DUE`, `FOLLOW_UP_PREPARED`, `MANUAL_REVIEW_REQUIRED` and their audit
+events. It preserves V2 case IDs, revisions, confirmation hashes, ordered messages,
+receipt IDs, response evidence and all original timestamps. V1 migrations still
+rename `CONFIRMED` to `USER_CONFIRMED`, never to a provider confirmation.
+
+The nullable `confirmed_provider_name` captures the provider at text confirmation.
+For existing confirmed cases it is recovered only from the deterministic notice's
+explicit cancellation heading; no current contract rename is substituted as
+historical evidence. Missing proof blocks follow-up preparation and requires
+manual review. The existing V2 payload hash is not recalculated or silently
+repaired during this migration.
+
+`app_contract_cancellation_followups` stores one user-prepared, immutable text per
+owned case, linked to its original dispatch. It cascades with case/message deletion
+and participates in private export and existing deletion/tombstone lifecycle.
+There is no automatic sender, follow-up queue, public link, persisted PDF or new
+financial column. PDF generation is private, on demand and in memory.
+
+The existing daily report maintenance adds a bounded (100 changes/run) VKS reminder
+step only after the API schema exists. An accepted send without any documented
+reply becomes due after 14 days, and manual review after 28 days. These are internal
+product intervals, not legal deadlines. No reminder after a response/final state;
+late evidence is still accepted for manually reviewed cases. A contract's enddate
+only affects a server-derived display label, never cash/fixed-cost calculations.
+
+Release prerequisites: verified DB backup/integrity/FKs, V1/V2/V3 and privacy tests,
+PDF runtime availability and maintenance timer verification. Do not downgrade code
+against V3 states; keep code/DB rollback coordinated. Mail remains OFF; an exact
+internal test allowlist and separate live approval are required. See
+`docs/VKS_OPERATIONS.md`. No deployment or real mail test has been performed.
+
 ## Contract cancellation send/proof V2 (28.09.2026)
 
 `ensure_cancellation_schema()` extends V1 during controlled API startup. Its

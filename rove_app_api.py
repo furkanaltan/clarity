@@ -53,6 +53,9 @@ from rove_contract_cancellation import (
     document_cancellation_response,
     confirm_cancellation_response,
     verified_reply_address,
+    prepare_cancellation_followup,
+    request_cancellation_manual_review,
+    build_cancellation_file,
 )
 from rove_contract_cancellation_mail import CancellationTransportError, send_cancellation_email, fetch_cancellation_delivery
 from rove_behavior_patterns import build_shadow_inspector
@@ -229,6 +232,11 @@ _screenshot_attempts: dict[int, list[float]] = {}
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 VKS_EMAIL_ENABLED = os.getenv('ROVE_VKS_EMAIL_ENABLED','0').strip() == '1'
+VKS_MAIL_MODE = os.getenv('ROVE_VKS_MAIL_MODE', 'test').strip()
+VKS_LIVE_APPROVED = os.getenv('ROVE_VKS_LIVE_APPROVED', '0').strip() == '1'
+VKS_TEST_USER_ID = os.getenv('ROVE_VKS_TEST_USER_ID', '').strip()
+VKS_TEST_CONTRACT_ID = os.getenv('ROVE_VKS_TEST_CONTRACT_ID', '').strip()
+VKS_TEST_RECIPIENT = os.getenv('ROVE_VKS_TEST_RECIPIENT', '').strip()
 AUTH_SECRET = os.getenv("ROVE_APP_AUTH_SECRET", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 SCREENSHOT_MODEL = os.getenv("ROVE_SCREENSHOT_MODEL", "gpt-4o-mini").strip()
@@ -323,6 +331,7 @@ DATA_EXPORT_TABLES = (
     ("kuendigungsfaelle", "app_contract_cancellations"),
     ("kuendigungshistorie", "app_contract_cancellation_events"),
     ("kuendigungsnachrichten", "app_contract_cancellation_messages"),
+    ("kuendigungsnachfragen", "app_contract_cancellation_followups"),
     ("fahrzeugfinanzierungen", "app_vehicle_financings"),
     ("konsumschulden", "app_consumer_debts"),
     ("ziele", "app_goals"),
@@ -619,6 +628,8 @@ def goals_options():
 @app.route("/v1/contracts", methods=["OPTIONS"])
 @app.route("/v1/contract-cancellations", methods=["OPTIONS"])
 @app.route("/v1/contract-cancellations/<case_id>", methods=["OPTIONS"])
+@app.route("/v1/contract-cancellations/<case_id>/file", methods=["OPTIONS"])
+@app.route("/v1/contract-cancellations/<case_id>/pdf", methods=["OPTIONS"])
 def contracts_options():
     return ("", 204)
 
@@ -6123,6 +6134,53 @@ def update_goals():
     return jsonify({"ok": True, **live_data})
 
 
+def cancellation_send_gate(case):
+    if not VKS_EMAIL_ENABLED or not BREVO_API_KEY:
+        return 'cancellation_send_disabled'
+    if VKS_MAIL_MODE == 'live':
+        return None if VKS_LIVE_APPROVED else 'cancellation_live_not_approved'
+    if VKS_MAIL_MODE != 'test':
+        return 'cancellation_mail_mode_invalid'
+    if not all((VKS_TEST_USER_ID, VKS_TEST_CONTRACT_ID, VKS_TEST_RECIPIENT)):
+        return 'cancellation_test_not_configured'
+    if (str(case['user_id']) != VKS_TEST_USER_ID or case['contract_id'] != VKS_TEST_CONTRACT_ID
+            or case['recipient'] != VKS_TEST_RECIPIENT or not case['contract_name'].startswith('[VKS TEST] ')):
+        return 'cancellation_test_target_required'
+    return None
+
+
+@app.route("/v1/contract-cancellations/<case_id>/file", methods=["GET"])
+@app.route("/v1/contract-cancellations/<case_id>/pdf", methods=["GET"])
+def cancellation_file(case_id):
+    with db() as conn:
+        user_id = user_from_token(conn, token_from_request())
+        if not user_id:
+            return jsonify({'ok': False, 'error': 'invalid_or_expired_token'}), 401
+        try:
+            case_file = build_cancellation_file(conn, user_id, case_id)
+        except CancellationError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), exc.status
+    if request.path.endswith('/file'):
+        return jsonify({'ok': True, 'case_file': case_file})
+    from rove_contract_cancellation_pdf import render_cancellation_pdf
+    try:
+        payload = render_cancellation_pdf(case_file)
+    except ImportError:
+        return jsonify({'ok': False, 'error': 'cancellation_pdf_unavailable'}), 503
+    # Do not return an artifact for a case deleted/changed while it was rendered.
+    with db() as conn:
+        if user_from_token(conn, token_from_request()) != user_id:
+            return jsonify({'ok': False, 'error': 'invalid_or_expired_token'}), 401
+        try:
+            current = get_cancellation_case(conn, user_id, case_id)
+            if current['revision'] != case_file['revision'] or current['status'] != case_file['status']:
+                raise CancellationError('cancellation_file_changed', 409)
+        except CancellationError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), exc.status
+    return send_file(io.BytesIO(payload), mimetype='application/pdf', as_attachment=True,
+                     download_name='RovE_Kuendigungsakte.pdf', max_age=0)
+
+
 @app.route("/v1/contract-cancellations", methods=["GET", "POST"])
 @app.route("/v1/contract-cancellations/<case_id>", methods=["GET", "POST"])
 def contract_cancellations(case_id=None):
@@ -6159,6 +6217,8 @@ def contract_cancellations(case_id=None):
                     "delivery": {"action"},
                     "response": {"action","revision","response"},
                     "confirm_response": {"action","revision","response"},
+                    "followup": {"action", "revision"},
+                    "manual_review": {"action", "revision"},
                 }
                 if not isinstance(action, str) or action not in allowed or set(payload) - allowed[action]:
                     raise CancellationError("invalid_cancellation_action")
@@ -6171,8 +6231,10 @@ def contract_cancellations(case_id=None):
                 elif action == 'cancel':
                     result = {"case": cancel_cancellation_case(conn, user_id, case_id, payload.get("revision"))}
                 elif action in {'send','retry'}:
-                    if not VKS_EMAIL_ENABLED or not BREVO_API_KEY:
-                        raise CancellationError('cancellation_send_disabled',503)
+                    send_case = get_cancellation_case(conn, user_id, case_id)
+                    gate_error = cancellation_send_gate(send_case)
+                    if gate_error:
+                        raise CancellationError(gate_error, 503)
                     send_plan = prepare_cancellation_send(conn,user_id,case_id,
                         expected_revision=payload.get('revision'),notice_sha256=payload.get('notice_sha256'),
                         confirmed=payload.get('confirmed'),sender=LOGIN_FROM_EMAIL,retry=action=='retry')
@@ -6184,6 +6246,10 @@ def contract_cancellations(case_id=None):
                     result = {'case':document_cancellation_response(conn,user_id,case_id,payload.get('response'),payload.get('revision'))}
                 elif action == 'confirm_response':
                     result = {'case':confirm_cancellation_response(conn,user_id,case_id,payload.get('response'),payload.get('revision'))}
+                elif action == 'followup':
+                    result = {'case': prepare_cancellation_followup(conn, user_id, case_id, payload.get('revision'))}
+                elif action == 'manual_review':
+                    result = {'case': request_cancellation_manual_review(conn, user_id, case_id, payload.get('revision'))}
             conn.commit()
         except CancellationError as exc:
             conn.rollback()
@@ -6240,7 +6306,9 @@ def contract_cancellations(case_id=None):
         for case in result.get('cases', [result['case']] if 'case' in result else []):
             case['email_sender'] = LOGIN_FROM_EMAIL
             case['reply_to'] = reply_to
-            case['send_available'] = bool(VKS_EMAIL_ENABLED and BREVO_API_KEY and reply_to)
+            case['send_available'] = not cancellation_send_gate(case) and bool(reply_to)
+            case['mail_mode'] = VKS_MAIL_MODE
+            case['send_gate_error'] = cancellation_send_gate(case)
     return jsonify({"ok": True, **result})
 
 

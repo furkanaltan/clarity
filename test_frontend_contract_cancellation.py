@@ -31,13 +31,14 @@ const initial=INITIAL;
 const nodes={};
 function el(id){return nodes[id]||(nodes[id]={id,value:'',checked:false,disabled:false,hidden:false,textContent:'',innerHTML:'',
  dataset:{},listeners:{},classList:{contains:()=>true,remove(){}},addEventListener(type,fn){this.listeners[type]=fn;}});}
-const document={getElementById:el,querySelectorAll:()=>[]};
+const downloads=[];
+const document={getElementById:el,querySelectorAll:()=>[],body:{appendChild(){}},createElement:()=>({click(){downloads.push(this.download);},remove(){}})};
 const escapeAccountHtml=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 let BRIDGE_USER_ID=1,calls=[],fail=false,resolveRequest,abortRequest;
 const apiReady=()=>true;
 function apiFetch(path,options){calls.push({path,method:options.method,payload:options.body?JSON.parse(options.body):null});
  return new Promise((resolve,reject)=>{
-  resolveRequest=data=>resolve({ok:!fail,json:async()=>fail?{ok:false,error:'cancellation_review_changed',...data}:{ok:true,...data}});
+  resolveRequest=data=>resolve({ok:!fail,blob:async()=>data.blob,json:async()=>fail?{ok:false,error:'cancellation_review_changed',...data}:{ok:true,...data}});
   options.signal.addEventListener('abort',()=>reject(new Error('aborted')));});}
 let timer;const setTimeout=fn=>{timer=fn;return 1;};const clearTimeout=()=>{};
 function openOnly(){};function showToast(value){el('toast').textContent=value;}
@@ -212,6 +213,92 @@ assert.equal(calls[0].payload.action,'response');assert.equal(calls[0].payload.r
 assert.ok(calls[0].payload.response.received_at.endsWith('Z'));assert.equal(calls[0].payload.confirmed,undefined);
 resolveRequest({case:{...initial,status:'PROVIDER_RESPONSE'}});await new Promise(resolve=>setImmediate(resolve));
 assert.equal(cancellationCase.status,'PROVIDER_RESPONSE');
+""")
+
+    def test_followup_reminds_but_never_automatically_sends(self):
+        self.run_js("""
+cancellationCase={...initial,status:'FOLLOW_UP_DUE',reminder:{due:true,manual_review_due:false},messages:[{direction:'outbound',transport_status:'accepted'}]};
+renderCancellation();assert.equal(calls.length,0);assert.ok(el('vksBody').innerHTML.includes('Nachfrage vorbereiten'));
+assert.ok(el('vksBody').innerHTML.includes('keine rechtliche Frist'));assert.ok(!el('vksBody').innerHTML.includes('id="vksSend"'));
+el('cancellationsheet').listeners.click({target:{closest:selector=>selector==='#vksFollowup'}});
+assert.equal(calls[0].payload.action,'followup');
+resolveRequest({case:{...cancellationCase,status:'FOLLOW_UP_PREPARED',followups:[{body_text:'Nachfrage zum ursprünglichen Termin'}]}});
+await new Promise(resolve=>setImmediate(resolve));assert.ok(el('vksBody').innerHTML.includes('Nicht durch Rov.E versendet.'));
+assert.equal(calls.length,1);
+""")
+
+    def test_manual_review_and_final_states_show_next_actions_not_internal_names(self):
+        self.run_js("""
+for(const status of ['MANUAL_REVIEW_REQUIRED','TERMINATION_CONFIRMED','FAILED','CANCELLED']){
+ cancellationCase={...initial,status};renderCancellation();
+ assert.ok(!el('vksBody').innerHTML.includes(status));assert.ok(el('vksBody').innerHTML.includes('Kündigungsakte als PDF'));
+ assert.ok(!el('vksBody').innerHTML.includes('id="vksFollowup"'));
+}
+cancellationCase={...initial,status:'MANUAL_REVIEW_REQUIRED',messages:[{direction:'outbound',transport_status:'accepted'}]};renderCancellation();
+assert.ok(el('vksBody').innerHTML.includes('Anbieterantwort dokumentieren'));
+cancellationCase={...initial,status:'SENT'};renderCancellation();assert.ok(el('vksBody').innerHTML.includes('noch nicht belegt'));
+""")
+
+    def test_prepared_followup_and_timeline_are_escaped(self):
+        self.run_js("""
+cancellationCase={...initial,status:'FOLLOW_UP_PREPARED',followups:[{body_text:'<img src=x onerror=alert(1)>'}],events:[{event_type:'follow_up_prepared',created_at:'<img src=x>'}]};
+renderCancellation();assert.ok(!el('vksBody').innerHTML.includes('<img'));assert.ok(el('vksBody').innerHTML.includes('&lt;img'));
+assert.ok(el('vksBody').innerHTML.includes('Nachfrage vorbereitet, nicht versendet'));
+assert.equal(calls.length,0);
+""")
+
+    def test_private_pdf_download_is_single_busy_get(self):
+        self.run_js("""
+cancellationCase={...initial};const first=downloadCancellationFile();
+assert.equal(await downloadCancellationFile(),false);assert.equal(calls.length,1);
+assert.equal(calls[0].method,'GET');assert.ok(calls[0].path.endsWith('/pdf'));assert.equal(calls[0].payload,null);
+resolveRequest({blob:new Blob(['%PDF-test'],{type:'application/pdf'})});assert.equal(await first,true);
+assert.deepEqual(downloads,['RovE_Kuendigungsakte.pdf']);assert.equal(cancellationBusy,false);
+""")
+
+    def test_pdf_finishing_after_user_change_does_not_download(self):
+        self.run_js("""
+cancellationCase={...initial};const pending=downloadCancellationFile();BRIDGE_USER_ID=2;
+resolveRequest({blob:new Blob(['%PDF-test'])});assert.equal(await pending,false);assert.deepEqual(downloads,[]);
+""")
+
+    def test_pdf_error_does_not_leave_busy_or_fake_success(self):
+        self.run_js("""
+cancellationCase={...initial};const pending=downloadCancellationFile();fail=true;
+resolveRequest({error:'cancellation_pdf_unavailable'});assert.equal(await pending,false);
+assert.equal(cancellationBusy,false);assert.deepEqual(downloads,[]);assert.ok(el('vksFeedback').textContent.includes('nicht verfügbar'));
+""")
+
+    def test_internal_mail_gate_copy_is_distinct_from_public_send(self):
+        self.run_js("""
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:false,send_gate_error:'cancellation_live_not_approved'};
+renderCancellation();assert.ok(el('vksBody').innerHTML.includes('Öffentlicher Mailversand ist noch nicht freigegeben'));
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:true,mail_mode:'test'};
+renderCancellation();assert.ok(el('vksBody').innerHTML.includes('Interner Mailtest'));
+""")
+
+    def test_confirmed_end_copy_does_not_auto_delete_or_adjust_plan(self):
+        self.run_js("""
+cancellationCase={...initial,status:'TERMINATION_CONFIRMED',contract_ended:true,confirmed_end_date:'2020-01-01'};
+renderCancellation();assert.ok(el('vksBody').innerHTML.includes('Beendet laut bestätigtem Enddatum'));
+assert.ok(el('vksBody').innerHTML.includes('Monatsplan bleibt unverändert'));
+""")
+
+    def test_unusual_end_date_warns_but_does_not_block_user_confirmation(self):
+        self.run_js("""
+assert.equal(cancellationEndDateLooksUnusual('2031-01-01',new Date(2026,0,1)),false);
+assert.equal(cancellationEndDateLooksUnusual('2031-01-02',new Date(2026,0,1)),true);
+cancellationCase={...initial,status:'PROVIDER_RESPONSE',revision:7,messages:[
+ {direction:'outbound',transport_status:'accepted'},
+ {direction:'inbound',id:'reply-1',body_sha256:'reply-hash'}
+]};
+renderCancellation();el('vksEndDate').value='2099-01-01';
+el('cancellationsheet').listeners.input({target:{id:'vksEndDate',closest:()=>false}});
+assert.equal(el('vksEndDateWarning').hidden,false);
+el('vksResponseOutcome').value='termination_confirmed';el('vksResponseConsent').checked=true;cancellationControls();
+assert.equal(el('vksResponseConfirm').disabled,false);
+el('cancellationsheet').listeners.click({target:{closest:selector=>selector==='#vksResponseConfirm'}});
+assert.equal(calls[0].payload.action,'confirm_response');assert.equal(calls[0].payload.response.end_date,'2099-01-01');
 """)
 
     def test_entry_is_scoped_sheet_scrolls_and_closes_with_existing_navigation(self):

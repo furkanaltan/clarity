@@ -28,6 +28,7 @@ class CancellationDispatchTests(unittest.TestCase):
     def setUp(self):
         fixtures.ContractCancellationTests.setUp(self)
         for name, value in (("VKS_EMAIL_ENABLED", True), ("BREVO_API_KEY", "test-key"),
+                            ("VKS_MAIL_MODE", "live"), ("VKS_LIVE_APPROVED", True),
                             ("LOGIN_FROM_EMAIL", "info@getrove.de")):
             patcher = patch.object(api, name, value)
             patcher.start()
@@ -427,6 +428,7 @@ class CancellationMigrationTests(CancellationDispatchTests):
         with self.connection() as conn:
             raw = dict(conn.execute("SELECT * FROM app_contract_cancellations WHERE id=?", (case['id'],)).fetchone())
             events = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_events")]
+            conn.execute("DROP TABLE app_contract_cancellation_followups")
             conn.execute("DROP TABLE app_contract_cancellation_messages")
             conn.execute("DROP TABLE app_contract_cancellation_events")
             conn.execute("DROP TABLE app_contract_cancellations")

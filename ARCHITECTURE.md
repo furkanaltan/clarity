@@ -95,6 +95,16 @@ tombstones use the existing lifecycle. Local UI status feedback is used; there
 are no unsolicited background notifications. See `docs/MIGRATIONS.md` for the
 controlled V1 migration and operational release prerequisites.
 
+V3 extends the same domain with 14/28-day internal reminders via the existing
+daily maintenance worker. These are product reminders, not legal deadlines.
+Follow-ups are explicitly prepared, immutable text; no resend/follow-up sender
+exists. Private case-file JSON and on-demand PDFs use the existing authenticated
+API/PIN boundary. `rove_contract_cancellation_pdf.py` reuses reportlab/fonts and
+only renders in memory: no public artifacts, links, files or new retention store.
+The mail gate defaults to OFF and, when enabled, to an exact user/contract/recipient
+internal test allowlist. Public sending needs separate operator approval. See
+`docs/VKS_OPERATIONS.md`; external sender verification/E2E remain deployment gates.
+
 ## Bot und Worker
 
 `bot.py` ist der getrennte Telegram-Entry-Point. Die Produktion befindet sich

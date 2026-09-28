@@ -29,6 +29,7 @@ import logging
 import os
 import secrets
 import sqlite3
+import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -2106,6 +2107,12 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
              FROM app_contracts WHERE user_id = ? ORDER BY datetime(created_at), contract_id""",
         (user_id,),
     ).fetchall()
+    case_statuses = {}
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='app_contract_cancellations'").fetchone():
+        case_statuses = {str(row['contract_id']): row['status'] for row in conn.execute(
+            "SELECT contract_id,status FROM app_contract_cancellations WHERE user_id=? AND status IN "
+            "('FOLLOW_UP_DUE','FOLLOW_UP_PREPARED','MANUAL_REVIEW_REQUIRED')", (user_id,))}
+    today = business_today().isoformat()
     return [{
         "id": str(row["contract_id"]), "n": str(row["name"]),
         "a": round(max(0.0, float(row["amount"] or 0)), 2),
@@ -2116,6 +2123,10 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
         "cancellationStatus": row["cancellation_status"],
         "effectiveEndDate": row["effective_end_date"],
         "cancellationConfirmedAt": row["cancellation_confirmed_at"],
+        "cancellationCaseStatus": case_statuses.get(str(row['contract_id'])),
+        "cancellationEnded": bool(row['cancellation_status'] == 'termination_confirmed'
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(row['effective_end_date'] or ''))
+            and row['effective_end_date'] < today),
     } for row in rows]
 
 

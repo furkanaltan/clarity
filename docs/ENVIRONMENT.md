@@ -25,6 +25,12 @@ Production secrets must stay in root-readable environment files outside Git.
 | `ROVE_LOGIN_FROM_EMAIL` | Login and recovery mail | YES when email auth is enabled | NO | `info@getrove.de` for the documented host |
 | `ROVE_LOGIN_FROM_NAME` | Login and recovery mail | NO | NO | `Rov.E` |
 | `BREVO_API_KEY` | Login and recovery mail delivery | YES when email auth is enabled | YES | None |
+| `ROVE_VKS_EMAIL_ENABLED` | VKS explicit mail dispatch | NO | NO | `0` (OFF) |
+| `ROVE_VKS_MAIL_MODE` | VKS transport target gate | NO | NO | `test` |
+| `ROVE_VKS_LIVE_APPROVED` | Separate operator approval for public VKS mail | YES in live mode | NO | `0` |
+| `ROVE_VKS_TEST_USER_ID` | Dedicated internal VKS test account | YES in enabled test mode | NO | Empty (blocked) |
+| `ROVE_VKS_TEST_CONTRACT_ID` | Dedicated internal VKS test contract | YES in enabled test mode | NO | Empty (blocked) |
+| `ROVE_VKS_TEST_RECIPIENT` | Exact operator-controlled VKS test mailbox | YES in enabled test mode | NO | Empty (blocked) |
 | `ROVE_ADMIN_USER_IDS` | API administration allowlist | NO | NO | Empty list |
 | `TELEGRAM_TOKEN` | Telegram bot | YES for bot service | YES | None |
 | `ADMIN_USER_IDS` | Telegram administration allowlist | NO | NO | Empty list |

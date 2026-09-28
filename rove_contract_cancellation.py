@@ -7,7 +7,8 @@ import json
 import re
 import secrets
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from rove_dates import business_today
 
@@ -18,12 +19,25 @@ TRANSITIONS = {
     "USER_CONFIRMED": {"READY_TO_SEND", "CANCELLED"},
     "READY_TO_SEND": {"SENDING", "REVIEW_REQUIRED", "CANCELLED"},
     "SENDING": {"SENT", "FAILED"},
-    "SENT": {"DELIVERY_RECORDED", "PROVIDER_RESPONSE"},
-    "DELIVERY_RECORDED": {"PROVIDER_RESPONSE"},
-    "PROVIDER_RESPONSE": {"TERMINATION_CONFIRMED", "FAILED"},
-    "FAILED": {"SENDING", "REVIEW_REQUIRED", "CANCELLED"},
+    "SENT": {"DELIVERY_RECORDED", "PROVIDER_RESPONSE", "FOLLOW_UP_DUE", "MANUAL_REVIEW_REQUIRED"},
+    "DELIVERY_RECORDED": {"PROVIDER_RESPONSE", "FOLLOW_UP_DUE", "MANUAL_REVIEW_REQUIRED"},
+    "PROVIDER_RESPONSE": {"TERMINATION_CONFIRMED", "FAILED", "MANUAL_REVIEW_REQUIRED"},
+    "FOLLOW_UP_DUE": {"FOLLOW_UP_PREPARED", "PROVIDER_RESPONSE", "MANUAL_REVIEW_REQUIRED"},
+    "FOLLOW_UP_PREPARED": {"PROVIDER_RESPONSE", "MANUAL_REVIEW_REQUIRED"},
+    "MANUAL_REVIEW_REQUIRED": {"PROVIDER_RESPONSE", "TERMINATION_CONFIRMED", "FAILED"},
+    "FAILED": {"SENDING", "REVIEW_REQUIRED", "CANCELLED", "MANUAL_REVIEW_REQUIRED"},
     "TERMINATION_CONFIRMED": set(),
     "CANCELLED": set(),
+}
+FOLLOW_UP_DAYS = 14
+MANUAL_REVIEW_DAYS = 28
+STATUS_LABELS = {
+    "DRAFT": "Entwurf", "REVIEW_REQUIRED": "Angaben prüfen", "USER_CONFIRMED": "Text bestätigt",
+    "READY_TO_SEND": "Bereit zum Versand", "SENDING": "Versand in Bearbeitung", "SENT": "Gesendet",
+    "DELIVERY_RECORDED": "Zustellung dokumentiert", "PROVIDER_RESPONSE": "Antwort dokumentiert",
+    "FOLLOW_UP_DUE": "Nachfassen nötig", "FOLLOW_UP_PREPARED": "Nachfrage vorbereitet",
+    "MANUAL_REVIEW_REQUIRED": "Manuelle Prüfung nötig", "TERMINATION_CONFIRMED": "Kündigung bestätigt",
+    "FAILED": "Vorgang fehlgeschlagen", "CANCELLED": "Vorbereitung abgebrochen",
 }
 REVIEW_FIELDS = frozenset({
     "sender_name", "sender_address", "recipient", "contract_reference",
@@ -42,31 +56,45 @@ def ensure_cancellation_schema(conn: sqlite3.Connection) -> None:
 
     ensure_app_contracts_table(conn)
     old = conn.execute("SELECT sql FROM sqlite_master WHERE name='app_contract_cancellations'").fetchone()
-    migrate = old is not None and "SENDING" not in old[0]
+    migrate = old is not None and "FOLLOW_UP_DUE" not in old[0]
+    v1 = old is not None and "SENDING" not in old[0]
+    tables = ['app_contract_cancellations', 'app_contract_cancellation_events']
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='app_contract_cancellation_messages'").fetchone():
+        tables.append('app_contract_cancellation_messages')
     conn.execute("SAVEPOINT cancellation_schema")
     try:
         if migrate:
-            conn.execute("ALTER TABLE app_contract_cancellations RENAME TO app_contract_cancellations_v1")
-            conn.execute("ALTER TABLE app_contract_cancellation_events RENAME TO app_contract_cancellation_events_v1")
-            conn.execute("DROP INDEX idx_cancellation_active_contract")
-            conn.execute("DROP INDEX idx_cancellation_events_owner")
+            for table in tables:
+                conn.execute(f"ALTER TABLE {table} RENAME TO {table}_previous")
+            for index in ('idx_cancellation_active_contract', 'idx_cancellation_events_owner',
+                          'idx_cancellation_one_dispatch', 'idx_cancellation_response_dedup', 'idx_cancellation_messages_owner'):
+                conn.execute(f"DROP INDEX IF EXISTS {index}")
         _create_schema(conn)
         if migrate:
-            columns = [row[1] for row in conn.execute("PRAGMA table_info(app_contract_cancellations_v1)")]
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(app_contract_cancellations_previous)")]
             selection = ["CASE status WHEN 'CONFIRMED' THEN 'USER_CONFIRMED' ELSE status END" if key == "status" else key for key in columns]
-            conn.execute(f"INSERT INTO app_contract_cancellations ({','.join(columns)}) SELECT {','.join(selection)} FROM app_contract_cancellations_v1")
-            conn.execute("""INSERT INTO app_contract_cancellation_events
+            conn.execute(f"INSERT INTO app_contract_cancellations ({','.join(columns)}) SELECT {','.join(selection)} FROM app_contract_cancellations_previous ORDER BY rowid")
+            if v1:
+                conn.execute("""INSERT INTO app_contract_cancellation_events
                 (id,user_id,case_id,event_type,from_status,to_status,revision,created_at,actor,source)
                 SELECT id,user_id,case_id,event_type,
                   CASE from_status WHEN 'CONFIRMED' THEN 'USER_CONFIRMED' ELSE from_status END,
                   CASE to_status WHEN 'CONFIRMED' THEN 'USER_CONFIRMED' ELSE to_status END,revision,created_at,'legacy','v1_migration'
-                FROM app_contract_cancellation_events_v1""")
+                FROM app_contract_cancellation_events_previous""")
+            else:
+                for table in tables[1:]:
+                    conn.execute(f"INSERT INTO {table} SELECT * FROM {table}_previous ORDER BY rowid")
             for row in conn.execute("SELECT * FROM app_contract_cancellations WHERE user_confirmed_at IS NOT NULL").fetchall():
                 case = dict(row)
-                conn.execute("""UPDATE app_contract_cancellations SET confirmed_notice_sha256=?,confirmed_payload_sha256=?
-                    WHERE user_id=? AND id=?""", (_notice_hash(case), _payload_hash(case), case['user_id'], case['id']))
-            conn.execute("DROP TABLE app_contract_cancellation_events_v1")
-            conn.execute("DROP TABLE app_contract_cancellations_v1")
+                if v1:
+                    conn.execute("""UPDATE app_contract_cancellations SET confirmed_notice_sha256=?,confirmed_payload_sha256=?
+                        WHERE user_id=? AND id=?""", (_notice_hash(case), _payload_hash(case), case['user_id'], case['id']))
+                match = re.search(r'^Kündigung: (.+)$', case['generated_notice_text'], re.MULTILINE)
+                if match:
+                    conn.execute("UPDATE app_contract_cancellations SET confirmed_provider_name=? WHERE user_id=? AND id=?",
+                                 (match[1], case['user_id'], case['id']))
+            for table in reversed(tables):
+                conn.execute(f"DROP TABLE {table}_previous")
         conn.execute("RELEASE cancellation_schema")
     except Exception:
         conn.execute("ROLLBACK TO cancellation_schema")
@@ -81,7 +109,8 @@ def _create_schema(conn):
         contract_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN
             ('DRAFT','REVIEW_REQUIRED','USER_CONFIRMED','READY_TO_SEND','SENDING','SENT',
-             'DELIVERY_RECORDED','PROVIDER_RESPONSE','TERMINATION_CONFIRMED','FAILED','CANCELLED')),
+             'DELIVERY_RECORDED','PROVIDER_RESPONSE','TERMINATION_CONFIRMED','FAILED','CANCELLED',
+             'FOLLOW_UP_DUE','FOLLOW_UP_PREPARED','MANUAL_REVIEW_REQUIRED')),
         revision INTEGER NOT NULL DEFAULT 1,
         sender_name TEXT NOT NULL DEFAULT '',
         sender_address TEXT NOT NULL DEFAULT '',
@@ -100,6 +129,7 @@ def _create_schema(conn):
         termination_confirmed_at TEXT,
         confirmed_end_date TEXT,
         confirmation_source TEXT,
+        confirmed_provider_name TEXT,
         error_code TEXT,
         retry_allowed INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -109,7 +139,7 @@ def _create_schema(conn):
         FOREIGN KEY(user_id, contract_id) REFERENCES app_contracts(user_id, contract_id)
             ON DELETE CASCADE,
         CHECK(status NOT IN ('USER_CONFIRMED','READY_TO_SEND','SENDING','SENT','DELIVERY_RECORDED',
-            'PROVIDER_RESPONSE','TERMINATION_CONFIRMED') OR user_confirmed_at IS NOT NULL),
+            'PROVIDER_RESPONSE','TERMINATION_CONFIRMED','FOLLOW_UP_DUE','FOLLOW_UP_PREPARED') OR user_confirmed_at IS NOT NULL),
         CHECK(status <> 'READY_TO_SEND' OR ready_to_send_at IS NOT NULL)
     )""")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cancellation_active_contract
@@ -122,7 +152,7 @@ def _create_schema(conn):
         event_type TEXT NOT NULL CHECK(event_type IN
             ('case_created','review_required','review_updated','review_invalidated','user_confirmed',
              'ready_to_send','send_requested','sending','sent','delivery_recorded','response_received',
-             'termination_confirmed','failed','retry','cancelled')),
+             'termination_confirmed','failed','retry','cancelled','follow_up_due','follow_up_prepared','manual_review_required')),
         from_status TEXT,
         to_status TEXT NOT NULL,
         revision INTEGER NOT NULL,
@@ -157,6 +187,14 @@ def _create_schema(conn):
         WHERE response_fingerprint IS NOT NULL""")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_cancellation_messages_owner
         ON app_contract_cancellation_messages(user_id,case_id,created_at)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_contract_cancellation_followups (
+        id TEXT NOT NULL, user_id INTEGER NOT NULL, case_id TEXT NOT NULL, original_message_id TEXT NOT NULL,
+        body_text TEXT NOT NULL, body_sha256 TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'user_prepared',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(user_id,id), UNIQUE(user_id,case_id),
+        FOREIGN KEY(user_id,case_id) REFERENCES app_contract_cancellations(user_id,id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id,original_message_id) REFERENCES app_contract_cancellation_messages(user_id,id) ON DELETE CASCADE
+    )""")
 
 
 def _require_schema(conn):
@@ -294,6 +332,8 @@ def get_cancellation_case(conn, user_id, case_id):
     case = _case_row(conn, user_id, case_id)
     contract = _contract(conn, user_id, case["contract_id"])
     case["provider_name"] = case["contract_name"] = contract["name"]
+    if case['confirmed_provider_name']:
+        case['provider_name'] = case['confirmed_provider_name']
     case["contract_source"] = contract["source"]
     case["missing_fields"] = _missing(case)
     case["notice_sha256"] = _notice_hash(case)
@@ -303,6 +343,11 @@ def get_cancellation_case(conn, user_id, case_id):
     case.pop("reviewed_contract_sha256")
     case.pop("confirmed_payload_sha256")
     case['messages'] = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_messages WHERE user_id=? AND case_id=? ORDER BY rowid", (user_id,case_id))]
+    case['followups'] = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_followups WHERE user_id=? AND case_id=? ORDER BY rowid", (user_id,case_id))]
+    case['reminder'] = cancellation_reminder(case)
+    case['status_label'] = STATUS_LABELS[case['status']]
+    case['contract_ended'] = bool(case['status'] == 'TERMINATION_CONFIRMED' and case['confirmed_end_date']
+                                  and case['confirmed_end_date'] < business_today().isoformat())
     return case
 
 
@@ -379,8 +424,8 @@ def confirm_cancellation_case(conn, user_id, case_id, *, confirmed, expected_rev
         raise CancellationError("cancellation_review_incomplete", 409)
     _review_values({}, case)
     conn.execute("""UPDATE app_contract_cancellations SET user_confirmed_at=CURRENT_TIMESTAMP,
-        confirmed_notice_sha256=?,confirmed_payload_sha256=? WHERE user_id=? AND id=?""",
-        (_notice_hash(case), _payload_hash(case), user_id, case_id))
+        confirmed_notice_sha256=?,confirmed_payload_sha256=?,confirmed_provider_name=? WHERE user_id=? AND id=?""",
+        (_notice_hash(case), _payload_hash(case), contract['name'], user_id, case_id))
     _transition(conn, case, "USER_CONFIRMED", "user_confirmed")
     conn.execute("""UPDATE app_contract_cancellations SET ready_to_send_at=CURRENT_TIMESTAMP
         WHERE user_id=? AND id=?""", (user_id, case_id))
@@ -436,7 +481,7 @@ def _invalidate_review(conn, case, contract, reason):
     if 'REVIEW_REQUIRED' not in TRANSITIONS[previous]:
         raise CancellationError('invalid_cancellation_transition',409)
     conn.execute("""UPDATE app_contract_cancellations SET status='REVIEW_REQUIRED',revision=?,user_confirmed_at=NULL,
-        ready_to_send_at=NULL,confirmed_notice_sha256=NULL,confirmed_payload_sha256=NULL,
+        ready_to_send_at=NULL,confirmed_notice_sha256=NULL,confirmed_payload_sha256=NULL,confirmed_provider_name=NULL,
         generated_notice_text=?,reviewed_contract_sha256=?,error_code=?,retry_allowed=0,updated_at=CURRENT_TIMESTAMP
         WHERE user_id=? AND id=?""", (case['revision'],generate_notice(case,contract),_contract_hash(contract),reason,case['user_id'],case['id']))
     case['status'] = 'REVIEW_REQUIRED'
@@ -450,7 +495,8 @@ def prepare_cancellation_send(conn, user_id, case_id, *, expected_revision, noti
     _revision(case,expected_revision)
     if confirmed is not True:
         raise CancellationError('cancellation_send_confirmation_required')
-    if case['status'] in {'SENDING','SENT','DELIVERY_RECORDED','PROVIDER_RESPONSE','TERMINATION_CONFIRMED'}:
+    if case['status'] in {'SENDING','SENT','DELIVERY_RECORDED','PROVIDER_RESPONSE','TERMINATION_CONFIRMED',
+                          'FOLLOW_UP_DUE','FOLLOW_UP_PREPARED','MANUAL_REVIEW_REQUIRED'}:
         return {'dispatch':False,'case':get_cancellation_case(conn,user_id,case_id)}
     if retry:
         if case['status'] != 'FAILED' or not case['retry_allowed']:
@@ -536,7 +582,8 @@ def record_cancellation_delivery(conn, user_id, case_id, evidence):
 def document_cancellation_response(conn, user_id, case_id, payload, expected_revision):
     case,outbound = outbound_message(conn,user_id,case_id)
     _revision(case,expected_revision)
-    if case['status'] not in {'SENT','DELIVERY_RECORDED','PROVIDER_RESPONSE'}:
+    if case['status'] not in {'SENT','DELIVERY_RECORDED','PROVIDER_RESPONSE','FOLLOW_UP_DUE',
+                              'FOLLOW_UP_PREPARED','MANUAL_REVIEW_REQUIRED'}:
         raise CancellationError('invalid_cancellation_transition',409)
     if not isinstance(payload,dict) or set(payload)-{'sender','subject','body','received_at','in_reply_to'}:
         raise CancellationError('invalid_cancellation_response')
@@ -579,7 +626,7 @@ def confirm_cancellation_response(conn, user_id, case_id, payload, expected_revi
     latest = conn.execute("SELECT id FROM app_contract_cancellation_messages WHERE user_id=? AND case_id=? AND direction='inbound' ORDER BY rowid DESC LIMIT 1",(user_id,case_id)).fetchone()
     if not latest or latest[0] != message['id']:
         raise CancellationError('cancellation_response_mismatch',409)
-    if case['status'] != 'PROVIDER_RESPONSE':
+    if case['status'] not in {'PROVIDER_RESPONSE', 'MANUAL_REVIEW_REQUIRED'}:
         raise CancellationError('invalid_cancellation_transition',409)
     outcome = payload.get('outcome')
     if not isinstance(outcome,str) or outcome not in {'termination_confirmed','rejected'}:
@@ -604,3 +651,176 @@ def confirm_cancellation_response(conn, user_id, case_id, payload, expected_revi
         conn.execute("""UPDATE app_contracts SET cancellation_status='termination_confirmed',effective_end_date=?,
             cancellation_confirmed_at=CURRENT_TIMESTAMP WHERE user_id=? AND contract_id=?""",(end,user_id,case['contract_id']))
     return get_cancellation_case(conn,user_id,case_id)
+
+
+def cancellation_reminder(case, *, now=None):
+    """Product reminders, not statutory deadlines. A documented response stops them."""
+    result = {'due_at': None, 'manual_review_at': None, 'due': False, 'manual_review_due': False}
+    messages = case.get('messages', [])
+    sent = next((message for message in messages if message['direction'] == 'outbound'
+                 and message['transport_status'] in {'accepted', 'delivered'} and message['sent_at']), None)
+    if not sent:
+        return result
+    sent_at = datetime.fromisoformat(sent['sent_at']).replace(tzinfo=timezone.utc)
+    due_at = sent_at + timedelta(days=FOLLOW_UP_DAYS)
+    review_at = sent_at + timedelta(days=MANUAL_REVIEW_DAYS)
+    result.update(due_at=due_at.strftime('%Y-%m-%d %H:%M:%S'),
+                  manual_review_at=review_at.strftime('%Y-%m-%d %H:%M:%S'))
+    open_case = case['status'] in {'SENT', 'DELIVERY_RECORDED', 'FOLLOW_UP_DUE', 'FOLLOW_UP_PREPARED'}
+    if open_case and not any(message['direction'] == 'inbound' for message in messages):
+        current = now or datetime.now(timezone.utc)
+        result.update(due=current >= due_at, manual_review_due=current >= review_at)
+    return result
+
+
+def refresh_cancellation_reminders(conn, *, now=None, limit=100):
+    """Bounded existing-maintenance hook. Never sends mail or creates another cancellation."""
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='app_contract_cancellation_followups'").fetchone():
+        return 0  # Schema is owned by controlled API startup, not by maintenance.
+    changed = 0
+    current = now or datetime.now(timezone.utc)
+    cutoff = (current - timedelta(days=FOLLOW_UP_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+    rows = conn.execute("""SELECT c.user_id,c.id FROM app_contract_cancellations c
+        WHERE c.status IN ('SENT','DELIVERY_RECORDED','FOLLOW_UP_DUE','FOLLOW_UP_PREPARED')
+        AND EXISTS(SELECT 1 FROM app_contract_cancellation_messages m WHERE m.user_id=c.user_id AND m.case_id=c.id
+                   AND m.direction='outbound' AND m.transport_status IN ('accepted','delivered') AND m.sent_at<=?)
+        AND NOT EXISTS(SELECT 1 FROM app_contract_cancellation_messages r WHERE r.user_id=c.user_id
+                       AND r.case_id=c.id AND r.direction='inbound')
+        AND (c.status IN ('SENT','DELIVERY_RECORDED') OR EXISTS(
+             SELECT 1 FROM app_contract_cancellation_messages m WHERE m.user_id=c.user_id AND m.case_id=c.id
+             AND m.sent_at<=? AND m.transport_status IN ('accepted','delivered')))
+        ORDER BY c.updated_at,c.rowid LIMIT ?""",
+        (cutoff, (current - timedelta(days=MANUAL_REVIEW_DAYS)).strftime('%Y-%m-%d %H:%M:%S'), limit)).fetchall()
+    for row in rows:
+        case = get_cancellation_case(conn, row['user_id'], row['id'])
+        reminder = cancellation_reminder(case, now=current)
+        target = 'MANUAL_REVIEW_REQUIRED' if reminder['manual_review_due'] else 'FOLLOW_UP_DUE'
+        if target == case['status'] or case['status'] == 'FOLLOW_UP_PREPARED' and target == 'FOLLOW_UP_DUE':
+            continue
+        _advance_case_revision(conn, case)
+        _transition(conn, case, target, target.lower(), actor='system', source='internal_reminder')
+        changed += 1
+    return changed
+
+
+def _advance_case_revision(conn, case):
+    case['revision'] += 1
+    conn.execute("UPDATE app_contract_cancellations SET revision=? WHERE user_id=? AND id=?",
+                 (case['revision'], case['user_id'], case['id']))
+
+
+def prepare_cancellation_followup(conn, user_id, case_id, expected_revision):
+    case, message = outbound_message(conn, user_id, case_id)
+    _revision(case, expected_revision)
+    existing = conn.execute("SELECT 1 FROM app_contract_cancellation_followups WHERE user_id=? AND case_id=?",
+                            (user_id, case_id)).fetchone()
+    if existing and case['status'] == 'FOLLOW_UP_PREPARED':
+        return get_cancellation_case(conn, user_id, case_id)
+    full = get_cancellation_case(conn, user_id, case_id)
+    reminder = cancellation_reminder(full)
+    if not reminder['due'] or reminder['manual_review_due'] or case['status'] not in {'SENT', 'DELIVERY_RECORDED', 'FOLLOW_UP_DUE'}:
+        raise CancellationError('cancellation_followup_not_due', 409)
+    if not case['confirmed_provider_name'] or case['confirmed_notice_sha256'] != _notice_hash(case):
+        raise CancellationError('cancellation_manual_review_required', 409)
+    sent_date = datetime.fromisoformat(message['sent_at']).strftime('%d.%m.%Y')
+    target = (f"zum {date.fromisoformat(case['cancellation_target_date']).strftime('%d.%m.%Y')}"
+              if case['timing_choice'] == 'date' and case['cancellation_target_date'] else 'zum nächstmöglichen Zeitpunkt')
+    lines = [case['sender_name'], message['recipient'], f"Nachfrage zu meiner Kündigung: {case['confirmed_provider_name']}",
+             f"Versand der ursprünglichen Kündigung: {sent_date}"]
+    if case['contract_reference']:
+        lines.append(f"Vertrags-/Kundennummer: {case['contract_reference']}")
+    lines.extend(['Sehr geehrte Damen und Herren,',
+                  f"am {sent_date} habe ich Ihnen meine Kündigung {target} übermittelt.",
+                  'Bitte teilen Sie mir den Bearbeitungsstand mit und bestätigen Sie den Beendigungszeitpunkt.',
+                  'Diese Nachfrage ändert weder die ursprüngliche Kündigung noch den darin genannten Termin.',
+                  'Mit freundlichen Grüßen', case['sender_name']])
+    body = '\n\n'.join(lines)
+    if case['status'] != 'FOLLOW_UP_DUE':
+        _transition(conn, case, 'FOLLOW_UP_DUE', 'follow_up_due', actor='system', source='internal_reminder')
+    _advance_case_revision(conn, case)
+    conn.execute("""INSERT INTO app_contract_cancellation_followups
+        (id,user_id,case_id,original_message_id,body_text,body_sha256) VALUES (?,?,?,?,?,?)""",
+        (secrets.token_urlsafe(18), user_id, case_id, message['id'], body, hashlib.sha256(body.encode()).hexdigest()))
+    _transition(conn, case, 'FOLLOW_UP_PREPARED', 'follow_up_prepared')
+    return get_cancellation_case(conn, user_id, case_id)
+
+
+def request_cancellation_manual_review(conn, user_id, case_id, expected_revision):
+    case = _case_row(conn, user_id, case_id)
+    _revision(case, expected_revision)
+    if case['status'] == 'MANUAL_REVIEW_REQUIRED':
+        return get_cancellation_case(conn, user_id, case_id)
+    _advance_case_revision(conn, case)
+    _transition(conn, case, 'MANUAL_REVIEW_REQUIRED', 'manual_review_required')
+    conn.execute("UPDATE app_contract_cancellations SET retry_allowed=0 WHERE user_id=? AND id=?", (user_id, case_id))
+    return get_cancellation_case(conn, user_id, case_id)
+
+
+def build_cancellation_file(conn, user_id, case_id):
+    """Private evidence projection, not a new snapshot or a claim of legal validity."""
+    case = get_cancellation_case(conn, user_id, case_id)
+    messages = case['messages']
+
+    def message_for(event, direction):
+        candidates = [message for message in messages
+                      if message['direction'] == direction and message['revision'] == event['revision']]
+        return candidates[-1] if candidates else None
+
+    timeline = []
+    for event in case['events']:
+        event = dict(event)
+        occurred_at = event['created_at']
+        if event['event_type'] == 'user_confirmed':
+            occurred_at = case['user_confirmed_at'] or occurred_at
+        elif event['event_type'] == 'ready_to_send':
+            occurred_at = case['ready_to_send_at'] or occurred_at
+        elif event['event_type'] in {'send_requested', 'sending', 'retry'}:
+            message = message_for(event, 'outbound')
+            occurred_at = (message or {}).get('created_at') or occurred_at
+        elif event['event_type'] == 'sent':
+            message = message_for(event, 'outbound')
+            occurred_at = ((message or {}).get('sent_at') or (message or {}).get('created_at')
+                           or occurred_at)
+        elif event['event_type'] == 'delivery_recorded':
+            message = message_for(event, 'outbound')
+            occurred_at = ((message or {}).get('delivered_at') or (message or {}).get('created_at')
+                           or occurred_at)
+        elif event['event_type'] == 'response_received':
+            message = message_for(event, 'inbound')
+            occurred_at = ((message or {}).get('received_at') or (message or {}).get('created_at')
+                           or occurred_at)
+        elif event['event_type'] == 'follow_up_prepared' and case['followups']:
+            occurred_at = case['followups'][-1]['created_at'] or occurred_at
+        elif event['event_type'] == 'termination_confirmed':
+            occurred_at = case['termination_confirmed_at'] or occurred_at
+        event['occurred_at'] = occurred_at
+        timeline.append(event)
+    def timeline_order(event):
+        try:
+            value = datetime.fromisoformat(event['occurred_at'].replace('Z', '+00:00'))
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc), event['revision']
+        except (AttributeError, TypeError, ValueError):
+            return datetime.min.replace(tzinfo=timezone.utc), event['revision']
+
+    timeline.sort(key=timeline_order)
+
+    message_fields = ('direction', 'sender', 'recipient', 'subject', 'body_text', 'body_sha256',
+                      'provider_message_id', 'sent_at', 'received_at', 'delivered_at',
+                      'transport_status', 'source', 'error_code', 'reply_to', 'created_at')
+    return {
+        'title': 'Kündigungsakte', 'case_reference': case['id'], 'revision': case['revision'],
+        'generated_on': datetime.now(timezone.utc).astimezone(ZoneInfo('Europe/Berlin')).date().isoformat(),
+        'provider': case['confirmed_provider_name'] or (case['provider_name'] if not case['messages'] else None),
+        'contract': case['contract_name'], 'contract_reference': case['contract_reference'] or None,
+        'status': case['status'], 'status_label': case['status_label'],
+        'notice_text': case['generated_notice_text'], 'user_confirmed_at': case['user_confirmed_at'],
+        'notice_integrity': bool(case['confirmed_notice_sha256'] and case['confirmed_notice_sha256'] == case['notice_sha256']),
+        'confirmed_end_date': case['confirmed_end_date'], 'confirmed_at': case['termination_confirmed_at'],
+        'confirmation_source': case['confirmation_source'],
+        'messages': [{field: message[field] for field in message_fields} for message in case['messages']],
+        'followups': [{key: followup[key] for key in ('body_text', 'body_sha256', 'source', 'created_at')}
+                      for followup in case['followups']],
+        'timeline': timeline,
+    }

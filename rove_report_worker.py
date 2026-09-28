@@ -348,6 +348,11 @@ def maintain_archives() -> dict:
     cleanup_completed = account_delete_cleanup.retry_paths(
         DB_PATH, account_delete_cleanup_roots(), ACCOUNT_DELETE_CLEANUP_BATCH_SIZE
     )
+    from rove_contract_cancellation import refresh_cancellation_reminders
+    with get_db() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        vks_reminders = refresh_cancellation_reminders(conn)
+        conn.commit()
     rove_web_report_renderer = report_renderer_module()
     report_engine = report_engine_module()
     removed = rove_web_report_renderer.cleanup_expired_reports()
@@ -357,6 +362,7 @@ def maintain_archives() -> dict:
         "pdf_reports_archived": int(archived or 0),
         "account_delete_cleanup_completed": int(cleanup_completed or 0),
         "auth_cleanup": auth_cleanup,
+        "vks_reminders_updated": vks_reminders,
     }
     logger.info("Report-Pflege: %s", result)
     return result
