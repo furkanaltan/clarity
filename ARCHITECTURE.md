@@ -72,6 +72,16 @@ Schemaerweiterungen werden derzeit durch mehrere Runtime-Module und
 Migrationsskripte verwaltet; ein einzelnes kanonisches Migrationsledger fehlt
 noch.
 
+## Contract cancellation preparation
+
+Contract cancellation preparation V1 has one domain owner:
+`rove_contract_cancellation.py`. The existing API session/PIN boundary protects
+every case operation. A user/contract reference, one active-case index and a
+transactional status history keep preparation distinct from contract and
+financial state. V1 ends at explicit, version-bound READY_TO_SEND and has no
+outbound transport. User export, account deletion and restore tombstones use
+the existing lifecycle; see `docs/MIGRATIONS.md` for the additive schema.
+
 ## Bot und Worker
 
 `bot.py` ist der getrennte Telegram-Entry-Point. Die Produktion befindet sich

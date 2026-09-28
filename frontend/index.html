@@ -2116,6 +2116,17 @@
   .vd-btn{display:block;width:100%;margin-top:18px;padding:13px;border-radius:14px;border:1px solid var(--line);
     background:var(--blue-soft);color:var(--blue);font-size:14px;font-weight:700;cursor:pointer;min-height:44px}
   .vd-btn.act{background:var(--card);color:var(--green)}
+  #cancellationsheet{max-height:calc(100svh - var(--safe-top) - 12px);overflow-y:auto;overscroll-behavior:contain}
+  #cancellationsheet .vks-field{display:block;margin:14px 0;color:var(--muted);font-size:13px;font-weight:650}
+  #cancellationsheet .vks-field[hidden]{display:none}
+  #cancellationsheet .vks-field input,#cancellationsheet .vks-field textarea,#cancellationsheet .vks-field select{display:block;width:100%;box-sizing:border-box;margin-top:7px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);font:inherit;font-size:16px}
+  #cancellationsheet .vks-notice{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);font:inherit;font-size:14px;line-height:1.6;margin:16px 0}
+  #cancellationsheet .vks-confirm{display:flex;gap:10px;align-items:flex-start;margin:16px 0;font-size:14px;line-height:1.5;color:var(--ink)}
+  #cancellationsheet .vks-confirm input{margin-top:4px;accent-color:var(--blue)}
+  #cancellationsheet button:disabled{opacity:.5;cursor:default}
+  #vksBack{color:var(--muted)}
+  #vksFeedback{min-height:20px;margin-top:12px;font-size:13px;color:var(--muted)}
+  #vksFeedback[data-error="true"]{color:var(--red)}
   .vd-btn:active{transform:scale(.97)}
   /* Sichtbar, aber nicht wichtiger als die Fixkosten-Karte oder die bestehenden Vertraege. */
   #addContractBtn{padding:11px;background:transparent;border-color:rgba(42,171,238,.28);color:var(--blue);font-weight:650}
@@ -3040,6 +3051,14 @@
     <div id="vdbody"></div>
   </div>
 
+  <!-- Vertragskuendigung: nur Vorbereitung und ausdrueckliche Freigabe, kein Versand. -->
+  <div class="sheet" id="cancellationsheet" aria-labelledby="vksTitle">
+    <div class="grab"></div>
+    <h3 id="vksTitle">Kündigung vorbereiten</h3>
+    <div id="vksBody"></div>
+    <div id="vksFeedback" role="status" aria-live="polite"></div>
+  </div>
+
   <!-- Neues Abo erkannt: als Vertrag übernehmen? (Finanzgurus meistgelobte Stärke: Abo-Erkennung) -->
   <div class="sheet" id="abosheet">
     <div class="grab"></div>
@@ -3812,6 +3831,7 @@ function handleApiSessionStatus(status,body=null){
   }
   if(status!==401 || API_SESSION_FAILURE_HANDLED) return;
   API_SESSION_FAILURE_HANDLED=true;
+  resetCancellationView();
   ROVE_API=null;
   BRIDGE_USER_ID=null;
   BRIDGE_LIVE_STATE_READY=false;
@@ -8414,7 +8434,7 @@ const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","bsheet","ngsheet","abosheet","immosheet",
   "contractsheet","vehiclefinancingsheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","etfplansheet",
-  "markettrackingsheet","savingssheet"
+  "markettrackingsheet","savingssheet","cancellationsheet"
 ]);
 const SHEET_SWIPE_RUNTIME=new WeakMap();
 
@@ -9882,8 +9902,8 @@ function openContract(name,reference={}){
       </div>
     </div>`:""}
     ${v.cancel?`
-      <div class="hint" style="margin-top:14px">Die Glocke zeigt dir anstehende Abbuchungen. Automatische Kündigungserinnerungen und der Kündigungsservice kommen mit dem Vertragsservice.</div>
-      <button class="txd-del" id="vdCancel" data-vn="${contractName}" style="margin-top:10px">Kündigungsservice vormerken</button>
+      <div class="hint" style="margin-top:14px">Bereite deine Kündigung vor und prüfe das Schreiben. Es wird noch nichts versendet.</div>
+      <button class="txd-del" id="vdCancel" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:10px">Kündigung starten</button>
       <button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
     :`<button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
   sheetBg.classList.add("on"); document.getElementById("vdsheet").classList.add("on");
@@ -9984,8 +10004,139 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
     return;
   }
   const c=e.target.closest("#vdCancel");
-  if(c) showToast(`✂️ ${c.dataset.vn}: Kündigungsservice kommt mit einem späteren Update.`);
+  if(c) openCancellation(c.dataset.contractId);
 });
+
+// ===================== CONTRACT CANCELLATION V1 =====================
+let cancellationCase=null, cancellationBusy=false, cancellationReviewDirty=false, cancellationView=0;
+const cancellationStatusLabels={DRAFT:"Entwurf",REVIEW_REQUIRED:"Angaben prüfen",CONFIRMED:"Bestätigt",READY_TO_SEND:"Bereit zum Versand",CANCELLED:"Vorbereitung abgebrochen"};
+function resetCancellationView(){
+  cancellationView++;cancellationCase=null;cancellationBusy=false;cancellationReviewDirty=false;
+  document.getElementById("vksBody").innerHTML="";cancellationFeedback("");
+  document.getElementById("cancellationsheet").classList.remove("on");
+}
+function cancellationFeedback(message,error=false){
+  const node=document.getElementById("vksFeedback");node.textContent=message;node.dataset.error=String(error);
+}
+function cancellationControls(){
+  document.querySelectorAll("#cancellationsheet input,#cancellationsheet textarea,#cancellationsheet select,#cancellationsheet button").forEach(node=>{node.disabled=cancellationBusy;});
+  const confirm=document.getElementById("vksConfirm");
+  if(confirm)confirm.disabled=cancellationBusy||cancellationReviewDirty||!document.getElementById("vksConsent")?.checked;
+}
+function cancellationError(code){
+  return ({contract_not_found:"Dieser Vertrag konnte nicht eindeutig zugeordnet werden.",
+    contract_not_cancelable:"Für diesen Vertrag ist keine Kündigungsvorbereitung verfügbar.",
+    contract_ownership_unverified:"Dieser Altvertrag muss zuerst eindeutig zugeordnet werden.",
+    cancellation_not_found:"Die Kündigungsvorbereitung ist nicht mehr verfügbar.",
+    cancellation_review_incomplete:"Bitte ergänze Absender, Empfänger und Kündigungstermin.",
+    cancellation_review_changed:"Die Angaben haben sich geändert. Lade die Vorbereitung erneut und prüfe den Text.",
+    cancellation_contract_changed:"Der Vertrag hat sich geändert. Speichere und prüfe die Angaben erneut.",
+    invalid_cancellation_target_date:"Bitte gib einen gültigen heutigen oder zukünftigen Termin an.",
+    invalid_cancellation_transition:"Dieser Vorgang ist in diesem Status nicht möglich.",
+    cancellation_schema_unavailable:"Die Kündigungsvorbereitung ist noch nicht verfügbar."})[code]||"Die Änderung wurde nicht bestätigt. Öffne die Vorbereitung erneut, bevor du es noch einmal versuchst.";
+}
+async function cancellationRequest(path,payload){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const response=await apiFetch(path,{method:payload===undefined?"GET":"POST",signal:controller.signal,
+      ...(payload===undefined?{}:{headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})});
+    const data=await response.json();
+    if(!response.ok||!data.ok)throw new Error(data.error||"cancellation_request_failed");
+    return data;
+  }finally{clearTimeout(timer);}
+}
+function renderCancellation(){
+  const item=cancellationCase;if(!item)return;
+  const esc=escapeAccountHtml,review=item.status==="REVIEW_REQUIRED",ready=item.status==="READY_TO_SEND";
+  const target=item.timing_choice==="date"?item.cancellation_target_date:"Zum nächstmöglichen Zeitpunkt";
+  document.getElementById("vksBody").innerHTML=`
+    <div class="drow"><span class="k">Anbieter / Vertrag</span><span class="v">${esc(item.provider_name)}</span></div>
+    <div class="drow"><span class="k">Vorbereitung</span><span class="v">${esc(cancellationStatusLabels[item.status]||item.status)}</span></div>
+    <p class="hint">${ready?"Deine Kündigung ist vorbereitet und freigegeben. Sie wurde noch nicht versendet. Der Vertrag bleibt unverändert.":item.status==="CANCELLED"?"Die Vorbereitung wurde abgebrochen. Dein Vertrag bleibt unverändert.":"Prüfe Anbieter, Empfänger, Vertragskennung und Text. Es wird noch nichts versendet."}</p>
+    ${item.contract_changed?`<p class="hint">Der Vertrag hat sich seit der Textprüfung geändert. ${review?"Speichere und prüfe die Angaben erneut.":"Die bisherige Freigabe gilt nur für den gespeicherten Text. Brich diese Vorbereitung ab, um eine neue zu prüfen."}</p>`:""}
+    ${review?`<form id="vksReviewForm">
+      <label class="vks-field">Absendername<input id="vksSender" autocomplete="name" maxlength="160" value="${esc(item.sender_name)}" required></label>
+      <label class="vks-field">Absenderadresse · optional<textarea id="vksAddress" autocomplete="street-address" maxlength="600" rows="2">${esc(item.sender_address)}</textarea></label>
+      <label class="vks-field">Empfänger · E-Mail oder Postanschrift<textarea id="vksRecipient" maxlength="600" rows="2" required>${esc(item.recipient)}</textarea></label>
+      <label class="vks-field">Vertrags-/Kundennummer · optional<input id="vksReference" maxlength="160" value="${esc(item.contract_reference)}"></label>
+      <label class="vks-field">Gewünschter Kündigungstermin<select id="vksTiming" required>
+        <option value=""${!item.timing_choice?" selected":""}>Bitte wählen</option>
+        <option value="next_possible"${item.timing_choice==="next_possible"?" selected":""}>Zum nächstmöglichen Zeitpunkt</option>
+        <option value="date"${item.timing_choice==="date"?" selected":""}>Termin aus meinen Vertragsunterlagen</option>
+      </select></label>
+      <label class="vks-field" id="vksDateField"${item.timing_choice==="date"?"":" hidden"}>Termin laut Vertragsunterlagen<input id="vksDate" type="date" value="${esc(item.cancellation_target_date||"")}"></label>
+      <p class="hint">Rov.E kennt die Kündigungsfrist dieses Vertrags noch nicht. Ein eingetragener Termin ist deine Angabe und keine geprüfte Frist.</p>
+      <button class="vd-btn" type="submit">Angaben speichern und Text prüfen</button>
+    </form>`:`
+      <div class="drow"><span class="k">Vertrags-/Kundennummer</span><span class="v">${esc(item.contract_reference||"Nicht hinterlegt")}</span></div>
+      <div class="drow"><span class="k">Gewünschter Termin</span><span class="v">${esc(target)}</span></div>
+      <div class="drow"><span class="k">Empfänger</span><span class="v">${esc(item.recipient||"Nicht hinterlegt")}</span></div>`}
+    <h4 style="margin-top:20px">Kündigungstext</h4>
+    <div class="vks-notice">${esc(item.generated_notice_text)}</div>
+    ${review&&!item.missing_fields.length&&!item.contract_changed?`
+      <label class="vks-confirm"><input id="vksConsent" type="checkbox"><span>Ich habe Anbieter, Empfänger, Vertragskennung, Termin und Text geprüft und bestätige die Vorbereitung dieser Kündigung.</span></label>
+      <button class="vd-btn" id="vksConfirm" disabled>Kündigung bestätigen</button>`:""}
+    ${["DRAFT","REVIEW_REQUIRED","CONFIRMED","READY_TO_SEND"].includes(item.status)?`<button class="txd-del" id="vksCancel">Vorbereitung abbrechen</button>`:""}
+    <button class="txd-del" id="vksBack">Zurück zum Vertrag</button>`;
+  cancellationReviewDirty=false;cancellationControls();
+}
+async function openCancellation(contractId){
+  if(cancellationBusy)return;
+  if(!apiReady()||!contractId){showToast("Bitte öffne einen eindeutig gespeicherten Vertrag. Lokale Altverträge müssen zuerst zugeordnet werden.");return;}
+  const view=++cancellationView,user=BRIDGE_USER_ID;cancellationCase=null;cancellationBusy=true;
+  openOnly("cancellationsheet");document.getElementById("vksBody").innerHTML="";cancellationFeedback("Vorbereitung wird geladen …");
+  try{
+    const result=await cancellationRequest(`/v1/contract-cancellations?contract_id=${encodeURIComponent(contractId)}`);
+    if(view!==cancellationView||user!==BRIDGE_USER_ID)return;
+    const active=result.cases.find(item=>item.status!=="CANCELLED");
+    const item=active||(await cancellationRequest("/v1/contract-cancellations",{contract_id:contractId})).case;
+    if(view!==cancellationView||user!==BRIDGE_USER_ID)return;
+    cancellationCase=item;
+    if(document.getElementById("cancellationsheet").classList.contains("on")){renderCancellation();cancellationFeedback("");}
+  }catch(error){if(view===cancellationView&&user===BRIDGE_USER_ID)cancellationFeedback(cancellationError(error.message),true);}
+  finally{if(view===cancellationView){cancellationBusy=false;cancellationControls();}}
+}
+async function mutateCancellation(action,extra={}){
+  if(cancellationBusy||!cancellationCase)return false;
+  if(action==="confirm"&&(cancellationReviewDirty||!document.getElementById("vksConsent")?.checked))return false;
+  const view=cancellationView,user=BRIDGE_USER_ID,item=cancellationCase;
+  cancellationBusy=true;cancellationControls();cancellationFeedback("Wird gespeichert …");
+  try{
+    const result=await cancellationRequest(`/v1/contract-cancellations/${encodeURIComponent(item.id)}`,
+      {action,revision:item.revision,...extra});
+    if(view!==cancellationView||user!==BRIDGE_USER_ID)return false;
+    cancellationCase=result.case;
+    if(document.getElementById("cancellationsheet").classList.contains("on")){
+      renderCancellation();cancellationFeedback(action==="confirm"?"Bereit zum Versand. Noch nichts versendet.":"Gespeichert.");
+    }
+    return true;
+  }catch(error){if(view===cancellationView&&user===BRIDGE_USER_ID)cancellationFeedback(cancellationError(error.message),true);return false;}
+  finally{if(view===cancellationView){cancellationBusy=false;cancellationControls();}}
+}
+document.getElementById("cancellationsheet").addEventListener("input",event=>{
+  if(event.target.id==="vksConsent"){cancellationControls();return;}
+  if(event.target.closest("#vksReviewForm")){
+    cancellationReviewDirty=true;
+    const consent=document.getElementById("vksConsent");if(consent)consent.checked=false;
+    document.getElementById("vksDateField").hidden=document.getElementById("vksTiming").value!=="date";
+    cancellationFeedback("Speichere die Angaben, um den aktualisierten Text zu prüfen.");cancellationControls();
+  }
+});
+document.getElementById("cancellationsheet").addEventListener("submit",event=>{
+  if(event.target.id!=="vksReviewForm")return;event.preventDefault();
+  mutateCancellation("review",{review:{sender_name:document.getElementById("vksSender").value,
+    sender_address:document.getElementById("vksAddress").value,recipient:document.getElementById("vksRecipient").value,
+    contract_reference:document.getElementById("vksReference").value,timing_choice:document.getElementById("vksTiming").value,
+    cancellation_target_date:document.getElementById("vksDate").value||null}});
+});
+document.getElementById("cancellationsheet").addEventListener("click",event=>{
+  if(event.target.closest("#vksConfirm"))mutateCancellation("confirm",{confirmed:true,notice_sha256:cancellationCase?.notice_sha256});
+  else if(event.target.closest("#vksCancel")&&!cancellationBusy&&window.confirm("Nur die Vorbereitung abbrechen? Dein Vertrag bleibt unverändert."))mutateCancellation("cancel");
+  else if(event.target.closest("#vksBack")&&!cancellationBusy){
+    const item=cancellationCase;openContract(item?.contract_name,{contractId:item?.contract_id});
+  }
+});
+// ===================== END CONTRACT CANCELLATION V1 =====================
 
 // ===================== PROFIL (Avatar) — Score · Reports · Sprechen · Premium · Einstellungen =====================
 DATA.score = {
@@ -10366,7 +10517,7 @@ function openReportDetail(i){
 }
 // Sheet-Wechsel: alle Sheets schließen, Hintergrund bleibt
 function closeAllSheetsSoft(){
-  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
+  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","cancellationsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
     .forEach(id=>{
       const element=document.getElementById(id);
       resetSheetSwipeStyles(element);
@@ -10622,6 +10773,7 @@ async function logoutCurrentUser(){
     }
     sessionStorage.removeItem("rove-demo");
   }catch(_){}
+  resetCancellationView();
   ROVE_API=null;
   BRIDGE_USER_ID=null;
   location.replace(location.pathname);
@@ -13374,6 +13526,7 @@ async function loadBridgeState(){
     const b = await res.json();
     const serverUserId=Number(b.user_id);
     if(!Number.isSafeInteger(serverUserId)||serverUserId<1) throw new Error("invalid authenticated state identity");
+    if(BRIDGE_USER_ID!==serverUserId)resetCancellationView();
     BRIDGE_USER_ID = serverUserId;
     clearAmbiguousBridgeStorage();
     CAT_RULES=loadCatRules();

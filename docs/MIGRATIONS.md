@@ -1,5 +1,29 @@
 # Rov.E Migrations
 
+## Contract cancellation preparation V1 (28.09.2026)
+
+`rove_contract_cancellation.ensure_cancellation_schema()` adds
+`app_contract_cancellations` and `app_contract_cancellation_events` during
+controlled API startup, before requests are accepted. The schema is additive
+and idempotent; no contract or historical data is migrated. Requests fail with
+503 if preparation is missing. A partial unique index allows at most one open
+case per user/contract. Composite foreign keys enforce ownership and cascade
+on explicit contract/account deletion. Both tables carry `user_id` and use
+the existing account-delete, tombstone-reapply and private export lifecycle.
+
+Contract/provider identity stays in `app_contracts`; only user-supplied review
+information and the reviewed notice are stored in the case. The current
+contract schema has no trustworthy termination dates/contact data. No debit
+day, inferred profile name, or legacy display text is used as such evidence.
+Dates are explicitly user supplied; `next_possible` requires a conscious choice.
+Confirmation binds to the persisted revision and notice SHA-256, checks that
+the contract identity is unchanged, and records CONFIRMED then READY_TO_SEND
+atomically. No sender, queue, PDF, financial mutation or contract-status change.
+
+Before rollout: production DB backup, controlled schema preparation, integrity
+and FK checks, Python-3.12 API/privacy tests and internal review. Code rollback
+leaves the new tables intact. Production status: NOT DEPLOYED.
+
 ## Personal buffer target (25.09.2026)
 
 `users.buffer_target_amount` is an optional, user-owned amount, not a goal or

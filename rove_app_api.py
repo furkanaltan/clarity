@@ -37,6 +37,16 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type
 import rove_account_delete_cleanup as account_delete_cleanup
 from rove_log_safety import safe_exception_summary
+from rove_contract_cancellation import (
+    CancellationError,
+    ensure_cancellation_schema,
+    get_cancellation_case,
+    list_cancellation_cases,
+    start_cancellation_case,
+    update_cancellation_review,
+    confirm_cancellation_case,
+    cancel_cancellation_case,
+)
 from rove_behavior_patterns import build_shadow_inspector
 from rove_behavior_snapshot import (
     delete_behavior_snapshot,
@@ -301,6 +311,8 @@ DATA_EXPORT_TABLES = (
     ("financial_accounts", "app_financial_accounts"),
     ("financial_account_roles", "app_financial_account_roles"),
     ("vertraege", "app_contracts"),
+    ("kuendigungsfaelle", "app_contract_cancellations"),
+    ("kuendigungshistorie", "app_contract_cancellation_events"),
     ("fahrzeugfinanzierungen", "app_vehicle_financings"),
     ("konsumschulden", "app_consumer_debts"),
     ("ziele", "app_goals"),
@@ -595,6 +607,8 @@ def goals_options():
 
 
 @app.route("/v1/contracts", methods=["OPTIONS"])
+@app.route("/v1/contract-cancellations", methods=["OPTIONS"])
+@app.route("/v1/contract-cancellations/<case_id>", methods=["OPTIONS"])
 def contracts_options():
     return ("", 204)
 
@@ -6099,6 +6113,53 @@ def update_goals():
     return jsonify({"ok": True, **live_data})
 
 
+@app.route("/v1/contract-cancellations", methods=["GET", "POST"])
+@app.route("/v1/contract-cancellations/<case_id>", methods=["GET", "POST"])
+def contract_cancellations(case_id=None):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_cancellation_request"}), 400
+    token = token_from_request()
+    with db() as conn:
+        if request.method == "POST":
+            begin_write(conn)
+        user_id = user_from_token(conn, token)
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        try:
+            if request.method == "GET":
+                if case_id:
+                    result = {"case": get_cancellation_case(conn, user_id, case_id)}
+                else:
+                    result = {"cases": list_cancellation_cases(conn, user_id, clean_text(request.args.get("contract_id")))}
+            elif case_id is None:
+                if set(payload) - {"contract_id"}:
+                    raise CancellationError("invalid_cancellation_request")
+                result = {"case": start_cancellation_case(conn, user_id, clean_text(payload.get("contract_id")))}
+            else:
+                action = payload.get("action")
+                allowed = {
+                    "review": {"action", "revision", "review"},
+                    "confirm": {"action", "revision", "confirmed", "notice_sha256"},
+                    "cancel": {"action", "revision"},
+                }
+                if not isinstance(action, str) or action not in allowed or set(payload) - allowed[action]:
+                    raise CancellationError("invalid_cancellation_action")
+                if action == "review":
+                    result = {"case": update_cancellation_review(conn, user_id, case_id, payload.get("review"), payload.get("revision"))}
+                elif action == "confirm":
+                    result = {"case": confirm_cancellation_case(conn, user_id, case_id,
+                        confirmed=payload.get("confirmed"), expected_revision=payload.get("revision"),
+                        notice_sha256=payload.get("notice_sha256"))}
+                else:
+                    result = {"case": cancel_cancellation_case(conn, user_id, case_id, payload.get("revision"))}
+            conn.commit()
+        except CancellationError as exc:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), exc.status
+    return jsonify({"ok": True, **result})
+
+
 @app.route("/v1/contracts", methods=["POST"])
 def update_contracts():
     """Speichert App-Verträge zentral und rechnet sie sofort in die Fixkosten ein."""
@@ -9152,5 +9213,6 @@ if __name__ == "__main__":
     with db() as conn:
         ensure_admin_tables(conn)
         ensure_buffer_target_column(conn)
+        ensure_cancellation_schema(conn)
     port = int(os.getenv("ROVE_APP_API_PORT", "5057"))
     app.run(host="127.0.0.1", port=port)
