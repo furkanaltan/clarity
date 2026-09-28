@@ -6141,6 +6141,8 @@ def cancellation_send_gate(case):
         return None if VKS_LIVE_APPROVED else 'cancellation_live_not_approved'
     if VKS_MAIL_MODE != 'test':
         return 'cancellation_mail_mode_invalid'
+    if VKS_LIVE_APPROVED:
+        return 'cancellation_test_live_approved'
     if not all((VKS_TEST_USER_ID, VKS_TEST_CONTRACT_ID, VKS_TEST_RECIPIENT)):
         return 'cancellation_test_not_configured'
     if (str(case['user_id']) != VKS_TEST_USER_ID or case['contract_id'] != VKS_TEST_CONTRACT_ID

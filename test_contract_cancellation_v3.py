@@ -308,7 +308,8 @@ class CancellationFinalizationTests(CancellationDispatchTests):
         self.assertEqual(self.count('app_contract_cancellation_messages'), 0)
 
     def test_internal_e2e_only_exact_test_user_contract_and_recipient_can_send(self):
-        with patch.object(api, 'VKS_MAIL_MODE', 'test'), patch.object(api, 'VKS_TEST_USER_ID', '1'), \
+        with patch.object(api, 'VKS_MAIL_MODE', 'test'), patch.object(api, 'VKS_LIVE_APPROVED', False), \
+             patch.object(api, 'VKS_TEST_USER_ID', '1'), \
              patch.object(api, 'VKS_TEST_CONTRACT_ID', 'own'), patch.object(api, 'VKS_TEST_RECIPIENT', 'cancel@example.test'):
             case = self.ready()
             self.assertEqual(self.send(case).get_json()['error'], 'cancellation_test_target_required')
@@ -325,9 +326,23 @@ class CancellationFinalizationTests(CancellationDispatchTests):
             self.assertEqual(self.send(case).get_json()['case']['status'], 'SENT')
         self.assertEqual(self.transport.call_count, 1)
 
+    def test_test_mode_blocks_when_live_approved_even_with_exact_allowlist(self):
+        with patch.object(api, 'VKS_MAIL_MODE', 'test'), patch.object(api, 'VKS_LIVE_APPROVED', True), \
+             patch.object(api, 'VKS_TEST_USER_ID', '1'), \
+             patch.object(api, 'VKS_TEST_CONTRACT_ID', 'own'), patch.object(api, 'VKS_TEST_RECIPIENT', 'cancel@example.test'):
+            with self.connection() as conn:
+                conn.execute("UPDATE app_contracts SET name='[VKS TEST] Interner Testvertrag' WHERE user_id=1 AND contract_id='own'")
+            case = self.ready()
+            response = self.send(case)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.get_json()['error'], 'cancellation_test_live_approved')
+        self.transport.assert_not_called()
+        self.assertEqual(self.count('app_contract_cancellation_messages'), 0)
+
     def test_unconfigured_test_or_unknown_mode_never_dispatches(self):
         case = self.ready()
-        with patch.object(api, 'VKS_MAIL_MODE', 'test'), patch.object(api, 'VKS_TEST_RECIPIENT', ''):
+        with patch.object(api, 'VKS_MAIL_MODE', 'test'), patch.object(api, 'VKS_LIVE_APPROVED', False), \
+             patch.object(api, 'VKS_TEST_RECIPIENT', ''):
             self.assertEqual(self.send(case).get_json()['error'], 'cancellation_test_not_configured')
         with patch.object(api, 'VKS_MAIL_MODE', 'invalid'):
             self.assertEqual(self.send(case).get_json()['error'], 'cancellation_mail_mode_invalid')
