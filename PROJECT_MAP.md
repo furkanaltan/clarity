@@ -26,7 +26,7 @@ bereits abgeschlossene Zielarchitektur.
 | Wealth Chart V2 input / pure range adapter | `rove_app_state.py`, `frontend/index.html`; regression: `test_chart_engine_v2.py` |
 | Ausgabenwahrheit | `rove_expense_domain.py` |
 | Finanzkonten | `rove_financial_accounts.py` |
-| Vertragskuendigung vorbereiten (V1, noch kein Versand) | `rove_contract_cancellation.py`, `rove_app_api.py`, `frontend/index.html` |
+| Vertragskuendigung (V1/V2: Vorbereitung, E-Mail, Nachweis, manuelle Antwort) | `rove_contract_cancellation.py`, `rove_contract_cancellation_mail.py`, `rove_app_api.py`, `frontend/index.html` |
 | Konsumschulden / Nettovermoegensformel | `rove_consumer_debt.py` |
 | Investmentbeitraege | `rove_investment_contributions.py` |
 | Score | `rove_score.py` |

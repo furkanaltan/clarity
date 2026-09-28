@@ -1,5 +1,52 @@
 # Rov.E Migrations
 
+## Contract cancellation send/proof V2 (28.09.2026)
+
+`ensure_cancellation_schema()` extends V1 during controlled API startup. Its
+savepoint rebuilds the case/event tables to extend their CHECK constraints,
+preserves IDs, notices, revisions and original timestamps, and renames V1
+`CONFIRMED` to `USER_CONFIRMED` (never provider confirmation). Historical events
+are marked `legacy/v1_migration`; confirmed V1 payload hashes are recorded without
+changing the notice. The migration is idempotent and rolls back on failure.
+`ensure_app_contracts_table()` adds nullable `cancellation_status`,
+`effective_end_date`, `cancellation_confirmed_at`; no financial column changes.
+
+`app_contract_cancellation_messages` owns outbound attempts and manually entered
+inbound responses, scoped by user/case with cascade deletion. Outbound notice text
+is not duplicated; the case remains its source. The case history, messages and
+contract metadata are included in private export and existing account deletion /
+restore-tombstone cleanup. No new external artifacts or public report links exist.
+Cases are retained with the owned contract until its/account deletion, not in a
+separate retention store. Inbound messages are capped at 20 per case / 6,000 chars.
+
+The send gate is OFF unless `ROVE_VKS_EMAIL_ENABLED=1`. Transport reuses
+`BREVO_API_KEY`, `ROVE_LOGIN_FROM_EMAIL` and `ROVE_LOGIN_FROM_NAME`; From must be a
+registered platform sender and Reply-To is the user's verified account email.
+Only explicitly confirmed notice text is sent. Attempts are committed before
+network I/O, at most 3 per case / 10 per user per rolling 24 hours. No automatic
+retries: timeout, 5xx, 409, malformed receipt or process exit keep resend locked.
+Only a known rejection permits a new explicit audited attempt. A crash can leave
+SENDING indefinitely: support must reconcile the provider receipt/correlation
+before any future recovery procedure, never blindly reset or resend.
+
+Brevo acceptance is SENT; only an authenticated, exactly correlated delivered
+event from its events API records delivery. No unauthenticated webhook exists.
+Without secure inbound infrastructure, the user documents the received response
+and explicitly confirms its result; source is `user_confirmed_provider_message`.
+No end date is inferred. A confirmation changes only contract metadata, not its
+amount/active fixed costs. No AI adjudication or automatic follow-up exists.
+
+Before release: consistent DB backup, integrity/FK checks, Python-3.12 V1/V2 /
+privacy gates, registered sender/Reply-To approval, provider data-retention review
+and an explicitly authorized internal end-to-end delivery test. Local tests must
+mock transport (no real emails). Deletion stops persisted queued cases; a network
+request already in flight cannot be recalled. Brevo/recipient copies are external
+mail records, not artifacts deleted by local account cleanup.
+
+Rollback: keep a verified pre-V2 DB backup. Do not run V1 against dispatched V2
+states or silently downgrade the schema; disable the send gate first and plan
+DB/code recovery together. No migration/backfill of financial data. NOT DEPLOYED.
+
 ## Contract cancellation preparation V1 (28.09.2026)
 
 `rove_contract_cancellation.ensure_cancellation_schema()` adds

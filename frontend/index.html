@@ -2117,6 +2117,10 @@
     background:var(--blue-soft);color:var(--blue);font-size:14px;font-weight:700;cursor:pointer;min-height:44px}
   .vd-btn.act{background:var(--card);color:var(--green)}
   #cancellationsheet{max-height:calc(100svh - var(--safe-top) - 12px);overflow-y:auto;overscroll-behavior:contain}
+  #cancellationsheet .drow{gap:12px;align-items:flex-start}
+  #cancellationsheet .drow .v{min-width:0;overflow-wrap:anywhere}
+  #cancellationsheet h4{margin:20px 0 10px}
+  #cancellationsheet details{margin:14px 0}
   #cancellationsheet .vks-field{display:block;margin:14px 0;color:var(--muted);font-size:13px;font-weight:650}
   #cancellationsheet .vks-field[hidden]{display:none}
   #cancellationsheet .vks-field input,#cancellationsheet .vks-field textarea,#cancellationsheet .vks-field select{display:block;width:100%;box-sizing:border-box;margin-top:7px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);font:inherit;font-size:16px}
@@ -2125,6 +2129,7 @@
   #cancellationsheet .vks-confirm input{margin-top:4px;accent-color:var(--blue)}
   #cancellationsheet button:disabled{opacity:.5;cursor:default}
   #vksBack{color:var(--muted)}
+  #vksDelivery{color:var(--blue)}
   #vksFeedback{min-height:20px;margin-top:12px;font-size:13px;color:var(--muted)}
   #vksFeedback[data-error="true"]{color:var(--red)}
   .vd-btn:active{transform:scale(.97)}
@@ -9889,6 +9894,7 @@ function openContract(name,reference={}){
       ${vehicle.contract_end_date?`<div class="drow"><span class="k">Vertragsende</span><span class="v">${escapeAccountHtml(vehicle.contract_end_date)}</span></div>`:""}
       <button class="vd-btn" id="vdVehicleEdit" data-vf-id="${Number(vehicle.id)}" style="margin-top:14px">${vehicle.financing_type==="leasing"?"Leasing":"Finanzierung"} bearbeiten</button>`:""}
     <div class="drow"><span class="k">Status</span><span class="v">${status}</span></div>
+    ${v.cancellationStatus==="termination_confirmed"?`<div class="drow"><span class="k">Kündigung</span><span class="v">Bestätigt${v.effectiveEndDate?` · Ende ${escapeAccountHtml(v.effectiveEndDate)}`:" · Enddatum nicht hinterlegt"}</span></div><p class="hint">Der Vertrag bleibt dokumentiert. Der Monatsplan wurde nicht automatisch verändert.</p>`:""}
     <div class="field" style="margin-top:14px;margin-bottom:10px">
       <input id="vdAmtEdit" type="text" inputmode="decimal" autocomplete="off" value="${eur2(v.a).replace(/\s*€/,'')}" aria-label="Monatsbetrag ändern">
       <button class="send" id="vdAmtSave" data-vn="${contractName}" aria-label="Betrag speichern"><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 6"/></svg></button>
@@ -9902,7 +9908,7 @@ function openContract(name,reference={}){
       </div>
     </div>`:""}
     ${v.cancel?`
-      <div class="hint" style="margin-top:14px">Bereite deine Kündigung vor und prüfe das Schreiben. Es wird noch nichts versendet.</div>
+      <div class="hint" style="margin-top:14px">Prüfe deine Kündigung und ihren Status. Versand erfolgt nur nach deiner ausdrücklichen Freigabe.</div>
       <button class="txd-del" id="vdCancel" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:10px">Kündigung starten</button>
       <button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:8px;color:var(--red)">Vertrag löschen</button>`
     :`<button class="txd-del" id="vdDelete" data-vn="${contractName}"${contractReferenceAttrs(v)} style="margin-top:10px;color:var(--red)">Vertrag löschen</button>`}`;
@@ -10009,7 +10015,7 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
 
 // ===================== CONTRACT CANCELLATION V1 =====================
 let cancellationCase=null, cancellationBusy=false, cancellationReviewDirty=false, cancellationView=0;
-const cancellationStatusLabels={DRAFT:"Entwurf",REVIEW_REQUIRED:"Angaben prüfen",CONFIRMED:"Bestätigt",READY_TO_SEND:"Bereit zum Versand",CANCELLED:"Vorbereitung abgebrochen"};
+const cancellationStatusLabels={DRAFT:"Entwurf",REVIEW_REQUIRED:"Angaben prüfen",USER_CONFIRMED:"Text bestätigt",READY_TO_SEND:"Bereit zum Versand",SENDING:"Versand in Bearbeitung",SENT:"Gesendet",DELIVERY_RECORDED:"Zustellung dokumentiert",PROVIDER_RESPONSE:"Antwort dokumentiert",TERMINATION_CONFIRMED:"Kündigung bestätigt",FAILED:"Vorgang fehlgeschlagen",CANCELLED:"Vorbereitung abgebrochen"};
 function resetCancellationView(){
   cancellationView++;cancellationCase=null;cancellationBusy=false;cancellationReviewDirty=false;
   document.getElementById("vksBody").innerHTML="";cancellationFeedback("");
@@ -10022,6 +10028,10 @@ function cancellationControls(){
   document.querySelectorAll("#cancellationsheet input,#cancellationsheet textarea,#cancellationsheet select,#cancellationsheet button").forEach(node=>{node.disabled=cancellationBusy;});
   const confirm=document.getElementById("vksConfirm");
   if(confirm)confirm.disabled=cancellationBusy||cancellationReviewDirty||!document.getElementById("vksConsent")?.checked;
+  const send=document.getElementById("vksSend");
+  if(send)send.disabled=cancellationBusy||!cancellationCase?.send_available||!document.getElementById("vksSendConsent")?.checked;
+  const response=document.getElementById("vksResponseConfirm");
+  if(response)response.disabled=cancellationBusy||!document.getElementById("vksResponseConsent")?.checked;
 }
 function cancellationError(code){
   return ({contract_not_found:"Dieser Vertrag konnte nicht eindeutig zugeordnet werden.",
@@ -10033,7 +10043,18 @@ function cancellationError(code){
     cancellation_contract_changed:"Der Vertrag hat sich geändert. Speichere und prüfe die Angaben erneut.",
     invalid_cancellation_target_date:"Bitte gib einen gültigen heutigen oder zukünftigen Termin an.",
     invalid_cancellation_transition:"Dieser Vorgang ist in diesem Status nicht möglich.",
-    cancellation_schema_unavailable:"Die Kündigungsvorbereitung ist noch nicht verfügbar."})[code]||"Die Änderung wurde nicht bestätigt. Öffne die Vorbereitung erneut, bevor du es noch einmal versuchst.";
+    cancellation_schema_unavailable:"Die Kündigungsvorbereitung ist noch nicht verfügbar.",
+    cancellation_send_disabled:"Der Mailversand ist noch nicht freigeschaltet. Dein Text bleibt gespeichert.",
+    cancellation_verified_reply_required:"Für Antworten ist eine bestätigte E-Mail-Adresse erforderlich.",
+    cancellation_email_recipient_required:"Bitte hinterlege genau eine gültige Empfänger-E-Mail-Adresse.",
+    cancellation_confirmation_invalidated:"Die Versanddaten haben sich geändert. Bitte prüfe und bestätige den Text erneut.",
+    cancellation_retry_unsafe:"Der Versandstatus ist unklar. Erneuter Versand bleibt gesperrt, um doppelte Kündigungen zu verhindern.",
+    cancellation_response_mismatch:"Diese Antwort passt nicht zur aktuellen Bestätigung. Öffne den Vorgang erneut.",
+    invalid_cancellation_response:"Bitte ergänze eine gültige Absenderadresse, Betreff und Antworttext.",
+    invalid_cancellation_evidence_date:"Bitte gib den tatsächlichen Empfangszeitpunkt nach dem Versand an, nicht einen zukünftigen Zeitpunkt.",
+    delivery_lookup_failed:"Der Zustellnachweis konnte nicht abgerufen werden. Der gespeicherte Versand bleibt unverändert.",
+    cancellation_send_limit:"Das Versandlimit ist erreicht. Es wurde keine weitere Mail versendet.",
+    cancellation_response_limit:"Für diesen Vorgang sind bereits genügend Antworten dokumentiert."})[code]||"Die Änderung wurde nicht bestätigt. Öffne die Vorbereitung erneut, bevor du es noch einmal versuchst.";
 }
 async function cancellationRequest(path,payload){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
@@ -10041,7 +10062,7 @@ async function cancellationRequest(path,payload){
     const response=await apiFetch(path,{method:payload===undefined?"GET":"POST",signal:controller.signal,
       ...(payload===undefined?{}:{headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})});
     const data=await response.json();
-    if(!response.ok||!data.ok)throw new Error(data.error||"cancellation_request_failed");
+    if(!response.ok||!data.ok){const error=new Error(data.error||"cancellation_request_failed");error.case=data.case;throw error;}
     return data;
   }finally{clearTimeout(timer);}
 }
@@ -10049,15 +10070,21 @@ function renderCancellation(){
   const item=cancellationCase;if(!item)return;
   const esc=escapeAccountHtml,review=item.status==="REVIEW_REQUIRED",ready=item.status==="READY_TO_SEND";
   const target=item.timing_choice==="date"?item.cancellation_target_date:"Zum nächstmöglichen Zeitpunkt";
+  const messages=item.messages||[],outbound=messages.filter(message=>message.direction==="outbound").at(-1),inbound=messages.filter(message=>message.direction==="inbound").at(-1);
+  const canRespond=["SENT","DELIVERY_RECORDED","PROVIDER_RESPONSE"].includes(item.status);
+  const canSend=ready||(item.status==="FAILED"&&item.retry_allowed);
+  document.getElementById("vksTitle").textContent=review?"Kündigung vorbereiten":"Deine Kündigung";
+  const notes={SENDING:"Der Versand wurde angefordert. Ein erneuter Versand bleibt gesperrt. Öffne den Vorgang später erneut, um den bestätigten Status zu sehen.",SENT:"Der Maildienst hat die Nachricht angenommen. Zustellung und Kündigungsbestätigung sind damit noch nicht belegt.",DELIVERY_RECORDED:"Der Maildienst hat die Zustellung dokumentiert. Eine Kündigungsbestätigung liegt damit noch nicht vor.",PROVIDER_RESPONSE:"Du hast eine Anbieterantwort dokumentiert. Sie wird nicht automatisch als Kündigungsbestätigung gewertet.",TERMINATION_CONFIRMED:"Du hast die erhaltene Kündigungsbestätigung ausdrücklich bestätigt. Der Vertrag bleibt dokumentiert; der Monatsplan bleibt unverändert.",FAILED:item.error_code==="provider_rejected"?"Du hast die Ablehnung des Anbieters dokumentiert. Es erfolgt kein automatischer erneuter Versand.":item.retry_allowed?"Der Maildienst hat den Versand abgelehnt. Eine Wiederholung ist nur nach deiner erneuten Freigabe möglich.":"Der Versandstatus ist unklar. Kein erneuter Versand, um eine doppelte Kündigung zu verhindern. Bitte kontaktiere den Support."};
+  if(item.status==="FAILED"&&item.error_code==="permanent_transport_failure")notes.FAILED="Der Maildienst hat den Versand dauerhaft abgelehnt. Bitte kontaktiere den Support vor einer ausdrücklichen Wiederholung.";
   document.getElementById("vksBody").innerHTML=`
     <div class="drow"><span class="k">Anbieter / Vertrag</span><span class="v">${esc(item.provider_name)}</span></div>
-    <div class="drow"><span class="k">Vorbereitung</span><span class="v">${esc(cancellationStatusLabels[item.status]||item.status)}</span></div>
-    <p class="hint">${ready?"Deine Kündigung ist vorbereitet und freigegeben. Sie wurde noch nicht versendet. Der Vertrag bleibt unverändert.":item.status==="CANCELLED"?"Die Vorbereitung wurde abgebrochen. Dein Vertrag bleibt unverändert.":"Prüfe Anbieter, Empfänger, Vertragskennung und Text. Es wird noch nichts versendet."}</p>
-    ${item.contract_changed?`<p class="hint">Der Vertrag hat sich seit der Textprüfung geändert. ${review?"Speichere und prüfe die Angaben erneut.":"Die bisherige Freigabe gilt nur für den gespeicherten Text. Brich diese Vorbereitung ab, um eine neue zu prüfen."}</p>`:""}
+    <div class="drow"><span class="k">Status</span><span class="v">${esc(cancellationStatusLabels[item.status]||item.status)}</span></div>
+    <p class="hint">${esc(notes[item.status]||(ready?"Deine Kündigung ist vorbereitet und freigegeben. Sie wurde noch nicht versendet. Der Vertrag bleibt unverändert.":item.status==="CANCELLED"?"Die Vorbereitung wurde abgebrochen. Dein Vertrag bleibt unverändert.":"Prüfe Anbieter, Empfänger, Vertragskennung und Text. Es wird noch nichts versendet."))}</p>
+    ${item.contract_changed?`<p class="hint">Der Vertrag hat sich seit der Textprüfung geändert. Vor einem Versand ist eine neue Prüfung erforderlich.</p>`:""}
     ${review?`<form id="vksReviewForm">
       <label class="vks-field">Absendername<input id="vksSender" autocomplete="name" maxlength="160" value="${esc(item.sender_name)}" required></label>
       <label class="vks-field">Absenderadresse · optional<textarea id="vksAddress" autocomplete="street-address" maxlength="600" rows="2">${esc(item.sender_address)}</textarea></label>
-      <label class="vks-field">Empfänger · E-Mail oder Postanschrift<textarea id="vksRecipient" maxlength="600" rows="2" required>${esc(item.recipient)}</textarea></label>
+      <label class="vks-field">Empfänger · E-Mail-Adresse<input id="vksRecipient" type="email" maxlength="254" value="${esc(item.recipient)}" required></label>
       <label class="vks-field">Vertrags-/Kundennummer · optional<input id="vksReference" maxlength="160" value="${esc(item.contract_reference)}"></label>
       <label class="vks-field">Gewünschter Kündigungstermin<select id="vksTiming" required>
         <option value=""${!item.timing_choice?" selected":""}>Bitte wählen</option>
@@ -10071,12 +10098,41 @@ function renderCancellation(){
       <div class="drow"><span class="k">Vertrags-/Kundennummer</span><span class="v">${esc(item.contract_reference||"Nicht hinterlegt")}</span></div>
       <div class="drow"><span class="k">Gewünschter Termin</span><span class="v">${esc(target)}</span></div>
       <div class="drow"><span class="k">Empfänger</span><span class="v">${esc(item.recipient||"Nicht hinterlegt")}</span></div>`}
-    <h4 style="margin-top:20px">Kündigungstext</h4>
-    <div class="vks-notice">${esc(item.generated_notice_text)}</div>
+    ${outbound&&!canSend?`<details><summary>Kündigungstext</summary><div class="vks-notice">${esc(item.generated_notice_text)}</div></details>`:`<h4 style="margin-top:20px">Kündigungstext</h4><div class="vks-notice">${esc(item.generated_notice_text)}</div>`}
     ${review&&!item.missing_fields.length&&!item.contract_changed?`
       <label class="vks-confirm"><input id="vksConsent" type="checkbox"><span>Ich habe Anbieter, Empfänger, Vertragskennung, Termin und Text geprüft und bestätige die Vorbereitung dieser Kündigung.</span></label>
       <button class="vd-btn" id="vksConfirm" disabled>Kündigung bestätigen</button>`:""}
-    ${["DRAFT","REVIEW_REQUIRED","CONFIRMED","READY_TO_SEND"].includes(item.status)?`<button class="txd-del" id="vksCancel">Vorbereitung abbrechen</button>`:""}
+    ${canSend?`
+      <div class="drow"><span class="k">Versand über Rov.E</span><span class="v">${esc(item.email_sender||"Nicht verfügbar")}</span></div>
+      <div class="drow"><span class="k">Antworten an</span><span class="v">${esc(item.reply_to||"Bestätigte E-Mail fehlt")}</span></div>
+      ${!item.send_available?`<p class="hint">Der Mailversand ist noch nicht freigeschaltet oder die bestätigte Antwortadresse fehlt. Dein Text bleibt gespeichert.</p>`:""}
+      <label class="vks-confirm"><input id="vksSendConsent" type="checkbox"><span>Ich beauftrage Rov.E, genau diesen Text an ${esc(item.recipient)} zu senden. Anbieter, Vertragskennung und Termin habe ich geprüft.</span></label>
+      <button class="vd-btn" id="vksSend" disabled>${ready?"Kündigung senden":"Versand ausdrücklich wiederholen"}</button>`:""}
+    ${outbound?`<h4>Versandnachweis</h4>
+      <div class="drow"><span class="k">Maildienst</span><span class="v">${esc(outbound.transport_status==="delivered"?"Zustellung dokumentiert":outbound.transport_status==="accepted"?"Nachricht angenommen":outbound.transport_status==="rejected"?"Versand abgelehnt":"Ergebnis noch nicht belegt")}</span></div>
+      ${outbound.sent_at?`<div class="drow"><span class="k">Angenommen am (UTC)</span><span class="v">${esc(outbound.sent_at)}</span></div>`:""}
+      ${outbound.delivered_at?`<div class="drow"><span class="k">Zugestellt am (UTC)</span><span class="v">${esc(outbound.delivered_at)}</span></div>`:""}
+      ${outbound.provider_message_id?`<details><summary>Technischer Nachweis</summary><div class="vks-notice">${esc(outbound.subject)}\nMail-ID: ${esc(outbound.provider_message_id)}\nTextversion: ${esc(outbound.body_sha256)}</div></details>`:""}`:""}
+    ${canRespond?`<button class="txd-del" id="vksDelivery">Zustellstatus prüfen</button>
+      <details><summary>Anbieterantwort dokumentieren</summary><p class="hint">Trage die tatsächlich erhaltene E-Mail ein. Rov.E prüft den Absender nicht automatisch und entscheidet nicht anhand des Antworttexts.</p>
+      <form id="vksResponseForm">
+        <label class="vks-field">Absender der Antwort<input id="vksResponseSender" type="email" maxlength="254" required></label>
+        <label class="vks-field">Betreff<input id="vksResponseSubject" maxlength="300" required></label>
+        <label class="vks-field">Empfangen am · deine Ortszeit<input id="vksResponseDate" type="datetime-local" step="1" required></label>
+        <label class="vks-field">Antworttext<textarea id="vksResponseBody" maxlength="6000" rows="5" required></textarea></label>
+        <button class="vd-btn" type="submit">Erhaltene Antwort dokumentieren</button>
+      </form></details>`:""}
+    ${inbound?`<h4>Anbieterantwort</h4><p class="hint">Von dir dokumentiert · nicht automatisch verifiziert</p>
+      <div class="drow"><span class="k">Absender</span><span class="v">${esc(inbound.sender)}</span></div>
+      <div class="drow"><span class="k">Empfangen (UTC)</span><span class="v">${esc(inbound.received_at)}</span></div>
+      <strong>${esc(inbound.subject)}</strong><div class="vks-notice">${esc(inbound.body_text)}</div>
+      ${item.status==="PROVIDER_RESPONSE"?`<label class="vks-field">Erhaltenes Ergebnis<select id="vksResponseOutcome"><option value="">Bitte wählen</option><option value="termination_confirmed">Anbieter bestätigt die Kündigung</option><option value="rejected">Anbieter lehnt die Kündigung ab</option></select></label>
+        <label class="vks-field">Bestätigtes Enddatum · nur falls genannt<input id="vksEndDate" type="date"></label>
+        <label class="vks-confirm"><input id="vksResponseConsent" type="checkbox"><span>Ich habe diese Anbieterantwort erhalten und bestätige ausdrücklich das ausgewählte Ergebnis und gegebenenfalls das darin genannte Enddatum.</span></label>
+        <button class="vd-btn" id="vksResponseConfirm" disabled>Ergebnis bestätigen</button>`:""}`:""}
+    ${item.status==="TERMINATION_CONFIRMED"?`<div class="drow"><span class="k">Bestätigtes Vertragsende</span><span class="v">${esc(item.confirmed_end_date||"Nicht mitgeteilt")}</span></div>`:""}
+    ${["DRAFT","REVIEW_REQUIRED","USER_CONFIRMED","READY_TO_SEND"].includes(item.status)||(item.status==="FAILED"&&item.retry_allowed)?`<button class="txd-del" id="vksCancel">Vorbereitung abbrechen</button>`:""}
+    ${item.status==="SENDING"?`<button class="txd-del" id="vksReload">Gespeicherten Status laden</button>`:""}
     <button class="txd-del" id="vksBack">Zurück zum Vertrag</button>`;
   cancellationReviewDirty=false;cancellationControls();
 }
@@ -10099,22 +10155,39 @@ async function openCancellation(contractId){
 async function mutateCancellation(action,extra={}){
   if(cancellationBusy||!cancellationCase)return false;
   if(action==="confirm"&&(cancellationReviewDirty||!document.getElementById("vksConsent")?.checked))return false;
+  if(["send","retry"].includes(action)&&(!cancellationCase.send_available||!document.getElementById("vksSendConsent")?.checked))return false;
+  if(action==="confirm_response"&&!document.getElementById("vksResponseConsent")?.checked)return false;
   const view=cancellationView,user=BRIDGE_USER_ID,item=cancellationCase;
   cancellationBusy=true;cancellationControls();cancellationFeedback("Wird gespeichert …");
   try{
     const result=await cancellationRequest(`/v1/contract-cancellations/${encodeURIComponent(item.id)}`,
-      {action,revision:item.revision,...extra});
+      {action,...(action==="delivery"?{}:{revision:item.revision}),...extra});
     if(view!==cancellationView||user!==BRIDGE_USER_ID)return false;
     cancellationCase=result.case;
+    if(result.case.status==="TERMINATION_CONFIRMED"&&typeof DATA!=="undefined"){
+      for(const group of DATA.vertraege||[])for(const contract of group.items||[])if(serverContractId(contract)===result.case.contract_id){
+        contract.cancellationStatus="termination_confirmed";contract.effectiveEndDate=result.case.confirmed_end_date;contract.cancellationConfirmedAt=result.case.termination_confirmed_at;
+      }
+    }
     if(document.getElementById("cancellationsheet").classList.contains("on")){
-      renderCancellation();cancellationFeedback(action==="confirm"?"Bereit zum Versand. Noch nichts versendet.":"Gespeichert.");
+      renderCancellation();cancellationFeedback(result.case.status==="FAILED"?"Versand nicht bestätigt. Bitte beachte den gespeicherten Status.":action==="confirm"?"Bereit zum Versand. Noch nichts versendet.":action==="delivery"&&result.case.status==="SENT"?"Noch kein Zustellnachweis verfügbar.":"Gespeichert.",result.case.status==="FAILED");
     }
     return true;
-  }catch(error){if(view===cancellationView&&user===BRIDGE_USER_ID)cancellationFeedback(cancellationError(error.message),true);return false;}
+  }catch(error){if(view===cancellationView&&user===BRIDGE_USER_ID){
+    if(error.case){cancellationCase=error.case;renderCancellation();}
+    else if(["send","retry"].includes(action)){
+      // The server may already have committed the send lock, even if this request timed out.
+      cancellationCase={...item,status:"SENDING"};renderCancellation();
+    }
+    cancellationFeedback(cancellationError(error.message),true);
+  }return false;}
   finally{if(view===cancellationView){cancellationBusy=false;cancellationControls();}}
 }
 document.getElementById("cancellationsheet").addEventListener("input",event=>{
-  if(event.target.id==="vksConsent"){cancellationControls();return;}
+  if(["vksConsent","vksSendConsent","vksResponseConsent"].includes(event.target.id)){cancellationControls();return;}
+  if(event.target.closest("#vksResponseForm")||["vksResponseOutcome","vksEndDate"].includes(event.target.id)){
+    const consent=document.getElementById("vksResponseConsent");if(consent)consent.checked=false;cancellationControls();return;
+  }
   if(event.target.closest("#vksReviewForm")){
     cancellationReviewDirty=true;
     const consent=document.getElementById("vksConsent");if(consent)consent.checked=false;
@@ -10123,6 +10196,11 @@ document.getElementById("cancellationsheet").addEventListener("input",event=>{
   }
 });
 document.getElementById("cancellationsheet").addEventListener("submit",event=>{
+  if(event.target.id==="vksResponseForm"){
+    event.preventDefault();const received=new Date(document.getElementById("vksResponseDate").value);
+    if(Number.isNaN(received.getTime())){cancellationFeedback(cancellationError("invalid_cancellation_evidence_date"),true);return;}
+    mutateCancellation("response",{response:{sender:document.getElementById("vksResponseSender").value,subject:document.getElementById("vksResponseSubject").value,body:document.getElementById("vksResponseBody").value,received_at:received.toISOString()}});return;
+  }
   if(event.target.id!=="vksReviewForm")return;event.preventDefault();
   mutateCancellation("review",{review:{sender_name:document.getElementById("vksSender").value,
     sender_address:document.getElementById("vksAddress").value,recipient:document.getElementById("vksRecipient").value,
@@ -10131,6 +10209,13 @@ document.getElementById("cancellationsheet").addEventListener("submit",event=>{
 });
 document.getElementById("cancellationsheet").addEventListener("click",event=>{
   if(event.target.closest("#vksConfirm"))mutateCancellation("confirm",{confirmed:true,notice_sha256:cancellationCase?.notice_sha256});
+  else if(event.target.closest("#vksSend"))mutateCancellation(cancellationCase?.status==="FAILED"?"retry":"send",{confirmed:true,notice_sha256:cancellationCase?.notice_sha256});
+  else if(event.target.closest("#vksDelivery"))mutateCancellation("delivery");
+  else if(event.target.closest("#vksReload"))openCancellation(cancellationCase?.contract_id);
+  else if(event.target.closest("#vksResponseConfirm")){
+    const message=(cancellationCase?.messages||[]).filter(item=>item.direction==="inbound").at(-1);
+    if(message)mutateCancellation("confirm_response",{response:{message_id:message.id,body_sha256:message.body_sha256,confirmed:true,outcome:document.getElementById("vksResponseOutcome").value,end_date:document.getElementById("vksEndDate").value||null}});
+  }
   else if(event.target.closest("#vksCancel")&&!cancellationBusy&&window.confirm("Nur die Vorbereitung abbrechen? Dein Vertrag bleibt unverändert."))mutateCancellation("cancel");
   else if(event.target.closest("#vksBack")&&!cancellationBusy){
     const item=cancellationCase;openContract(item?.contract_name,{contractId:item?.contract_id});

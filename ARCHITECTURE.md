@@ -72,15 +72,28 @@ Schemaerweiterungen werden derzeit durch mehrere Runtime-Module und
 Migrationsskripte verwaltet; ein einzelnes kanonisches Migrationsledger fehlt
 noch.
 
-## Contract cancellation preparation
+## Contract cancellation workflow
 
-Contract cancellation preparation V1 has one domain owner:
+Contract cancellation V1/V2 has one domain owner:
 `rove_contract_cancellation.py`. The existing API session/PIN boundary protects
 every case operation. A user/contract reference, one active-case index and a
 transactional status history keep preparation distinct from contract and
-financial state. V1 ends at explicit, version-bound READY_TO_SEND and has no
-outbound transport. User export, account deletion and restore tombstones use
-the existing lifecycle; see `docs/MIGRATIONS.md` for the additive schema.
+financial state. V2 commits SENDING plus its message receipt before invoking
+`rove_contract_cancellation_mail.py`, a single-attempt adapter for the existing
+Brevo transport. No DB write transaction spans network I/O. Unknown outcomes
+and process crashes keep dispatch locked; no automatic resend worker exists.
+Transport acceptance, authenticated delivery evidence and user-confirmed
+provider response have distinct statuses. Manual responses are untrusted text,
+not authenticated inbound mail, and never parsed by AI. Only explicit response
+confirmation writes nullable cancellation metadata on the existing contract;
+it does not delete it or alter financial values/the monthly plan.
+
+Messages remain in the owned case lifecycle (until explicit contract/account
+deletion), with bounded response size/count and audited, rate-limited attempts.
+There are no new public files or PDFs. User export, account deletion and restore
+tombstones use the existing lifecycle. Local UI status feedback is used; there
+are no unsolicited background notifications. See `docs/MIGRATIONS.md` for the
+controlled V1 migration and operational release prerequisites.
 
 ## Bot und Worker
 

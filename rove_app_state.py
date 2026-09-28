@@ -1945,6 +1945,9 @@ def ensure_app_contracts_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE app_contracts ADD COLUMN source TEXT NOT NULL DEFAULT 'app'")
     if "legacy_ref" not in columns:
         conn.execute("ALTER TABLE app_contracts ADD COLUMN legacy_ref TEXT")
+    for name in ("cancellation_status", "effective_end_date", "cancellation_confirmed_at"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE app_contracts ADD COLUMN {name} TEXT")
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_app_contracts_legacy_ref
              ON app_contracts(user_id, legacy_ref)
@@ -2098,7 +2101,8 @@ def normalize_legacy_contracts(conn: sqlite3.Connection, user_id: int) -> dict:
 def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     ensure_app_contracts_table(conn)
     rows = conn.execute(
-        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source, legacy_ref
+        """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source, legacy_ref,
+                  cancellation_status, effective_end_date, cancellation_confirmed_at
              FROM app_contracts WHERE user_id = ? ORDER BY datetime(created_at), contract_id""",
         (user_id,),
     ).fetchall()
@@ -2109,6 +2113,9 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
         "date": str(row["debit_day"] or "1."), "cancel": bool(row["cancelable"]),
         "source": str(row["source"] or "app"), "category": str(row["category"]),
         "legacyRef": str(row["legacy_ref"] or ""),
+        "cancellationStatus": row["cancellation_status"],
+        "effectiveEndDate": row["effective_end_date"],
+        "cancellationConfirmedAt": row["cancellation_confirmed_at"],
     } for row in rows]
 
 

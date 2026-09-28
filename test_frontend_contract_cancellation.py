@@ -37,7 +37,7 @@ let BRIDGE_USER_ID=1,calls=[],fail=false,resolveRequest,abortRequest;
 const apiReady=()=>true;
 function apiFetch(path,options){calls.push({path,method:options.method,payload:options.body?JSON.parse(options.body):null});
  return new Promise((resolve,reject)=>{
-  resolveRequest=data=>resolve({ok:!fail,json:async()=>fail?{ok:false,error:'cancellation_review_changed'}:{ok:true,...data}});
+  resolveRequest=data=>resolve({ok:!fail,json:async()=>fail?{ok:false,error:'cancellation_review_changed',...data}:{ok:true,...data}});
   options.signal.addEventListener('abort',()=>reject(new Error('aborted')));});}
 let timer;const setTimeout=fn=>{timer=fn;return 1;};const clearTimeout=()=>{};
 function openOnly(){};function showToast(value){el('toast').textContent=value;}
@@ -89,7 +89,7 @@ assert.ok(!el('vksBody').innerHTML.includes('id="vksConfirm"'));
     def test_changed_form_invalidates_consent_until_saved_and_reviewed(self):
         self.run_js("""
 cancellationCase={...initial};el('vksConsent').checked=true;
-el('cancellationsheet').listeners.input({target:{id:'vksSender',closest:()=>true}});
+el('cancellationsheet').listeners.input({target:{id:'vksSender',closest:selector=>selector==='#vksReviewForm'}});
 assert.equal(cancellationReviewDirty,true);assert.equal(el('vksConsent').checked,false);
 assert.equal(await mutateCancellation('confirm'),false);assert.equal(calls.length,0);
 const save=mutateCancellation('review',{review:{sender_name:'Changed'}});
@@ -138,6 +138,80 @@ assert.equal(cancellationCase.contract_id,'other-contract');assert.equal(cancell
 cancellationCase={...initial};el('vksConsent').checked=true;fail=true;
 const saving=mutateCancellation('confirm');resolveRequest({});assert.equal(await saving,false);
 assert.deepEqual(cancellationCase,initial);assert.ok(el('vksFeedback').textContent.includes('erneut'));
+""")
+
+    def test_ready_requires_separate_send_consent_and_single_busy_request(self):
+        self.run_js("""
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:true,email_sender:'info@getrove.de',reply_to:'user@example.test'};
+renderCancellation();assert.ok(el('vksBody').innerHTML.includes('Antworten an'));
+assert.ok(el('vksBody').innerHTML.includes('info@getrove.de'));assert.equal(el('vksSend').disabled,true);
+assert.equal(await mutateCancellation('send'),false);assert.equal(calls.length,0);
+el('vksSendConsent').checked=true;cancellationControls();assert.equal(el('vksSend').disabled,false);
+const first=mutateCancellation('send',{confirmed:true,notice_sha256:'notice-hash'});
+assert.equal(await mutateCancellation('send'),false);assert.equal(calls.length,1);
+resolveRequest({case:{...initial,status:'SENT',messages:[{direction:'outbound',recipient:'cancel@example.test',transport_status:'accepted',provider_message_id:'receipt',sent_at:'2026-09-28 12:00:00'}]}});
+await first;assert.equal(cancellationBusy,false);assert.ok(el('vksBody').innerHTML.includes('noch nicht belegt'));
+assert.ok(!el('vksBody').innerHTML.includes('id="vksSend"'));assert.ok(el('vksBody').innerHTML.includes('Anbieterantwort dokumentieren'));
+""")
+
+    def test_send_timeout_is_fail_closed_and_reopening_only_reads_status(self):
+        self.run_js("""
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:true};el('vksSendConsent').checked=true;
+const sending=mutateCancellation('send');timer();assert.equal(await sending,false);
+assert.equal(cancellationCase.status,'SENDING');assert.ok(!el('vksBody').innerHTML.includes('id="vksSend"'));
+const reload=openCancellation('contract-1');resolveRequest({cases:[{...initial,status:'SENT'}]});await reload;
+assert.equal(calls.length,2);assert.equal(calls[1].method,'GET');assert.equal(cancellationCase.status,'SENT');
+""")
+
+    def test_disabled_transport_and_ambiguous_failure_have_no_send_control(self):
+        self.run_js("""
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:false};el('vksSendConsent').checked=true;renderCancellation();
+assert.equal(el('vksSend').disabled,true);assert.equal(await mutateCancellation('send'),false);
+cancellationCase={...initial,status:'FAILED',retry_allowed:false,error_code:'transport_outcome_unknown'};renderCancellation();
+assert.ok(!el('vksBody').innerHTML.includes('id="vksSend"'));assert.ok(!el('vksBody').innerHTML.includes('id="vksCancel"'));
+assert.ok(el('vksBody').innerHTML.includes('Kein erneuter Versand'));
+""")
+
+    def test_provider_response_is_escaped_and_confirmation_is_separate(self):
+        self.run_js("""
+const attack='<img src=x onerror=alert(1)>';
+cancellationCase={...initial,status:'PROVIDER_RESPONSE',messages:[{id:'inbound',direction:'inbound',sender:attack,subject:attack,body_text:attack,received_at:'2026-09-28 12:00:00',body_sha256:'response-hash'}]};
+renderCancellation();const html=el('vksBody').innerHTML;assert.ok(!html.includes('<img'));assert.ok(html.includes('&lt;img'));
+assert.ok(html.includes('nicht automatisch verifiziert'));assert.equal(el('vksResponseConfirm').disabled,true);
+assert.equal(await mutateCancellation('confirm_response'),false);
+el('vksResponseConsent').checked=true;el('vksResponseOutcome').value='termination_confirmed';
+el('cancellationsheet').listeners.click({target:{closest:selector=>selector==='#vksResponseConfirm'}});
+assert.deepEqual(calls[0].payload.response,{message_id:'inbound',body_sha256:'response-hash',confirmed:true,outcome:'termination_confirmed',end_date:null});
+resolveRequest({case:{...initial,status:'TERMINATION_CONFIRMED',confirmed_end_date:null}});
+await new Promise(resolve=>setImmediate(resolve));assert.ok(el('vksBody').innerHTML.includes('Nicht mitgeteilt'));
+""")
+
+    def test_delivery_request_has_no_forged_evidence_or_revision(self):
+        self.run_js("""
+cancellationCase={...initial,status:'SENT'};const checking=mutateCancellation('delivery');
+assert.deepEqual(calls[0].payload,{action:'delivery'});resolveRequest({case:{...initial,status:'SENT'}});await checking;
+assert.ok(el('vksFeedback').textContent.includes('Noch kein Zustellnachweis'));
+""")
+
+    def test_invalidated_server_case_replaces_old_confirmation(self):
+        self.run_js("""
+cancellationCase={...initial,status:'READY_TO_SEND',send_available:true};el('vksSendConsent').checked=true;
+const sending=mutateCancellation('send',{confirmed:true,notice_sha256:initial.notice_sha256});fail=true;
+resolveRequest({case:{...initial,status:'REVIEW_REQUIRED',revision:3,generated_notice_text:'Changed provider notice',user_confirmed_at:null}});
+assert.equal(await sending,false);assert.equal(cancellationCase.status,'REVIEW_REQUIRED');assert.equal(cancellationCase.revision,3);
+assert.ok(el('vksBody').innerHTML.includes('Changed provider notice'));assert.ok(!el('vksBody').innerHTML.includes('id="vksSend"'));
+""")
+
+    def test_response_form_uses_actual_date_and_does_not_auto_confirm(self):
+        self.run_js("""
+cancellationCase={...initial,status:'SENT'};
+el('vksResponseSender').value='service@example.test';el('vksResponseSubject').value='Antwort';
+el('vksResponseBody').value='Wir bestätigen.';el('vksResponseDate').value='2026-09-28T12:00:00';
+el('cancellationsheet').listeners.submit({target:{id:'vksResponseForm'},preventDefault(){}});
+assert.equal(calls[0].payload.action,'response');assert.equal(calls[0].payload.response.sender,'service@example.test');
+assert.ok(calls[0].payload.response.received_at.endsWith('Z'));assert.equal(calls[0].payload.confirmed,undefined);
+resolveRequest({case:{...initial,status:'PROVIDER_RESPONSE'}});await new Promise(resolve=>setImmediate(resolve));
+assert.equal(cancellationCase.status,'PROVIDER_RESPONSE');
 """)
 
     def test_entry_is_scoped_sheet_scrolls_and_closes_with_existing_navigation(self):
