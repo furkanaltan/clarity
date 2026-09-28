@@ -144,6 +144,18 @@ assert.equal(items.filter(isConsumptionExpense).reduce((sum,item)=>sum+Math.abs(
 '''
         self.run_node(script)
 
+    def test_quick_capture_has_no_fixed_cost_classification_control(self):
+        start = self.source.index('<div class="sheet" id="sheet">')
+        end = self.source.index('<div class="sheet tall" id="importsheet">', start)
+        quick_sheet = self.source[start:end]
+        self.assertNotIn("quickFixedCost", self.source)
+        self.assertNotIn("quick-fixed-cost", self.source)
+        self.assertNotIn("Geplante Fixkostenabbuchung", quick_sheet)
+        self.assertIn('id="quickForm"', quick_sheet)
+        self.assertIn('id="quickChips"', quick_sheet)
+        self.assertIn('id="scanOpen"', quick_sheet)
+        self.assertIn('class="scan-fixed"', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
