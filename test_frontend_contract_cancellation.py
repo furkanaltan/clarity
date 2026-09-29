@@ -194,6 +194,22 @@ assert.deepEqual(calls[0].payload,{action:'delivery'});resolveRequest({case:{...
 assert.ok(el('vksFeedback').textContent.includes('Noch kein Zustellnachweis'));
 """)
 
+    def test_brevo_delivery_states_are_short_german_and_never_claim_termination(self):
+        self.run_js("""
+cancellationCase={...initial,status:'SENT',status_label:'Zustellung verzögert',messages:[
+ {direction:'outbound',recipient:'cancel@example.test',transport_status:'deferred',provider_message_id:'receipt'}
+],events:[{event_type:'brevo_delivery_deferred',created_at:'2026-09-29 12:00:00'}]};renderCancellation();
+assert.ok(el('vksBody').innerHTML.includes('Zustellung verzögert'));
+assert.ok(el('vksBody').innerHTML.includes('Brevo meldet eine verzögerte Zustellung'));
+assert.ok(el('vksBody').innerHTML.includes('Rov.E versendet nichts erneut'));
+assert.ok(!el('vksBody').innerHTML.includes('deferred'));
+cancellationCase={...initial,status:'DELIVERY_RECORDED',status_label:'Zugestellt',messages:[
+ {direction:'outbound',recipient:'cancel@example.test',transport_status:'delivered',provider_message_id:'receipt',delivered_at:'2026-09-29 12:00:00'}
+]};renderCancellation();
+assert.ok(el('vksBody').innerHTML.includes('Zugestellt'));
+assert.ok(el('vksBody').innerHTML.includes('Kündigungsbestätigung liegt damit noch nicht vor'));
+""")
+
     def test_invalidated_server_case_replaces_old_confirmation(self):
         self.run_js("""
 cancellationCase={...initial,status:'READY_TO_SEND',send_available:true};el('vksSendConsent').checked=true;

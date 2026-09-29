@@ -1,7 +1,8 @@
 # VKS Mail Operations And Launch Gates
 
-VKS V1-V3 is not deployed by this sprint. No real mail was sent. These are
-operator release gates, not evidence that production or Brevo is already verified.
+Verify the live commit and service configuration before every operation. This
+document describes operator gates and does not itself prove that production or
+Brevo is configured.
 
 ## Defaults And Isolation
 
@@ -21,6 +22,27 @@ operator release gates, not evidence that production or Brevo is already verifie
 - Existing `BREVO_API_KEY`, `ROVE_LOGIN_FROM_EMAIL`, `ROVE_LOGIN_FROM_NAME` are
   reused. Never print credentials, commit ENV files or install production packages
   as part of this feature.
+
+## Brevo Delivery Webhook
+
+- The endpoint is `POST /webhooks/brevo/vks`. It is unavailable unless
+  `ROVE_VKS_BREVO_WEBHOOK_TOKEN` is configured; the endpoint accepts only a
+  constant-time-checked `Authorization: Bearer` token. Do not reuse the Brevo API
+  key as this callback token.
+- Configure the Brevo transactional webhook with Bearer authentication using the
+  same independently generated token. Subscribe only to sent/request, delivered,
+  deferred, soft bounce, hard bounce, blocked, invalid and error events; do not
+  enable batching for this endpoint.
+- Events map only through an exact stored Brevo message ID to one outbound attempt.
+  Recipient mismatch, duplicate/ambiguous IDs or a mismatching `X-Mailin-custom`
+  attempt marker do not mutate a case. Unmatched authenticated events are logged
+  using a one-way identifier hash and acknowledged without case mutation.
+- The event timestamp uses Brevo `ts_event`, then `ts`; it never substitutes
+  webhook receipt time. Retries are idempotent. Delivered means only that Brevo
+  reported delivery, never that the provider confirmed cancellation.
+- Deferred/soft-bounce events do not resend. Hard bounce, blocked, invalid and
+  error move eligible cases to manual review with retries disabled. No webhook
+  event starts a send, retry, cancellation or termination confirmation.
 
 ## Required Before Any Real Dispatch
 

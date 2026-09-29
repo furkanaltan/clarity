@@ -31,6 +31,7 @@ Production secrets must stay in root-readable environment files outside Git.
 | `ROVE_VKS_TEST_USER_ID` | Dedicated internal VKS test account | YES in enabled test mode | NO | Empty (blocked) |
 | `ROVE_VKS_TEST_CONTRACT_ID` | Dedicated internal VKS test contract | YES in enabled test mode | NO | Empty (blocked) |
 | `ROVE_VKS_TEST_RECIPIENT` | Exact operator-controlled VKS test mailbox | YES in enabled test mode | NO | Empty (blocked) |
+| `ROVE_VKS_BREVO_WEBHOOK_TOKEN` | Bearer token for authenticated VKS delivery callbacks | YES to enable callbacks | YES | Empty (webhook returns unavailable) |
 | `ROVE_ADMIN_USER_IDS` | API administration allowlist | NO | NO | Empty list |
 | `TELEGRAM_TOKEN` | Telegram bot | YES for bot service | YES | None |
 | `ADMIN_USER_IDS` | Telegram administration allowlist | NO | NO | Empty list |

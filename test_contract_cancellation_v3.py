@@ -383,6 +383,7 @@ class CancellationFinalizationTests(CancellationDispatchTests):
             schemas[tables[1]] = schemas[tables[1]].replace(", 'follow_up_due'", '')  # SQL may contain no whitespace.
             schemas[tables[1]] = re.sub(r",\s*'(?:follow_up_due|follow_up_prepared|manual_review_required)'", '', schemas[tables[1]])
             conn.execute('DROP TABLE app_contract_cancellation_followups')
+            conn.execute('DROP TABLE app_contract_cancellation_delivery_events')
             for table in reversed(tables):
                 conn.execute(f'DROP TABLE {table}')
             for table in tables:

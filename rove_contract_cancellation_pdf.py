@@ -10,11 +10,15 @@ EVENT_LABELS = {
     'review_updated': 'Angaben aktualisiert', 'review_invalidated': 'Neue Prüfung erforderlich',
     'user_confirmed': 'Kündigungstext bestätigt', 'ready_to_send': 'Versand vorbereitet',
     'send_requested': 'Versand beauftragt', 'sending': 'Versand gestartet',
-    'sent': 'Maildienst hat Nachricht angenommen', 'delivery_recorded': 'Zustellung dokumentiert',
+    'sent': 'Maildienst hat Nachricht angenommen', 'delivery_recorded': 'Zugestellt',
     'response_received': 'Erhaltene Antwort dokumentiert', 'termination_confirmed': 'Kündigungsergebnis bestätigt',
     'failed': 'Vorgang fehlgeschlagen', 'retry': 'Wiederholung ausdrücklich beauftragt',
     'cancelled': 'Vorbereitung abgebrochen', 'follow_up_due': 'Nachfassen nötig',
     'follow_up_prepared': 'Nachfrage vorbereitet, nicht versendet', 'manual_review_required': 'Manuelle Prüfung nötig',
+    'brevo_delivery_sent': 'Gesendet', 'brevo_delivery_delivered': 'Zugestellt',
+    'brevo_delivery_deferred': 'Zustellung verzögert', 'brevo_delivery_soft_bounce': 'Zustellung verzögert',
+    'brevo_delivery_hard_bounce': 'Zustellung fehlgeschlagen', 'brevo_delivery_blocked': 'Zustellung fehlgeschlagen',
+    'brevo_delivery_invalid': 'Zustellung fehlgeschlagen', 'brevo_delivery_error': 'Zustellung fehlgeschlagen',
 }
 BERLIN = ZoneInfo('Europe/Berlin')
 
@@ -121,7 +125,10 @@ def render_cancellation_pdf(case_file):
     outgoing = [message for message in case_file['messages'] if message['direction'] == 'outbound']
     if not outgoing:
         add('Kein Versand dokumentiert.')
-    transport_labels = {'accepted': 'Vom Maildienst angenommen', 'delivered': 'Zustellung dokumentiert',
+    transport_labels = {'accepted': 'Vom Maildienst angenommen', 'delivered': 'Zugestellt',
+                        'deferred': 'Zustellung verzögert', 'soft_bounce': 'Zustellung verzögert',
+                        'hard_bounce': 'Zustellung fehlgeschlagen', 'blocked': 'Zustellung fehlgeschlagen',
+                        'invalid': 'Zustellung fehlgeschlagen', 'error': 'Zustellung fehlgeschlagen',
                         'sending': 'Ausgang noch unklar', 'unknown': 'Ausgang unklar', 'rejected': 'Versand abgelehnt'}
     for index, message in enumerate(outgoing, 1):
         add(f"Versuch {index}: {transport_labels.get(message['transport_status'], 'Nicht belegt')}")

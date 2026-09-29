@@ -29,7 +29,8 @@ class CancellationDispatchTests(unittest.TestCase):
         fixtures.ContractCancellationTests.setUp(self)
         for name, value in (("VKS_EMAIL_ENABLED", True), ("BREVO_API_KEY", "test-key"),
                             ("VKS_MAIL_MODE", "live"), ("VKS_LIVE_APPROVED", True),
-                            ("LOGIN_FROM_EMAIL", "info@getrove.de")):
+                            ("LOGIN_FROM_EMAIL", "info@getrove.de"),
+                            ("VKS_BREVO_WEBHOOK_TOKEN", "brevo-webhook-test-secret")):
             patcher = patch.object(api, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -44,11 +45,18 @@ class CancellationDispatchTests(unittest.TestCase):
         case = self.action(case, "review", {"review": values}, user).get_json()["case"]
         return self.action(case, "confirm", {"confirmed": True, "notice_sha256": case["notice_sha256"]}, user).get_json()["case"]
 
-    def send(self, case, action="send", **changes):
-        return self.action(case, action, {"confirmed": True, "notice_sha256": case["notice_sha256"], **changes})
+    def add_contract(self, contract_id, user=1):
+        with self.connection() as conn:
+            conn.execute("""INSERT INTO app_contracts
+                (user_id,contract_id,detail_key,name,category,amount,cancelable)
+                VALUES (?,?,?,?,?,?,1)""", (user, contract_id, contract_id, "Webhook-Test", "Abos", 1))
+            conn.commit()
 
-    def sent(self):
-        response = self.send(self.ready())
+    def send(self, case, action="send", user=1, **changes):
+        return self.action(case, action, {"confirmed": True, "notice_sha256": case["notice_sha256"], **changes}, user)
+
+    def sent(self, contract="own", user=1):
+        response = self.send(self.ready(contract=contract, user=user), user=user)
         self.assertEqual(response.status_code, 200, response.get_json())
         return response.get_json()["case"]
 
@@ -280,6 +288,186 @@ class CancellationDispatchTests(unittest.TestCase):
             self.assertEqual(self.request("POST", f"/v1/contract-cancellations/{case['id']}", {"action": "delivery"}).status_code, 503)
         self.assertEqual(self.start()["status"], "SENT")
 
+    def webhook_payload(self, case, event, **overrides):
+        message = next(message for message in case['messages'] if message['direction'] == 'outbound')
+        payload = {
+            'event': event,
+            'email': message['recipient'],
+            'message-id': message['provider_message_id'],
+            'ts_event': int(datetime.now(timezone.utc).timestamp()),
+            'X-Mailin-custom': 'vks-attempt=' + message['id'],
+        }
+        payload.update(overrides)
+        return payload
+
+    def post_webhook(self, payload, *, token='brevo-webhook-test-secret'):
+        headers = {'Authorization': 'Bearer ' + token} if token is not None else {}
+        with api.app.test_client() as client:
+            return client.post('/webhooks/brevo/vks', json=payload, headers=headers)
+
+    def test_brevo_delivered_records_delivery_at_provider_event_time(self):
+        case = self.sent()
+        event_time = int(datetime.now(timezone.utc).timestamp())
+        payload = self.webhook_payload(case, 'delivered', ts_event=event_time,
+                                       ts=1000000000, date='2001-01-01 00:00:00')
+        response = self.post_webhook(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        updated = response.get_json()
+        self.assertEqual(updated['result'], 'recorded')
+        with self.connection() as conn:
+            result = vks.get_cancellation_case(conn, 1, case['id'])
+        self.assertEqual(result['status'], 'DELIVERY_RECORDED')
+        self.assertEqual(result['status_label'], 'Zugestellt')
+        self.assertEqual(result['messages'][-1]['transport_status'], 'delivered')
+        self.assertEqual(result['messages'][-1]['delivered_at'],
+                         datetime.fromtimestamp(event_time, timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
+        webhook_events = [event for event in result['events'] if event['event_type'] == 'brevo_delivery_delivered']
+        self.assertEqual(len(webhook_events), 1)
+        self.assertEqual(webhook_events[0]['created_at'], result['messages'][-1]['delivered_at'])
+        self.assertIsNone(result['termination_confirmed_at'])
+
+    def test_duplicate_delivery_webhook_is_idempotent(self):
+        case = self.sent()
+        payload = self.webhook_payload(case, 'delivered')
+        self.assertEqual(self.post_webhook(payload).get_json()['result'], 'recorded')
+        duplicate = self.post_webhook(payload)
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(duplicate.get_json()['result'], 'duplicate')
+        with self.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_delivery_events").fetchone()[0], 1)
+            result = vks.get_cancellation_case(conn, 1, case['id'])
+        self.assertEqual(sum(event['event_type'] == 'brevo_delivery_delivered' for event in result['events']), 1)
+
+    def test_webhook_rejects_missing_or_invalid_authentication(self):
+        case = self.sent()
+        payload = self.webhook_payload(case, 'delivered')
+        self.assertEqual(self.post_webhook(payload, token='wrong-token').status_code, 401)
+        with patch.object(api, 'VKS_BREVO_WEBHOOK_TOKEN', ''):
+            response = self.post_webhook(payload, token=None)
+        self.assertEqual(response.status_code, 503)
+        with self.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_delivery_events").fetchone()[0], 0)
+            self.assertEqual(vks.get_cancellation_case(conn, 1, case['id'])['status'], 'SENT')
+
+    def test_unknown_or_ambiguous_message_id_fails_closed(self):
+        case = self.sent()
+        payload = self.webhook_payload(case, 'delivered', **{'message-id': '<unknown@example.test>'})
+        response = self.post_webhook(payload)
+        self.assertEqual((response.status_code, response.get_json()['result']), (202, 'unmatched'))
+        second = self.send(self.ready(contract='foreign', user=2), user=2).get_json()['case']
+        ambiguous = self.webhook_payload(case, 'delivered')
+        response = self.post_webhook(ambiguous)
+        self.assertEqual((response.status_code, response.get_json()['result']), (202, 'unmatched'))
+        with self.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_delivery_events").fetchone()[0], 0)
+            self.assertEqual(vks.get_cancellation_case(conn, 1, case['id'])['status'], 'SENT')
+            self.assertEqual(vks.get_cancellation_case(conn, 2, second['id'])['status'], 'SENT')
+
+    def test_recipient_and_attempt_mismatches_do_not_mutate_case(self):
+        case = self.sent()
+        for changes in ({'email': 'other@example.test'}, {'X-Mailin-custom': 'vks-attempt=another-attempt'}):
+            with self.subTest(changes=changes):
+                response = self.post_webhook(self.webhook_payload(case, 'delivered', **changes))
+                self.assertEqual((response.status_code, response.get_json()['result']), (202, 'unmatched'))
+        with self.connection() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_delivery_events").fetchone()[0], 0)
+            self.assertEqual(vks.get_cancellation_case(conn, 1, case['id'])['status'], 'SENT')
+
+    def test_deferred_and_soft_bounce_are_delayed_without_resend(self):
+        for index, event in enumerate(('deferred', 'soft_bounce')):
+            with self.subTest(event=event):
+                contract_id = f'delayed-{index}'
+                self.add_contract(contract_id)
+                self.transport.return_value = f'<receipt-{contract_id}@example.test>'
+                case = self.sent(contract=contract_id)
+                sends_before = self.transport.call_count
+                response = self.post_webhook(self.webhook_payload(case, event))
+                self.assertEqual(response.status_code, 200)
+                with self.connection() as conn:
+                    result = vks.get_cancellation_case(conn, 1, case['id'])
+                self.assertEqual(result['status'], 'SENT')
+                self.assertEqual(result['status_label'], 'Zustellung verzögert')
+                self.assertEqual(result['messages'][-1]['transport_status'], event)
+                retry = self.send(result, action='retry')
+                self.assertEqual(retry.status_code, 200)
+                self.assertEqual(self.transport.call_count, sends_before)
+                self.assertIsNone(result['termination_confirmed_at'])
+
+    def test_terminal_delivery_events_require_manual_review_and_never_resend(self):
+        for index, (event, brevo_name) in enumerate((('hard_bounce', 'hardBounce'), ('blocked', 'blocked'),
+                                  ('invalid', 'invalid_email'), ('error', 'error'))):
+            with self.subTest(event=event):
+                contract_id = f'terminal-{index}'
+                self.add_contract(contract_id)
+                self.transport.return_value = f'<receipt-{contract_id}@example.test>'
+                case = self.sent(contract=contract_id)
+                sends_before = self.transport.call_count
+                response = self.post_webhook(self.webhook_payload(case, brevo_name))
+                self.assertEqual(response.status_code, 200)
+                with self.connection() as conn:
+                    result = vks.get_cancellation_case(conn, 1, case['id'])
+                self.assertEqual(result['status'], 'MANUAL_REVIEW_REQUIRED')
+                self.assertEqual(result['status_label'], 'Manuelle Prüfung nötig')
+                self.assertEqual(result['messages'][-1]['transport_status'], event)
+                self.assertFalse(result['retry_allowed'])
+                self.assertEqual(result['events'][-1]['event_type'], 'brevo_delivery_' + event)
+                self.assertEqual(self.send(result, action='retry').status_code, 200)
+                self.assertEqual(self.transport.call_count, sends_before)
+
+    def test_delivered_never_confirms_termination_and_open_events_are_ignored(self):
+        case = self.sent()
+        opened = self.post_webhook(self.webhook_payload(case, 'opened'))
+        self.assertEqual((opened.status_code, opened.get_json()['result']), (200, 'ignored'))
+        delivered = self.post_webhook(self.webhook_payload(case, 'delivered'))
+        self.assertEqual(delivered.status_code, 200)
+        with self.connection() as conn:
+            result = vks.get_cancellation_case(conn, 1, case['id'])
+        self.assertEqual(result['status'], 'DELIVERY_RECORDED')
+        self.assertIsNone(result['termination_confirmed_at'])
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_delivery_events").fetchone()[0], 1)
+
+    def test_brevo_request_alias_records_sent_event_without_state_regression(self):
+        case = self.sent()
+        response = self.post_webhook(self.webhook_payload(case, 'request'))
+        self.assertEqual(response.get_json()['result'], 'recorded')
+        with self.connection() as conn:
+            result = vks.get_cancellation_case(conn, 1, case['id'])
+        self.assertEqual(result['status'], 'SENT')
+        self.assertEqual(result['messages'][-1]['transport_status'], 'accepted')
+        self.assertIn('brevo_delivery_sent', [event['event_type'] for event in result['events']])
+        self.assertEqual(api._parse_brevo_delivery_payload(self.webhook_payload(case, 'sent'))['event_type'], 'sent')
+
+    def test_delivery_event_mutates_only_the_correlated_user_and_case(self):
+        first = self.sent()
+        self.transport.return_value = '<second-receipt@example.test>'
+        second = self.send(self.ready(contract='foreign', user=2), user=2).get_json()['case']
+        response = self.post_webhook(self.webhook_payload(second, 'delivered'))
+        self.assertEqual(response.get_json()['result'], 'recorded')
+        with self.connection() as conn:
+            self.assertEqual(vks.get_cancellation_case(conn, 1, first['id'])['status'], 'SENT')
+            self.assertEqual(vks.get_cancellation_case(conn, 2, second['id'])['status'], 'DELIVERY_RECORDED')
+
+    def test_terminal_event_after_documented_response_requires_manual_review(self):
+        case = self.sent()
+        response = self.received(case).get_json()['case']
+        self.assertEqual(response['status'], 'PROVIDER_RESPONSE')
+        result = self.post_webhook(self.webhook_payload(case, 'hardBounce'))
+        self.assertEqual(result.status_code, 200)
+        with self.connection() as conn:
+            updated = vks.get_cancellation_case(conn, 1, case['id'])
+        self.assertEqual(updated['status'], 'MANUAL_REVIEW_REQUIRED')
+        self.assertFalse(updated['retry_allowed'])
+        self.assertIsNone(updated['termination_confirmed_at'])
+
+    def test_api_delivery_recording_uses_provider_event_timestamp_in_timeline(self):
+        case = self.sent()
+        event_time = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        evidence = {'messageId': '<receipt@example.test>', 'email': 'cancel@example.test', 'event': 'delivered',
+                    'date': event_time}
+        with self.connection() as conn:
+            result = vks.record_cancellation_delivery(conn, 1, case['id'], evidence)
+        self.assertEqual(result['events'][-1]['created_at'], result['messages'][-1]['delivered_at'])
+
     def test_response_alone_is_untrusted_and_does_not_modify_contract(self):
         case = self.sent()
         before = dict(self.connection().execute("SELECT * FROM app_contracts WHERE contract_id='own'").fetchone())
@@ -364,11 +552,21 @@ class CancellationDispatchTests(unittest.TestCase):
         self.assertEqual(self.provider_confirm(latest, message_id=message["id"], body_sha256=message["body_sha256"]).status_code, 409)
 
     def test_account_delete_removes_messages_and_events_and_export_covers_them(self):
-        self.received(self.sent())
+        case = self.received(self.sent()).get_json()['case']
+        delivered = self.post_webhook(self.webhook_payload(case, 'delivered'))
+        self.assertEqual(delivered.status_code, 200)
         self.start("foreign", user=2)
         self.assertEqual(dict(api.DATA_EXPORT_TABLES)["kuendigungsnachrichten"], "app_contract_cancellation_messages")
+        self.assertEqual(dict(api.DATA_EXPORT_TABLES)["kuendigung_zustellereignisse"],
+                         "app_contract_cancellation_delivery_events")
+        with self.connection() as conn:
+            _, own_events = api.export_table_rows(conn, "app_contract_cancellation_delivery_events", 1)
+            _, other_events = api.export_table_rows(conn, "app_contract_cancellation_delivery_events", 2)
+        self.assertEqual(len(own_events), 1)
+        self.assertEqual(other_events, [])
         fixtures.ContractCancellationTests.test_real_account_delete_removes_cases_and_events_only_for_owner(self)
         self.assertEqual(self.count("app_contract_cancellation_messages"), 0)
+        self.assertEqual(self.count("app_contract_cancellation_delivery_events"), 0)
 
     def test_malformed_confirmation_fields_do_not_crash_or_mutate(self):
         case = self.received(self.sent()).get_json()['case']
@@ -447,6 +645,7 @@ class CancellationMigrationTests(CancellationDispatchTests):
             raw = dict(conn.execute("SELECT * FROM app_contract_cancellations WHERE id=?", (case['id'],)).fetchone())
             events = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_events")]
             conn.execute("DROP TABLE app_contract_cancellation_followups")
+            conn.execute("DROP TABLE app_contract_cancellation_delivery_events")
             conn.execute("DROP TABLE app_contract_cancellation_messages")
             conn.execute("DROP TABLE app_contract_cancellation_events")
             conn.execute("DROP TABLE app_contract_cancellations")

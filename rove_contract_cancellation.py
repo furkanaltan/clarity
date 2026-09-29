@@ -34,7 +34,7 @@ MANUAL_REVIEW_DAYS = 28
 STATUS_LABELS = {
     "DRAFT": "Entwurf", "REVIEW_REQUIRED": "Angaben prüfen", "USER_CONFIRMED": "Text bestätigt",
     "READY_TO_SEND": "Bereit zum Versand", "SENDING": "Versand in Bearbeitung", "SENT": "Gesendet",
-    "DELIVERY_RECORDED": "Zustellung dokumentiert", "PROVIDER_RESPONSE": "Antwort dokumentiert",
+    "DELIVERY_RECORDED": "Zugestellt", "PROVIDER_RESPONSE": "Antwort dokumentiert",
     "FOLLOW_UP_DUE": "Nachfassen nötig", "FOLLOW_UP_PREPARED": "Nachfrage vorbereitet",
     "MANUAL_REVIEW_REQUIRED": "Manuelle Prüfung nötig", "TERMINATION_CONFIRMED": "Kündigung bestätigt",
     "FAILED": "Vorgang fehlgeschlagen", "CANCELLED": "Vorbereitung abgebrochen",
@@ -61,13 +61,16 @@ def ensure_cancellation_schema(conn: sqlite3.Connection) -> None:
     tables = ['app_contract_cancellations', 'app_contract_cancellation_events']
     if conn.execute("SELECT 1 FROM sqlite_master WHERE name='app_contract_cancellation_messages'").fetchone():
         tables.append('app_contract_cancellation_messages')
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='app_contract_cancellation_delivery_events'").fetchone():
+        tables.append('app_contract_cancellation_delivery_events')
     conn.execute("SAVEPOINT cancellation_schema")
     try:
         if migrate:
             for table in tables:
                 conn.execute(f"ALTER TABLE {table} RENAME TO {table}_previous")
             for index in ('idx_cancellation_active_contract', 'idx_cancellation_events_owner',
-                          'idx_cancellation_one_dispatch', 'idx_cancellation_response_dedup', 'idx_cancellation_messages_owner'):
+                          'idx_cancellation_one_dispatch', 'idx_cancellation_response_dedup', 'idx_cancellation_messages_owner',
+                          'idx_cancellation_provider_message_id', 'idx_cancellation_delivery_events_owner'):
                 conn.execute(f"DROP INDEX IF EXISTS {index}")
         _create_schema(conn)
         if migrate:
@@ -179,14 +182,36 @@ def _create_schema(conn):
         FOREIGN KEY(user_id,case_id) REFERENCES app_contract_cancellations(user_id,id) ON DELETE CASCADE,
         CHECK(direction <> 'outbound' OR body_text IS NULL)
     )""")
-    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cancellation_one_dispatch
-        ON app_contract_cancellation_messages(user_id,case_id)
-        WHERE direction='outbound' AND transport_status IN ('sending','accepted','unknown','delivered')""")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cancellation_response_dedup
         ON app_contract_cancellation_messages(user_id,case_id,response_fingerprint)
         WHERE response_fingerprint IS NOT NULL""")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_cancellation_messages_owner
         ON app_contract_cancellation_messages(user_id,case_id,created_at)""")
+    conn.execute("DROP INDEX IF EXISTS idx_cancellation_one_dispatch")
+    conn.execute("""CREATE UNIQUE INDEX idx_cancellation_one_dispatch
+        ON app_contract_cancellation_messages(user_id,case_id)
+        WHERE direction='outbound' AND transport_status IN
+            ('sending','accepted','unknown','delivered','deferred','soft_bounce',
+             'hard_bounce','blocked','invalid','error')""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_cancellation_provider_message_id
+        ON app_contract_cancellation_messages(provider_message_id)
+        WHERE direction='outbound' AND provider_message_id IS NOT NULL""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_contract_cancellation_delivery_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_fingerprint TEXT NOT NULL UNIQUE,
+        user_id INTEGER NOT NULL,
+        case_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        provider_message_id TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN
+            ('sent','delivered','deferred','soft_bounce','hard_bounce','blocked','invalid','error')),
+        occurred_at TEXT NOT NULL,
+        received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id,case_id) REFERENCES app_contract_cancellations(user_id,id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id,message_id) REFERENCES app_contract_cancellation_messages(user_id,id) ON DELETE CASCADE
+    )""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_cancellation_delivery_events_owner
+        ON app_contract_cancellation_delivery_events(user_id,case_id,occurred_at,id)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS app_contract_cancellation_followups (
         id TEXT NOT NULL, user_id INTEGER NOT NULL, case_id TEXT NOT NULL, original_message_id TEXT NOT NULL,
         body_text TEXT NOT NULL, body_sha256 TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'user_prepared',
@@ -199,7 +224,8 @@ def _create_schema(conn):
 
 def _require_schema(conn):
     if conn.execute("""SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-        AND name IN ('app_contract_cancellations','app_contract_cancellation_events','app_contract_cancellation_messages')""").fetchone()[0] != 3:
+        AND name IN ('app_contract_cancellations','app_contract_cancellation_events',
+                     'app_contract_cancellation_messages','app_contract_cancellation_delivery_events')""").fetchone()[0] != 4:
         raise CancellationError("cancellation_schema_unavailable", 503)
 
 
@@ -318,10 +344,17 @@ def _missing(case):
     return missing
 
 
-def _event(conn, case, event_type, previous, *, actor='user', source='app'):
-    conn.execute("""INSERT INTO app_contract_cancellation_events
-        (user_id,case_id,event_type,from_status,to_status,revision,actor,source) VALUES (?,?,?,?,?,?,?,?)""",
-        (case["user_id"], case["id"], event_type, previous, case["status"], case["revision"], actor, source))
+def _event(conn, case, event_type, previous, *, actor='user', source='app', occurred_at=None):
+    if occurred_at:
+        conn.execute("""INSERT INTO app_contract_cancellation_events
+            (user_id,case_id,event_type,from_status,to_status,revision,actor,source,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (case["user_id"], case["id"], event_type, previous, case["status"], case["revision"],
+             actor, source, occurred_at))
+    else:
+        conn.execute("""INSERT INTO app_contract_cancellation_events
+            (user_id,case_id,event_type,from_status,to_status,revision,actor,source) VALUES (?,?,?,?,?,?,?,?)""",
+            (case["user_id"], case["id"], event_type, previous, case["status"], case["revision"], actor, source))
 
 
 def _transition(conn, case, target, event_type, **evidence):
@@ -331,7 +364,9 @@ def _transition(conn, case, target, event_type, **evidence):
     case["status"] = target
     conn.execute("UPDATE app_contract_cancellations SET status=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND id=?",
                  (target, case["user_id"], case["id"]))
-    _event(conn, case, event_type, previous, **evidence)
+    record_event = evidence.pop('record_event', True)
+    if record_event:
+        _event(conn, case, event_type, previous, **evidence)
 
 
 def get_cancellation_case(conn, user_id, case_id):
@@ -349,9 +384,27 @@ def get_cancellation_case(conn, user_id, case_id):
     case.pop("reviewed_contract_sha256")
     case.pop("confirmed_payload_sha256")
     case['messages'] = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_messages WHERE user_id=? AND case_id=? ORDER BY rowid", (user_id,case_id))]
+    for row in conn.execute("""SELECT event_type,occurred_at,message_id FROM app_contract_cancellation_delivery_events
+        WHERE user_id=? AND case_id=? ORDER BY occurred_at,id""", (user_id, case_id)):
+        case['events'].append({
+            'event_type': 'brevo_delivery_' + row['event_type'],
+            'from_status': None,
+            'to_status': case['status'],
+            'revision': next((message['revision'] for message in case['messages'] if message['id'] == row['message_id']), case['revision']),
+            'created_at': row['occurred_at'],
+            'actor': 'transport',
+            'source': 'brevo_webhook',
+        })
+    case['events'].sort(key=lambda event: (event['created_at'] or '', event['revision']))
     case['followups'] = [dict(row) for row in conn.execute("SELECT * FROM app_contract_cancellation_followups WHERE user_id=? AND case_id=? ORDER BY rowid", (user_id,case_id))]
     case['reminder'] = cancellation_reminder(case)
     case['status_label'] = STATUS_LABELS[case['status']]
+    if case['status'] == 'DELIVERY_RECORDED':
+        case['status_label'] = 'Zugestellt'
+    elif case['status'] == 'SENT' and case['messages']:
+        latest_outbound = next((message for message in reversed(case['messages']) if message['direction'] == 'outbound'), None)
+        if latest_outbound and latest_outbound['transport_status'] in {'deferred', 'soft_bounce'}:
+            case['status_label'] = 'Zustellung verzögert'
     case['contract_ended'] = bool(case['status'] == 'TERMINATION_CONFIRMED' and case['confirmed_end_date']
                                   and case['confirmed_end_date'] < business_today().isoformat())
     return case
@@ -564,7 +617,9 @@ def finish_cancellation_send(conn, user_id, case_id, message_id, *, provider_mes
 def outbound_message(conn, user_id, case_id):
     case = _case_row(conn,user_id,case_id)
     row = conn.execute("""SELECT * FROM app_contract_cancellation_messages WHERE user_id=? AND case_id=?
-        AND direction='outbound' AND transport_status IN ('accepted','delivered') ORDER BY rowid DESC LIMIT 1""",(user_id,case_id)).fetchone()
+        AND direction='outbound' AND transport_status IN
+            ('accepted','delivered','deferred','soft_bounce','hard_bounce','blocked','invalid','error')
+        ORDER BY rowid DESC LIMIT 1""",(user_id,case_id)).fetchone()
     if row is None:
         raise CancellationError('cancellation_not_sent',409)
     return case,dict(row)
@@ -580,10 +635,81 @@ def record_cancellation_delivery(conn, user_id, case_id, evidence):
         return get_cancellation_case(conn,user_id,case_id)
     conn.execute("UPDATE app_contract_cancellation_messages SET delivered_at=?,transport_status='delivered' WHERE user_id=? AND id=?",(delivered_at,user_id,message['id']))
     if case['status'] == 'SENT':
-        _transition(conn,case,'DELIVERY_RECORDED','delivery_recorded',actor='transport',source='brevo_events_api')
+        _transition(conn,case,'DELIVERY_RECORDED','delivery_recorded',actor='transport',source='brevo_events_api',
+                    occurred_at=delivered_at)
     else:
-        _event(conn,case,'delivery_recorded',case['status'],actor='transport',source='brevo_events_api')
+        _event(conn,case,'delivery_recorded',case['status'],actor='transport',source='brevo_events_api',
+               occurred_at=delivered_at)
     return get_cancellation_case(conn,user_id,case_id)
+
+
+BREVO_DELIVERY_EVENT_TYPES = frozenset({
+    'sent', 'delivered', 'deferred', 'soft_bounce', 'hard_bounce', 'blocked', 'invalid', 'error',
+})
+BREVO_TERMINAL_DELIVERY_FAILURES = frozenset({'hard_bounce', 'blocked', 'invalid', 'error'})
+
+
+def record_brevo_delivery_event(conn, *, provider_message_id, recipient, event_type,
+                                occurred_at, attempt_marker=None):
+    """Record one authenticated, exactly-correlated Brevo event without resending."""
+    provider_message_id = _text(provider_message_id, 'provider_message_id', 300)
+    recipient = email_address(recipient)
+    if event_type not in BREVO_DELIVERY_EVENT_TYPES:
+        raise CancellationError('invalid_brevo_delivery_event')
+    rows = conn.execute("""SELECT m.*,c.status AS case_status FROM app_contract_cancellation_messages m
+        JOIN app_contract_cancellations c ON c.user_id=m.user_id AND c.id=m.case_id
+        WHERE m.direction='outbound' AND m.provider_message_id=?""", (provider_message_id,)).fetchall()
+    if len(rows) != 1:
+        return {'result': 'unmatched'}
+    message = dict(rows[0])
+    if message['recipient'].casefold() != recipient.casefold():
+        return {'result': 'unmatched'}
+    if attempt_marker is not None and attempt_marker != 'vks-attempt=' + message['id']:
+        return {'result': 'unmatched'}
+    occurred_at = _timestamp(occurred_at, minimum=message['created_at'])
+    fingerprint = hashlib.sha256(json.dumps(
+        [provider_message_id, recipient.casefold(), event_type, occurred_at],
+        separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+    inserted = conn.execute("""INSERT OR IGNORE INTO app_contract_cancellation_delivery_events
+        (event_fingerprint,user_id,case_id,message_id,provider_message_id,event_type,occurred_at)
+        VALUES (?,?,?,?,?,?,?)""", (fingerprint, message['user_id'], message['case_id'], message['id'],
+                                      provider_message_id, event_type, occurred_at)).rowcount
+    if not inserted:
+        return {'result': 'duplicate', 'case': get_cancellation_case(conn, message['user_id'], message['case_id'])}
+
+    event_rows = conn.execute("""SELECT event_type,occurred_at FROM app_contract_cancellation_delivery_events
+        WHERE user_id=? AND message_id=? ORDER BY occurred_at,id""", (message['user_id'], message['id'])).fetchall()
+    terminal = [row for row in event_rows if row['event_type'] in BREVO_TERMINAL_DELIVERY_FAILURES]
+    delivered = [row for row in event_rows if row['event_type'] == 'delivered']
+    if message['delivered_at'] and not delivered:
+        delivered_at = message['delivered_at']
+    else:
+        delivered_at = delivered[-1]['occurred_at'] if delivered else None
+    latest_terminal = terminal[-1] if terminal else None
+    latest_delivered = delivered[-1] if delivered else None
+    effective_delivery_time = latest_delivered['occurred_at'] if latest_delivered else delivered_at
+    if latest_terminal and (not effective_delivery_time or latest_terminal['occurred_at'] >= effective_delivery_time):
+        transport_status = latest_terminal['event_type']
+    elif effective_delivery_time:
+        transport_status = 'delivered'
+    else:
+        latest = event_rows[-1]
+        transport_status = {'sent': 'accepted'}.get(latest['event_type'], latest['event_type'])
+    conn.execute("""UPDATE app_contract_cancellation_messages SET transport_status=?,
+        delivered_at=COALESCE(delivered_at,?),retry_allowed=0 WHERE user_id=? AND id=?""",
+        (transport_status, delivered_at, message['user_id'], message['id']))
+
+    case = _case_row(conn, message['user_id'], message['case_id'])
+    if transport_status in BREVO_TERMINAL_DELIVERY_FAILURES:
+        if 'MANUAL_REVIEW_REQUIRED' in TRANSITIONS.get(case['status'], set()):
+            _transition(conn, case, 'MANUAL_REVIEW_REQUIRED', 'manual_review_required',
+                        actor='transport', source='brevo_webhook', record_event=False)
+        conn.execute("UPDATE app_contract_cancellations SET retry_allowed=0 WHERE user_id=? AND id=?",
+                     (message['user_id'], message['case_id']))
+    elif transport_status == 'delivered' and case['status'] == 'SENT':
+        _transition(conn, case, 'DELIVERY_RECORDED', 'delivery_recorded', actor='transport',
+                    source='brevo_webhook', record_event=False)
+    return {'result': 'recorded', 'case': get_cancellation_case(conn, message['user_id'], message['case_id'])}
 
 
 def document_cancellation_response(conn, user_id, case_id, payload, expected_revision):

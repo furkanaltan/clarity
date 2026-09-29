@@ -56,6 +56,7 @@ from rove_contract_cancellation import (
     prepare_cancellation_followup,
     request_cancellation_manual_review,
     build_cancellation_file,
+    record_brevo_delivery_event,
 )
 from rove_contract_cancellation_mail import CancellationTransportError, send_cancellation_email, fetch_cancellation_delivery
 from rove_behavior_patterns import build_shadow_inspector
@@ -237,6 +238,7 @@ VKS_LIVE_APPROVED = os.getenv('ROVE_VKS_LIVE_APPROVED', '0').strip() == '1'
 VKS_TEST_USER_ID = os.getenv('ROVE_VKS_TEST_USER_ID', '').strip()
 VKS_TEST_CONTRACT_ID = os.getenv('ROVE_VKS_TEST_CONTRACT_ID', '').strip()
 VKS_TEST_RECIPIENT = os.getenv('ROVE_VKS_TEST_RECIPIENT', '').strip()
+VKS_BREVO_WEBHOOK_TOKEN = os.getenv('ROVE_VKS_BREVO_WEBHOOK_TOKEN', '').strip()
 AUTH_SECRET = os.getenv("ROVE_APP_AUTH_SECRET", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 SCREENSHOT_MODEL = os.getenv("ROVE_SCREENSHOT_MODEL", "gpt-4o-mini").strip()
@@ -331,6 +333,7 @@ DATA_EXPORT_TABLES = (
     ("kuendigungsfaelle", "app_contract_cancellations"),
     ("kuendigungshistorie", "app_contract_cancellation_events"),
     ("kuendigungsnachrichten", "app_contract_cancellation_messages"),
+    ("kuendigung_zustellereignisse", "app_contract_cancellation_delivery_events"),
     ("kuendigungsnachfragen", "app_contract_cancellation_followups"),
     ("fahrzeugfinanzierungen", "app_vehicle_financings"),
     ("konsumschulden", "app_consumer_debts"),
@@ -6149,6 +6152,82 @@ def cancellation_send_gate(case):
             or case['recipient'] != VKS_TEST_RECIPIENT or not case['contract_name'].startswith('[VKS TEST] ')):
         return 'cancellation_test_target_required'
     return None
+
+
+def _parse_brevo_delivery_payload(payload):
+    if not isinstance(payload, dict):
+        raise CancellationError('invalid_brevo_delivery_payload')
+    raw_event = payload.get('event')
+    if not isinstance(raw_event, str):
+        raise CancellationError('invalid_brevo_delivery_event')
+    normalized = re.sub(r'[_\-\s]', '', raw_event.strip().casefold())
+    event_type = {
+        'sent': 'sent', 'request': 'sent', 'delivered': 'delivered', 'deferred': 'deferred',
+        'softbounce': 'soft_bounce', 'hardbounce': 'hard_bounce', 'blocked': 'blocked',
+        'invalid': 'invalid', 'invalidemail': 'invalid', 'error': 'error',
+    }.get(normalized)
+    if event_type is None:
+        return None
+
+    message_ids = [payload.get(key) for key in ('message-id', 'messageId') if payload.get(key) is not None]
+    if (not message_ids or any(not isinstance(value, str) for value in message_ids)
+            or len({value for value in message_ids}) != 1):
+        raise CancellationError('invalid_brevo_delivery_message_id')
+    recipient = payload.get('email')
+    if not isinstance(recipient, str):
+        raise CancellationError('invalid_brevo_delivery_recipient')
+
+    event_epoch = payload.get('ts_event')
+    if event_epoch is None:
+        event_epoch = payload.get('ts')
+    if type(event_epoch) is not int:
+        raise CancellationError('brevo_delivery_timestamp_required')
+    try:
+        occurred_at = datetime.fromtimestamp(event_epoch, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        raise CancellationError('invalid_brevo_delivery_timestamp')
+
+    custom = next((value for key, value in payload.items() if isinstance(key, str) and key.casefold() == 'x-mailin-custom'), None)
+    if custom is not None and not isinstance(custom, str):
+        raise CancellationError('invalid_brevo_delivery_attempt')
+    return {
+        'provider_message_id': message_ids[0], 'recipient': recipient,
+        'event_type': event_type, 'occurred_at': occurred_at, 'attempt_marker': custom,
+    }
+
+
+@app.route('/webhooks/brevo/vks', methods=['POST'])
+def brevo_vks_delivery_webhook():
+    """Authenticated Brevo transactional delivery callback; never dispatches mail."""
+    if not VKS_BREVO_WEBHOOK_TOKEN:
+        return jsonify({'ok': False, 'error': 'webhook_not_configured'}), 503
+    authorization = request.headers.get('Authorization', '')
+    scheme, _, supplied = authorization.partition(' ')
+    if (scheme.casefold() != 'bearer' or not supplied
+            or not hmac.compare_digest(supplied.encode(), VKS_BREVO_WEBHOOK_TOKEN.encode())):
+        return jsonify({'ok': False, 'error': 'webhook_unauthorized'}), 401
+    if request.content_length is not None and request.content_length > 64 * 1024:
+        return jsonify({'ok': False, 'error': 'webhook_payload_too_large'}), 413
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return jsonify({'ok': False, 'error': 'invalid_brevo_delivery_payload'}), 400
+    try:
+        parsed = _parse_brevo_delivery_payload(payload)
+        if parsed is None:
+            return jsonify({'ok': True, 'result': 'ignored'}), 200
+        with db() as conn:
+            begin_write(conn)
+            result = record_brevo_delivery_event(conn, **parsed)
+            if result['result'] == 'unmatched':
+                provider_hash = hashlib.sha256(parsed['provider_message_id'].encode()).hexdigest()[:12]
+                logger.warning('Unmatched authenticated VKS Brevo event; provider_ref=%s event=%s',
+                               provider_hash, parsed['event_type'])
+                conn.rollback()
+                return jsonify({'ok': True, 'result': 'unmatched'}), 202
+            conn.commit()
+    except CancellationError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), exc.status
+    return jsonify({'ok': True, 'result': result['result']}), 200
 
 
 @app.route("/v1/contract-cancellations/<case_id>/file", methods=["GET"])
