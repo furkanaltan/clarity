@@ -13,6 +13,22 @@ class CancellationTransportError(RuntimeError):
         self.retry_allowed = retry_allowed
 
 
+def _html_body(body):
+    paragraphs = []
+    for paragraph in body.split("\n\n"):
+        if paragraph:
+            lines = "<br>\n".join(html.escape(line, quote=True) for line in paragraph.split("\n"))
+            paragraphs.append(f'<p style="margin:0 0 16px">{lines}</p>')
+    content = "".join(paragraphs)
+    return (
+        '<!doctype html><html><head><meta charset="UTF-8"></head>'
+        '<body style="margin:0;background:#fff;color:#202124;'
+        'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Arial,sans-serif;line-height:1.55">'
+        '<div style="box-sizing:border-box;max-width:640px;margin:0 auto;padding:24px 20px">'
+        f"{content}</div></body></html>"
+    )
+
+
 def send_cancellation_email(plan, *, api_key, sender_name, api_url):
     if not api_key:
         raise CancellationTransportError('transport_not_configured', retry_allowed=True)
@@ -23,7 +39,7 @@ def send_cancellation_email(plan, *, api_key, sender_name, api_url):
         'to': [{'email': plan['recipient']}],
         'replyTo': {'email': plan['reply_to']},
         'subject': plan['subject'], 'textContent': plan['body'],
-        'htmlContent': '<html><body><pre style="white-space:pre-wrap">' + html.escape(plan['body']) + '</pre></body></html>',
+        'htmlContent': _html_body(plan['body']),
         'tags': ['rove-contract-cancellation'],
         'headers': {'X-Mailin-Custom': 'vks-attempt=' + plan['message_id']},
     }

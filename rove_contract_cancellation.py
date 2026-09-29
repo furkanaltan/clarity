@@ -288,21 +288,27 @@ def _review_values(payload, existing):
 
 def generate_notice(case, contract):
     """Use only supplied facts; a debit day is never a cancellation deadline."""
-    lines = [value for value in (case["sender_name"], case["sender_address"], case["recipient"]) if value]
-    lines.extend([date.fromisoformat(case["notice_date"]).strftime("%d.%m.%Y"),
-                  f"Kündigung: {contract['name']}"])
+    sender_lines = [value for value in (case["sender_name"], case["sender_address"]) if value]
+    paragraphs = []
+    if sender_lines:
+        paragraphs.append("\n".join(sender_lines))
+    paragraphs.extend([date.fromisoformat(case["notice_date"]).strftime("%d.%m.%Y"),
+                       "Sehr geehrte Damen und Herren,"])
     if case["contract_reference"]:
-        lines.append(f"Vertrags-/Kundennummer: {case['contract_reference']}")
+        reference = f"Vertrags-/Kundennummer: {case['contract_reference']}"
+    else:
+        reference = None
     target = (f"zum {date.fromisoformat(case['cancellation_target_date']).strftime('%d.%m.%Y')}"
               if case["timing_choice"] == "date" and case["cancellation_target_date"]
               else "zum nächstmöglichen Zeitpunkt")
-    lines.extend(["Sehr geehrte Damen und Herren,",
-                  f"hiermit kündige ich meinen Vertrag bei {contract['name']} {target}.",
-                  "Bitte bestätigen Sie mir die Kündigung und den Beendigungszeitpunkt.",
-                  "Mit freundlichen Grüßen"])
+    paragraphs.append(f"hiermit kündige ich meinen Vertrag bei {contract['name']} {target}.")
+    if reference:
+        paragraphs.append(reference)
+    paragraphs.extend(["Bitte bestätigen Sie mir die Kündigung sowie den Beendigungszeitpunkt schriftlich.",
+                       "Mit freundlichen Grüßen"])
     if case["sender_name"]:
-        lines.append(case["sender_name"])
-    return "\n\n".join(lines)
+        paragraphs[-1] += f"\n{case['sender_name']}"
+    return "\n\n".join(paragraphs)
 
 
 def _missing(case):
@@ -521,7 +527,8 @@ def prepare_cancellation_send(conn, user_id, case_id, *, expected_revision, noti
     if conn.execute("SELECT COUNT(*) FROM app_contract_cancellation_messages WHERE user_id=? AND case_id=? AND direction='outbound'",(user_id,case_id)).fetchone()[0] >= 3:
         raise CancellationError('cancellation_retry_limit',429)
     message_id = secrets.token_urlsafe(18)
-    subject = f"Kündigung: {contract['name']} [Rov.E {case_id}]"
+    subject = (f"Kündigung meines Vertrags – {case['contract_reference']}"
+               if case['contract_reference'] else f"Kündigung meines Vertrags bei {contract['name']}")
     conn.execute("""INSERT INTO app_contract_cancellation_messages
         (id,user_id,case_id,direction,sender,recipient,subject,body_sha256,revision,transport_status,source,reply_to)
         VALUES (?,?,?,'outbound',?,?,?,?,?,'sending','brevo',?)""",

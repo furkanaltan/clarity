@@ -116,10 +116,27 @@ class ContractCancellationTests(unittest.TestCase):
         conn = self.connection()
         raw = dict(conn.execute("SELECT * FROM app_contract_cancellations WHERE id=?", (case["id"],)).fetchone())
         contract = dict(conn.execute("SELECT * FROM app_contracts WHERE contract_id='own'").fetchone())
-        self.assertEqual(vks.generate_notice(raw, contract), case["generated_notice_text"])
-        self.assertIn("zum nächstmöglichen Zeitpunkt", case["generated_notice_text"])
+        notice = vks.generate_notice(raw, contract)
+        self.assertEqual(notice, case["generated_notice_text"])
+        self.assertIn("hiermit kündige ich meinen Vertrag bei Beispielanbieter zum nächstmöglichen Zeitpunkt.", notice)
+        self.assertEqual(notice.count("Beispielanbieter"), 1)
+        self.assertNotIn(case["recipient"], notice)
+        self.assertIn("Bitte bestätigen Sie mir die Kündigung sowie den Beendigungszeitpunkt schriftlich.", notice)
         self.assertIsNone(case["cancellation_target_date"])
-        self.assertIn("REF-123", case["generated_notice_text"])
+        self.assertIn("REF-123", notice)
+
+    def test_notice_uses_reviewed_unicode_facts_and_sender_address(self):
+        with self.connection() as conn:
+            conn.execute("UPDATE app_contracts SET name=? WHERE contract_id='own'", ("Müller & Söhne",))
+        case = self.review(self.start(), sender_name="Jörg Öztürk",
+                           sender_address="Straße 7\n12345 Köln", recipient="kontakt@example.test",
+                           contract_reference="KÜ-ß-42")
+        notice = case["generated_notice_text"]
+        self.assertIn("Jörg Öztürk\nStraße 7\n12345 Köln", notice)
+        self.assertIn("Vertrags-/Kundennummer: KÜ-ß-42", notice)
+        self.assertIn("bei Müller & Söhne", notice)
+        self.assertEqual(notice.count("Müller & Söhne"), 1)
+        self.assertNotIn("kontakt@example.test", notice)
 
     def test_explicit_document_date_is_preserved_with_user_provenance(self):
         case = self.review(self.start(), timing_choice="date", cancellation_target_date="2040-09-15")

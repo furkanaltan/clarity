@@ -86,7 +86,25 @@ class CancellationDispatchTests(unittest.TestCase):
         self.assertIsNone(result["termination_confirmed_at"])
         self.assertTrue(message["sent_at"])
         self.assertEqual(message["provider_message_id"], "<receipt@example.test>")
+        self.assertEqual(message["subject"], "Kündigung meines Vertrags bei Beispielanbieter")
+        self.assertNotIn(ready["id"], message["subject"])
         self.assertEqual([e["event_type"] for e in result["events"]][-3:], ["send_requested", "sending", "sent"])
+
+    def test_subject_prefers_contract_reference_without_case_id(self):
+        case = self.review(self.start(), recipient="cancel@example.test", contract_reference="REF-123")
+        case = self.confirm(case).get_json()["case"]
+        sent = self.send(case).get_json()["case"]
+        subject = sent["messages"][0]["subject"]
+        self.assertEqual(subject, "Kündigung meines Vertrags – REF-123")
+        self.assertNotIn(case["id"], subject)
+
+    def test_subject_fallback_uses_provider_when_reference_is_missing(self):
+        with self.connection() as conn:
+            conn.execute("UPDATE app_contracts SET name=? WHERE contract_id='own'", ("Müller & Söhne",))
+        sent = self.sent()
+        subject = sent["messages"][0]["subject"]
+        self.assertEqual(subject, "Kündigung meines Vertrags bei Müller & Söhne")
+        self.assertNotIn(sent["id"], subject)
 
     def test_parallel_double_click_dispatches_one_mail(self):
         case = self.ready()
@@ -519,9 +537,15 @@ class CancellationMailTests(unittest.TestCase):
             self.assertEqual(self.send(), "receipt")
             payload = json.loads(request.call_args.args[0].data)
             self.assertEqual(payload["textContent"], self.plan["body"])
+            self.assertIn('<div style="box-sizing:border-box;max-width:640px', payload["htmlContent"])
+            self.assertIn('<meta charset="UTF-8">', payload["htmlContent"])
+            self.assertIn("Confirmed text<br>\n&lt;img src=x onerror=alert(1)&gt;", payload["htmlContent"])
             self.assertNotIn("<img", payload["htmlContent"])
+            self.assertNotIn("<pre", payload["htmlContent"])
+            self.assertEqual(payload["sender"], {"name": "Rov.E", "email": "info@getrove.de"})
             self.assertEqual(payload["replyTo"]["email"], "user@example.test")
             self.assertEqual(payload["to"], [{"email": "cancel@example.test"}])
+            self.assertEqual(payload["headers"], {"X-Mailin-Custom": "vks-attempt=opaque-attempt"})
             self.assertEqual(request.call_count, 1)
 
     def test_timeout_network_and_ambiguous_status_never_retry(self):

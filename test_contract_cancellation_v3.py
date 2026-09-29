@@ -395,7 +395,25 @@ class CancellationFinalizationTests(CancellationDispatchTests):
         return records
 
     def test_v2_migration_preserves_dispatch_lock_messages_events_and_no_new_send(self):
-        case = self.received(self.sent()).get_json()['case']
+        def legacy_v2_notice(case, contract):
+            lines = [value for value in (case['sender_name'], case['sender_address'], case['recipient']) if value]
+            lines.extend([datetime.fromisoformat(case['notice_date']).strftime('%d.%m.%Y'),
+                          f"Kündigung: {contract['name']}"])
+            if case['contract_reference']:
+                lines.append(f"Vertrags-/Kundennummer: {case['contract_reference']}")
+            target = (f"zum {datetime.fromisoformat(case['cancellation_target_date']).strftime('%d.%m.%Y')}"
+                      if case['timing_choice'] == 'date' and case['cancellation_target_date']
+                      else 'zum nächstmöglichen Zeitpunkt')
+            lines.extend(['Sehr geehrte Damen und Herren,',
+                          f"hiermit kündige ich meinen Vertrag bei {contract['name']} {target}.",
+                          'Bitte bestätigen Sie mir die Kündigung und den Beendigungszeitpunkt.',
+                          'Mit freundlichen Grüßen'])
+            if case['sender_name']:
+                lines.append(case['sender_name'])
+            return '\n\n'.join(lines)
+
+        with patch.object(vks, 'generate_notice', side_effect=legacy_v2_notice):
+            case = self.received(self.sent()).get_json()['case']
         records = self.downgrade_fixture_to_v2()
         with self.connection() as conn:
             vks.ensure_cancellation_schema(conn)
