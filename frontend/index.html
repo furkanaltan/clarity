@@ -2132,6 +2132,101 @@
   #vksDelivery{color:var(--blue)}
   #vksFeedback{min-height:20px;margin-top:12px;font-size:13px;color:var(--muted)}
   #vksFeedback[data-error="true"]{color:var(--red)}
+  #cancellationsheet #vksBody{min-width:0;overflow-wrap:anywhere}
+  #cancellationsheet .vks-header,#cancellationsheet .vks-impact,#cancellationsheet .vks-response-card,
+  #cancellationsheet .vks-casefile,#cancellationsheet .vks-proof{
+    box-sizing:border-box;border:1px solid rgba(205,220,232,.13);border-radius:18px;
+    background:linear-gradient(145deg,rgba(255,255,255,.075),rgba(255,255,255,.025));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 8px 22px rgba(0,0,0,.09);
+    -webkit-backdrop-filter:blur(14px) saturate(115%);backdrop-filter:blur(14px) saturate(115%);
+  }
+  #cancellationsheet .vks-header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 14px;align-items:start;padding:16px;margin:4px 0 14px}
+  #cancellationsheet .vks-provider{min-width:0;color:var(--ink);font-size:21px;font-weight:750;letter-spacing:-.025em;line-height:1.2;overflow-wrap:anywhere}
+  #cancellationsheet .vks-category{grid-column:1;color:var(--muted);font-size:13px;line-height:1.35}
+  #cancellationsheet .vks-status{grid-column:2;grid-row:1 / span 2;display:inline-flex;align-items:center;gap:7px;max-width:150px;min-height:30px;padding:5px 10px;border:1px solid var(--line2);border-radius:999px;background:rgba(255,255,255,.055);color:var(--ink);font-size:12px;font-weight:700;line-height:1.2;text-align:center;overflow-wrap:anywhere}
+  #cancellationsheet .vks-status-mark{display:grid;place-items:center;flex:0 0 17px;width:17px;height:17px;border-radius:50%;background:var(--line);color:var(--ink);font-size:11px}
+  #cancellationsheet .vks-status--positive{border-color:rgba(53,208,127,.3);background:var(--green-soft)}
+  #cancellationsheet .vks-status--positive .vks-status-mark{background:var(--green);color:#082516}
+  #cancellationsheet .vks-status--warning{border-color:rgba(216,182,106,.34);background:rgba(216,182,106,.09)}
+  #cancellationsheet .vks-status--warning .vks-status-mark{background:var(--gold);color:#241d0b}
+  #cancellationsheet .vks-status--failure{border-color:rgba(255,107,107,.3);background:rgba(255,107,107,.07)}
+  #cancellationsheet .vks-status--failure .vks-status-mark{background:var(--red);color:#321010}
+  #cancellationsheet .vks-impact{display:grid;gap:9px;padding:13px 15px;margin:0 0 14px;background:linear-gradient(145deg,rgba(42,171,238,.09),rgba(255,255,255,.025))}
+  #cancellationsheet .vks-impact-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+  #cancellationsheet .vks-impact-row+.vks-impact-row{padding-top:9px;border-top:1px solid var(--line)}
+  #cancellationsheet .vks-impact-label{color:var(--muted);font-size:13px;line-height:1.35}
+  #cancellationsheet .vks-impact-value{color:var(--ink);font-size:18px;font-weight:750;letter-spacing:-.02em;text-align:right;white-space:nowrap}
+  #cancellationsheet .vks-impact-row:not(:first-child) .vks-impact-value{font-size:15px}
+  #cancellationsheet .vks-state-copy{padding:1px 0 1px 11px;margin:0 0 14px;border:0;border-left:2px solid var(--line2);border-radius:0;background:transparent;color:var(--muted);font-size:13px;line-height:1.5}
+  #cancellationsheet .vks-state-copy--warning{border-left-color:var(--gold)}
+  #cancellationsheet .vks-state-copy--failure{border-left-color:var(--red)}
+  #cancellationsheet .vks-facts{margin:0 0 12px}
+  #cancellationsheet .vks-section-title{margin:20px 0 9px;color:var(--ink);font-size:15px;font-weight:750;letter-spacing:-.01em}
+  #cancellationsheet .vks-response-card{padding:14px;margin:17px 0}
+  #cancellationsheet .vks-response-card .vks-section-title{margin:0 0 7px}
+  #cancellationsheet .vks-response-tag{display:inline-flex;align-items:center;min-height:24px;padding:3px 9px;border:1px solid var(--line2);border-radius:999px;color:var(--muted);font-size:11px;font-weight:700}
+  #cancellationsheet .vks-response-card .vks-notice{margin:12px 0 0}
+  #cancellationsheet .vks-proof{padding:13px 14px;margin:14px 0}
+  #cancellationsheet .vks-proof .vks-section-title{margin:0 0 5px}
+  #cancellationsheet .vks-history{padding:2px 0;margin:16px 0;border:0;border-radius:0;background:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+  #cancellationsheet .vks-timeline{list-style:none;position:relative;margin:0;padding:2px 0 2px 5px}
+  #cancellationsheet .vks-step{position:relative;display:grid;grid-template-columns:22px minmax(0,1fr);gap:9px;min-height:43px;padding:4px 0 9px}
+  #cancellationsheet .vks-step:not(:last-child)::before{content:"";position:absolute;left:9px;top:22px;bottom:-1px;width:1px;background:var(--line2)}
+  #cancellationsheet .vks-step-mark{z-index:1;display:grid;place-items:center;width:19px;height:19px;border:1px solid var(--line2);border-radius:50%;background:var(--bg2);color:var(--muted);font-size:11px;font-weight:800}
+  #cancellationsheet .vks-step--done .vks-step-mark{border-color:rgba(53,208,127,.36);background:var(--green-soft);color:var(--green)}
+  #cancellationsheet .vks-step--warning .vks-step-mark{border-color:rgba(216,182,106,.4);background:rgba(216,182,106,.1);color:var(--gold)}
+  #cancellationsheet .vks-step-copy{min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 10px;color:var(--ink);font-size:13px;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
+  #cancellationsheet .vks-step-time{color:var(--faint);font-size:11px;font-weight:500;white-space:nowrap}
+  #cancellationsheet .vks-step--pending .vks-step-copy{color:var(--muted);font-weight:550}
+  #cancellationsheet .vks-casefile{padding:13px 14px;margin:16px 0 4px;background:linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018));box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+  #cancellationsheet .vks-casefile-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  #cancellationsheet .vks-casefile-title{color:var(--ink);font-size:14px;font-weight:750}
+  #cancellationsheet .vks-casefile-copy{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.4}
+  #cancellationsheet .vks-button{box-sizing:border-box;min-height:46px;margin-top:12px;padding:12px 15px;border-radius:14px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
+  #cancellationsheet .vks-primary{border-color:rgba(42,171,238,.3);background:linear-gradient(145deg,rgba(42,171,238,.19),rgba(42,171,238,.09));color:var(--blue);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 5px 15px rgba(0,0,0,.08)}
+  #cancellationsheet .vks-action-summary{display:block;box-sizing:border-box;min-height:46px;margin:12px 0;padding:13px 15px;border:1px solid var(--line);border-radius:14px;color:var(--muted);font-size:14px;font-weight:700;line-height:1.35;cursor:pointer;overflow-wrap:anywhere}
+  #cancellationsheet .vks-action-summary::-webkit-details-marker{display:none}
+  #cancellationsheet .vks-action-summary.vks-primary{border-color:rgba(42,171,238,.3);background:linear-gradient(145deg,rgba(42,171,238,.19),rgba(42,171,238,.09));color:var(--blue);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 5px 15px rgba(0,0,0,.08)}
+  #cancellationsheet .vks-secondary{background:rgba(255,255,255,.025);color:var(--muted);box-shadow:none}
+  #cancellationsheet .vks-quiet{background:transparent;color:var(--muted);box-shadow:none}
+  #cancellationsheet .vks-destructive{border-color:rgba(255,107,107,.2);background:rgba(255,107,107,.035);color:var(--red);box-shadow:none}
+  #cancellationsheet .vks-button:focus-visible,#cancellationsheet summary:focus-visible,
+  #cancellationsheet .vks-field input:focus-visible,#cancellationsheet .vks-field textarea:focus-visible,
+  #cancellationsheet .vks-field select:focus-visible,#cancellationsheet .vks-confirm input:focus-visible{
+    outline:2px solid var(--blue);outline-offset:3px
+  }
+  :root[data-theme="light"] #cancellationsheet .vks-header,
+  :root[data-theme="light"] #cancellationsheet .vks-impact,
+  :root[data-theme="light"] #cancellationsheet .vks-response-card,
+  :root[data-theme="light"] #cancellationsheet .vks-casefile,
+  :root[data-theme="light"] #cancellationsheet .vks-proof{
+    border-color:rgba(58,84,108,.13);background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(238,243,248,.91));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.98),0 7px 18px rgba(40,67,84,.055)
+  }
+  :root[data-theme="light"] #cancellationsheet .vks-impact{background:linear-gradient(145deg,rgba(28,147,214,.08),rgba(255,255,255,.96))}
+  :root[data-theme="light"] #cancellationsheet .vks-state-copy{background:rgba(255,255,255,.56)}
+  :root[data-theme="light"] #cancellationsheet .vks-primary{background:linear-gradient(145deg,#fff,rgba(28,147,214,.11));box-shadow:inset 0 1px 0 #fff,0 5px 14px rgba(40,67,84,.07)}
+  :root[data-theme="light"] #cancellationsheet .vks-secondary{background:rgba(255,255,255,.7)}
+  @media(max-width:480px){
+    #cancellationsheet .vks-header{grid-template-columns:minmax(0,1fr)}
+    #cancellationsheet .vks-status{grid-column:1;grid-row:auto;justify-self:start;max-width:100%}
+  }
+  @media(max-width:380px){
+    #cancellationsheet{padding-left:16px;padding-right:16px}
+    #cancellationsheet .vks-header{gap:7px;padding:14px}
+    #cancellationsheet .vks-category{grid-column:1}
+    #cancellationsheet .vks-impact-row{grid-template-columns:minmax(0,1fr)}
+    #cancellationsheet .vks-impact-value{text-align:left}
+    #cancellationsheet .vks-impact-value{font-size:16px}
+    #cancellationsheet .vks-step-copy{display:block}
+    #cancellationsheet .vks-step-time{display:block;margin-top:2px;white-space:normal}
+  }
+  @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+    #cancellationsheet .vks-header,#cancellationsheet .vks-impact,#cancellationsheet .vks-response-card,
+    #cancellationsheet .vks-casefile,#cancellationsheet .vks-proof{background:var(--card);-webkit-backdrop-filter:none;backdrop-filter:none}
+    #cancellationsheet .vks-status,#cancellationsheet .vks-state-copy{background:var(--card)}
+  }
+  @media(prefers-reduced-motion:reduce){#cancellationsheet,#cancellationsheet .vks-button{transition:none!important;scroll-behavior:auto}}
   .vd-btn:active{transform:scale(.97)}
   /* Sichtbar, aber nicht wichtiger als die Fixkosten-Karte oder die bestehenden Vertraege. */
   #addContractBtn{padding:11px;background:transparent;border-color:rgba(42,171,238,.28);color:var(--blue);font-weight:650}
@@ -10017,6 +10112,91 @@ document.getElementById("vdbody").addEventListener("click",async e=>{
 let cancellationCase=null, cancellationBusy=false, cancellationReviewDirty=false, cancellationView=0;
 const cancellationStatusLabels={DRAFT:"Entwurf",REVIEW_REQUIRED:"Angaben prüfen",USER_CONFIRMED:"Text bestätigt",READY_TO_SEND:"Bereit zum Versand",SENDING:"Versand in Bearbeitung",SENT:"Gesendet",DELIVERY_RECORDED:"Zugestellt",PROVIDER_RESPONSE:"Antwort dokumentiert",TERMINATION_CONFIRMED:"Kündigung bestätigt",FAILED:"Vorgang fehlgeschlagen",CANCELLED:"Vorbereitung abgebrochen",FOLLOW_UP_DUE:"Nachfassen nötig",FOLLOW_UP_PREPARED:"Nachfrage vorbereitet",MANUAL_REVIEW_REQUIRED:"Manuelle Prüfung nötig"};
 const cancellationEventLabels={case_created:"Vorgang angelegt",review_required:"Prüfung erforderlich",review_updated:"Angaben aktualisiert",review_invalidated:"Neue Prüfung erforderlich",user_confirmed:"Text bestätigt",ready_to_send:"Versand vorbereitet",send_requested:"Versand beauftragt",sending:"Versand gestartet",sent:"Maildienst hat Nachricht angenommen",delivery_recorded:"Zugestellt",response_received:"Erhaltene Antwort dokumentiert",termination_confirmed:"Kündigungsergebnis bestätigt",failed:"Vorgang fehlgeschlagen",retry:"Wiederholung beauftragt",cancelled:"Vorbereitung abgebrochen",follow_up_due:"Nachfassen nötig",follow_up_prepared:"Nachfrage vorbereitet, nicht versendet",manual_review_required:"Manuelle Prüfung nötig",brevo_delivery_sent:"Gesendet",brevo_delivery_delivered:"Zugestellt",brevo_delivery_deferred:"Zustellung verzögert",brevo_delivery_soft_bounce:"Zustellung verzögert",brevo_delivery_hard_bounce:"Zustellung fehlgeschlagen",brevo_delivery_blocked:"Zustellung fehlgeschlagen",brevo_delivery_invalid:"Zustellung fehlgeschlagen",brevo_delivery_error:"Zustellung fehlgeschlagen"};
+const cancellationTimelineLabels={case_created:"Vorbereitung gestartet",review_required:"Prüfung erforderlich",review_updated:"Angaben gespeichert",review_invalidated:"Erneute Prüfung nötig",user_confirmed:"Text bestätigt",ready_to_send:"Versand vorbereitet",sent:"Gesendet",delivery_recorded:"Zugestellt",response_received:"Anbieterantwort dokumentiert",termination_confirmed:"Kündigung bestätigt",failed:"Versand fehlgeschlagen",cancelled:"Vorbereitung abgebrochen",follow_up_due:"Nachfassen nötig",follow_up_prepared:"Nachfrage vorbereitet",manual_review_required:"Manuelle Prüfung nötig",brevo_delivery_sent:"Gesendet",brevo_delivery_delivered:"Zugestellt",brevo_delivery_deferred:"Zustellung verzögert",brevo_delivery_soft_bounce:"Zustellung verzögert",brevo_delivery_hard_bounce:"Zustellung fehlgeschlagen",brevo_delivery_blocked:"Zustellung fehlgeschlagen",brevo_delivery_invalid:"Zustellung fehlgeschlagen",brevo_delivery_error:"Zustellung fehlgeschlagen"};
+function cancellationFormatDateTime(raw){
+  if(typeof raw!=="string"||!raw.trim())return "";
+  let value=raw.trim();
+  if(/^\d{4}-\d{2}-\d{2} \d/.test(value))value=value.replace(" ","T");
+  if(value.includes("T")&&!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value))value+="Z";
+  const date=new Date(value);if(Number.isNaN(date.getTime()))return "";
+  return new Intl.DateTimeFormat("de-DE",{timeZone:"Europe/Berlin",day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"}).format(date);
+}
+function cancellationDisplayStatus(item,outbound){
+  const transport=outbound?.transport_status;
+  if(item.status==="SENT"&&["deferred","soft_bounce"].includes(transport))return "Zustellung verzögert";
+  if(["hard_bounce","blocked","invalid","error"].includes(transport))return "Manuelle Prüfung nötig";
+  if(item.status==="FAILED")return item.retry_allowed?"Versand fehlgeschlagen":"Manuelle Prüfung nötig";
+  return ({DRAFT:"Vorbereitung",REVIEW_REQUIRED:"Prüfung erforderlich",USER_CONFIRMED:"Text bestätigt",READY_TO_SEND:"Bereit zum Senden",SENDING:"Versand wird geprüft",SENT:"Gesendet",DELIVERY_RECORDED:"Zugestellt",PROVIDER_RESPONSE:"Antwort dokumentiert",TERMINATION_CONFIRMED:"Kündigung bestätigt",CANCELLED:"Vorbereitung abgebrochen",FOLLOW_UP_DUE:"Nachfassen nötig",FOLLOW_UP_PREPARED:"Nachfrage vorbereitet",MANUAL_REVIEW_REQUIRED:"Manuelle Prüfung nötig"})[item.status]||"Status wird geprüft";
+}
+function cancellationCategoryAndMonthlyAmount(item){
+  for(const group of Array.isArray(DATA?.vertraege)?DATA.vertraege:[]){
+    const contract=(group.items||[]).find(candidate=>String(candidate?.id||"").trim()===String(item.contract_id||"").trim());
+    if(!contract)continue;
+    const amount=Number(contract.a);
+    return {category:String(group.cat||"").trim(),monthlyAmount:Number.isFinite(amount)&&amount>0?amount:null};
+  }
+  return {category:"",monthlyAmount:null};
+}
+function cancellationAnnualAmount(amount,cadence){
+  const periodsPerYear={monthly:12,quarterly:4,semiannual:2,"half-yearly":2,annual:1,yearly:1,weekly:52,biweekly:26,bimonthly:6};
+  const value=Number(amount),periods=Object.prototype.hasOwnProperty.call(periodsPerYear,cadence)?periodsPerYear[cadence]:null;
+  return amount!=null&&amount!==""&&Number.isFinite(value)&&value>0&&periods
+    ?Math.round(value*periods*100)/100:null;
+}
+function cancellationReliefDate(item){
+  if(item.status!=="TERMINATION_CONFIRMED")return null;
+  const value=item.confirmed_end_date;
+  if(typeof value!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(value))return null;
+  const date=new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(date.getTime())&&date.toISOString().slice(0,10)===value
+    ?new Intl.DateTimeFormat("de-DE",{timeZone:"Europe/Berlin",day:"2-digit",month:"2-digit",year:"numeric"}).format(date):null;
+}
+function cancellationFinancialImpact(item,facts){
+  const monthly=facts.monthlyAmount;
+  const reliefDate=cancellationReliefDate(item);
+  if(monthly===null&&!reliefDate)return "";
+  // App contracts and their legacy mirrors store monthly amounts, not raw payment amounts.
+  const annual=monthly===null?null:cancellationAnnualAmount(monthly,"monthly");
+  const fixed=DATA?.monthlyPlan?.fixedCosts;
+  const fixedBasis=fixed==null?null:Number(fixed);
+  const contractAmounts=(Array.isArray(DATA?.vertraege)?DATA.vertraege:[])
+    .flatMap(group=>Array.isArray(group.items)?group.items:[]).map(contract=>Number(contract.a));
+  const contractTotal=contractAmounts.reduce((total,amount)=>total+amount,0);
+  const matchingBasis=contractAmounts.length>0&&contractAmounts.every(amount=>Number.isFinite(amount)&&amount>0)
+    &&Number.isFinite(fixedBasis)&&fixedBasis>0&&Math.abs(contractTotal-fixedBasis)<0.01;
+  const share=monthly!==null&&matchingBasis
+    ?new Intl.NumberFormat("de-DE",{maximumFractionDigits:1}).format(monthly/fixedBasis*100):null;
+  const row=(label,value)=>`<div class="vks-impact-row"><span class="vks-impact-label">${label}</span><strong class="vks-impact-value">${value}</strong></div>`;
+  return `<section class="vks-impact" aria-label="Finanzielle Vertragsübersicht">
+    ${monthly!==null?row("Monatliche Kosten",eur2(monthly)):""}
+    ${annual!==null?row("Sparpotenzial pro Jahr",eur2(annual)):""}
+    ${share!==null?row("Anteil an Fixkosten",`${share} %`):""}
+    ${reliefDate?row("Nächstmögliche Entlastung ab",reliefDate):""}
+  </section>`;
+}
+function cancellationTimelineTime(event,item,outbound,inbound,followup){
+  const type=event.event_type;
+  if(type==="sent")return outbound?.sent_at||event.occurred_at||event.created_at;
+  if(type==="delivery_recorded")return outbound?.delivered_at||event.occurred_at||event.created_at;
+  if(type==="response_received")return inbound?.received_at||event.occurred_at||event.created_at;
+  if(type==="termination_confirmed")return item.termination_confirmed_at||event.occurred_at||event.created_at;
+  if(type==="follow_up_prepared")return followup?.created_at||event.occurred_at||event.created_at;
+  if(type.startsWith("brevo_delivery_"))return event.occurred_at||event.created_at||outbound?.delivered_at;
+  return event.occurred_at||event.created_at;
+}
+function cancellationTimelineMarkup(item,outbound,inbound,followup){
+  const rows=[];
+  for(const event of Array.isArray(item.events)?item.events:[]){
+    const label=cancellationTimelineLabels[event.event_type];if(!label)continue;
+    const time=cancellationFormatDateTime(cancellationTimelineTime(event,item,outbound,inbound,followup));
+    const previous=rows.at(-1);
+    if(previous?.label===label){if(time)previous.time=time;continue;}
+    rows.push({label,time,warning:label==="Versand fehlgeschlagen"||label==="Zustellung fehlgeschlagen"||label==="Manuelle Prüfung nötig"});
+  }
+  if(["SENT","DELIVERY_RECORDED"].includes(item.status))rows.push({label:"Anbieterbestätigung ausstehend",time:"",pending:true});
+  if(!rows.length)return "";
+  return `<section class="vks-proof vks-history" aria-label="Verlauf"><h4 class="vks-section-title">Verlauf</h4><ol class="vks-timeline">${rows.map(row=>`<li class="vks-step${row.pending?" vks-step--pending":row.warning?" vks-step--warning":" vks-step--done"}"><span class="vks-step-mark" aria-hidden="true">${row.pending?"·":row.warning?"!":"✓"}</span><span class="vks-step-copy"><span>${row.label}</span>${row.time?`<time class="vks-step-time">${row.time}</time>`:""}</span></li>`).join("")}</ol></section>`;
+}
 function resetCancellationView(){
   cancellationView++;cancellationCase=null;cancellationBusy=false;cancellationReviewDirty=false;
   document.getElementById("vksBody").innerHTML="";cancellationFeedback("");
@@ -10096,11 +10276,23 @@ function renderCancellation(){
   notes.FOLLOW_UP_PREPARED="Deine Nachfrage ist vorbereitet, nicht versendet. Prüfe sie und sende sie bei Bedarf selbst über deinen Mailanbieter.";
   notes.MANUAL_REVIEW_REQUIRED="Prüfe den bisherigen Schriftverkehr und kläre den Stand direkt mit dem Anbieter oder Support. Rov.E versendet nichts automatisch. Eine spätere Antwort kannst du weiterhin dokumentieren.";
   if(outbound&&['deferred','soft_bounce'].includes(outbound.transport_status))notes.SENT="Brevo meldet eine verzögerte Zustellung. Es liegt noch keine Zustell- oder Kündigungsbestätigung vor. Rov.E versendet nichts erneut.";
+  const displayStatus=cancellationDisplayStatus(item,outbound),statusTone=["DELIVERY_RECORDED","TERMINATION_CONFIRMED"].includes(item.status)?"positive":["FAILED"].includes(item.status)||["hard_bounce","blocked","invalid","error"].includes(outbound?.transport_status)?"failure":["MANUAL_REVIEW_REQUIRED","FOLLOW_UP_DUE","FOLLOW_UP_PREPARED"].includes(item.status)||["deferred","soft_bounce"].includes(outbound?.transport_status)?"warning":"neutral";
+  const facts=cancellationCategoryAndMonthlyAmount(item),confirmableReview=review&&!item.missing_fields.length&&!item.contract_changed;
+  const responseCanConfirm=!!inbound&&["PROVIDER_RESPONSE","MANUAL_REVIEW_REQUIRED"].includes(item.status);
+  const responseCanDocument=!!canRespond&&!inbound;
+  const primaryAction=canSend?"send":confirmableReview?"confirm":responseCanConfirm?"response-confirm":responseCanDocument?"response-summary":canFollowup?"followup":review?"review":"";
+  const timeline=cancellationTimelineMarkup(item,outbound,inbound,followup);
+  const sentAtLabel=cancellationFormatDateTime(outbound?.sent_at),deliveredAtLabel=cancellationFormatDateTime(outbound?.delivered_at);
+  const inboundReceivedAtLabel=cancellationFormatDateTime(inbound?.received_at);
   document.getElementById("vksBody").innerHTML=`
-    <div class="drow"><span class="k">Anbieter / Vertrag</span><span class="v">${esc(item.provider_name)}</span></div>
-    <div class="drow"><span class="k">Status</span><span class="v">${esc(item.status_label||cancellationStatusLabels[item.status]||"Status wird geprüft")}</span></div>
-    <p class="hint">${esc(notes[item.status]||(ready?"Deine Kündigung ist vorbereitet und freigegeben. Sie wurde noch nicht versendet. Der Vertrag bleibt unverändert.":item.status==="CANCELLED"?"Die Vorbereitung wurde abgebrochen. Dein Vertrag bleibt unverändert.":"Prüfe Anbieter, Empfänger, Vertragskennung und Text. Es wird noch nichts versendet."))}</p>
-    ${item.contract_changed?`<p class="hint">Der Vertrag hat sich seit der Textprüfung geändert. Vor einem Versand ist eine neue Prüfung erforderlich.</p>`:""}
+    <section class="vks-header" aria-label="Vertragsstatus">
+      <div class="vks-provider">${esc(item.provider_name||item.contract_name||"Kündigung")}</div>
+      ${facts.category?`<div class="vks-category">${esc(facts.category)}</div>`:""}
+      <span class="vks-status vks-status--${statusTone}" aria-label="Status: ${esc(displayStatus)}"><span class="vks-status-mark" aria-hidden="true">${statusTone==="positive"?"✓":statusTone==="failure"?"!":statusTone==="warning"?"·":"•"}</span>${esc(displayStatus)}</span>
+    </section>
+    ${cancellationFinancialImpact(item,facts)}
+    <p class="vks-state-copy${statusTone==="failure"?" vks-state-copy--failure":statusTone==="warning"?" vks-state-copy--warning":""}">${esc(notes[item.status]||(ready?"Deine Kündigung ist vorbereitet und freigegeben. Sie wurde noch nicht versendet. Der Vertrag bleibt unverändert.":item.status==="CANCELLED"?"Die Vorbereitung wurde abgebrochen. Dein Vertrag bleibt unverändert.":"Prüfe Anbieter, Empfänger, Vertragskennung und Text. Es wird noch nichts versendet."))}</p>
+    ${item.contract_changed?`<p class="vks-state-copy vks-state-copy--warning">Der Vertrag hat sich seit der Textprüfung geändert. Vor einem Versand ist eine neue Prüfung erforderlich.</p>`:""}
     ${review?`<form id="vksReviewForm">
       <label class="vks-field">Absendername<input id="vksSender" autocomplete="name" maxlength="160" value="${esc(item.sender_name)}" required></label>
       <label class="vks-field">Absenderadresse · optional<textarea id="vksAddress" autocomplete="street-address" maxlength="600" rows="2">${esc(item.sender_address)}</textarea></label>
@@ -10113,56 +10305,59 @@ function renderCancellation(){
       </select></label>
       <label class="vks-field" id="vksDateField"${item.timing_choice==="date"?"":" hidden"}>Termin laut Vertragsunterlagen<input id="vksDate" type="date" value="${esc(item.cancellation_target_date||"")}"></label>
       <p class="hint">Rov.E kennt die Kündigungsfrist dieses Vertrags noch nicht. Ein eingetragener Termin ist deine Angabe und keine geprüfte Frist.</p>
-      <button class="vd-btn" type="submit">Angaben speichern und Text prüfen</button>
+      <button class="vd-btn vks-button ${primaryAction==="review"?"vks-primary":"vks-secondary"}" type="submit">Angaben speichern und Text prüfen</button>
     </form>`:`
-      <div class="drow"><span class="k">Vertrags-/Kundennummer</span><span class="v">${esc(item.contract_reference||"Nicht hinterlegt")}</span></div>
-      <div class="drow"><span class="k">Gewünschter Termin</span><span class="v">${esc(target)}</span></div>
-      <div class="drow"><span class="k">Empfänger</span><span class="v">${esc(item.recipient||"Nicht hinterlegt")}</span></div>`}
+      <div class="vks-facts">
+        ${item.contract_reference?`<div class="drow"><span class="k">Vertrags-/Kundennummer</span><span class="v">${esc(item.contract_reference)}</span></div>`:""}
+        ${target?`<div class="drow"><span class="k">Gewünschter Termin</span><span class="v">${esc(target)}</span></div>`:""}
+        ${item.recipient?`<div class="drow"><span class="k">Empfänger</span><span class="v">${esc(item.recipient)}</span></div>`:""}
+      </div>`}
     ${outbound&&!canSend?`<details><summary>Kündigungstext</summary><div class="vks-notice">${esc(item.generated_notice_text)}</div></details>`:`<h4 style="margin-top:20px">Kündigungstext</h4><div class="vks-notice">${esc(item.generated_notice_text)}</div>`}
     ${review&&!item.missing_fields.length&&!item.contract_changed?`
       <label class="vks-confirm"><input id="vksConsent" type="checkbox"><span>Ich habe Anbieter, Empfänger, Vertragskennung, Termin und Text geprüft und bestätige die Vorbereitung dieser Kündigung.</span></label>
-      <button class="vd-btn" id="vksConfirm" disabled>Kündigung bestätigen</button>`:""}
+      <button class="vd-btn vks-button ${primaryAction==="confirm"?"vks-primary":"vks-secondary"}" id="vksConfirm" disabled>Kündigung bestätigen</button>`:""}
     ${canSend?`
       <div class="drow"><span class="k">Versand über Rov.E</span><span class="v">${esc(item.email_sender||"Nicht verfügbar")}</span></div>
       <div class="drow"><span class="k">Antworten an</span><span class="v">${esc(item.reply_to||"Bestätigte E-Mail fehlt")}</span></div>
       ${!item.send_available?`<p class="hint">${esc(item.send_gate_error?cancellationError(item.send_gate_error):"Der Mailversand ist noch nicht freigeschaltet oder die bestätigte Antwortadresse fehlt. Dein Text bleibt gespeichert.")}</p>`:""}
       ${item.mail_mode==="test"&&item.send_available?`<p class="hint">Interner Mailtest · ausschließlich der freigegebene Testempfänger.</p>`:""}
       <label class="vks-confirm"><input id="vksSendConsent" type="checkbox"><span>Ich beauftrage Rov.E, genau diesen Text an ${esc(item.recipient)} zu senden. Anbieter, Vertragskennung und Termin habe ich geprüft.</span></label>
-      <button class="vd-btn" id="vksSend" disabled>${ready?"Kündigung senden":"Versand ausdrücklich wiederholen"}</button>`:""}
-    ${outbound?`<h4>Versandnachweis</h4>
-      <div class="drow"><span class="k">Maildienst</span><span class="v">${esc(({delivered:"Zugestellt",accepted:"Gesendet",deferred:"Zustellung verzögert",soft_bounce:"Zustellung verzögert",hard_bounce:"Zustellung fehlgeschlagen",blocked:"Zustellung fehlgeschlagen",invalid:"Zustellung fehlgeschlagen",error:"Zustellung fehlgeschlagen",rejected:"Versand abgelehnt"})[outbound.transport_status]||"Ergebnis noch nicht belegt")}</span></div>
-      ${outbound.sent_at?`<div class="drow"><span class="k">Angenommen am (UTC)</span><span class="v">${esc(outbound.sent_at)}</span></div>`:""}
-      ${outbound.delivered_at?`<div class="drow"><span class="k">Zugestellt am (UTC)</span><span class="v">${esc(outbound.delivered_at)}</span></div>`:""}
-      ${outbound.provider_message_id?`<details><summary>Technischer Nachweis</summary><div class="vks-notice">${esc(outbound.subject)}\nMail-ID: ${esc(outbound.provider_message_id)}\nTextversion: ${esc(outbound.body_sha256)}</div></details>`:""}`:""}
-    ${canRespond?`<button class="txd-del" id="vksDelivery">Zustellstatus prüfen</button>
-      <details><summary>Anbieterantwort dokumentieren</summary><p class="hint">Trage die tatsächlich erhaltene E-Mail ein. Rov.E prüft den Absender nicht automatisch und entscheidet nicht anhand des Antworttexts.</p>
+      <button class="vd-btn vks-button ${primaryAction==="send"?"vks-primary":"vks-secondary"}" id="vksSend" disabled>${ready?"Kündigung senden":"Versand ausdrücklich wiederholen"}</button>`:""}
+    ${outbound?`<section class="vks-proof"><h4 class="vks-section-title">Versandnachweis</h4>
+      <div class="drow"><span class="k">Maildienst</span><span class="v">${esc(({delivered:"Zugestellt",accepted:"Gesendet",deferred:"Zustellung verzögert",soft_bounce:"Zustellung verzögert",hard_bounce:"Zustellung fehlgeschlagen",blocked:"Zustellung fehlgeschlagen",invalid:"Zustellung fehlgeschlagen",error:"Zustellung fehlgeschlagen",rejected:"Versand abgelehnt"})[outbound.transport_status]||"Ergebnis wird geprüft")}</span></div>
+      ${sentAtLabel?`<div class="drow"><span class="k">Angenommen am</span><span class="v">${esc(sentAtLabel)}</span></div>`:""}
+      ${deliveredAtLabel?`<div class="drow"><span class="k">Zugestellt am</span><span class="v">${esc(deliveredAtLabel)}</span></div>`:""}</section>`:""}
+    ${canRespond?`<button class="txd-del vks-button vks-secondary" id="vksDelivery">Zustellstatus prüfen</button>
+      <details><summary class="vks-action-summary${primaryAction==="response-summary"?" vks-primary":""}">Anbieterantwort dokumentieren</summary><p class="hint">Trage die tatsächlich erhaltene E-Mail ein. Rov.E prüft den Absender nicht automatisch und entscheidet nicht anhand des Antworttexts.</p>
       <form id="vksResponseForm">
         <label class="vks-field">Absender der Antwort<input id="vksResponseSender" type="email" maxlength="254" required></label>
         <label class="vks-field">Betreff<input id="vksResponseSubject" maxlength="300" required></label>
         <label class="vks-field">Empfangen am · deine Ortszeit<input id="vksResponseDate" type="datetime-local" step="1" required></label>
         <label class="vks-field">Antworttext<textarea id="vksResponseBody" maxlength="6000" rows="5" required></textarea></label>
-        <button class="vd-btn" type="submit">Erhaltene Antwort dokumentieren</button>
+        <button class="vd-btn vks-button vks-secondary" type="submit">Erhaltene Antwort dokumentieren</button>
       </form></details>`:""}
-    ${inbound?`<h4>Anbieterantwort</h4><p class="hint">Von dir dokumentiert · nicht automatisch verifiziert</p>
-      <div class="drow"><span class="k">Absender</span><span class="v">${esc(inbound.sender)}</span></div>
-      <div class="drow"><span class="k">Empfangen (UTC)</span><span class="v">${esc(inbound.received_at)}</span></div>
-      <strong>${esc(inbound.subject)}</strong><div class="vks-notice">${esc(inbound.body_text)}</div>
+    ${inbound?`<section class="vks-response-card"><div class="vks-casefile-head"><h4 class="vks-section-title">Antwort des Anbieters</h4><span class="vks-response-tag">Vom Nutzer dokumentiert</span></div>
+      <p class="hint">Absender und Inhalt wurden von Rov.E nicht automatisch verifiziert.</p>
+      ${inbound.sender?`<div class="drow"><span class="k">Absender</span><span class="v">${esc(inbound.sender)}</span></div>`:""}
+      ${inboundReceivedAtLabel?`<div class="drow"><span class="k">Empfangen</span><span class="v">${esc(inboundReceivedAtLabel)}</span></div>`:""}
+      ${inbound.subject?`<strong>${esc(inbound.subject)}</strong>`:""}<div class="vks-notice">${esc(inbound.body_text)}</div>
       ${["PROVIDER_RESPONSE","MANUAL_REVIEW_REQUIRED"].includes(item.status)?`<label class="vks-field">Erhaltenes Ergebnis<select id="vksResponseOutcome"><option value="">Bitte wählen</option><option value="termination_confirmed">Anbieter bestätigt die Kündigung</option><option value="rejected">Anbieter lehnt die Kündigung ab</option></select></label>
         <label class="vks-field">Bestätigtes Enddatum · nur falls genannt<input id="vksEndDate" type="date" aria-describedby="vksEndDateWarning"></label>
         <p class="hint" id="vksEndDateWarning" aria-live="polite" hidden>Das Enddatum liegt ungewöhnlich weit in der Zukunft. Bitte prüfe es.</p>
         <label class="vks-confirm"><input id="vksResponseConsent" type="checkbox"><span>Ich habe diese Anbieterantwort erhalten und bestätige ausdrücklich das ausgewählte Ergebnis und gegebenenfalls das darin genannte Enddatum.</span></label>
-        <button class="vd-btn" id="vksResponseConfirm" disabled>Ergebnis bestätigen</button>`:""}`:""}
+        <button class="vd-btn vks-button ${primaryAction==="response-confirm"?"vks-primary":"vks-secondary"}" id="vksResponseConfirm" disabled>Antwort bestätigen</button>`:""}</section>`:""}
     ${item.status==="TERMINATION_CONFIRMED"?`<div class="drow"><span class="k">Bestätigtes Vertragsende</span><span class="v">${esc(item.confirmed_end_date||"Nicht mitgeteilt")}</span></div>${item.contract_ended?`<p class="hint">Beendet laut bestätigtem Enddatum. Der Vertrag bleibt in deiner Dokumentation.</p>`:""}`:""}
-    ${canFollowup?`<p class="hint">Seit 14 Tagen ist keine Anbieterantwort dokumentiert. Das ist eine interne Erinnerung, keine rechtliche Frist.</p><button class="vd-btn" id="vksFollowup">Nachfrage vorbereiten</button>`:""}
+    ${canFollowup?`<p class="hint">Seit 14 Tagen ist keine Anbieterantwort dokumentiert. Das ist eine interne Erinnerung, keine rechtliche Frist.</p><button class="vd-btn vks-button ${primaryAction==="followup"?"vks-primary":"vks-secondary"}" id="vksFollowup">Nachfrage vorbereiten</button>`:""}
     ${reminder.manual_review_due?`<p class="hint">Seit 28 Tagen ist keine Anbieterantwort dokumentiert. Prüfe den Fall manuell; daraus folgt keine Aussage über einen Verzug des Anbieters.</p>`:""}
     ${followup?`<details><summary>Vorbereitete Nachfrage</summary><p class="hint">Nicht durch Rov.E versendet.</p><div class="vks-notice">${esc(followup.body_text)}</div></details>`:""}
-    ${["SENT","DELIVERY_RECORDED","PROVIDER_RESPONSE","FOLLOW_UP_DUE","FOLLOW_UP_PREPARED","FAILED"].includes(item.status)?`<button class="txd-del" id="vksManualReview">Manuelle Prüfung nötig</button>`:""}
-    <details><summary>Verlauf</summary>${(item.events||[]).map(event=>`<div class="drow"><span class="k">${esc(cancellationEventLabels[event.event_type]||"Statuswechsel dokumentiert")}</span><span class="v">${esc(event.created_at)} UTC</span></div>`).join("")}</details>
-    <button class="vd-btn" id="vksFile">Kündigungsakte als PDF</button>
-    <p class="hint">Privater Download des dokumentierten Stands. Keine öffentliche Report-URL.</p>
-    ${["DRAFT","REVIEW_REQUIRED","USER_CONFIRMED","READY_TO_SEND"].includes(item.status)||(item.status==="FAILED"&&item.retry_allowed)?`<button class="txd-del" id="vksCancel">Vorbereitung abbrechen</button>`:""}
-    ${item.status==="SENDING"?`<button class="txd-del" id="vksReload">Gespeicherten Status laden</button>`:""}
-    <button class="txd-del" id="vksBack">Zurück zum Vertrag</button>`;
+    ${["SENT","DELIVERY_RECORDED","PROVIDER_RESPONSE","FOLLOW_UP_DUE","FOLLOW_UP_PREPARED","FAILED"].includes(item.status)?`<button class="txd-del vks-button vks-secondary" id="vksManualReview">Zur manuellen Prüfung markieren</button>`:""}
+    ${timeline}
+    <section class="vks-casefile"><div class="vks-casefile-head"><div><div class="vks-casefile-title">Kündigungsakte</div><div class="vks-casefile-copy">Alle Nachweise und Ereignisse</div></div></div>
+      <button class="vd-btn vks-button vks-secondary" id="vksFile" aria-label="Kündigungsakte als PDF herunterladen">PDF herunterladen</button>
+    </section><p class="hint">Privater Download des dokumentierten Stands. Keine öffentliche Report-URL.</p>
+    ${["DRAFT","REVIEW_REQUIRED","USER_CONFIRMED","READY_TO_SEND"].includes(item.status)||(item.status==="FAILED"&&item.retry_allowed)?`<button class="txd-del vks-button vks-destructive" id="vksCancel">Vorbereitung abbrechen</button>`:""}
+    ${item.status==="SENDING"?`<button class="txd-del vks-button vks-secondary" id="vksReload">Gespeicherten Status laden</button>`:""}
+    <button class="txd-del vks-button vks-quiet" id="vksBack">Zurück zum Vertrag</button>`;
   cancellationReviewDirty=false;cancellationControls();
 }
 async function openCancellation(contractId){
