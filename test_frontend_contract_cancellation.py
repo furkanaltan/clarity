@@ -436,8 +436,13 @@ assert.equal(calls[0].payload.action,'confirm_response');assert.equal(calls[0].p
         self.assertIn('id="vdCancel" data-vn="${contractName}"${contractReferenceAttrs(v)}', self.source)
         self.assertIn('#cancellationsheet{max-height:', self.source)
         self.assertIn('overflow-y:auto;overscroll-behavior:contain', self.source)
+        allowed = re.search(r'const SWIPE_DISMISS_SHEET_IDS=Object.freeze\(\[(.*?)\]\)', self.source, re.S).group(1)
         blocked = re.search(r'const SWIPE_BLOCKED_SHEET_IDS=Object.freeze\(\[(.*?)\]\)', self.source, re.S).group(1)
-        self.assertIn('"cancellationsheet"', blocked)
+        self.assertIn('"cancellationsheet"', allowed)
+        self.assertNotIn('"cancellationsheet"', blocked)
+        self.assertIn('#cancellationsheet[data-swipe-dismiss="true"]{touch-action:pan-y}', self.source)
+        swipe_init = self.source.split('function initSheetSwipeDismiss(){', 1)[1].split('function announcementTutorialSteps', 1)[0]
+        self.assertIn('if(id==="cancellationsheet"&&!fromGrab)return;', swipe_init)
         close = self.source.split('function closeAllSheetsSoft(){', 1)[1].split('function openOnly', 1)[0]
         self.assertIn('"cancellationsheet"', close)
 

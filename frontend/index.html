@@ -2117,6 +2117,8 @@
     background:var(--blue-soft);color:var(--blue);font-size:14px;font-weight:700;cursor:pointer;min-height:44px}
   .vd-btn.act{background:var(--card);color:var(--green)}
   #cancellationsheet{max-height:calc(100svh - var(--safe-top) - 12px);overflow-y:auto;overscroll-behavior:contain}
+  #cancellationsheet[data-swipe-dismiss="true"]{touch-action:pan-y}
+  #cancellationsheet[data-swipe-dismiss="true"]>.grab{touch-action:none}
   #cancellationsheet .drow{gap:12px;align-items:flex-start}
   #cancellationsheet .drow .v{min-width:0;overflow-wrap:anywhere}
   #cancellationsheet h4{margin:20px 0 10px}
@@ -8524,17 +8526,17 @@ function closeSheet(options={}){
   if(shouldRestore) history.back();
 }
 
-// Swipe-to-dismiss bleibt bewusst auf unkritische Sheets begrenzt. Formulare mit eigenen
-// Schreibvorgaengen, Sicherheitsdialoge und destruktive Aktionen werden nicht registriert.
+// Swipe-to-dismiss bleibt auf unkritische Sheets begrenzt. Das Kündigungsformular reagiert nur
+// am Griff auf den Wisch, damit Formfelder und der vertikal scrollbare Inhalt ungestört bleiben.
 const SWIPE_DISMISS_SHEET_IDS=Object.freeze([
   "sheet","actsheet","whatsnewsheet","announcementdetailsheet","psheet","scoresheet","gsheet",
-  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet","categorysheet"
+  "repsheet","repdetailsheet","setsheet","supportsheet","accesssheet","txsheet","vdsheet","dsheet","talksheet","monthlyplansheet","categorysheet","cancellationsheet"
 ]);
 const SWIPE_BLOCKED_SHEET_IDS=Object.freeze([
   "importsheet","bsheet","ngsheet","abosheet","immosheet",
   "contractsheet","vehiclefinancingsheet","accountaddsheet","paysheet",
   "assetordersheet","adminsheet","deletesheet","etfplansheet",
-  "markettrackingsheet","savingssheet","cancellationsheet"
+  "markettrackingsheet","savingssheet"
 ]);
 const SHEET_SWIPE_RUNTIME=new WeakMap();
 
@@ -8610,6 +8612,7 @@ function initSheetSwipeDismiss(){
       if(!event.isPrimary||event.pointerType==="mouse"||!sheet.classList.contains("on"))return;
       if(sheet.getAttribute("aria-busy")==="true"||sheet.dataset.swipeLock==="true")return;
       const fromGrab=!!event.target.closest(".grab");
+      if(id==="cancellationsheet"&&!fromGrab)return;
       if(!fromGrab&&event.target.closest("button,a,input,textarea,select,[contenteditable='true'],[role='button']"))return;
       if(sheetHasScrolledContent(event.target,sheet))return;
       drag={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,lastY:event.clientY,
