@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -91,6 +92,54 @@ class WebAuthTests(unittest.TestCase):
                 verified = client.post("/v1/auth/verify-code", json={"email": "other@example.test", "code": "654321"})
         self.assertEqual(verified.status_code, 200, verified.get_json())
         self.assertNotIn("state_url", verified.get_json())
+
+    def test_new_login_code_invalidates_older_code_before_and_after_use(self):
+        with patch.object(api.secrets, "randbelow", side_effect=[111111, 222222]), patch.object(api, "send_login_email"):
+            with api.app.test_client() as client:
+                for _ in range(2):
+                    self.assertEqual(client.post("/v1/auth/request-code", json={"email": "legacy@example.test"}).status_code, 200)
+                old_before = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "111111"})
+                latest = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "222222"})
+                old_after = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "111111"})
+        self.assertEqual(old_before.status_code, 401)
+        self.assertEqual(latest.status_code, 200)
+        self.assertEqual(old_after.status_code, 401)
+
+    def test_login_code_replay_expiry_and_other_user_are_rejected(self):
+        with patch.object(api.secrets, "randbelow", side_effect=[333333, 444444]), patch.object(api, "send_login_email"):
+            with api.app.test_client() as client:
+                client.post("/v1/auth/request-code", json={"email": "legacy@example.test"})
+                wrong_user = client.post("/v1/auth/verify-code", json={"email": "other@example.test", "code": "333333"})
+                first = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "333333"})
+                replay = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "333333"})
+                client.post("/v1/auth/request-code", json={"email": "legacy@example.test"})
+                with closing(sqlite3.connect(self.db_path)) as conn:
+                    conn.execute("UPDATE app_login_codes SET expires_at = datetime('now', '-1 minute') WHERE email = ? AND consumed_at IS NULL", ("legacy@example.test",))
+                    conn.commit()
+                expired = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "444444"})
+        self.assertEqual((wrong_user.status_code, first.status_code, replay.status_code, expired.status_code), (401, 200, 401, 401))
+
+    def test_parallel_verifications_consume_login_code_only_once(self):
+        with patch.object(api.secrets, "randbelow", return_value=555555), patch.object(api, "send_login_email"):
+            with api.app.test_client() as client:
+                self.assertEqual(client.post("/v1/auth/request-code", json={"email": "legacy@example.test"}).status_code, 200)
+        barrier = threading.Barrier(2)
+        statuses = []
+
+        def verify():
+            with api.app.test_client() as client:
+                barrier.wait()
+                response = client.post("/v1/auth/verify-code", json={"email": "legacy@example.test", "code": "555555"})
+                statuses.append(response.status_code)
+
+        threads = [threading.Thread(target=verify) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(statuses), [200, 401])
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_sessions").fetchone()[0], 1)
 
     def test_logout_then_second_user_login_uses_only_second_user_state(self):
         raw_token = self.issue_session()

@@ -48,10 +48,14 @@ class FrontendCookieAuthTests(unittest.TestCase):
             self.frontend,
         )
         self.assertIn(
-            'fetch(`${PAIR_API_BASE_URL}/v1/state`,{credentials:"include",cache:"no-store"',
+            'fetch(`${PAIR_API_BASE_URL}/v1/state`,{method:"POST",credentials:"include",cache:"no-store"',
             self.frontend,
         )
         self.assertIn("return !!(ROVE_API?.baseUrl && ROVE_API.authenticated);", self.frontend)
+
+    def test_state_and_transaction_refresh_use_mutating_method(self):
+        self.assertRegex(self.frontend, r'apiFetch\("/v1/state",\{\s*method:"POST"')
+        self.assertRegex(self.frontend, r'apiFetch\("/v1/transactions",\{\s*method:"POST"')
 
     def test_feature_matrix_uses_cookie_wrapper(self):
         paths = (

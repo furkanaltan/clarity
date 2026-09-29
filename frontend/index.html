@@ -8955,7 +8955,7 @@ async function refreshTransactionsFromServer(){
   transactionRefreshInFlight = true;
   try{
     const res=await apiFetch("/v1/transactions",{
-      headers:{}, cache:"no-store"
+      method:"POST",headers:{},cache:"no-store"
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok || !Array.isArray(data.tx)) throw new Error(data.error||`HTTP ${res.status}`);
@@ -9031,7 +9031,7 @@ async function fetchCanonicalAppState(){
   const bufferRevisionAtFetch=bufferStateRevision;
   try{
     const res=await apiFetch("/v1/state",{
-      headers:{},cache:"no-store"
+      method:"POST",headers:{},cache:"no-store"
     });
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
@@ -13851,7 +13851,7 @@ async function loadBridgeState(){
     const timeout = setTimeout(()=>controller.abort(), 8000);
     let res;
     try{
-      res = await fetch(`${PAIR_API_BASE_URL}/v1/state`,{credentials:"include",cache:"no-store",signal:controller.signal});
+      res = await fetch(`${PAIR_API_BASE_URL}/v1/state`,{method:"POST",credentials:"include",cache:"no-store",signal:controller.signal});
     } finally {
       clearTimeout(timeout);
     }

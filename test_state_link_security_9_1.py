@@ -38,7 +38,7 @@ class StateLinkSecurityTests(unittest.TestCase):
             patch.object(api, "ensure_market_tracking_schema", lambda _conn: None),
             patch.object(api, "apply_due_scheduled_savings", lambda *_args: None),
             patch.object(api, "record_due_etf_plan", lambda *_args: None),
-            patch.object(api, "build_live_app_data", lambda _conn, uid: {"user_id": uid, "identity": {"name": f"User {uid}"}, "sts": {"available": 0}}),
+            patch.object(api, "build_live_app_data", lambda _conn, uid, **_kwargs: {"user_id": uid, "identity": {"name": f"User {uid}"}, "sts": {"available": 0}}),
             patch.object(state, "DB_PATH", self.db_path),
             patch.object(state, "PUBLIC_APP_STATE_DIR", self.state_dir),
         ]
@@ -64,6 +64,18 @@ class StateLinkSecurityTests(unittest.TestCase):
     def test_no_session_and_old_bearer_cannot_read_state(self):
         self.assertEqual(self.state_request().status_code, 401)
         self.assertEqual(self.state_request(bearer="old-bearer").status_code, 401)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            self.assertEqual(
+                conn.execute("SELECT status FROM app_state_links WHERE token='old-bearer'").fetchone()[0],
+                "active",
+            )
+
+    def test_authenticated_refresh_retires_old_bearer(self):
+        self.session(1, "session-one")
+        with api.app.test_client() as client:
+            client.set_cookie(api.SESSION_COOKIE_NAME, "session-one", domain="localhost", path="/")
+            response = client.post("/v1/state", headers={"Origin": "https://getrove.de"})
+        self.assertEqual(response.status_code, 200, response.get_json())
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(
                 conn.execute("SELECT status FROM app_state_links WHERE token='old-bearer'").fetchone()[0],

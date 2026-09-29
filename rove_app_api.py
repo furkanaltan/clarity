@@ -475,6 +475,8 @@ def reject_untrusted_browser_writes():
     origin = request.headers.get("Origin", "").rstrip("/")
     if origin and origin not in ALLOWED_ORIGINS:
         return jsonify({"ok": False, "error": "untrusted_origin"}), 403
+    if request.method == "POST" and request.path in {"/v1/state", "/v1/transactions"} and not origin:
+        return jsonify({"ok": False, "error": "origin_required"}), 403
     if request.path.startswith("/v1/admin/"):
         # Admin writes are cookie-authenticated. A browser must therefore prove
         # same-origin intent even when it omits the Origin header.
@@ -491,15 +493,7 @@ def reject_untrusted_browser_writes():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({
-        "ok": True,
-        "service": "rove-app-api",
-        "marketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
-        "stockMarketDataConfigured": bool(os.getenv("TWELVE_DATA_API_KEY", "").strip()),
-        "cryptoMarketDataConfigured": bool(os.getenv("COINMARKETCAP_API_KEY", "").strip()),
-        "europeMarketDataConfigured": bool(os.getenv("LEEWAY_API_TOKEN", "").strip()),
-        "screenshotImportConfigured": bool(OPENAI_API_KEY),
-    })
+    return jsonify({"ok": True, "service": "rove-app-api"})
 
 
 @app.route("/v1/auth/request-code", methods=["OPTIONS"])
@@ -673,7 +667,8 @@ def user_from_token(conn: sqlite3.Connection, token: str) -> int | None:
     finance endpoint derives its user from the HttpOnly session cookie, leaving one
     central authorization point for a later device-lock check.
     """
-    session = session_user_from_cookie(conn)
+    read_only_state = request.method == "GET" and request.path in {"/v1/state", "/v1/transactions"}
+    session = session_user_from_cookie(conn, touch=not read_only_state)
     return session[0] if session else None
 
 
@@ -1771,7 +1766,7 @@ def send_account_delete_email(email: str, code: str) -> None:
         raise RuntimeError("brevo_unavailable") from exc
 
 
-def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None:
+def session_user_from_cookie(conn: sqlite3.Connection, *, touch: bool = True) -> tuple[int, int] | None:
     raw = request.cookies.get(SESSION_COOKIE_NAME, "")
     if not raw:
         return None
@@ -1792,7 +1787,8 @@ def session_user_from_cookie(conn: sqlite3.Connection) -> tuple[int, int] | None
     ).fetchone()
     if not row:
         return None
-    conn.execute("UPDATE app_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", (row["session_id"],))
+    if touch:
+        conn.execute("UPDATE app_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", (row["session_id"],))
     return int(row["user_id"]), int(row["session_id"])
 
 
@@ -1806,7 +1802,9 @@ def pin_row(conn: sqlite3.Connection, session_id: int) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def pin_state(conn: sqlite3.Connection, session_id: int, *, touch: bool = False) -> str:
+def pin_state(
+    conn: sqlite3.Connection, session_id: int, *, touch: bool = False, persist_idle_lock: bool = True
+) -> str:
     row = pin_row(conn, session_id)
     if not row:
         return "setup_required"
@@ -1816,12 +1814,13 @@ def pin_state(conn: sqlite3.Connection, session_id: int, *, touch: bool = False)
         return "locked"
     idle_seconds = int(row["idle_seconds"] or 0)
     if idle_seconds >= PIN_INACTIVITY_SECONDS:
-        conn.execute(
-            """UPDATE app_session_pins
-                  SET unlocked_at = NULL, last_activity_at = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = ?""",
-            (session_id,),
-        )
+        if persist_idle_lock:
+            conn.execute(
+                """UPDATE app_session_pins
+                      SET unlocked_at = NULL, last_activity_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?""",
+                (session_id,),
+            )
         return "locked"
     if touch and idle_seconds >= 30:
         conn.execute(
@@ -2828,11 +2827,15 @@ def enforce_session_pin():
         return None
     if request.path in PIN_GATE_OPEN_PATHS:
         return None
+    read_only_state = request.method == "GET" and request.path in {"/v1/state", "/v1/transactions"}
     with db() as conn:
-        ensure_session_pin_table(conn)
-        session = session_user_from_cookie(conn)
+        if not read_only_state:
+            ensure_session_pin_table(conn)
+        session = session_user_from_cookie(conn, touch=not read_only_state)
         if not session:
             return None
+        if read_only_state and not table_exists(conn, "app_session_pins"):
+            return pin_locked_response("setup_required")
         user_id, session_id = session
         if request.path == "/v1/onboarding":
             user = conn.execute(
@@ -2840,7 +2843,7 @@ def enforce_session_pin():
             ).fetchone()
             if user and int(user["onboarding_step"] or 0) < 10 and not pin_row(conn, session_id):
                 return None
-        status = pin_state(conn, session_id, touch=True)
+        status = pin_state(conn, session_id, touch=not read_only_state, persist_idle_lock=not read_only_state)
         if status != "unlocked":
             return pin_locked_response(status)
     return None
@@ -2880,6 +2883,7 @@ def request_login_code():
     # Acknowledge every valid request identically; only eligible addresses receive a code.
     send_code = False
     with db() as conn:
+        begin_write(conn)
         ensure_auth_tables(conn)
         account = conn.execute("SELECT id FROM app_accounts WHERE email = ?", (email,)).fetchone()
         invitation_id = None
@@ -2899,6 +2903,11 @@ def request_login_code():
         elif account:
             send_code = True
         if send_code:
+            conn.execute(
+                "UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP "
+                "WHERE email = ? AND consumed_at IS NULL",
+                (email,),
+            )
             conn.execute(
                 """INSERT INTO app_login_codes
                    (email, code_hash, pairing_code, expires_at, flow, invitation_id)
@@ -2939,6 +2948,7 @@ def verify_login_code():
         return jsonify({"ok": False, "error": str(exc)}), 503
 
     with db() as conn:
+        begin_write(conn)
         ensure_auth_tables(conn)
         row = conn.execute(
             """SELECT id, pairing_code, attempts, flow, invitation_id
@@ -2988,8 +2998,14 @@ def verify_login_code():
         else:
             return jsonify({"ok": False, "error": "account_required"}), 409
 
+        consumed = conn.execute(
+            "UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND consumed_at IS NULL",
+            (row["id"],),
+        )
+        if consumed.rowcount != 1:
+            return jsonify({"ok": False, "error": "code_expired"}), 401
         raw_session, expires_at = issue_session(conn, account_id)
-        conn.execute("UPDATE app_login_codes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", (row["id"],))
         conn.commit()
         credential = conn.execute("SELECT 1 FROM app_credentials WHERE account_id = ?", (account_id,)).fetchone()
 
@@ -3910,61 +3926,77 @@ def pair_app():
     return jsonify({"ok": False, "error": "pairing_retired"}), 410
 
 
-@app.route("/v1/transactions", methods=["GET"])
+@app.route("/v1/transactions", methods=["GET", "POST"])
 def current_transactions():
-    """Liest die aktuellen Monatsbuchungen fuer eine bereits gekoppelte App."""
+    """GET reads transactions; POST also activates a due savings rate."""
     token = token_from_request()
     with db() as conn:
-        # This endpoint also activates due scheduled savings. Serialize the
-        # read-modify-delete path so concurrent GETs cannot materialize twice.
-        begin_write(conn)
+        refresh = request.method == "POST"
+        if refresh:
+            begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
 
-        apply_due_scheduled_savings(conn, user_id)
+        if refresh:
+            apply_due_scheduled_savings(conn, user_id)
+        else:
+            conn.execute("SAVEPOINT transactions_read")
         tx = _build_tx(conn, user_id)
+        if not refresh:
+            conn.execute("ROLLBACK TO transactions_read")
+            conn.execute("RELEASE transactions_read")
 
     return jsonify({"ok": True, "tx": tx})
 
 
-@app.route("/v1/state", methods=["GET"])
+@app.route("/v1/state", methods=["GET", "POST"])
 def current_app_state():
-    """Aktualisiert die vom Bot gefuehrten Bereiche einer gekoppelten App."""
+    """GET reads state; POST performs the existing due-finance refresh."""
     token = token_from_request()
     with db() as conn:
-        ensure_market_tracking_schema(conn)
-        conn.commit()
-        begin_write(conn)
-        # Retire every legacy bearer row on first API-state access. These rows are
-        # independent from app_sessions, so existing browser sessions keep working.
-        revoke_legacy_state_links(conn)
+        refresh = request.method == "POST"
+        if refresh:
+            ensure_market_tracking_schema(conn)
+            conn.commit()
+            begin_write(conn)
         user_id = user_from_token(conn, token)
         if not user_id:
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
-        # Eine fuer diesen Monat vorgemerkte Rate muss VOR dem ETF-Lauf aktiv werden.
-        # Sonst wuerde am Monatsersten noch einmal der alte Betrag gebucht.
-        apply_due_scheduled_savings(conn, user_id)
-        # Ein automatischer ETF-Sparplan wird beim ersten sicheren App-Kontakt am
-        # Ausfuehrungstag erfasst. Ohne Broker-API bleibt das ausschliesslich die
-        # interne Rov.E-Abbildung; die echte Order wird dadurch nie behauptet.
-        record_due_etf_plan(conn, user_id)
-        state = build_live_app_data(conn, user_id)
+        if refresh:
+            # Legacy bearer links are retired by a deliberate authenticated refresh.
+            revoke_legacy_state_links(conn)
+            # Activate the new rate before the ETF run, exactly once under the write lock.
+            apply_due_scheduled_savings(conn, user_id)
+            record_due_etf_plan(conn, user_id)
+        else:
+            conn.execute("SAVEPOINT state_read")
+            ensure_market_tracking_schema(conn)
+            ensure_app_etf_savings_plan_table(conn)
+            ensure_app_etf_position_plans_table(conn)
+            ensure_investment_contribution_schema(conn)
+        state = build_live_app_data(conn, user_id, activate_due_savings=refresh)
         # The identity is derived from the authenticated HttpOnly session above;
         # expose it only as an additive consistency marker for the frontend.
         state["user_id"] = int(user_id)
         # V4 remains server-gated and default-off. This nullable additive field is
         # ignored by the existing frontend until a separately reviewed UI pilot.
         state["coach_v4_visible"] = get_visible_coach_v4(conn, user_id)
-        coach_announcement = claim_coach_announcement(
-            conn,
-            user_id,
-            finance_action_due=bool(state.get("monthlyCheckinDueCount", 0)),
-        )
+        coach_announcement = None
+        if refresh:
+            coach_announcement = claim_coach_announcement(
+                conn,
+                user_id,
+                finance_action_due=bool(state.get("monthlyCheckinDueCount", 0)),
+            )
         feature_announcements = get_feature_announcements_for_user(conn, user_id)
         feature_announcements["coach"] = coach_announcement
         state["feature_announcements"] = feature_announcements
-        conn.commit()
+        if refresh:
+            conn.commit()
+        else:
+            conn.execute("ROLLBACK TO state_read")
+            conn.execute("RELEASE state_read")
 
     # Metadata is presentation-only. Fetch it after the state write lock is released.
     hydrate_crypto_logos(state)

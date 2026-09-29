@@ -10,7 +10,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import rove_app_api as api
-from rove_app_state import apply_due_scheduled_savings, build_live_app_data, get_app_cash_accounts
+from rove_app_state import (
+    apply_due_scheduled_savings,
+    build_live_app_data,
+    ensure_app_etf_savings_plan_table,
+    get_app_cash_accounts,
+)
+from rove_dates import business_month_key
 from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, set_feature_enabled
 from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 from test_financial_accounts_sprint2 import create_db
@@ -95,7 +101,7 @@ class StabilitySprint1Tests(unittest.TestCase):
         self.assertEqual(negative["giro"], -250)
         self.assertIsNone(unavailable["giro"])
 
-    def test_parallel_transactions_materialize_scheduled_savings_once(self):
+    def test_parallel_transaction_refreshes_materialize_scheduled_savings_once(self):
         with closing(self.connect()) as conn:
             apply_due_scheduled_savings(conn, 1)
             conn.execute(
@@ -110,7 +116,7 @@ class StabilitySprint1Tests(unittest.TestCase):
         def request_transactions():
             with api.app.test_client() as client:
                 client.set_cookie(api.SESSION_COOKIE_NAME, raw_token, domain="localhost", path="/")
-                response = client.get("/v1/transactions", headers={"Origin": "https://getrove.de"})
+                response = client.post("/v1/transactions", headers={"Origin": "https://getrove.de"})
                 statuses.append(response.status_code)
 
         with patch.object(api, "DB_PATH", self.db_path), patch.object(
@@ -129,6 +135,56 @@ class StabilitySprint1Tests(unittest.TestCase):
             pending = conn.execute("SELECT COUNT(*) FROM app_scheduled_savings WHERE user_id=1").fetchone()[0]
         self.assertEqual((user["etf_savings"], user["cash_savings"]), (300, 100))
         self.assertEqual(pending, 0)
+
+    def test_state_get_is_financially_read_only_and_post_runs_due_plan_once(self):
+        self.set_multi_cash(False)
+        with closing(self.connect()) as conn:
+            apply_due_scheduled_savings(conn, 1)
+            conn.execute(
+                "INSERT INTO app_scheduled_savings(user_id,effective_month,etf_savings,cash_savings) VALUES (1,?,?,?)",
+                (business_month_key(), 30, 100),
+            )
+            ensure_app_etf_savings_plan_table(conn)
+            conn.execute(
+                "INSERT INTO app_etf_savings_plan(user_id,execution_day,source_account,mode,active,start_month) "
+                "VALUES (1,1,'giro','auto',1,?)",
+                (business_month_key(),),
+            )
+            conn.commit()
+
+        with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "AUTH_SECRET", "state-refresh-test-secret"), patch.object(api, "hydrate_crypto_logos"):
+            ensure_unlocked_test_session(self.db_path, 1, "state-refresh-session")
+            with closing(self.connect()) as conn:
+                before_get = "\n".join(conn.iterdump())
+            with api.app.test_client() as client:
+                client.set_cookie(api.SESSION_COOKIE_NAME, "state-refresh-session", domain="localhost", path="/")
+                for headers in (
+                    {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"},
+                    {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"},
+                ):
+                    response = client.get("/v1/state", headers=headers)
+                    self.assertEqual(response.status_code, 200, response.get_json())
+                    transactions = client.get("/v1/transactions", headers=headers)
+                    self.assertEqual(transactions.status_code, 200, transactions.get_json())
+                    with closing(self.connect()) as conn:
+                        self.assertEqual(tuple(conn.execute("SELECT etf_savings,cash_savings FROM users WHERE user_id=1").fetchone()), (20, 100))
+                        self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_scheduled_savings WHERE user_id=1").fetchone()[0], 1)
+                        self.assertEqual(conn.execute("SELECT COUNT(*) FROM investment_events WHERE user_id=1 AND source='app_etf_plan'").fetchone()[0], 0)
+
+                with closing(self.connect()) as conn:
+                    self.assertEqual("\n".join(conn.iterdump()), before_get)
+                self.assertEqual(client.post("/v1/state", headers={"Sec-Fetch-Site": "cross-site"}).status_code, 403)
+                self.assertEqual(client.post("/v1/transactions", headers={"Sec-Fetch-Site": "cross-site"}).status_code, 403)
+                denied = client.post("/v1/state", headers={"Origin": "https://foreign.invalid"})
+                self.assertEqual(denied.status_code, 403)
+                for _ in range(2):
+                    response = client.post("/v1/state", headers={"Origin": "https://getrove.de"})
+                    self.assertEqual(response.status_code, 200, response.get_json())
+
+        with closing(self.connect()) as conn:
+            self.assertEqual(tuple(conn.execute("SELECT etf_savings,cash_savings FROM users WHERE user_id=1").fetchone()), (30, 100))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_scheduled_savings WHERE user_id=1").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM investment_events WHERE user_id=1 AND source='app_etf_plan' AND amount=30").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

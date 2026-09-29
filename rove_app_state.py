@@ -2652,7 +2652,9 @@ def build_buffer_data_from_monthly_snapshot(snapshot: dict | None) -> dict | Non
     return _buffer_data_from_values(cash, snapshot.get("fixed_costs"), None)
 
 
-def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
+def build_live_app_data(
+    conn: sqlite3.Connection, user_id: int, *, activate_due_savings: bool = True
+) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
     Lokale App-Ergänzungen wie Sachwerte oder ein manuell gepflegter Immobilienwert gehören
@@ -2665,7 +2667,8 @@ def build_live_app_data(conn: sqlite3.Connection, user_id: int) -> dict:
     ensure_app_mentor_event_state_table(conn)
     # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
     # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
-    apply_due_scheduled_savings(conn, user_id)
+    if activate_due_savings:
+        apply_due_scheduled_savings(conn, user_id)
     row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
         raise ValueError(f"Kein User {user_id} in der Bot-Datenbank gefunden")

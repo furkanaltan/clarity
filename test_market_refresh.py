@@ -194,7 +194,7 @@ class MarketRefreshWiringTests(unittest.TestCase):
 
 
 class MarketHealthTests(unittest.TestCase):
-    def test_health_exposes_provider_configuration_without_changing_legacy_flag(self):
+    def test_public_health_does_not_expose_provider_configuration(self):
         with patch.dict(
             os.environ,
             {
@@ -204,12 +204,11 @@ class MarketHealthTests(unittest.TestCase):
             },
             clear=False,
         ):
-            with api.app.test_request_context("/health"):
-                payload = api.health().get_json()
-        self.assertTrue(payload["marketDataConfigured"])
-        self.assertTrue(payload["stockMarketDataConfigured"])
-        self.assertTrue(payload["cryptoMarketDataConfigured"])
-        self.assertTrue(payload["europeMarketDataConfigured"])
+            with api.app.test_client() as client:
+                response = client.get("/health")
+                payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload, {"ok": True, "service": "rove-app-api"})
 
 
 if __name__ == "__main__":
