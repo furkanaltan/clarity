@@ -291,7 +291,13 @@
   .set-row .st{flex:1;min-width:0}
   .set-row .st .sl{font-size:15px;font-weight:600}
   .set-row .st .ss{font-size:12.5px;color:var(--muted);margin-top:2px}
-  .set-row .sv{font-size:14.5px;color:var(--muted);font-weight:600}
+  .set-row .sv{font-size:14.5px;color:var(--muted);font-weight:600;min-width:0;overflow-wrap:anywhere;text-align:right}
+  .set-row.set-info .st{flex:0 0 auto}
+  .set-row.set-info .sl{white-space:nowrap}
+  .set-row.set-action{width:100%;border-top:0;border-left:0;border-right:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+  .set-row.set-action .st .sl,.set-row.set-action .st .ss{display:block}
+  #setsheet button:focus-visible,#deletesheet button:focus-visible,#deletesheet input:focus-visible,
+  #psheet button:focus-visible,.avatar:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   .asset-order-list{display:flex;flex-direction:column;gap:9px;margin:14px 0 18px}
   .asset-order-row{display:flex;align-items:center;gap:10px;min-height:66px;padding:9px 10px 9px 7px;
     border:1px solid rgba(89,151,187,.15);border-radius:18px;background:linear-gradient(150deg,var(--card),var(--elevate2));
@@ -485,8 +491,9 @@
   .phead .pn{font-size:18px;font-weight:800;letter-spacing:-.3px}
   .phead .pm{font-size:13px;color:var(--muted);margin-top:2px}
   .pmenu{display:flex;flex-direction:column;gap:8px}
-  .prow{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
-    border-radius:15px;padding:14px 15px;cursor:pointer;transition:transform .15s ease,opacity .15s ease}
+  .prow{display:flex;align-items:center;gap:14px;width:100%;text-align:left;color:var(--ink);font:inherit;
+    background:var(--card);border:1px solid var(--line);border-radius:15px;padding:14px 15px;
+    cursor:pointer;transition:transform .15s ease,opacity .15s ease}
   .prow:active{transform:scale(.98);opacity:.85}
   .prow .pic{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;
     border:1px solid rgba(255,255,255,.07);box-shadow:inset 0 1px rgba(255,255,255,.12),0 6px 16px rgba(0,0,0,.16)}
@@ -2865,7 +2872,7 @@
         <svg viewBox="0 0 24 24"><path d="M18 8.5a6 6 0 0 0-12 0c0 6.5-2.5 7.5-2.5 7.5h17S18 15 18 8.5"/><path d="M13.7 20a2 2 0 0 1-3.4 0"/></svg>
         <span class="dot" id="bellDot"></span>
       </button>
-      <div class="avatar" id="avatar" role="button" aria-label="Profil">F</div>
+      <button class="avatar" id="avatar" type="button" aria-label="Profil">F</button>
     </div>
     <div class="home-heading">
       <h1 class="home-title">Gesamtvermögen</h1>
@@ -3246,14 +3253,14 @@
   </div>
 
   <!-- Profil-Menü (Avatar) -->
-  <div class="sheet" id="psheet">
+  <div class="sheet" id="psheet" role="dialog" aria-modal="true" aria-labelledby="profiletitle" tabindex="-1">
     <div class="grab"></div>
     <!-- ⚠️ Hier standen bis 27.07. ein echter Name und eine echte E-Mail-Adresse fest im HTML.
          Weil applyProfileIdentity() nur im Profil-Modus lief, sah JEDER eingeladene Beta-Tester
          diese fremden Daten. Nie wieder echte Werte als Platzhalter — im Zweifel leer. -->
     <div class="phead">
       <div class="pav">•</div>
-      <div><div class="pn">Dein Profil</div><div class="pm">—</div></div>
+      <div><div class="pn" id="profiletitle">Dein Profil</div><div class="pm">—</div></div>
     </div>
     <div class="pmenu" id="pmenu"></div>
   </div>
@@ -3288,9 +3295,10 @@
   </div>
 
   <!-- Einstellungen -->
-  <div class="sheet tall" id="setsheet">
+  <div class="sheet tall" id="setsheet" role="dialog" aria-modal="true" aria-labelledby="settingstitle" tabindex="-1">
+    <button type="button" class="sheet-dismiss" data-close-settings aria-label="Einstellungen schließen">×</button>
     <div class="grab"></div>
-    <h3>Einstellungen</h3>
+    <h3 id="settingstitle">Einstellungen</h3>
     <div class="feed" id="setbody"></div>
   </div>
 
@@ -3311,10 +3319,10 @@
   </div>
 
   <!-- Kontoloeschung: separater, zweistufiger Sicherheitsablauf. -->
-  <div class="sheet" id="deletesheet">
+  <div class="sheet" id="deletesheet" role="dialog" aria-modal="true" aria-labelledby="deletetitle" tabindex="-1">
     <div class="grab"></div>
     <button data-close-delete aria-label="Kontolöschung schließen" style="position:absolute;right:18px;top:14px;width:34px;height:34px;border:1px solid var(--line2);border-radius:50%;background:var(--card);color:var(--muted);font-size:23px;line-height:1;cursor:pointer">×</button>
-    <h3>Konto und Daten löschen</h3>
+    <h3 id="deletetitle">Konto und Daten löschen</h3>
     <div class="feed" id="deletebody"></div>
   </div>
 
@@ -8465,12 +8473,25 @@ const sheet=document.getElementById("sheet"), sheetBg=document.getElementById("s
 const quickForm=document.getElementById("quickForm");
 const quickError=document.getElementById("quickError");
 const gsheet=document.getElementById("gsheet");
+let SETTINGS_RETURN_FOCUS=null;
+function activeSettingsDialog(){
+  return document.querySelector("#psheet.on,#setsheet.on,#deletesheet.on");
+}
+function settingsDialogControls(dialog){
+  return [...dialog.querySelectorAll("button:not(:disabled),input:not(:disabled),a[href]")]
+    .filter(control=>control.getClientRects().length && !control.closest("[inert]"));
+}
 function syncSheetInteractivity(){
   document.querySelectorAll(".sheet").forEach(el=>{
     const active=el.classList.contains("on");
     el.toggleAttribute("inert",!active);
     el.setAttribute("aria-hidden",active?"false":"true");
   });
+  const dialog=activeSettingsDialog();
+  document.querySelectorAll("#app > .screen,#app > .tabbar").forEach(el=>el.toggleAttribute("inert",!!dialog));
+  if(dialog && !dialog.contains(document.activeElement)){
+    (settingsDialogControls(dialog)[0]||dialog).focus({preventScroll:true});
+  }
 }
 syncSheetInteractivity();
 if(window.MutationObserver){
@@ -8519,12 +8540,38 @@ function dismissKeyboard(){
   if(window.scrollY!==0) window.scrollTo(0,0);
 }
 function closeSheet(options={}){
+  const closingSettings=!!activeSettingsDialog();
   const shouldRestore=!options.fromHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
   sheetBg.classList.remove("on"); closeAllSheetsSoft(); document.body.classList.remove("quick-input-keyboard-open");
   sheet.classList.remove("keyboard-open"); sheet.style.removeProperty("--keyboard-cover");
   sheet.style.removeProperty("--sheet-viewport-height"); liftTabbar(); dismissKeyboard(); setQuickError("");
+  if(closingSettings){
+    const previous=SETTINGS_RETURN_FOCUS;
+    SETTINGS_RETURN_FOCUS=null;
+    requestAnimationFrame(()=>{
+      const target=previous?.isConnected && previous.tabIndex>=0 && !previous.closest(".sheet,[inert]")
+        ? previous : document.getElementById("avatar");
+      target?.focus({preventScroll:true});
+    });
+  }
   if(shouldRestore) history.back();
 }
+document.addEventListener("keydown",event=>{
+  const dialog=activeSettingsDialog();
+  if(!dialog)return;
+  if(event.key==="Escape"){
+    event.preventDefault();closeSheet();return;
+  }
+  if(event.key!=="Tab")return;
+  const controls=settingsDialogControls(dialog);
+  if(!controls.length){event.preventDefault();dialog.focus();return;}
+  const first=controls[0],last=controls[controls.length-1];
+  if(!dialog.contains(document.activeElement) || (event.shiftKey && document.activeElement===first)){
+    event.preventDefault();(event.shiftKey?last:first).focus();
+  }else if(!event.shiftKey && document.activeElement===last){
+    event.preventDefault();first.focus();
+  }
+});
 
 // Swipe-to-dismiss bleibt auf unkritische Sheets begrenzt. Das Kündigungsformular reagiert nur
 // am Griff auf den Wisch, damit Formfelder und der vertikal scrollbare Inhalt ungestört bleiben.
@@ -10554,12 +10601,12 @@ const PMENU = [
 ];
 function renderProfileMenu(){
   document.getElementById("pmenu").innerHTML = PMENU.filter(m=>!m.admin || DATA.identity?.isAdmin).map(m=>`
-    <div class="prow ${m.premium?'premium':''}" data-p="${m.k}">
+    <button type="button" class="prow ${m.premium?'premium':''}" data-p="${m.k}">
       <div class="pic rov-icon rov-icon--regular profile-menu-icon">${PICONS[m.ic]}</div>
       <div class="pt"><div class="pl">${m.l}</div><div class="ps">${m.s}</div></div>
       ${m.badge ? `<span class="pbadge">${typeof m.badge==="function"?m.badge():m.badge}</span>`
                 : `<svg class="pchev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>`}
-    </div>`).join("");
+    </button>`).join("");
 }
 const SUPPORT_OFFERS = {
   reset:{
@@ -10850,7 +10897,7 @@ function openReportDetail(i){
 }
 // Sheet-Wechsel: alle Sheets schließen, Hintergrund bleibt
 function closeAllSheetsSoft(){
-  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","cancellationsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
+  ["sheet","importsheet","gsheet","bsheet","txsheet","ngsheet","vdsheet","cancellationsheet","abosheet","immosheet","contractsheet","vehiclefinancingsheet","psheet","scoresheet","categorysheet","repsheet","repdetailsheet","talksheet","dsheet","accountaddsheet","actsheet","whatsnewsheet","announcementdetailsheet","paysheet","setsheet","deletesheet","assetordersheet","adminsheet","monthlyplansheet","etfplansheet","markettrackingsheet","savingssheet","supportsheet","accesssheet"]
     .forEach(id=>{
       const element=document.getElementById(id);
       resetSheetSwipeStyles(element);
@@ -10860,6 +10907,7 @@ function closeAllSheetsSoft(){
 }
 initSheetSwipeDismiss();
 function openOnly(id, render){
+  if(["psheet","setsheet","deletesheet"].includes(id) && !activeSettingsDialog()) SETTINGS_RETURN_FOCUS=document.activeElement;
   closeAllSheetsSoft(); if(render) render();
   sheetBg.classList.add("on");
   const el=document.getElementById(id); el.classList.add("on"); syncSheetInteractivity();
@@ -10878,10 +10926,18 @@ function setTheme(mode){
 }
 function renderSettings(){
   const theme = document.documentElement.dataset.theme==="light" ? "light" : "dark";
+  const activeControl=document.activeElement;
+  const focusSelector=activeControl?.closest("#setbody") && (
+    activeControl.dataset.act ? `[data-act="${activeControl.dataset.act}"]` :
+    activeControl.dataset.theme ? `[data-theme="${activeControl.dataset.theme}"]` :
+    activeControl.dataset.pref ? `[data-pref="${activeControl.dataset.pref}"]` :
+    activeControl.hasAttribute("data-push-master") ? "[data-push-master]" :
+    activeControl.hasAttribute("data-push-tracking") ? "[data-push-tracking]" : null
+  );
   const row=(key,label,sub)=>`<div class="set-row"><div class="st"><div class="sl">${label}</div><div class="ss">${sub}</div></div>
-    <button class="switch ${PREFS[key]?'on':''}" data-pref="${key}" aria-label="${label}"></button></div>`;
-  const info=(label,val)=>`<div class="set-row"><div class="st"><div class="sl">${label}</div></div><div class="sv">${val}</div></div>`;
-  const action=(key,label,sub,badge="")=>`<div class="set-row" data-act="${key}" style="cursor:pointer"><div class="st"><div class="sl">${label}</div><div class="ss">${sub}</div></div>${badge?`<span class="set-news-badge">${badge}</span>`:""}<div class="sv">›</div></div>`;
+    <button type="button" class="switch ${PREFS[key]?'on':''}" role="switch" aria-checked="${!!PREFS[key]}" data-pref="${key}" aria-label="${label}"></button></div>`;
+  const info=(label,val)=>`<div class="set-row set-info"><div class="st"><div class="sl">${label}</div></div><div class="sv">${escapeAccountHtml(val)}</div></div>`;
+  const action=(key,label,sub,badge="")=>`<button type="button" class="set-row set-action" data-act="${key}"><span class="st"><span class="sl">${label}</span><span class="ss">${escapeAccountHtml(sub)}</span></span>${badge?`<span class="set-news-badge">${badge}</span>`:""}<span class="sv" aria-hidden="true">›</span></button>`;
   // Profil-Sektion (27.07.): Bis dahin gab es keine Möglichkeit, den eigenen Namen zu setzen —
   // und in den Einstellungen stand bei jedem Tester Furkans Name und Adresse. Die E-Mail ist
   // bewusst nur Anzeige: sie ist der Login-Schlüssel und darf nicht ohne neue Bestätigung wechseln.
@@ -10916,12 +10972,12 @@ function renderSettings(){
   // Schlüssel gesetzt). Hauptschalter und Tracking-Erinnerung bleiben bewusst getrennt.
   const pushZeile = (typeof PUSH!=="undefined" && PUSH.available)
     ? `<div class="set-row"><div class="st"><div class="sl">Benachrichtigungen</div></div>
-         <button class="switch ${PUSH.abo?'on':''}" data-push-master aria-label="Benachrichtigungen"></button></div>`
+         <button type="button" class="switch ${PUSH.abo?'on':''}" role="switch" aria-checked="${!!PUSH.abo}" data-push-master aria-label="Benachrichtigungen"></button></div>`
     : "";
   const trackingReminderZeile = (typeof PUSH!=="undefined" && PUSH.available && PUSH.abo)
     ? `<div class="set-row"><div class="st"><div class="sl">Tägliche Tracking-Erinnerung</div>
          <div class="ss">Abends nur, wenn du an diesem Tag noch keine Ausgabe erfasst hast.</div></div>
-         <button class="switch ${PUSH.trackingReminder?'on':''}" data-push-tracking aria-label="Tägliche Tracking-Erinnerung"></button></div>`
+         <button type="button" class="switch ${PUSH.trackingReminder?'on':''}" role="switch" aria-checked="${!!PUSH.trackingReminder}" data-push-tracking aria-label="Tägliche Tracking-Erinnerung"></button></div>`
     : "";
   const prefRows = (kannVibrieren || pushZeile) ? `
     <div class="set-sec">Präferenzen</div>
@@ -10943,19 +10999,14 @@ function renderSettings(){
     ${APP_MODE==="bridge"?`<div class="set-sec">Sicherheit</div><div class="set-card">${action("pin-change","App-PIN ändern","Vier Ziffern für dieses Gerät")}</div>`:""}
     <div class="set-sec">Erscheinungsbild</div>
     <div class="seg" id="themeSeg">
-      <button class="seg-opt ${theme==='dark'?'on':''}" data-theme="dark">🌙 Dunkel</button>
-      <button class="seg-opt ${theme==='light'?'on':''}" data-theme="light">☀️ Hell</button>
+      <button type="button" class="seg-opt ${theme==='dark'?'on':''}" data-theme="dark" aria-pressed="${theme==='dark'}">🌙 Dunkel</button>
+      <button type="button" class="seg-opt ${theme==='light'?'on':''}" data-theme="light" aria-pressed="${theme==='light'}">☀️ Hell</button>
     </div>
     ${prefRows}
     <div class="set-sec">Konto</div>
     <div class="set-card">
       ${info("Währung","Euro (€)")}
       ${info("Sprache","Deutsch")}
-      ${/* Nur zur Kontrolle während des Aufbaus (27.07.): zeigt, ob der Service Worker läuft.
-           Bewusst NICHT „Benachrichtigungen" genannt — die gibt es noch nicht, und ein zweites
-           Versprechen ohne Wirkung wäre genau der Fehler, den wir gerade behoben haben.
-           Fliegt raus, sobald Push wirklich verschickt wird. */""}
-      ${info("Push-Grundlage", SW_STATUS)}
       ${info("Version","Rov.E 1.0 · Beta")}
     </div>
     ${APP_MODE==="bridge"?`<div class="set-card" style="margin-top:10px">${action("logout","Abmelden","Auf diesem Gerät sicher abmelden")}</div>`:""}
@@ -10966,12 +11017,13 @@ function renderSettings(){
       ${action("terms","AGB","Bedingungen für die Nutzung von Rov.E")}
       ${action("imprint","Impressum","Anbieter und Kontakt")}
     </div>`;
+  if(focusSelector) document.getElementById("setbody").querySelector(focusSelector)?.focus({preventScroll:true});
 }
 // "Daten"-Sektion: nur relevant, wenn ein eigenes Profil existiert (Profil-Modus) oder man
 // gerade im Demo-Modus ist und zurück will. Im reinen Mock-Modus (kein Profil) unsichtbar.
 function settingsDataRows(){
-  const act=(key,label,sub,danger)=>`<div class="set-row" data-act="${key}" style="cursor:pointer">
-    <div class="st"><div class="sl"${danger?' id="resetLbl" style="color:var(--red)"':''}>${label}</div><div class="ss">${sub}</div></div><div class="sv">›</div></div>`;
+  const act=(key,label,sub,danger)=>`<button type="button" class="set-row set-action" data-act="${key}">
+    <span class="st"><span class="sl"${danger?' id="resetLbl" style="color:var(--red)"':''}>${label}</span><span class="ss">${escapeAccountHtml(sub)}</span></span><span class="sv" aria-hidden="true">›</span></button>`;
   if(APP_MODE==="bridge") return `
     <div class="set-sec">Daten</div>
     <div class="set-card">
@@ -11548,7 +11600,7 @@ async function downloadRoveDataExport(){
       : "Der Datenexport konnte gerade nicht erstellt werden");
   }finally{ DATA_EXPORT_IN_FLIGHT=false; }
 }
-const ACCOUNT_DELETE_FLOW={codeSent:false,busy:false};
+const ACCOUNT_DELETE_FLOW={codeSent:false,busy:false,canResend:false};
 function renderAccountDeleteSheet(){
   const email=String(DATA.identity?.email||"");
   const body=document.getElementById("deletebody"); if(!body) return;
@@ -11559,18 +11611,22 @@ function renderAccountDeleteSheet(){
     </div>
     <button type="button" class="vd-btn" data-delete-export style="margin-top:0">Daten zuerst herunterladen</button>
     ${ACCOUNT_DELETE_FLOW.codeSent ? `
-      <div class="hint" style="margin-top:18px">Der Löschcode wurde an <b style="color:var(--ink)">${email}</b> gesendet. Er ist 10 Minuten gültig.</div>
+      <div class="hint" style="margin-top:18px">Der Löschcode wurde an <b style="color:var(--ink)">${escapeAccountHtml(email)}</b> gesendet. Er ist 10 Minuten gültig.</div>
+      <label class="hint" for="accountDeleteCode">6-stelliger Löschcode</label>
       <div class="field" style="margin-top:10px"><input id="accountDeleteCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-stelliger Löschcode"></div>
+      <label class="hint" for="accountDeletePhrase">Zur Bestätigung LÖSCHEN eingeben</label>
       <div class="field" style="margin-top:10px"><input id="accountDeletePhrase" type="text" autocomplete="off" autocapitalize="characters" placeholder="LÖSCHEN eingeben"></div>
       <button type="button" class="txd-del" data-delete-confirm style="border-color:rgba(255,107,107,.38);background:rgba(255,107,107,.08);color:var(--red)">Konto endgültig löschen</button>
+      ${ACCOUNT_DELETE_FLOW.canResend ? `<button type="button" class="vd-btn" data-delete-code>Neuen Code anfordern</button>` : ""}
     ` : `
       <button type="button" class="txd-del" data-delete-code style="border-color:rgba(255,107,107,.38);background:rgba(255,107,107,.08);color:var(--red)">Löschcode per E-Mail anfordern</button>
     `}
-    <div class="quick-error" id="accountDeleteHint"></div>`;
+    <div class="quick-error" id="accountDeleteHint" role="alert"></div>`;
 }
 function openAccountDelete(){
   ACCOUNT_DELETE_FLOW.codeSent=false;
   ACCOUNT_DELETE_FLOW.busy=false;
+  ACCOUNT_DELETE_FLOW.canResend=false;
   openOnly("deletesheet",renderAccountDeleteSheet);
 }
 function accountDeleteMessage(message){
@@ -11578,8 +11634,10 @@ function accountDeleteMessage(message){
   hint.textContent=message; hint.classList.add("on");
 }
 async function requestAccountDeleteCode(){
-  if(ACCOUNT_DELETE_FLOW.busy || !apiReady()) return;
+  if(ACCOUNT_DELETE_FLOW.busy) return;
+  if(!apiReady()){ accountDeleteMessage("Die Verbindung ist fehlgeschlagen. Bitte versuche es erneut."); return; }
   ACCOUNT_DELETE_FLOW.busy=true;
+  let expectedError="";
   try{
     const res=await apiFetch("/v1/account/delete-code",{
       method:"POST",credentials:"include",
@@ -11593,21 +11651,25 @@ async function requestAccountDeleteCode(){
         : data.error==="reauthentication_required"
           ? "Bitte melde dich erneut an."
           : "Der Löschcode konnte gerade nicht gesendet werden.";
-      throw new Error(message);
+      expectedError=message;
+      throw new Error("delete_code_request_failed");
     }
     ACCOUNT_DELETE_FLOW.codeSent=true;
+    ACCOUNT_DELETE_FLOW.canResend=false;
     renderAccountDeleteSheet();
     setTimeout(()=>document.getElementById("accountDeleteCode")?.focus(),80);
-  }catch(err){ accountDeleteMessage(err.message||"Der Löschcode konnte nicht gesendet werden."); }
+  }catch(err){ accountDeleteMessage(expectedError || (err instanceof TypeError ? "Die Verbindung ist fehlgeschlagen. Bitte versuche es erneut." : "Der Löschcode konnte gerade nicht gesendet werden.")); }
   finally{ ACCOUNT_DELETE_FLOW.busy=false; }
 }
 async function confirmAccountDelete(){
-  if(ACCOUNT_DELETE_FLOW.busy || !apiReady()) return;
+  if(ACCOUNT_DELETE_FLOW.busy) return;
+  if(!apiReady()){ accountDeleteMessage("Die Verbindung ist fehlgeschlagen. Bitte versuche es erneut."); return; }
   const code=String(document.getElementById("accountDeleteCode")?.value||"").replace(/\D/g,"").slice(0,6);
   const confirmation=String(document.getElementById("accountDeletePhrase")?.value||"").trim().toUpperCase();
   if(code.length!==6){ accountDeleteMessage("Gib den 6-stelligen Code aus deiner E-Mail ein."); return; }
   if(!["LÖSCHEN","LOESCHEN"].includes(confirmation)){ accountDeleteMessage("Schreib zur Bestätigung LÖSCHEN in das zweite Feld."); return; }
   ACCOUNT_DELETE_FLOW.busy=true;
+  let expectedError="";
   try{
     const res=await apiFetch("/v1/account",{
       method:"DELETE",credentials:"include",
@@ -11620,11 +11682,17 @@ async function confirmAccountDelete(){
         data.error==="delete_code_expired" ? "Der Löschcode ist abgelaufen. Fordere einen neuen an." :
         data.error==="too_many_delete_code_attempts" ? "Zu viele falsche Versuche. Fordere später einen neuen Code an." :
         "Das Konto konnte gerade nicht gelöscht werden.";
-      throw new Error(message);
+      expectedError=message;
+      if(data.error==="invalid_delete_code" || data.error==="delete_code_expired"){
+        ACCOUNT_DELETE_FLOW.canResend=true;
+        renderAccountDeleteSheet();
+        document.querySelector("#deletebody [data-delete-code]")?.focus({preventScroll:true});
+      }
+      throw new Error("account_delete_failed");
     }
     await clearRoveBrowserData(BRIDGE_USER_ID);
     location.href=location.pathname;
-  }catch(err){ accountDeleteMessage(err.message||"Das Konto konnte gerade nicht gelöscht werden."); }
+  }catch(err){ accountDeleteMessage(expectedError || (err instanceof TypeError ? "Die Verbindung ist fehlgeschlagen. Bitte versuche es erneut." : "Das Konto konnte gerade nicht gelöscht werden.")); }
   finally{ ACCOUNT_DELETE_FLOW.busy=false; }
 }
 // Hiess mal „OnMonthStart" und öffnete sich stur am 1. — Furkan bekommt am 15. Gehalt und hätte
@@ -11637,6 +11705,7 @@ function maybeOpenMonthlyPlanOnMonthStart(){
   updateMonthlyPlanEntryPoint();
 }
 function openSettings(){
+  PUSH.abo=null;
   openOnly("setsheet", renderSettings);
   // Der Status wird bewusst bei jedem Oeffnen frisch geholt. So erscheint die Push-Zeile
   // auch dann stabil, wenn beim Start Service Worker und Nutzerzugang unterschiedlich schnell laden.
@@ -11921,6 +11990,7 @@ document.getElementById("setbody").addEventListener("click",e=>{
   }
 });
 document.querySelector("[data-close-delete]").addEventListener("click",closeSheet);
+document.querySelector("[data-close-settings]").addEventListener("click",closeSheet);
 document.querySelector("[data-close-asset-order]").addEventListener("click",closeSheet);
 document.querySelector("[data-close-whats-new]").addEventListener("click",closeSheet);
 document.querySelector("[data-close-announcement-detail]").addEventListener("click",closeSheet);
@@ -14569,6 +14639,7 @@ let SW_STATUS = "nicht unterstützt";
 // in den Einstellungen gar nicht erst auf. Kein zweiter toter Schalter.
 const PUSH = { available:false, publicKey:"", erlaubt:false, abo:null, trackingReminder:false, timezone:"Europe/Berlin" };
 let PUSH_REFRESH_IN_FLIGHT = null;
+let PUSH_ACTION_IN_FLIGHT = false;
 
 function b64ToUint8(base64){
   const pad = "=".repeat((4 - base64.length % 4) % 4);
@@ -14592,18 +14663,16 @@ async function syncPushPreferences(patch={}){
   return true;
 }
 
-async function loadPushPreferences(){
-  if(!apiReady())return false;
-  const res=await apiFetch("/v1/push/preferences",{
-    method:"GET",headers:{},cache:"no-store"
+async function registerBrowserPush(abo){
+  const res=await apiFetch("/v1/push/subscribe",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({...abo.toJSON(),timezone:deviceTimezone()})
   });
   const data=await res.json().catch(()=>({}));
   if(!res.ok||!data.ok)throw new Error(data.error||`HTTP ${res.status}`);
   PUSH.trackingReminder=Boolean(data.trackingReminder);
-  PUSH.timezone=data.timezone||"Europe/Berlin";
-  const currentTimezone=deviceTimezone();
-  if(PUSH.timezone!==currentTimezone) await syncPushPreferences({timezone:currentTimezone});
-  return true;
+  PUSH.timezone=data.timezone||deviceTimezone();
+  return data;
 }
 
 async function initPush(){
@@ -14622,10 +14691,16 @@ async function initPush(){
       PUSH.available = true; PUSH.publicKey = data.publicKey;
       PUSH.erlaubt = (typeof Notification!=="undefined" && Notification.permission==="granted");
       const reg = await navigator.serviceWorker.ready;
-      PUSH.abo = await reg.pushManager.getSubscription();
-      if(PUSH.abo){
-        try{ await loadPushPreferences(); }
-        catch(e){ console.warn("Push-Einstellungen konnten nicht geladen werden:",e); }
+      const browserAbo = await reg.pushManager.getSubscription();
+      PUSH.abo=null;
+      if(browserAbo){
+        try{
+          await registerBrowserPush(browserAbo);
+          PUSH.abo=browserAbo;
+        }catch(e){
+          console.warn("Push-Anmeldung konnte nicht bestätigt werden:",e);
+          if(document.getElementById("setsheet")?.classList.contains("on")) showToast("Benachrichtigungen konnten nicht geprüft werden");
+        }
       }
       return true;
     }catch(e){
@@ -14646,47 +14721,54 @@ async function initPush(){
 }
 
 async function togglePush(){
+  if(PUSH_ACTION_IN_FLIGHT)return;
+  if(PUSH_REFRESH_IN_FLIGHT){showToast("Benachrichtigungen werden geprüft");return;}
   if(!PUSH.available){ showToast("Benachrichtigungen sind noch nicht eingerichtet"); return; }
-  const reg = await navigator.serviceWorker.ready;
-
-  if(PUSH.abo){                                        // abbestellen
-    try{
-      const endpoint = PUSH.abo.endpoint;
-      await PUSH.abo.unsubscribe();
-      await apiFetch("/v1/push/unsubscribe",{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({endpoint})
-      });
-      PUSH.abo=null; renderSettings(); showToast("Benachrichtigungen aus");
-    }catch(e){ showToast("Konnte nicht abbestellen"); }
-    return;
-  }
-
-  // iOS zeigt den Erlaubnis-Dialog NUR in der installierten App und nur nach einem echten Tippen —
-  // deshalb hängt das hier am Knopf und läuft nicht automatisch beim Start.
-  let erlaubnis = "denied";
-  try{ erlaubnis = await Notification.requestPermission(); }catch(e){}
-  if(erlaubnis!=="granted"){
-    showToast(erlaubnis==="denied" ? "In den iPhone-Einstellungen erlauben" : "Nicht erlaubt");
-    return;
-  }
+  PUSH_ACTION_IN_FLIGHT=true;
   try{
-    const abo = await reg.pushManager.subscribe({
-      userVisibleOnly:true,                            // Pflicht: keine stillen Nachrichten
-      applicationServerKey: b64ToUint8(PUSH.publicKey)
-    });
-    const subscriptionPayload=abo.toJSON();
-    const res = await apiFetch("/v1/push/subscribe",{
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({...subscriptionPayload,timezone:deviceTimezone(),trackingReminder:true})
-    });
-    const data=await res.json().catch(()=>({}));
-    if(!res.ok||!data.ok) throw new Error(data.error||`HTTP ${res.status}`);
-    PUSH.abo=abo; PUSH.erlaubt=true; PUSH.trackingReminder=Boolean(data.trackingReminder);PUSH.timezone=data.timezone||deviceTimezone();renderSettings();
-    showToast("Benachrichtigungen an — Rov.E meldet sich nur, wenn es zählt");
+    const reg = await navigator.serviceWorker.ready;
+
+    if(PUSH.abo){                                        // abbestellen
+      try{
+        const endpoint = PUSH.abo.endpoint;
+        const removed=await PUSH.abo.unsubscribe();
+        if(!removed && await reg.pushManager.getSubscription()) throw new Error("browser_unsubscribe_failed");
+        PUSH.abo=null;
+        renderSettings();
+        const res=await apiFetch("/v1/push/unsubscribe",{
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({endpoint})
+        });
+        if(!res.ok) throw new Error("server_unsubscribe_failed");
+        showToast("Benachrichtigungen aus");
+      }catch(e){ showToast(PUSH.abo?"Konnte nicht abbestellen":"Auf diesem Gerät aus; Serverabmeldung nicht bestätigt"); }
+      return;
+    }
+
+    // iOS zeigt den Erlaubnis-Dialog nur nach einem echten Tippen in der installierten App.
+    let erlaubnis = "denied";
+    try{ erlaubnis = await Notification.requestPermission(); }catch(e){}
+    if(erlaubnis!=="granted"){
+      showToast(erlaubnis==="denied" ? "In den iPhone-Einstellungen erlauben" : "Nicht erlaubt");
+      return;
+    }
+    try{
+      const abo = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey: b64ToUint8(PUSH.publicKey)
+      });
+      await registerBrowserPush(abo);
+      PUSH.abo=abo; PUSH.erlaubt=true; renderSettings();
+      showToast("Benachrichtigungen an — Rov.E meldet sich nur, wenn es zählt");
+    }catch(err){
+      PUSH.abo=null;renderSettings();
+      console.warn("Push-Abo fehlgeschlagen:",err);
+      showToast("Konnte Benachrichtigungen nicht aktivieren");
+    }
   }catch(err){
-    console.warn("Push-Abo fehlgeschlagen:",err);
-    showToast("Konnte Benachrichtigungen nicht aktivieren");
+    showToast("Benachrichtigungen konnten nicht geprüft werden");
+  }finally{
+    PUSH_ACTION_IN_FLIGHT=false;
   }
 }
 
