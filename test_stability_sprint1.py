@@ -154,6 +154,7 @@ class StabilitySprint1Tests(unittest.TestCase):
 
         with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "AUTH_SECRET", "state-refresh-test-secret"), patch.object(api, "hydrate_crypto_logos"):
             ensure_unlocked_test_session(self.db_path, 1, "state-refresh-session")
+            api.prepare_runtime_schema()
             with closing(self.connect()) as conn:
                 before_get = "\n".join(conn.iterdump())
             with api.app.test_client() as client:

@@ -27,6 +27,7 @@ class StateLinkSecurityTests(unittest.TestCase):
                 INSERT INTO user_access VALUES (2, 'approved');
             """)
             api.ensure_auth_tables(conn)
+            api.ensure_feature_announcement_tables(conn)
             conn.execute("INSERT INTO app_accounts (email,user_id,verified_at,source) VALUES ('one@example.test',1,CURRENT_TIMESTAMP,'app')")
             conn.execute("INSERT INTO app_accounts (email,user_id,verified_at,source) VALUES ('two@example.test',2,CURRENT_TIMESTAMP,'app')")
             conn.execute("UPDATE app_state_links SET status='active'")

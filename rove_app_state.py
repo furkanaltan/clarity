@@ -70,6 +70,13 @@ from rove_financial_accounts import (
 
 logger = logging.getLogger(__name__)
 
+
+def _prepare_for_read(conn: sqlite3.Connection, prepare) -> None:
+    """Prepared API reads never run schema or compatibility writes."""
+    if not getattr(conn, "state_read_only", False):
+        prepare(conn)
+
+
 APP_DIR = Path(__file__).resolve().parent
 DB_NAME = os.getenv("CLARITY_DB_NAME", "clarity.db")
 DB_PATH = Path(DB_NAME) if Path(DB_NAME).is_absolute() else APP_DIR / DB_NAME
@@ -550,7 +557,7 @@ def _observe_mentor_event(
     worsening: bool = False,
 ) -> dict:
     """Upsert one event and report whether it is new since the last display."""
-    ensure_app_mentor_event_state_table(conn)
+    _prepare_for_read(conn, ensure_app_mentor_event_state_table)
     event_id = str(event["event_id"])
     row = conn.execute(
         """SELECT fingerprint, seen_at, resolved_at
@@ -559,8 +566,11 @@ def _observe_mentor_event(
     ).fetchone()
     fingerprint = str(event.get("fingerprint") or "")
     is_new = row is None or row["seen_at"] is None
-    if row is not None and (row["resolved_at"] or (worsening and row["fingerprint"] != fingerprint)):
+    persist = not getattr(conn, "state_read_only", False)
+    needs_reset = row is not None and (row["resolved_at"] or (worsening and row["fingerprint"] != fingerprint))
+    if needs_reset:
         is_new = True
+    if persist and needs_reset:
         conn.execute(
             """UPDATE app_mentor_event_state
                   SET event_type=?, source_id=?, period_key=?, occurred_at=?, fingerprint=?,
@@ -571,7 +581,7 @@ def _observe_mentor_event(
                 event["occurred_at"], fingerprint, event.get("expires_at"), user_id, event_id,
             ),
         )
-    elif row is None:
+    elif persist and row is None:
         conn.execute(
             """INSERT INTO app_mentor_event_state
                (user_id,event_id,event_type,source_id,period_key,occurred_at,fingerprint,expires_at)
@@ -581,7 +591,7 @@ def _observe_mentor_event(
                 event["occurred_at"], fingerprint, event.get("expires_at"),
             ),
         )
-    else:
+    elif persist:
         conn.execute(
             """UPDATE app_mentor_event_state
                   SET occurred_at=?, fingerprint=?, expires_at=?, updated_at=CURRENT_TIMESTAMP
@@ -597,6 +607,8 @@ def _observe_mentor_event(
 
 
 def mark_mentor_event_seen(conn: sqlite3.Connection, user_id: int, event_id: object) -> None:
+    if getattr(conn, "state_read_only", False):
+        return
     ensure_app_mentor_event_state_table(conn)
     conn.execute(
         """UPDATE app_mentor_event_state
@@ -607,6 +619,8 @@ def mark_mentor_event_seen(conn: sqlite3.Connection, user_id: int, event_id: obj
 
 
 def _resolve_mentor_event(conn: sqlite3.Connection, user_id: int, event_id: str) -> None:
+    if getattr(conn, "state_read_only", False):
+        return
     ensure_app_mentor_event_state_table(conn)
     conn.execute(
         """UPDATE app_mentor_event_state
@@ -629,7 +643,7 @@ def build_mentor_events(
     Transfers are intentionally not included: app_cash_movements.kind='transfer' is an
     internal movement and must never become an expense or a negative coach event.
     """
-    ensure_app_mentor_event_state_table(conn)
+    _prepare_for_read(conn, ensure_app_mentor_event_state_table)
     now = now or datetime.now()
     occurred_now = now.isoformat(timespec="seconds")
     month_key = now.strftime("%Y-%m")
@@ -1262,7 +1276,7 @@ def ensure_app_asset_order_table(conn: sqlite3.Connection) -> None:
 
 def get_app_asset_order(conn: sqlite3.Connection, user_id: int) -> list[str]:
     """Liest eine gueltige Reihenfolge; ohne Praeferenz bleibt die bisherige Sortierung aktiv."""
-    ensure_app_asset_order_table(conn)
+    _prepare_for_read(conn, ensure_app_asset_order_table)
     rows = conn.execute(
         """SELECT asset_key FROM app_asset_order
              WHERE user_id = ?
@@ -1580,10 +1594,11 @@ def _oldest_open_month_close(conn: sqlite3.Connection, user_id: int, today: date
     ).fetchone()
     if enrollment is None:
         # The feature must not turn months before its first use into debt.
-        conn.execute(
-            "INSERT INTO app_month_close_enrollment (user_id, starts_month) VALUES (?, ?)",
-            (user_id, current_month),
-        )
+        if not getattr(conn, "state_read_only", False):
+            conn.execute(
+                "INSERT INTO app_month_close_enrollment (user_id, starts_month) VALUES (?, ?)",
+                (user_id, current_month),
+            )
         return None
     starts_month = str(enrollment["starts_month"])
     lower_bound = _month_close_candidate_start(today)
@@ -1631,10 +1646,10 @@ def get_monthly_checkin_actions(conn: sqlite3.Connection, user_id: int, user: di
     This is the single UI/coach/push truth. Existing income and ETF event
     idempotency remains authoritative; this function only describes work.
     """
-    ensure_app_monthly_plan_table(conn)
-    ensure_app_month_close_table(conn)
-    ensure_app_etf_position_plans_table(conn)
-    ensure_app_etf_savings_plan_table(conn)
+    _prepare_for_read(conn, ensure_app_monthly_plan_table)
+    _prepare_for_read(conn, ensure_app_month_close_table)
+    _prepare_for_read(conn, ensure_app_etf_position_plans_table)
+    _prepare_for_read(conn, ensure_app_etf_savings_plan_table)
     today = date.today()
     current_month = _month_key(today)
     actions: list[dict] = []
@@ -1757,7 +1772,7 @@ def apply_due_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict 
 
 def get_app_scheduled_savings(conn: sqlite3.Connection, user_id: int) -> dict | None:
     """Liefert eine noch nicht aktive Sparrate fuer die transparente App-Anzeige."""
-    ensure_app_scheduled_savings_table(conn)
+    _prepare_for_read(conn, ensure_app_scheduled_savings_table)
     month_key = business_month_key()
     row = conn.execute(
         """SELECT effective_month, etf_savings, cash_savings
@@ -1824,7 +1839,7 @@ def ensure_app_etf_position_plans_table(conn: sqlite3.Connection) -> None:
 
 def get_app_etf_savings_plan(conn: sqlite3.Connection, user_id: int, etf_savings: float) -> dict:
     """Liefert nur den Planstatus; die echte Buchung passiert in der App-API."""
-    ensure_app_etf_savings_plan_table(conn)
+    _prepare_for_read(conn, ensure_app_etf_savings_plan_table)
     month_key = date.today().strftime("%Y-%m")
     row = conn.execute(
         """SELECT execution_day, source_account, source_account_id, mode, active, start_month
@@ -1899,7 +1914,7 @@ def ensure_app_primary_goal_progress_table(conn: sqlite3.Connection) -> None:
 
 
 def get_app_primary_goal_progress(conn: sqlite3.Connection, user_id: int, target: float) -> float:
-    ensure_app_primary_goal_progress_table(conn)
+    _prepare_for_read(conn, ensure_app_primary_goal_progress_table)
     row = conn.execute(
         "SELECT current_amount FROM app_primary_goal_progress WHERE user_id = ?", (user_id,)
     ).fetchone()
@@ -1907,7 +1922,7 @@ def get_app_primary_goal_progress(conn: sqlite3.Connection, user_id: int, target
 
 
 def get_app_primary_goal_rate(conn: sqlite3.Connection, user_id: int) -> float | None:
-    ensure_app_primary_goal_progress_table(conn)
+    _prepare_for_read(conn, ensure_app_primary_goal_progress_table)
     row = conn.execute(
         "SELECT goal_monthly_rate FROM app_primary_goal_progress WHERE user_id = ?",
         (user_id,),
@@ -2100,7 +2115,7 @@ def normalize_legacy_contracts(conn: sqlite3.Connection, user_id: int) -> dict:
 
 
 def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
-    ensure_app_contracts_table(conn)
+    _prepare_for_read(conn, ensure_app_contracts_table)
     rows = conn.execute(
         """SELECT contract_id, name, category, amount, icon, tint, debit_day, cancelable, source, legacy_ref,
                   cancellation_status, effective_end_date, cancellation_confirmed_at
@@ -2132,7 +2147,7 @@ def get_app_contracts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
 
 def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     """Liest nur Ziele, die in der App angelegt wurden, ohne Bot-Ziele zu duplizieren."""
-    ensure_app_goals_table(conn)
+    _prepare_for_read(conn, ensure_app_goals_table)
     rows = conn.execute(
         """SELECT goal_id, name, target_amount, current_amount, goal_monthly_rate, icon, tint
              FROM app_goals WHERE user_id = ? ORDER BY datetime(created_at), goal_id""",
@@ -2155,7 +2170,7 @@ def get_app_goals(conn: sqlite3.Connection, user_id: int) -> list[dict]:
 def get_app_monthly_plan(conn: sqlite3.Connection, user_id: int, income: float,
                          fixed_costs: float, sparraten: float) -> dict:
     """Liefert Planung und explizite Bestaetigungen getrennt von echten Buchungen."""
-    ensure_app_monthly_plan_table(conn)
+    _prepare_for_read(conn, ensure_app_monthly_plan_table)
     month_key = business_month_key()
     row = conn.execute(
         """SELECT income_status, fixed_costs_status, savings_status
@@ -2652,6 +2667,20 @@ def build_buffer_data_from_monthly_snapshot(snapshot: dict | None) -> dict | Non
     return _buffer_data_from_values(cash, snapshot.get("fixed_costs"), None)
 
 
+def prepare_state_read_schema(conn: sqlite3.Connection) -> None:
+    """Run the existing state schema/backfills before accepting prepared reads."""
+    for prepare in (
+        ensure_app_properties_table, ensure_debt_status_column,
+        ensure_app_mentor_event_state_table, ensure_app_asset_order_table,
+        ensure_app_monthly_plan_table, ensure_app_month_close_table,
+        ensure_app_etf_savings_plan_table, ensure_app_etf_position_plans_table,
+        ensure_app_scheduled_savings_table, ensure_app_goals_table,
+        ensure_app_primary_goal_progress_table, ensure_app_contracts_table,
+        ensure_market_tracking_schema, ensure_investment_contribution_schema,
+    ):
+        prepare(conn)
+
+
 def build_live_app_data(
     conn: sqlite3.Connection, user_id: int, *, activate_due_savings: bool = True
 ) -> dict:
@@ -2662,9 +2691,9 @@ def build_live_app_data(
     überschreiben. Der Bot ist derzeit nur Quelle für Cash, Investments, Fixkosten, Ziele und
     Monatsbuchungen.
     """
-    ensure_app_properties_table(conn)
-    ensure_debt_status_column(conn)
-    ensure_app_mentor_event_state_table(conn)
+    _prepare_for_read(conn, ensure_app_properties_table)
+    _prepare_for_read(conn, ensure_debt_status_column)
+    _prepare_for_read(conn, ensure_app_mentor_event_state_table)
     # Ein geplanter Wechsel wird beim ersten Zugriff im neuen Monat aktiv. Er ist
     # nur eine neue Vorgabe fuer den Monatsplan, keine automatische Geldbewegung.
     if activate_due_savings:
@@ -3043,7 +3072,7 @@ def _crypto_holdings_value(conn: sqlite3.Connection, user_id: int) -> float:
     """Current crypto truth: tracked holdings plus untouched legacy remainder."""
     legacy = _legacy_crypto_value(conn, user_id)
     try:
-        ensure_market_tracking_schema(conn)
+        _prepare_for_read(conn, ensure_market_tracking_schema)
         row = conn.execute(
             """SELECT COALESCE(SUM(CASE
                        WHEN valuation_enabled = 1 AND market_value IS NOT NULL THEN market_value
@@ -3072,7 +3101,7 @@ def _crypto_positions(conn: sqlite3.Connection, user_id: int) -> list:
     verkauft) fallen raus. Nach Wert absteigend sortiert."""
     positions: list[dict] = []
     try:
-        ensure_market_tracking_schema(conn)
+        _prepare_for_read(conn, ensure_market_tracking_schema)
         holding_rows = conn.execute(
             """SELECT id, instrument_label, price_symbol, quantity, total_invested,
                       market_value, last_price, market_value_updated_at,
@@ -3196,9 +3225,9 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
     v = automatischer Marktwert, sobald eine Position mit Stueckzahl konfiguriert ist;
     sonst bleibt total_invested der manuell gepflegte Stand. Fehlende Tabelle → []."""
     try:
-        ensure_market_tracking_schema(conn)
-        ensure_app_etf_position_plans_table(conn)
-        ensure_investment_contribution_schema(conn)
+        _prepare_for_read(conn, ensure_market_tracking_schema)
+        _prepare_for_read(conn, ensure_app_etf_position_plans_table)
+        _prepare_for_read(conn, ensure_investment_contribution_schema)
         rows = conn.execute(
             """SELECT ph.id, ph.instrument_label, ph.instrument_type,
                       ph.total_invested, ph.market_value, ph.start_price, ph.last_price,
@@ -3242,7 +3271,8 @@ def _etf_positions(conn: sqlite3.Connection, user_id: int) -> list:
         # Investment-Schublade enthaelt auch Aktien; fuer sie darf der strikte
         # ETF-Helfer nicht aufgerufen werden, sonst bricht /v1/state komplett ab.
         contribution = (
-            holding_contribution_summary(conn, user_id, int(r["id"]))
+            holding_contribution_summary(conn, user_id, int(r["id"]),
+                                         prepare_schema=not getattr(conn, "state_read_only", False))
             if instrument_type == "etf"
             else {"contributed": 0.0, "pending": 0.0}
         )

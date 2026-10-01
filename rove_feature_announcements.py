@@ -238,9 +238,12 @@ def _payload(row: sqlite3.Row, *, usage_completed: bool) -> dict[str, Any]:
     }
 
 
-def get_feature_announcements_for_user(conn: sqlite3.Connection, user_id: int) -> dict[str, Any]:
+def get_feature_announcements_for_user(
+    conn: sqlite3.Connection, user_id: int, *, prepare_schema: bool = True
+) -> dict[str, Any]:
     """Returns user-scoped prepared state without creating any state rows."""
-    ensure_feature_announcement_tables(conn)
+    if prepare_schema:
+        ensure_feature_announcement_tables(conn)
     prominent: list[dict[str, Any]] = []
     archive: list[dict[str, Any]] = []
     for row in _eligible_rows(conn, user_id):

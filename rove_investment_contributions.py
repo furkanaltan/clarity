@@ -47,10 +47,11 @@ def require_user_holding(
 
 
 def holding_contribution_summary(
-    conn: sqlite3.Connection, user_id: int, holding_id: int
+    conn: sqlite3.Connection, user_id: int, holding_id: int, *, prepare_schema: bool = True
 ) -> dict[str, float]:
     """Return historical contributions and the still-unpriced live remainder."""
-    ensure_investment_contribution_schema(conn)
+    if prepare_schema:
+        ensure_investment_contribution_schema(conn)
     require_user_holding(conn, user_id, holding_id)
     row = conn.execute(
         """SELECT

@@ -125,6 +125,7 @@ class BufferApiTests(unittest.TestCase):
                          "VALUES (1,'saved-goal','Notgroschen',2000,300)")
             build_live_app_data(conn, 1)
             conn.commit()
+        api.prepare_runtime_schema()
 
     def connect(self):
         conn = sqlite3.connect(self.path)

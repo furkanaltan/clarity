@@ -142,6 +142,8 @@ def normalize_debt_status(value: object) -> str:
 
 def ensure_debt_status_column(conn: sqlite3.Connection) -> None:
     """Persist the user's explicit consumer-debt verification state on users."""
+    if getattr(conn, "state_read_only", False):
+        return
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(users)")}
     if "debt_status" not in columns:
         conn.execute(

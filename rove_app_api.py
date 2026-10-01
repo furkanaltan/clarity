@@ -81,6 +81,7 @@ from rove_app_state import (
     build_mentor_candidate,
     build_live_app_data,
     build_buffer_data,
+    prepare_state_read_schema,
     get_app_property,
     get_app_cash_accounts,
     ensure_buffer_target_column,
@@ -376,12 +377,19 @@ def invalidate_behavior_snapshot_safely(
 
 
 @contextmanager
-def db():
+def db(*, read_only: bool = False):
     # Wartezeit statt Sofortabbruch: seit begin_write() die Schreibsperre vorzieht,
     # treffen parallele Buchungen aufeinander. Der zweite Request soll kurz warten
     # und dann den bereits gesenkten Stand lesen, nicht mit "database is locked"
     # abbrechen. 15 s ist grosszuegig — ein Endpunkt haelt die Sperre wenige ms.
-    conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    if read_only:
+        conn = sqlite3.connect(
+            DB_PATH.resolve().as_uri() + "?mode=ro", uri=True, timeout=15.0,
+            factory=StateReadConnection,
+        )
+        conn.execute("PRAGMA query_only = ON")
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     # sqlite3.Connection.__exit__ commits or rolls back but does not close the
@@ -389,6 +397,12 @@ def db():
     with closing(conn):
         with conn:
             yield conn
+
+
+class StateReadConnection(sqlite3.Connection):
+    """Explicit prepared-state lifecycle; SQLite itself rejects unexpected writes."""
+
+    state_read_only = True
 
 
 def begin_write(conn: sqlite3.Connection) -> None:
@@ -2828,7 +2842,7 @@ def enforce_session_pin():
     if request.path in PIN_GATE_OPEN_PATHS:
         return None
     read_only_state = request.method == "GET" and request.path in {"/v1/state", "/v1/transactions"}
-    with db() as conn:
+    with (db(read_only=True) if read_only_state else db()) as conn:
         if not read_only_state:
             ensure_session_pin_table(conn)
         session = session_user_from_cookie(conn, touch=not read_only_state)
@@ -3930,8 +3944,8 @@ def pair_app():
 def current_transactions():
     """GET reads transactions; POST also activates a due savings rate."""
     token = token_from_request()
-    with db() as conn:
-        refresh = request.method == "POST"
+    refresh = request.method == "POST"
+    with (db() if refresh else db(read_only=True)) as conn:
         if refresh:
             begin_write(conn)
         user_id = user_from_token(conn, token)
@@ -3944,7 +3958,6 @@ def current_transactions():
             conn.execute("SAVEPOINT transactions_read")
         tx = _build_tx(conn, user_id)
         if not refresh:
-            conn.execute("ROLLBACK TO transactions_read")
             conn.execute("RELEASE transactions_read")
 
     return jsonify({"ok": True, "tx": tx})
@@ -3954,8 +3967,8 @@ def current_transactions():
 def current_app_state():
     """GET reads state; POST performs the existing due-finance refresh."""
     token = token_from_request()
-    with db() as conn:
-        refresh = request.method == "POST"
+    refresh = request.method == "POST"
+    with (db() if refresh else db(read_only=True)) as conn:
         if refresh:
             ensure_market_tracking_schema(conn)
             conn.commit()
@@ -3971,10 +3984,6 @@ def current_app_state():
             record_due_etf_plan(conn, user_id)
         else:
             conn.execute("SAVEPOINT state_read")
-            ensure_market_tracking_schema(conn)
-            ensure_app_etf_savings_plan_table(conn)
-            ensure_app_etf_position_plans_table(conn)
-            ensure_investment_contribution_schema(conn)
         state = build_live_app_data(conn, user_id, activate_due_savings=refresh)
         # The identity is derived from the authenticated HttpOnly session above;
         # expose it only as an additive consistency marker for the frontend.
@@ -3989,13 +3998,12 @@ def current_app_state():
                 user_id,
                 finance_action_due=bool(state.get("monthlyCheckinDueCount", 0)),
             )
-        feature_announcements = get_feature_announcements_for_user(conn, user_id)
+        feature_announcements = get_feature_announcements_for_user(conn, user_id, prepare_schema=refresh)
         feature_announcements["coach"] = coach_announcement
         state["feature_announcements"] = feature_announcements
         if refresh:
             conn.commit()
         else:
-            conn.execute("ROLLBACK TO state_read")
             conn.execute("RELEASE state_read")
 
     # Metadata is presentation-only. Fetch it after the state write lock is released.
@@ -9473,11 +9481,18 @@ def delete_cash_movement(movement_id: int):
     })
 
 
-if __name__ == "__main__":
-    # Schema preparation runs once before the server accepts requests.
+def prepare_runtime_schema() -> None:
+    """Run the existing startup preparation before accepting API requests."""
     with db() as conn:
         ensure_admin_tables(conn)
         ensure_buffer_target_column(conn)
         ensure_cancellation_schema(conn)
+        ensure_session_pin_table(conn)
+        prepare_state_read_schema(conn)
+        ensure_feature_announcement_tables(conn)
+
+
+if __name__ == "__main__":
+    prepare_runtime_schema()
     port = int(os.getenv("ROVE_APP_API_PORT", "5057"))
     app.run(host="127.0.0.1", port=port)
