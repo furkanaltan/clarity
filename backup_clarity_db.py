@@ -11,11 +11,16 @@ import argparse
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
 
 APP_DIR = Path(__file__).resolve().parent
+
+
+class BackupValidationError(RuntimeError):
+    """Validation failed; message is a safe code, not database contents."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,11 +49,32 @@ def resolve_db_path(value: str) -> Path:
     return path if path.is_absolute() else APP_DIR / path
 
 
-def verify_database(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
-        row = conn.execute("PRAGMA integrity_check").fetchone()
-    if not row or row[0] != "ok":
-        raise RuntimeError(f"SQLite-Integritaetscheck fehlgeschlagen: {row[0] if row else 'keine Antwort'}")
+def verify_database(path: Path, *, immutable: bool = False) -> None:
+    uri = path.resolve().as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
+    with closing(sqlite3.connect(uri, uri=True)) as conn:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        if rows != [("ok",)]:
+            raise BackupValidationError("integrity_check_failed")
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise BackupValidationError("foreign_key_check_failed")
+
+
+def create_verified_backup(source_path: Path, backup_path: Path) -> None:
+    """Create a new snapshot without overwriting a backup or opening the source RW."""
+    if not source_path.is_file():
+        raise FileNotFoundError("Backup-Quelldatenbank fehlt")
+    fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+    try:
+        with closing(sqlite3.connect(source_path.resolve().as_uri() + "?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(backup_path)) as target:
+                source.backup(target)
+                # Seal only the destination as a standalone file, even for WAL sources.
+                target.execute("PRAGMA journal_mode=DELETE")
+        verify_database(backup_path)
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
 
 
 def cleanup_old_backups(backup_dir: Path, keep_days: int) -> int:
@@ -77,14 +103,7 @@ def main() -> int:
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backup_dir / f"clarity_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
 
-    try:
-        # SQLite erstellt dabei einen konsistenten Snapshot, auch bei laufenden Writes.
-        with sqlite3.connect(db_path) as source, sqlite3.connect(backup_path) as target:
-            source.backup(target)
-        verify_database(backup_path)
-    except Exception:
-        backup_path.unlink(missing_ok=True)
-        raise
+    create_verified_backup(db_path, backup_path)
 
     removed = cleanup_old_backups(backup_dir, args.keep_days)
     print(f"Backup OK: {backup_path}")

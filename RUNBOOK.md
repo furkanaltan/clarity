@@ -148,13 +148,24 @@ Abdeckung. Die obige Verifikation hat keine weiteren Dateien oder Services geaen
 
 ## Restore-Grundablauf
 
-1. Incident dokumentieren und passenden Backupzeitpunkt bestimmen.
+1. Incident dokumentieren und Backup-Generation auswaehlen. Vor jeder Kopie oder
+   Wiederherstellung `rove_recovery_set.py generation-gate` mit einer unabhaengig
+   verwahrten aktuellen Policy und dem neuesten externen Loeschledger ausfuehren.
+   Nur Exit 0 plus `SAFE_FOR_ACCOUNT_RESTORE` darf fortfahren. `UNSAFE_FOR_ACCOUNT_RESTORE`,
+   `UNKNOWN`, fehlende Policy oder Fehler bedeuten STOP, ohne Force-Option.
 2. Alle DB-schreibenden Dienste und Timer kontrolliert stoppen.
 3. Aktuelle defekte DB separat sichern, nicht ueberschreiben oder loeschen.
-4. Backup mit korrekten Rechten an den produktiven DB-Pfad kopieren.
-5. `reapply_account_delete_tombstones.py` mit dem externen Loeschledger ausfuehren.
-6. `PRAGMA integrity_check` und `pragma_foreign_key_check` ausfuehren.
-7. Finanzielle Drift-Gates ausfuehren.
+4. Ausschliesslich die freigegebene versiegelte Generation in eine separate
+   private Staging-DB kopieren, niemals direkt an den produktiven DB-Pfad.
+5. `reapply_account_delete_tombstones.py --db <staging.db> --policy <trusted-policy.json>
+   --recovery-set <approved-set>` ausfuehren. Der Replay-Einstieg erzwingt denselben
+   Gate erneut und bindet die Staging-Datei an den Generation-Hash. Fuer eine exakt
+   freigegebene Baseline ersetzt `--baseline <approved-baseline.db>` die Set-Auswahl.
+   Die alte Kombination nur aus `--db` und `--ledger` ist gesperrt.
+6. Integritaet, Foreign Keys, Datei-Scrub und finanzielle Drift-Gates am isolierten
+   Staging-Stand pruefen. Ein erfolgreicher Generation-Gate ersetzt diese Gates nicht.
+7. Erst den vollstaendig geprueften und scrubbed Staging-Stand mit korrekten Rechten
+   an den produktiven DB-Pfad uebernehmen; aktuelle Sidecars kontrolliert behandeln.
 8. Dienste schrittweise starten und Healthcheck pruefen.
 9. App-, Bot- und Worker-Smoke-Tests durchfuehren.
 
@@ -164,6 +175,10 @@ user-scoped entfernt; das ist unabhaengig vom spaeteren Datei-Cleanup.
 
 Ein Restore wird nicht improvisiert und niemals auf Basis einer lokalen
 Entwicklungsdatenbank durchgefuehrt.
+Die leere Production-Ledgerdatei beweist keine historische Abdeckung. Ohne belegte
+Baseline und fortlaufende Ledger-Abdeckung bleiben historische Kopien gesperrt;
+Details und der Manifestvertrag stehen in `docs/RECOVERY_SET.md`. Dieser Ablauf ist
+kein Auftrag zur Restore-Ausfuehrung oder zum Production-Deploy.
 
 ## Rollback
 

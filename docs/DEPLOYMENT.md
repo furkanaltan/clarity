@@ -168,8 +168,16 @@ auszuführender Produktionsbefehl:
 4. System-Python 3.12 und `/root/rove-app-api-venv` bereitstellen.
 5. Requirements pro Runtime installieren; native Reportpakete und Fonts separat bereitstellen.
 6. `deploy/env.example` in getrennte, nicht versionierte Environment-Dateien überführen.
-7. Validiertes SQLite-Backup wiederherstellen; niemals die lokale Entwicklungs-DB verwenden.
-8. Den externen Löschledger mit `reapply_account_delete_tombstones.py` auf die wiederhergestellte DB anwenden.
+7. Vor jeder Restore-Kopie die Generation mit `rove_recovery_set.py generation-gate`
+   gegen die unabhängig verwahrte aktuelle Policy und den neuesten externen Ledger
+   prüfen. Nur `SAFE_FOR_ACCOUNT_RESTORE` und Exit 0 akzeptieren; sonst STOP.
+   Die freigegebene DB zunächst separat und privat stagen, niemals direkt produktiv.
+8. `reapply_account_delete_tombstones.py --db <staging.db> --policy <trusted-policy.json>
+   --recovery-set <approved-set>` anwenden. Der Einstieg prüft Gate und Generation-Hash
+   zwingend erneut. Eine explizit freigegebene Baseline nutzt stattdessen `--baseline`.
+   Keine Umgehung durch den bisherigen ungeprüften `--db --ledger`-Aufruf.
+   Erst nach Ledger-Replay, Datei-Scrub und den bestehenden isolierten Integritäts-/
+   Finanz-Gates die geprüfte Staging-DB übernehmen; keine Entwicklungs-DB verwenden.
 9. Produktionsschema und bereits angewandte Migrationen gegen `docs/MIGRATIONS.md` inventarisieren.
 10. Nur fehlende additive Migrationen nach eigenem Gate ausführen.
 11. Sanitizierte systemd-Templates gegen den Zielhost prüfen und installieren.
