@@ -1,0 +1,146 @@
+# Rov.E Architecture
+
+Stand: 31.08.2026.
+
+## Systemfluss
+
+```text
+Browser / installierte PWA
+        |
+        | HTTPS
+        v
+Nginx
+  |-- /app/     -> statische Dateien unter /var/www/getrove/app
+  `-- /app-api/ -> Flask API
+                         |
+                         v
+                    SQLite DB
+                         ^
+                         |
+        Telegram-Bot und Systemd-Worker
+```
+
+## Browser und PWA
+
+Die App ist eine statische, mobile Web-App. CSS und JavaScript liegen
+ueberwiegend in `frontend/index.html`. Das Manifest und die Icons liegen im
+gleichen Verzeichnis. `frontend/sw.js` verarbeitet Push-Nachrichten, besitzt
+aber bewusst keinen Fetch-Handler und kann deshalb keine alte App-Version aus
+einem Offline-Cache ausliefern.
+
+## Nginx und API
+
+Nginx liefert `/app/` statisch aus und leitet `/app-api/` an die Flask API
+weiter. Die vollstaendige produktive Nginx-Konfiguration ist noch nicht als
+Infrastructure-as-Code im Repository abgebildet.
+
+`rove_app_api.py` stellt die App-Endpunkte bereit. Authentifizierung verwendet
+serverseitige Accounts, Cookie-Sessions und einen sessiongebundenen PIN-Guard.
+Der Browser entscheidet nicht allein ueber den Zugriff auf Finanzdaten.
+
+## Datenbank
+
+### Wealth Chart V2
+
+`rove_app_state.build_live_app_data()` supplies `chartV2` alongside the legacy
+series contract. Its points carry exact euro values, IDs, timestamps, source
+and coverage scope. Intraday values are reconstructed from the current total
+and remaining committed expense, income/fixed and market-valuation events;
+they are not recorded observations or browser snapshots. Deleting an event
+reconstructs subsequent points without that effect. Transfers and expense
+cash mirrors are excluded. Unlogged balance corrections are reflected in the
+current anchor, not invented as timed events. The day follows the server's
+existing calendar/time convention.
+
+Long ranges reuse the existing reconstruction and immutable monthly snapshots
+without kEUR rounding. Property-excluded reconstructions, full current totals
+and snapshots with unproven comparable coverage are separate line segments.
+The displayed delta sums only comparable adjacent intervals; coverage gaps
+contribute no claimed performance. This does not backfill property equity.
+`coverage_started_at` bounds today's comparable reconstruction when applicable.
+
+Frontend `normalizeChartSeriesV2` and `buildRangeSeriesV2` are pure. Local
+netHistory remains a legacy/profile comparison path and cannot override a
+received V2 contract. Refresh callers share a queued read, so a mutation during
+a request waits for a subsequent read. The existing renderer consumes the
+result, using a deterministic padded domain with a 5% minimum span (at least
+EUR 1,000) and separate paths at coverage gaps. No new persistence table.
+
+API, Bot und Worker verwenden dieselbe SQLite-Datenbank unter
+`/root/clarity/clarity.db`. WAL ist produktiv aktiv. Tabellen und additive
+Schemaerweiterungen werden derzeit durch mehrere Runtime-Module und
+Migrationsskripte verwaltet; ein einzelnes kanonisches Migrationsledger fehlt
+noch.
+
+## Contract cancellation workflow
+
+Contract cancellation V1/V2 has one domain owner:
+`rove_contract_cancellation.py`. The existing API session/PIN boundary protects
+every case operation. A user/contract reference, one active-case index and a
+transactional status history keep preparation distinct from contract and
+financial state. V2 commits SENDING plus its message receipt before invoking
+`rove_contract_cancellation_mail.py`, a single-attempt adapter for the existing
+Brevo transport. No DB write transaction spans network I/O. Unknown outcomes
+and process crashes keep dispatch locked; no automatic resend worker exists.
+Transport acceptance, authenticated delivery evidence and user-confirmed
+provider response have distinct statuses. Manual responses are untrusted text,
+not authenticated inbound mail, and never parsed by AI. Only explicit response
+confirmation writes nullable cancellation metadata on the existing contract;
+it does not delete it or alter financial values/the monthly plan.
+
+Messages remain in the owned case lifecycle (until explicit contract/account
+deletion), with bounded response size/count and audited, rate-limited attempts.
+There are no new public files or PDFs. User export, account deletion and restore
+tombstones use the existing lifecycle. Local UI status feedback is used; there
+are no unsolicited background notifications. See `docs/MIGRATIONS.md` for the
+controlled V1 migration and operational release prerequisites.
+
+V3 extends the same domain with 14/28-day internal reminders via the existing
+daily maintenance worker. These are product reminders, not legal deadlines.
+Follow-ups are explicitly prepared, immutable text; no resend/follow-up sender
+exists. Private case-file JSON and on-demand PDFs use the existing authenticated
+API/PIN boundary. `rove_contract_cancellation_pdf.py` reuses reportlab/fonts and
+only renders in memory: no public artifacts, links, files or new retention store.
+The mail gate defaults to OFF and, when enabled, to an exact user/contract/recipient
+internal test allowlist. Public sending needs separate operator approval. See
+`docs/VKS_OPERATIONS.md`; external sender verification/E2E remain deployment gates.
+
+## Bot und Worker
+
+`bot.py` ist der getrennte Telegram-Entry-Point. Die Produktion befindet sich
+aktuell in einer 7-taegigen Stop-Beobachtung; der Code bleibt fuer Rollback
+erhalten. App-Reports, Monats- und Tracking-Erinnerungen, Marktwerte und
+Datenbankbackups werden durch getrennte systemd-Timer verarbeitet und benoetigen
+den Bot-Prozess nicht.
+
+## Reports
+
+Reportdaten entstehen aus der kanonischen Finanzwahrheit. Der aktuelle
+Hauptpfad verwendet Story-, HTML- und Web-Renderer; ein ReportLab-Renderer
+bleibt als Fallback vorhanden. Templates und produktive Renderer liegen noch
+im Root beziehungsweise in `report_templates/`, um Importpfade stabil zu
+halten.
+
+## Externe Provider
+
+- OpenAI: serverseitige AI-Antworten und optionale Reporttexte
+- CoinMarketCap und weitere Marktdatenquellen: serverseitige Quotes und Metadaten
+- Telegram: Bot-Kommunikation
+- Web Push: Push-Nachrichten an registrierte Browser
+
+### DETERMINISTIC FIRST
+
+Wenn eine Antwort aus kanonischen Rov.E-Daten eindeutig bestimmbar ist, wird sie
+ohne LLM erzeugt. AI ist nur für Interpretation, Erklärung, Synthese oder offene
+Analyse vorgesehen; Prioritäten und Fakten dürfen nicht aus Convenience-Gründen
+an einen externen Provider delegiert werden.
+
+API-Keys und Provider-Secrets werden ausschliesslich serverseitig aus
+Environment-Dateien gelesen und niemals an das Frontend ausgeliefert.
+
+## Bekannte technische Grenzen
+
+- Frontend und Backend werden derzeit ueber unterschiedliche Deploy-Wege verteilt.
+- API-Venv und System-Python besitzen unterschiedliche Dependency-Saetze.
+- Nicht alle Systemd- und Nginx-Dateien sind bereits versioniert.
+- Mehrere grosse Root-Module erhoehen die Seiteneffektflaeche von Aenderungen.

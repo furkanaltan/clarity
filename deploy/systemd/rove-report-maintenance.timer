@@ -1,0 +1,11 @@
+[Unit]
+Description=Maintain Rov.E report archives daily
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 Europe/Berlin
+Persistent=true
+AccuracySec=2min
+Unit=rove-report-maintenance.service
+
+[Install]
+WantedBy=timers.target
