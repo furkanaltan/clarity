@@ -5,17 +5,19 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import fcntl
 import re
 import secrets
 import shutil
 import sqlite3
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
 
 class TombstoneLedgerError(RuntimeError):
-    """The deletion ledger cannot be trusted for a restore operation."""
+    """The deletion ledger cannot be trusted for deletion or restore."""
 
 
 PREVIEW_OWNER_RE = re.compile(r"<!-- rove-preview-owner:(\d+) -->")
@@ -114,15 +116,80 @@ def tombstone_path(app_dir: Path | None = None) -> Path:
     return Path(os.getenv("ROVE_ACCOUNT_DELETE_TOMBSTONES", str(default_dir / "account_delete_tombstones.jsonl")))
 
 
+def _validate_tombstone_ledger(raw: bytes) -> None:
+    # An existing empty file is structurally valid, not proof of complete history.
+    if raw and not raw.endswith(b"\n"):
+        raise TombstoneLedgerError("ledger_incomplete_record")
+
+    def unique_fields(pairs):
+        row = {}
+        for key, value in pairs:
+            if key in row:
+                raise ValueError("duplicate_field")
+            row[key] = value
+        return row
+
+    now = datetime.now(timezone.utc)
+    for line_number, line in enumerate(raw.split(b"\n")[:-1], start=1):
+        try:
+            row = json.loads(line.decode("utf-8"), object_pairs_hook=unique_fields)
+            if not isinstance(row, dict) or set(row) != {"user_id", "deleted_at"}:
+                raise ValueError("invalid_fields")
+            owner = row["user_id"]
+            timestamp = datetime.fromisoformat(row["deleted_at"])
+            if type(owner) is not int or not 0 < owner <= 9223372036854775807:
+                raise ValueError("invalid_user_id")
+            if timestamp.utcoffset() != timedelta(0) or timestamp > now:
+                raise ValueError("invalid_timestamp")
+        except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+            raise TombstoneLedgerError(f"ledger_invalid_line:{line_number}") from exc
+
+
+def _check_tombstone_file(fd: int, target: Path) -> os.stat_result:
+    opened = os.fstat(fd)
+    named = target.lstat()
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or opened.st_nlink != 1
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise TombstoneLedgerError("ledger_file_changed_or_invalid")
+    return opened
+
+
 def record_delete_tombstone(user_id: int, path: Path | None = None) -> None:
-    """Durably record deletion intent before the mutable account rows are removed."""
+    """Validate and durably append intent before the caller deletes account rows.
+
+    Require an existing ledger: silently creating a missing one could hide lost
+    history. All appenders must hold this inode's lock; never replace the ledger.
+    """
+    if type(user_id) is not int or not 0 < user_id <= 9223372036854775807:
+        raise TombstoneLedgerError("ledger_invalid_user_id")
     target = path or tombstone_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"user_id": int(user_id), "deleted_at": datetime.now(timezone.utc).isoformat()}) + "\n"
-    fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    line = json.dumps({"user_id": user_id, "deleted_at": datetime.now(timezone.utc).isoformat()}) + "\n"
+    payload = line.encode("utf-8")
+    fd = os.open(target, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        os.write(fd, line.encode("utf-8"))
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        original = _check_tombstone_file(fd, target)
+        chunks = []
+        while chunk := os.read(fd, 65536):
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if len(raw) != original.st_size:
+            raise TombstoneLedgerError("ledger_changed_during_read")
+        _validate_tombstone_ledger(raw)
+
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if type(written) is not int or not 0 < written <= len(payload) - offset:
+                raise TombstoneLedgerError("ledger_incomplete_write")
+            offset += written
         os.fsync(fd)
+        if _check_tombstone_file(fd, target).st_size != len(raw) + len(payload):
+            raise TombstoneLedgerError("ledger_changed_during_append")
     finally:
         os.close(fd)
 

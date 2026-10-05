@@ -2842,13 +2842,16 @@ def enforce_session_pin():
     if request.path in PIN_GATE_OPEN_PATHS:
         return None
     read_only_state = request.method == "GET" and request.path in {"/v1/state", "/v1/transactions"}
-    with (db(read_only=True) if read_only_state else db()) as conn:
-        if not read_only_state:
+    # A failed deletion must not commit session activity before the ledger gate.
+    read_only_delete = request.method == "DELETE" and request.path == "/v1/account"
+    read_only_gate = read_only_state or read_only_delete
+    with (db(read_only=True) if read_only_gate else db()) as conn:
+        if not read_only_gate:
             ensure_session_pin_table(conn)
-        session = session_user_from_cookie(conn, touch=not read_only_state)
+        session = session_user_from_cookie(conn, touch=not read_only_gate)
         if not session:
             return None
-        if read_only_state and not table_exists(conn, "app_session_pins"):
+        if read_only_gate and not table_exists(conn, "app_session_pins"):
             return pin_locked_response("setup_required")
         user_id, session_id = session
         if request.path == "/v1/onboarding":
@@ -2857,7 +2860,7 @@ def enforce_session_pin():
             ).fetchone()
             if user and int(user["onboarding_step"] or 0) < 10 and not pin_row(conn, session_id):
                 return None
-        status = pin_state(conn, session_id, touch=not read_only_state, persist_idle_lock=not read_only_state)
+        status = pin_state(conn, session_id, touch=not read_only_gate, persist_idle_lock=not read_only_gate)
         if status != "unlocked":
             return pin_locked_response(status)
     return None
@@ -9018,7 +9021,7 @@ def delete_account():
         # A restored database is therefore fail-closed and can be scrubbed again.
         try:
             account_delete_cleanup.record_delete_tombstone(token_user_id)
-        except OSError:
+        except (OSError, account_delete_cleanup.TombstoneLedgerError):
             conn.rollback()
             return jsonify({"ok": False, "error": "delete_protection_unavailable"}), 503
 

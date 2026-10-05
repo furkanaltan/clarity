@@ -15,6 +15,7 @@ class PrivacyRetentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ledger = root / "tombstones.jsonl"
+            ledger.touch(mode=0o600)
             cleanup.record_delete_tombstone(1, ledger)
             self.assertEqual(cleanup.read_delete_tombstones(ledger), {1})
             db = root / "restore.db"
@@ -43,6 +44,7 @@ class PrivacyRetentionTests(unittest.TestCase):
     def test_tombstone_write_is_append_only_and_private(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ledger.jsonl"
+            path.touch(mode=0o600)
             cleanup.record_delete_tombstone(42, path)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             record = json.loads(path.read_text(encoding="utf-8"))
