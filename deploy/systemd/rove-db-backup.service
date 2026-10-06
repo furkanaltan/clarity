@@ -1,0 +1,8 @@
+[Unit]
+Description=Rov.E daily database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/clarity
+ExecStart=/usr/bin/python3 /root/clarity/backup_clarity_db.py --db /root/clarity/clarity.db --backup-dir /root/clarity/backups/automatic --keep-days 30
+UMask=0077

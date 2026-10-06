@@ -1,0 +1,3 @@
+# Gunicorn 26.2.2 official release archive; exact source bytes verified locally.
+# The reachable package index does not yet expose this patch release.
+gunicorn @ https://codeload.github.com/benoitc/gunicorn/tar.gz/refs/tags/26.2.2#sha256=fab2c19817acf7ad61d405584feef928d4231a17374ae8ffa92b82ee43deed7c

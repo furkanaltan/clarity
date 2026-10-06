@@ -1,0 +1,15 @@
+[Unit]
+Description=Clarity Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.rove-leeway.env
+ExecStart=/usr/bin/python3 /root/clarity/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

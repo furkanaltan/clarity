@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rov.E Beta — Cockpit</title>
+<link href="./vendor/fonts/fonts.css" rel="stylesheet">
+<script src="./vendor/chartjs-4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #0f0f10; --bg2: #161618; --bg3: #1e1e21; --bg4: #26262a;
+    --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
+    --text: #f0f0f0; --text2: #a0a0a8; --text3: #666670;
+    --accent: #6366f1; --accent-bg: rgba(99,102,241,0.12); --accent-border: rgba(99,102,241,0.3);
+    --green: #22c55e; --green-bg: rgba(34,197,94,0.1);
+    --amber: #f59e0b; --amber-bg: rgba(245,158,11,0.1);
+    --red: #ef4444; --red-bg: rgba(239,68,68,0.1);
+    --radius: 10px; --radius-lg: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+  .topbar-left h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
+  .topbar-left p { font-size: 12px; color: var(--text3); margin-top: 3px; }
+  .topbar-right { display: flex; gap: 10px; align-items: center; }
+  .dot-live { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; animation: pulse 2s infinite; }
+  .dot-err { background: var(--red); animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+  .refresh-btn { font-family: inherit; font-size: 12px; padding: 6px 14px; background: var(--bg3); border: 1px solid var(--border2); color: var(--text2); border-radius: var(--radius); cursor: pointer; transition: all .15s; }
+  .refresh-btn:hover { background: var(--bg4); color: var(--text); }
+  .last-refresh { font-size: 11px; color: var(--text3); }
+
+  /* KPIs */
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+  .kpi { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 18px; }
+  .kpi .lbl { font-size: 11px; color: var(--text3); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 6px; }
+  .kpi .val { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; font-family: 'JetBrains Mono', monospace; }
+  .kpi .sub { font-size: 11px; margin-top: 4px; color: var(--text3); }
+  .kpi .sub.ok { color: var(--green); } .kpi .sub.warn { color: var(--amber); } .kpi .sub.bad { color: var(--red); }
+
+  /* Grid */
+  .grid-main { display: grid; grid-template-columns: 1fr 320px; gap: 12px; margin-bottom: 12px; }
+  .grid-bot { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 20px; }
+  .card-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .card-hd .title { font-size: 12px; font-weight: 500; color: var(--text2); letter-spacing: 0.03em; }
+  .card-hd .hint { font-size: 11px; color: var(--text3); }
+
+  /* Tester rows */
+  .trow { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-radius: 8px; cursor: pointer; transition: background .12s; }
+  .trow:hover { background: var(--bg3); }
+  .av { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .tinfo { flex: 1; min-width: 0; }
+  .tname { font-size: 13px; color: var(--text); }
+  .tsub { font-size: 11px; color: var(--text3); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+  .btrack { flex: 1; height: 3px; background: var(--bg4); border-radius: 2px; overflow: hidden; max-width: 80px; }
+  .bfill { height: 100%; border-radius: 2px; }
+  .bnum { font-size: 11px; color: var(--text3); min-width: 16px; text-align: right; font-family: 'JetBrains Mono', monospace; }
+  .badge { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
+  .b-aktiv { background: var(--green-bg); color: var(--green); }
+  .b-still { background: var(--amber-bg); color: var(--amber); }
+  .b-neu   { background: var(--accent-bg); color: var(--accent); }
+  .b-inaktiv { background: var(--red-bg); color: var(--red); }
+
+  /* Detail panel */
+  .detail-panel { display: none; background: var(--bg3); border-radius: var(--radius); padding: 14px 16px; margin: 6px 0 4px 42px; font-size: 12px; color: var(--text2); line-height: 1.9; }
+  .detail-panel.open { display: block; }
+  .detail-row { display: flex; justify-content: space-between; }
+  .detail-row span:last-child { color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+  /* Expenses drawer */
+  .exp-drawer { display: none; background: var(--bg3); border-radius: var(--radius); padding: 12px 16px; margin: 4px 0 4px 42px; }
+  .exp-drawer.open { display: block; }
+  .exp-row { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .exp-row:last-child { border-bottom: none; }
+  .exp-cat { color: var(--text3); min-width: 90px; }
+  .exp-amt { font-family: 'JetBrains Mono', monospace; color: var(--text); min-width: 52px; }
+  .exp-desc { color: var(--text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .exp-date { color: var(--text3); font-size: 11px; min-width: 50px; text-align: right; }
+  .exp-load { font-size: 11px; color: var(--accent); cursor: pointer; margin-top: 4px; display: block; }
+  .exp-load:hover { color: var(--text); }
+
+  /* Phase */
+  .divider { height: 1px; background: var(--border); margin: 12px 0; }
+  .ms-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+  .ms-lbl { font-size: 12px; color: var(--text2); }
+  .ms-val { font-size: 13px; font-weight: 500; font-family: 'JetBrains Mono', monospace; color: var(--text); }
+  .phase-wrap { margin-bottom: 14px; }
+  .phase-lbl { font-size: 11px; color: var(--text3); margin-bottom: 6px; }
+  .phase-track { height: 4px; background: var(--bg4); border-radius: 2px; overflow: hidden; }
+  .phase-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width .5s; }
+  .phase-dates { display: flex; justify-content: space-between; font-size: 10px; color: var(--text3); margin-top: 4px; }
+
+  /* Report jobs */
+  .rj-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 6px; border-radius: 8px; font-size: 12px; }
+  .rj-row:nth-child(odd) { background: var(--bg3); }
+  .rj-status { font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
+  .rj-done { background: var(--green-bg); color: var(--green); }
+  .rj-pending { background: var(--amber-bg); color: var(--amber); }
+  .rj-failed { background: var(--red-bg); color: var(--red); }
+
+  .empty { text-align: center; padding: 28px 0; color: var(--text3); font-size: 12px; }
+  .spinner { border: 2px solid var(--bg4); border-top-color: var(--accent); border-radius: 50%; width: 18px; height: 18px; animation: spin .6s linear infinite; margin: 28px auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err-banner { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.25); border-radius: var(--radius); padding: 10px 14px; font-size: 12px; color: var(--red); margin-bottom: 14px; display: none; }
+  .err-banner.show { display: block; }
+
+  /* Chart */
+  .chart-wrap { position: relative; height: 120px; }
+  .chart-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text3); text-align: center; }
+  .chart-fallback[hidden] { display: none; }
+  .score-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: 6px; padding: 3px 10px; font-size: 11px; color: var(--accent); font-family: 'JetBrains Mono', monospace; }
+
+  @media (max-width: 720px) {
+    .kpi-row { grid-template-columns: 1fr 1fr; }
+    .grid-main, .grid-bot { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="topbar-left">
+      <h1><span class="dot-live" id="status-dot"></span> Rov.E Beta — Cockpit</h1>
+      <p id="subtitle">Verbinde mit Backend…</p>
+    </div>
+    <div class="topbar-right">
+      <span class="last-refresh" id="last-refresh"></span>
+      <button class="refresh-btn" onclick="loadAll()">↻ Aktualisieren</button>
+    </div>
+  </div>
+
+  <div class="err-banner" id="err-banner"></div>
+
+  <div class="kpi-row">
+    <div class="kpi"><div class="lbl">Tester</div><div class="val" id="kpi-total">—</div><div class="sub ok" id="kpi-total-sub"></div></div>
+    <div class="kpi"><div class="lbl">Onboarding fertig</div><div class="val" id="kpi-onb">—</div><div class="sub" id="kpi-onb-sub"></div></div>
+    <div class="kpi"><div class="lbl">Ausgaben gesamt</div><div class="val" id="kpi-exp">—</div><div class="sub ok" id="kpi-exp-sub"></div></div>
+    <div class="kpi"><div class="lbl">Reports erstellt</div><div class="val" id="kpi-rep">—</div><div class="sub" id="kpi-rep-sub"></div></div>
+  </div>
+
+  <div class="grid-main">
+    <div class="card">
+      <div class="card-hd">
+        <span class="title">Tester</span>
+        <span class="hint">Klicken für Details</span>
+      </div>
+      <div id="tester-list"><div class="spinner"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-hd"><span class="title">Phasenstatus</span></div>
+      <div class="phase-wrap">
+        <div class="phase-lbl">Monat 1 — Eingabe &amp; Onboarding</div>
+        <div class="phase-track"><div class="phase-fill" id="m1-bar" style="width:0%"></div></div>
+        <div class="phase-dates"><span>1. Juli</span><span>31. Juli 2026</span></div>
+      </div>
+      <div class="phase-wrap">
+        <div class="phase-lbl">Monat 2 — Report &amp; Insight</div>
+        <div class="phase-track"><div class="phase-fill" id="m2-bar" style="width:0%;background:var(--bg4)"></div></div>
+        <div class="phase-dates"><span>1. Aug</span><span>31. Aug 2026</span></div>
+      </div>
+      <div class="divider"></div>
+      <div class="ms-row"><span class="ms-lbl">Onboarding fertig</span><span class="ms-val" id="ms-onb">—</span></div>
+      <div class="ms-row"><span class="ms-lbl">Mind. 1 Ausgabe</span><span class="ms-val" id="ms-inp">—</span></div>
+      <div class="ms-row"><span class="ms-lbl">Report erhalten</span><span class="ms-val" id="ms-rep">—</span></div>
+      <div class="ms-row"><span class="ms-lbl">Inaktiv (&gt;4 Tage)</span><span class="ms-val" id="ms-inakt" style="color:var(--red)">—</span></div>
+    </div>
+  </div>
+
+  <div class="grid-bot">
+    <div class="card">
+      <div class="card-hd"><span class="title">Report Jobs</span><span class="hint" id="rj-hint"></span></div>
+      <div id="rj-list"><div class="spinner"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-hd"><span class="title">Aktivität</span></div>
+      <div class="chart-wrap">
+        <canvas id="actChart" role="img" aria-label="Ausgaben je Tester"></canvas>
+        <div id="actChartFallback" class="chart-fallback" role="status" hidden>Das Aktivitätsdiagramm ist gerade nicht verfügbar.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = '/cockpit-api';
+const HEALTH_API = '/app-api/health';
+const AV_COLORS = [
+  ['rgba(99,102,241,0.2)','#a5b4fc'],['rgba(34,197,94,0.2)','#4ade80'],
+  ['rgba(245,158,11,0.2)','#fbbf24'],['rgba(168,85,247,0.2)','#c084fc'],
+  ['rgba(239,68,68,0.2)','#fca5a5'],['rgba(20,184,166,0.2)','#5eead4'],
+  ['rgba(249,115,22,0.2)','#fdba74'],['rgba(236,72,153,0.2)','#f9a8d4'],
+];
+
+let usersData = [], statsData = {}, chart = null, openUid = null, openExp = null;
+
+function fmt(n) { return n != null ? Number(n).toLocaleString('de-DE') : '—'; }
+function fmtE(n) { return n != null ? Number(n).toLocaleString('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—'; }
+
+async function loadAll() {
+  try {
+    const healthResponse = await fetch(HEALTH_API, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!healthResponse.ok || (await healthResponse.json())?.ok !== true) {
+      throw new Error('App health check failed');
+    }
+    setConnected(true);
+  } catch(e) {
+    setConnected(false);
+    showErr('Backend nicht erreichbar. Bitte später erneut versuchen.');
+    return;
+  }
+
+  try {
+    const [u, s] = await Promise.all([
+      fetch(API + '/api/overview').then(r => { if (!r.ok) throw new Error('Overview unavailable'); return r.json(); }),
+      fetch(API + '/api/stats').then(r => { if (!r.ok) throw new Error('Stats unavailable'); return r.json(); })
+    ]);
+    if (!Array.isArray(u) || !s || typeof s !== 'object' || Array.isArray(s)) {
+      throw new Error('Invalid cockpit data');
+    }
+    usersData = u;
+    statsData = s;
+    render();
+  } catch(e) {
+    document.getElementById('tester-list').innerHTML = '<div class="empty">Tester konnten nicht geladen werden.</div>';
+    document.getElementById('rj-list').innerHTML = '<div class="empty">Report Jobs konnten nicht geladen werden.</div>';
+    showErr('Cockpit-Daten konnten nicht geladen werden. Bitte erneut versuchen.');
+  }
+}
+
+function setConnected(ok) {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'dot-live' + (ok ? '' : ' dot-err');
+  document.getElementById('subtitle').textContent = ok
+    ? 'Backend online'
+    : 'Backend nicht erreichbar';
+  const now = new Date();
+  document.getElementById('last-refresh').textContent = ok
+    ? 'Stand: ' + now.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit',second:'2-digit'})
+    : '';
+}
+
+function showErr(msg) {
+  const b = document.getElementById('err-banner');
+  b.textContent = msg;
+  b.classList.add('show');
+}
+
+function render() {
+  document.getElementById('err-banner').classList.remove('show');
+  renderKPIs();
+  renderTesters();
+  renderPhase();
+  renderReports();
+  renderChart();
+}
+
+function renderKPIs() {
+  const n = usersData.length;
+  const onb = usersData.filter(u => u.onboarding_done).length;
+  const aktiv = usersData.filter(u => u.status === 'aktiv').length;
+  document.getElementById('kpi-total').textContent = n;
+  document.getElementById('kpi-total-sub').textContent = aktiv + ' aktiv heute';
+  document.getElementById('kpi-onb').textContent = onb;
+  document.getElementById('kpi-onb-sub').textContent = n ? Math.round(onb/n*100) + '% abgeschlossen' : '';
+  document.getElementById('kpi-exp').textContent = statsData.total_expenses ?? '—';
+  document.getElementById('kpi-exp-sub').textContent = n ? fmtE(statsData.total_expenses / n) + ' Ø pro Tester' : '';
+  document.getElementById('kpi-rep').textContent = statsData.reports_done ?? '—';
+  document.getElementById('kpi-rep-sub').textContent = statsData.reports_done ? 'erstellt' : 'noch keine';
+}
+
+function renderTesters() {
+  const el = document.getElementById('tester-list');
+  if (!usersData.length) { el.innerHTML = '<div class="empty">Noch keine Tester in clarity.db.</div>'; return; }
+  const maxExp = Math.max(...usersData.map(u => u.expense_count), 1);
+  el.innerHTML = '';
+  usersData.forEach((u, i) => {
+    const [abg, atc] = AV_COLORS[i % AV_COLORS.length];
+    const pct = Math.round(u.expense_count / maxExp * 100);
+    const barColor = u.status === 'aktiv' ? '#6366f1' : u.status === 'still' ? '#f59e0b' : '#374151';
+    const uid = u.user_id;
+
+    const initials = u.display_name
+      ? u.display_name.split(' ').map(w => w[0]||'').join('').toUpperCase().slice(0,2)
+      : String(uid).slice(-2);
+    const div = document.createElement('div');
+    div.innerHTML = `
+      <div class="trow" onclick="toggleDetail(${uid})">
+        <div class="av" style="background:${abg};color:${atc}">${initials}</div>
+        <div class="tinfo">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="tname">${u.name}</span>
+            ${u.username ? `<span style="font-size:11px;color:var(--text3)">${u.username}</span>` : ''}
+            ${u.score ? `<span class="score-pill">Score ${u.score} · ${u.rank}</span>` : ''}
+          </div>
+          <div class="tsub">Onb. ${u.onboarding_step}/10 · Streak ${u.streak_days}d · Punkte ${u.clarity_points}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="btrack"><div class="bfill" style="width:${pct}%;background:${barColor}"></div></div>
+          <span class="bnum">${u.expense_count}</span>
+          <span class="badge b-${u.status}">${{aktiv:'Aktiv',still:'Still',neu:'Neu',inaktiv:'Inaktiv'}[u.status]||u.status}</span>
+        </div>
+      </div>
+      <div class="detail-panel" id="detail-${uid}">
+        <div class="detail-row"><span>Letzte Aktivität</span><span>${u.last_active}</span></div>
+        <div class="detail-row"><span>Einkommen</span><span>${fmtE(u.income)} €</span></div>
+        <div class="detail-row"><span>Fixkosten</span><span>${fmtE(u.fixed_costs)} €</span></div>
+        <div class="detail-row"><span>ETF-Sparrate</span><span>${fmtE(u.etf_savings)} €</span></div>
+        <div class="detail-row"><span>Bargeld</span><span>${fmtE(u.cash_savings)} €</span></div>
+        ${u.goal ? `<div class="detail-row"><span>Ziel</span><span>${u.goal}</span></div>` : ''}
+        ${u.goal_amount ? `<div class="detail-row"><span>Zielbetrag</span><span>${fmtE(u.goal_amount)} €</span></div>` : ''}
+        <div class="detail-row"><span>Proof Days</span><span>${u.proof_days}</span></div>
+        <div class="detail-row"><span>Badges</span><span>${u.badge_count}</span></div>
+        <div class="detail-row"><span>Report Status</span><span>${u.report_status} ${u.report_month ? '('+u.report_month+')' : ''}</span></div>
+        <span class="exp-load" onclick="toggleExpenses(event, ${uid})">↓ Ausgaben laden</span>
+      </div>
+      <div class="exp-drawer" id="exp-${uid}"><div class="spinner"></div></div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function toggleDetail(uid) {
+  const panel = document.getElementById('detail-' + uid);
+  if (!panel) return;
+  if (openUid && openUid !== uid) {
+    const old = document.getElementById('detail-' + openUid);
+    if (old) old.classList.remove('open');
+    const oldExp = document.getElementById('exp-' + openUid);
+    if (oldExp) oldExp.classList.remove('open');
+  }
+  panel.classList.toggle('open');
+  if (!panel.classList.contains('open')) {
+    const expEl = document.getElementById('exp-' + uid);
+    if (expEl) expEl.classList.remove('open');
+    openUid = null;
+  } else {
+    openUid = uid;
+  }
+}
+
+async function toggleExpenses(e, uid) {
+  e.stopPropagation();
+  const expEl = document.getElementById('exp-' + uid);
+  if (!expEl) return;
+  if (expEl.classList.contains('open')) { expEl.classList.remove('open'); return; }
+  expEl.classList.add('open');
+  expEl.innerHTML = '<div class="spinner"></div>';
+  try {
+    const rows = await fetch(API + '/api/expenses/' + uid).then(r => r.json());
+    if (!rows.length) { expEl.innerHTML = '<div class="empty">Keine Ausgaben.</div>'; return; }
+    expEl.innerHTML = rows.map(r => `
+      <div class="exp-row">
+        <span class="exp-cat">${r.category || '—'}</span>
+        <span class="exp-amt">${fmtE(r.amount)} €</span>
+        <span class="exp-desc">${r.description || r.merchant || ''}</span>
+        <span class="exp-date">${(r.created_at||'').slice(5,10)}</span>
+      </div>
+    `).join('');
+  } catch(err) {
+    expEl.innerHTML = '<div class="empty">Fehler beim Laden.</div>';
+  }
+}
+
+function renderPhase() {
+  const s1 = new Date('2026-07-01'), e1 = new Date('2026-07-31');
+  const s2 = new Date('2026-08-01'), e2 = new Date('2026-08-31');
+  const now = new Date();
+  const p1 = Math.min(100, Math.max(0, Math.round((now - s1) / (e1 - s1) * 100)));
+  const p2 = Math.min(100, Math.max(0, Math.round((now - s2) / (e2 - s2) * 100)));
+  document.getElementById('m1-bar').style.width = p1 + '%';
+  const m2 = document.getElementById('m2-bar');
+  m2.style.width = p2 + '%';
+  m2.style.background = p2 > 0 ? 'var(--accent)' : 'var(--bg4)';
+
+  const n = usersData.length;
+  document.getElementById('ms-onb').textContent = usersData.filter(u => u.onboarding_done).length + ' / ' + n;
+  document.getElementById('ms-inp').textContent = usersData.filter(u => u.expense_count > 0).length + ' / ' + n;
+  document.getElementById('ms-rep').textContent = usersData.filter(u => u.report_status === 'sent' || u.report_status === 'done').length + ' / ' + n;
+  const inakt = usersData.filter(u => u.status === 'inaktiv').length;
+  document.getElementById('ms-inakt').textContent = inakt;
+  document.getElementById('ms-inakt').style.color = inakt > 0 ? 'var(--red)' : 'var(--green)';
+}
+
+function renderReports() {
+  const el = document.getElementById('rj-list');
+  const hint = document.getElementById('rj-hint');
+  const jobs = usersData.flatMap(u => u.report_status !== '—' ? [{
+    uid: u.user_id, status: u.report_status, month: u.report_month
+  }] : []);
+  hint.textContent = jobs.length + ' Jobs';
+  if (!jobs.length) { el.innerHTML = '<div class="empty">Keine Report Jobs.</div>'; return; }
+  el.innerHTML = jobs.map(j => {
+    const cls = (j.status === 'done' || j.status === 'sent') ? 'rj-done' : j.status === 'pending' ? 'rj-pending' : j.status === 'skipped' ? 'rj-pending' : 'rj-failed';
+    const label = {done:'Fertig', sent:'Gesendet', pending:'Ausstehend', skipped:'Übersprungen', failed:'Fehler'}[j.status] || j.status;
+    return `<div class="rj-row">
+      <span style="color:var(--text2)">User ${j.uid}</span>
+      <span style="color:var(--text3);font-size:11px">${j.month || ''}</span>
+      <span class="rj-status ${cls}">${label}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderChart() {
+  const canvas = document.getElementById('actChart');
+  const fallback = document.getElementById('actChartFallback');
+  if (typeof Chart !== 'function') {
+    canvas.hidden = true;
+    fallback.hidden = false;
+    return;
+  }
+  const labels = usersData.map((_, i) => 'U' + (i + 1));
+  const data = usersData.map(u => u.expense_count);
+  const colors = usersData.map((u, i) => AV_COLORS[i % AV_COLORS.length][1]);
+  try {
+    canvas.hidden = false;
+    fallback.hidden = true;
+    const previousChart = chart || Chart.getChart?.(canvas);
+    if (previousChart) previousChart.destroy();
+    chart = null;
+    chart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Ausgaben',
+          data,
+          backgroundColor: colors.map(c => c + '33'),
+          borderColor: colors,
+          borderWidth: 1.5,
+          borderRadius: 4,
+          borderSkipped: false
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ' ' + c.raw + ' Ausgaben' } } },
+        scales: {
+          x: { ticks: { color: '#666670', font: { size: 10 } }, grid: { display: false }, border: { display: false } },
+          y: { ticks: { color: '#666670', font: { size: 10 }, stepSize: 1 }, grid: { color: 'rgba(255,255,255,0.04)' }, border: { display: false }, min: 0 }
+        }
+      }
+    });
+  } catch(e) {
+    try { Chart.getChart?.(canvas)?.destroy(); } catch(cleanupError) {}
+    chart = null;
+    canvas.hidden = true;
+    fallback.hidden = false;
+  }
+}
+
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>
