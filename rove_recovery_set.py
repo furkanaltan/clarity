@@ -27,6 +27,10 @@ from backup_clarity_db import BackupValidationError, create_verified_backup, ver
 TOOL_VERSION = "1.2"
 MANIFEST_VERSION = 3
 GENERATION_GATE_VERSION = "1"
+PROSPECTIVE_POLICY_VERSION = 1
+PROSPECTIVE_GATE_VERSION = "2"
+PROSPECTIVE_FIELDS = {"admission_mode", "policy_version", "gate_version", "ledger_anchor_id",
+                      "expected_git_sha", "expected_schema_sha256"}
 SAFE_FOR_ACCOUNT_RESTORE = "SAFE_FOR_ACCOUNT_RESTORE"
 UNSAFE_FOR_ACCOUNT_RESTORE = "UNSAFE_FOR_ACCOUNT_RESTORE"
 UNKNOWN = "UNKNOWN"
@@ -35,6 +39,8 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 PDF = re.compile(r"rove_report_([1-9][0-9]*)_[0-9]{4}-(?:0[1-9]|1[0-2])\.pdf(?:\.gz)?\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{16,128}\Z")
 REFERENCE = re.compile(r"(?:escrow|vault|offline):[A-Za-z0-9_.:/-]{1,160}\Z")
+GENERATION_ID = re.compile(r"recovery_set_([0-9]{8}T[0-9]{6}Z)_[0-9a-f]{32}\Z")
+LEDGER_ANCHOR_ID = re.compile(r"ledger_anchor_[0-9a-f]{32}\Z")
 CONFIG_ROLES = {"api_service", "api_dropin", "nginx_site", "nginx_headers"}
 REQUIRED_CONFIG_ROLES = CONFIG_ROLES - {"api_dropin"}
 
@@ -304,6 +310,15 @@ def utc_timestamp(value: object) -> datetime:
         raise RecoveryError("recovery_timestamp_invalid") from exc
 
 
+def validate_prospective_metadata(value: dict) -> None:
+    if (type(value["policy_version"]) is not int or value["policy_version"] != PROSPECTIVE_POLICY_VERSION
+            or value["gate_version"] != PROSPECTIVE_GATE_VERSION
+            or not LEDGER_ANCHOR_ID.fullmatch(str(value["ledger_anchor_id"]))
+            or not SHA.fullmatch(str(value["expected_git_sha"]))
+            or not HASH.fullmatch(str(value["expected_schema_sha256"]))):
+        raise RecoveryError("prospective_metadata_invalid")
+
+
 def ledger_coverage(declared: object) -> dict:
     """An explicit boundary is not a claim that an empty historical ledger is complete."""
     if not isinstance(declared, dict):
@@ -311,6 +326,8 @@ def ledger_coverage(declared: object) -> dict:
     expected = {"path", "history_confirmed_complete", "audit_reference", "anchor"}
     if "recovery_boundary" in declared:
         expected.add("recovery_boundary")
+    if "generation_receipts" in declared:
+        expected.add("generation_receipts")
     fields(declared, expected)
     absolute_path(declared["path"])
     if not REFERENCE.fullmatch(str(declared["audit_reference"])):
@@ -319,20 +336,46 @@ def ledger_coverage(declared: object) -> dict:
     if type(anchor["bytes"]) is not int or anchor["bytes"] < 0 or not HASH.fullmatch(str(anchor["sha256"])):
         raise RecoveryError("ledger_anchor_invalid")
     if declared["history_confirmed_complete"] is True and "recovery_boundary" not in declared:
+        if "generation_receipts" in declared:
+            raise RecoveryError("prospective_mode_required")
         if anchor["bytes"] == 0:
             raise RecoveryError("empty_ledger_history_not_proven")
         return {"mode": "historical", "cutoff_at_utc": None, "baseline_database_sha256": None,
                 "evidence_ref": declared["audit_reference"]}
     if declared["history_confirmed_complete"] is not False or "recovery_boundary" not in declared:
         raise RecoveryError("ledger_history_not_attested")
-    boundary = fields(declared["recovery_boundary"],
-                      {"cutoff_at_utc", "baseline_database_sha256", "evidence_ref", "forward_coverage_confirmed"})
+    boundary = declared["recovery_boundary"]
+    prospective = isinstance(boundary, dict) and bool(PROSPECTIVE_FIELDS & boundary.keys())
+    required = {"cutoff_at_utc", "evidence_ref", "forward_coverage_confirmed"}
+    if prospective:
+        required |= PROSPECTIVE_FIELDS
+        if "baseline_database_sha256" in boundary:
+            required.add("baseline_database_sha256")
+    else:
+        required.add("baseline_database_sha256")
+    fields(boundary, required)
+    if prospective:
+        if boundary["admission_mode"] != "prospective":
+            raise RecoveryError("prospective_mode_required")
+        validate_prospective_metadata(boundary)
+        receipts = declared.get("generation_receipts", {})
+        if (not isinstance(receipts, dict) or len(receipts) > 10000
+                or any(not GENERATION_ID.fullmatch(str(key)) or not HASH.fullmatch(str(value))
+                       for key, value in receipts.items())):
+            raise RecoveryError("generation_receipts_invalid")
+    elif "generation_receipts" in declared:
+        raise RecoveryError("prospective_mode_required")
     cutoff = utc_timestamp(boundary["cutoff_at_utc"])
     if (cutoff > datetime.now(timezone.utc)
-            or not HASH.fullmatch(str(boundary["baseline_database_sha256"]))
+            or ("baseline_database_sha256" in boundary
+                and not HASH.fullmatch(str(boundary["baseline_database_sha256"])))
             or not REFERENCE.fullmatch(str(boundary["evidence_ref"]))
             or boundary["forward_coverage_confirmed"] is not True):
         raise RecoveryError("recovery_boundary_unverified")
+    if prospective:
+        return {"mode": "prospective", "cutoff_at_utc": cutoff.isoformat(), "baseline_database_sha256": None,
+                "evidence_ref": boundary["evidence_ref"],
+                **{key: boundary[key] for key in PROSPECTIVE_FIELDS - {"admission_mode"}}}
     return {"mode": "cutoff", "cutoff_at_utc": cutoff.isoformat(),
             "baseline_database_sha256": boundary["baseline_database_sha256"],
             "evidence_ref": boundary["evidence_ref"]}
@@ -347,6 +390,16 @@ def check_generation_boundary(manifest: dict, coverage: dict) -> None:
         raise RecoveryError("generation_timestamp_invalid")
     if coverage["mode"] == "cutoff" and started < utc_timestamp(coverage["cutoff_at_utc"]):
         raise RecoveryError("generation_before_recovery_cutoff")
+    if coverage["mode"] == "prospective":
+        validate_prospective_metadata(coverage)
+        if started <= utc_timestamp(coverage["cutoff_at_utc"]):
+            raise RecoveryError("generation_before_recovery_cutoff")
+        identity = GENERATION_ID.fullmatch(str(manifest.get("recovery_set_id")))
+        if not identity or identity.group(1) != started.strftime("%Y%m%dT%H%M%SZ"):
+            raise RecoveryError("generation_time_identity_mismatch")
+        if (manifest.get("software", {}).get("git_sha") != coverage["expected_git_sha"]
+                or manifest.get("runtime", {}).get("schema_sha256") != coverage["expected_schema_sha256"]):
+            raise RecoveryError("generation_policy_mismatch")
 
 
 def generation_manifest_safety(manifest: dict) -> dict:
@@ -355,11 +408,14 @@ def generation_manifest_safety(manifest: dict) -> dict:
     check_generation_boundary(manifest, coverage)
     if not SHA.fullmatch(str(manifest["software"]["git_sha"])):
         raise RecoveryError("generation_git_sha_invalid")
+    prospective = coverage["mode"] == "prospective"
+    if prospective and manifest["ledger"].get("anchor_id") != coverage["ledger_anchor_id"]:
+        raise RecoveryError("generation_ledger_anchor_mismatch")
     return {
         "status": SAFE_FOR_ACCOUNT_RESTORE,
         "reason": ("historical_coverage_attested" if coverage["mode"] == "historical"
                    else "after_verified_recovery_cutoff"),
-        "gate_version": GENERATION_GATE_VERSION,
+        "gate_version": PROSPECTIVE_GATE_VERSION if prospective else GENERATION_GATE_VERSION,
         "recovery_set_id": manifest["recovery_set_id"],
         "created_at_utc": manifest["created_at_utc"],
         "snapshot_completed_at_utc": manifest["snapshot_completed_at_utc"],
@@ -374,7 +430,8 @@ def generation_manifest_safety(manifest: dict) -> dict:
 
 
 def check_account_restore_generation(*, policy_path: Path, set_path: Path | None = None,
-                                     database_path: Path | None = None) -> GenerationApproval:
+                                     database_path: Path | None = None,
+                                     admission_mode: str | None = None) -> GenerationApproval:
     """Read-only eligibility gate. It never replays a ledger or starts/restores anything."""
     if (set_path is None) == (database_path is None):
         raise RecoveryError("generation_target_invalid")
@@ -387,6 +444,11 @@ def check_account_restore_generation(*, policy_path: Path, set_path: Path | None
     policy_sha256 = digest(raw)
     declared = strict_json(raw)
     coverage = ledger_coverage(declared)
+    mode = "prospective" if coverage["mode"] == "prospective" else "legacy"
+    if admission_mode is not None and admission_mode != mode:
+        raise RecoveryError("generation_admission_mode_mismatch")
+    if database_path is not None and mode == "prospective":
+        raise RecoveryError("prospective_complete_set_required")
     latest, _ = stable_bytes(absolute_path(declared["path"]))
     _, record_count = parse_ledger(latest)
     if coverage["mode"] == "historical" and record_count == 0:
@@ -415,7 +477,21 @@ def check_account_restore_generation(*, policy_path: Path, set_path: Path | None
             raise RecoveryError("generation_declared_unsafe")
         if isinstance(safety, dict) and safety.get("status") == UNKNOWN:
             raise RecoveryError("generation_safety_unknown")
+        if mode == "prospective":
+            if utc_timestamp(candidate.get("created_at_utc")) <= utc_timestamp(coverage["cutoff_at_utc"]):
+                raise RecoveryError("generation_before_recovery_cutoff")
+            # This receipt must come from independent trusted custody, never from
+            # the candidate itself. A self-rebound timestamp is not provenance.
+            receipt = declared.get("generation_receipts", {}).get(candidate.get("recovery_set_id"))
+            if receipt is None:
+                raise RecoveryError("generation_receipt_missing")
+            if digest(raw_manifest) != receipt:
+                raise RecoveryError("generation_manifest_receipt_mismatch")
         manifest = verify_recovery_set(set_path)
+        if mode == "prospective":
+            current, _ = stable_bytes(set_path / "manifest.json", limit=8 * 1024 * 1024)
+            if current != raw_manifest:
+                raise RecoveryError("generation_manifest_changed")
         check_generation_boundary(manifest, coverage)
         if (manifest["ledger"]["anchor"] != declared["anchor"]
                 or manifest["ledger"]["audit_reference"] != declared["audit_reference"]):
@@ -442,7 +518,9 @@ def classify_account_restore_generation(**kwargs) -> dict:
         reason = str(exc) if isinstance(exc, (RecoveryError, BackupValidationError)) else type(exc).__name__
         unsafe = {"generation_before_recovery_cutoff", "legacy_generation_not_approved",
                   "generation_declared_unsafe", "generation_policy_mismatch", "set_checksum_mismatch",
-                  "ledger_history_changed", "latest_ledger_history_changed", "generation_ledger_anchor_mismatch"}
+                  "ledger_history_changed", "latest_ledger_history_changed", "generation_ledger_anchor_mismatch",
+                  "prospective_complete_set_required", "generation_manifest_receipt_mismatch",
+                  "generation_time_identity_mismatch", "generation_admission_mode_mismatch"}
         return {"status": UNSAFE_FOR_ACCOUNT_RESTORE if reason in unsafe else UNKNOWN, "reason": reason}
 
 
@@ -746,11 +824,12 @@ def build_recovery_set(*, db: Path, ledger: Path, inventory_path: Path, repo: Pa
     protected += [Path(item["path"]) for item in inventory["runtime"]["config_files"]]
     protected += [configuration_path(item["path"]) for item in inventory["runtime"]["config_files"]]
     prepare_output(output, protected)
-    set_id = "recovery_set_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex
+    created_at = utc_now()
+    set_id = "recovery_set_" + utc_timestamp(created_at).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex
     staging = output / ("." + set_id + ".pending")
     staging.mkdir(mode=0o700)
     manifest = {"manifest_version": MANIFEST_VERSION, "tool_version": TOOL_VERSION,
-                "recovery_set_id": set_id, "created_at_utc": utc_now(), "status": "FAILED",
+                "recovery_set_id": set_id, "created_at_utc": created_at, "status": "FAILED",
                 "encryption": "NOT_ENCRYPTED_LOCAL_PRIVATE_ONLY", "offsite": "NOT_CONFIGURED",
                 "restore_verified": False, "software": None,
                 "account_restore_safety": {"status": UNKNOWN, "reason": "collection_not_verified",
@@ -811,6 +890,8 @@ def build_recovery_set(*, db: Path, ledger: Path, inventory_path: Path, repo: Pa
                                                if coverage["mode"] == "historical" else "FROM_VERIFIED_CUTOFF_ONLY"),
                               "audit_reference": inventory["ledger"]["audit_reference"],
                               "anchor": inventory["ledger"]["anchor"], "replay_before_runtime_required": True}
+        if coverage["mode"] == "prospective":
+            manifest["ledger"]["anchor_id"] = coverage["ledger_anchor_id"]
         manifest["artifacts"] = artifacts
         current_metadata, _ = runtime_metadata(inventory)
         if current_metadata != metadata:
@@ -878,14 +959,25 @@ def verify_recovery_set(path: Path, *, pending: bool = False) -> dict:
         raise RecoveryError("set_not_complete")
     if not pending and path.name != manifest.get("recovery_set_id"):
         raise RecoveryError("set_id_mismatch")
-    coverage = fields(manifest.get("account_restore_coverage"),
-                      {"mode", "cutoff_at_utc", "baseline_database_sha256", "evidence_ref"})
-    if (coverage["mode"] not in {"historical", "cutoff"}
+    coverage = manifest.get("account_restore_coverage")
+    expected_coverage = {"mode", "cutoff_at_utc", "baseline_database_sha256", "evidence_ref"}
+    if isinstance(coverage, dict) and coverage.get("mode") == "prospective":
+        expected_coverage |= PROSPECTIVE_FIELDS - {"admission_mode"}
+    fields(coverage, expected_coverage)
+    if (coverage["mode"] not in {"historical", "cutoff", "prospective"}
             or not REFERENCE.fullmatch(str(coverage["evidence_ref"]))):
         raise RecoveryError("generation_coverage_invalid")
     if coverage["mode"] == "historical":
         if coverage["cutoff_at_utc"] is not None or coverage["baseline_database_sha256"] is not None:
             raise RecoveryError("generation_coverage_invalid")
+    elif coverage["mode"] == "prospective":
+        if coverage["baseline_database_sha256"] is not None:
+            raise RecoveryError("generation_coverage_invalid")
+        validate_prospective_metadata(coverage)
+        if (manifest["database"].get("snapshot_method") != "sqlite_backup_api"
+                or manifest["database"].get("integrity_check") != "ok"
+                or manifest["database"].get("foreign_key_check") != "ok"):
+            raise RecoveryError("generation_snapshot_provenance_invalid")
     elif not HASH.fullmatch(str(coverage["baseline_database_sha256"])):
         raise RecoveryError("generation_coverage_invalid")
     check_generation_boundary(manifest, coverage)
@@ -944,6 +1036,7 @@ def main() -> int:
     verify.add_argument("set_path", type=Path)
     gate = commands.add_parser("generation-gate")
     gate.add_argument("--policy", type=Path, required=True)
+    gate.add_argument("--admission-mode", choices=("legacy", "prospective"))
     target = gate.add_mutually_exclusive_group(required=True)
     target.add_argument("--set", dest="set_path", type=Path)
     target.add_argument("--db", dest="database_path", type=Path)
@@ -956,7 +1049,8 @@ def main() -> int:
             return 0
         if args.command == "generation-gate":
             result = classify_account_restore_generation(policy_path=args.policy, set_path=args.set_path,
-                                                        database_path=args.database_path)
+                                                        database_path=args.database_path,
+                                                        admission_mode=args.admission_mode)
             print("ACCOUNT_RESTORE_GATE=" + result["status"])
             print("GATE_REASON=" + result["reason"])
             print("RESTORE=NOT_RUN; FILE_SCRUB_AND_INDEPENDENT_KEYS_REQUIRED")

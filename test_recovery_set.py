@@ -125,6 +125,30 @@ class RecoverySetTests(unittest.TestCase):
         path.write_text(json.dumps(declared))
         return path
 
+    def prospective_policy(self):
+        declared = self.cutoff_policy()
+        boundary = declared["recovery_boundary"]
+        del boundary["baseline_database_sha256"]
+        boundary.update(admission_mode="prospective", policy_version=recovery.PROSPECTIVE_POLICY_VERSION,
+                        gate_version=recovery.PROSPECTIVE_GATE_VERSION,
+                        ledger_anchor_id="ledger_anchor_" + "1" * 32,
+                        expected_git_sha=self.sha, expected_schema_sha256=self.schema_hash())
+        return declared
+
+    def prospective_fixture(self):
+        declared = self.prospective_policy()
+        self.inventory["ledger"] = declared
+        self.save_inventory()
+        generation = self.collect()
+        self.assertEqual(self.manifest(generation)["status"], "COMPLETE")
+        declared["generation_receipts"] = {
+            generation.name: recovery.digest((generation / "manifest.json").read_bytes())}
+        return generation, declared, self.save_policy(declared)
+
+    def changed_created_at(self, manifest):
+        timestamp = recovery.utc_timestamp(manifest["created_at_utc"])
+        return timestamp.replace(microsecond=(timestamp.microsecond + 1) % 1000000).isoformat()
+
     def collect(self, **kwargs):
         arguments = dict(db=self.db, ledger=self.ledger, inventory_path=self.inventory_path,
                          repo=self.repo, expected_git_sha=self.sha, output=self.output)
@@ -1024,6 +1048,376 @@ class RecoverySetTests(unittest.TestCase):
         target.chmod(0o644)
         output = self.assert_replay_blocked(self.replay_command(generation, policy, target), target)
         self.assertIn("replay_target_not_private", output)
+
+    def test_prospective_naked_baseline_is_blocked_before_database_access(self):
+        declared = self.prospective_policy()
+        declared["recovery_boundary"]["baseline_database_sha256"] = recovery.digest(self.db.read_bytes())
+        policy = self.save_policy(declared)
+        with patch.object(recovery, "file_metadata", side_effect=AssertionError("no DB admission")), \
+                patch.object(sqlite3, "connect", side_effect=AssertionError("no SQLite access")):
+            result = recovery.classify_account_restore_generation(policy_path=policy, database_path=self.db)
+        self.assertEqual(result, {"status": recovery.UNSAFE_FOR_ACCOUNT_RESTORE,
+                                  "reason": "prospective_complete_set_required"})
+
+    def test_prospective_byte_identical_pre_t0_copy_remains_unsafe_despite_new_mtime(self):
+        old = self.root / "before-t0.db"
+        backup.create_verified_backup(self.db, old)
+        old_completed = datetime.now(timezone.utc)
+        declared = self.prospective_policy()
+        cutoff = datetime.now(timezone.utc)
+        declared["recovery_boundary"]["cutoff_at_utc"] = cutoff.isoformat()
+        new = self.root / "after-t0.db"
+        backup.create_verified_backup(self.db, new)
+        self.assertLess(old_completed, cutoff)
+        self.assertEqual(old.read_bytes(), new.read_bytes())
+        declared["recovery_boundary"]["baseline_database_sha256"] = recovery.digest(new.read_bytes())
+        policy = self.save_policy(declared)
+        os.utime(old, None)
+        for database in (old, new):
+            with self.subTest(database=database.name):
+                result = recovery.classify_account_restore_generation(policy_path=policy, database_path=database)
+                self.assertEqual(result["status"], recovery.UNSAFE_FOR_ACCOUNT_RESTORE)
+
+    def test_prospective_pre_and_equal_t0_full_sets_are_unsafe_even_with_trusted_receipt(self):
+        generation, declared, policy = self.prospective_fixture()
+        original = self.manifest(generation)
+        cutoff = recovery.utc_timestamp(declared["recovery_boundary"]["cutoff_at_utc"])
+        for started in (cutoff - timedelta(seconds=1), cutoff):
+            with self.subTest(started=started):
+                manifest = json.loads(json.dumps(original))
+                manifest["created_at_utc"] = started.isoformat()
+                manifest["account_restore_safety"]["created_at_utc"] = started.isoformat()
+                raw = recovery.json_bytes(manifest)
+                (generation / "manifest.json").write_bytes(raw)
+                declared["generation_receipts"][generation.name] = recovery.digest(raw)
+                self.save_policy(declared)
+                result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+                self.assertEqual(result, {"status": recovery.UNSAFE_FOR_ACCOUNT_RESTORE,
+                                          "reason": "generation_before_recovery_cutoff"})
+
+    def test_prospective_complete_post_t0_set_with_independent_receipt_passes_readonly(self):
+        generation, declared, policy = self.prospective_fixture()
+        before = {p: p.read_bytes() for p in generation.rglob("*") if p.is_file()}
+        policy_before, ledger_before, db_before = policy.read_bytes(), self.ledger.read_bytes(), self.db.read_bytes()
+        manifest = recovery.verify_recovery_set(generation)
+        self.assertEqual(manifest["ledger"]["anchor_id"], declared["recovery_boundary"]["ledger_anchor_id"])
+        self.assertEqual(manifest["account_restore_safety"]["gate_version"], recovery.PROSPECTIVE_GATE_VERSION)
+        self.assertIsNone(manifest["account_restore_coverage"]["baseline_database_sha256"])
+        with patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
+            result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation,
+                                                                   admission_mode="prospective")
+        self.assertEqual(result["status"], recovery.SAFE_FOR_ACCOUNT_RESTORE)
+        self.assertTrue(all("mode=ro" in str(call.args[0]) for call in connect.call_args_list))
+        self.assertEqual(before, {p: p.read_bytes() for p in generation.rglob("*") if p.is_file()})
+        self.assertEqual((policy_before, ledger_before, db_before),
+                         (policy.read_bytes(), self.ledger.read_bytes(), self.db.read_bytes()))
+
+    def test_prospective_old_full_set_is_unsafe_without_admission_receipt(self):
+        generation, declared, policy = self.prospective_fixture()
+        declared["recovery_boundary"]["cutoff_at_utc"] = datetime.now(timezone.utc).isoformat()
+        declared.pop("generation_receipts")
+        self.save_policy(declared)
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result, {"status": recovery.UNSAFE_FOR_ACCOUNT_RESTORE,
+                                  "reason": "generation_before_recovery_cutoff"})
+
+    def test_prospective_missing_or_invalid_t0_and_anchor_are_blocked(self):
+        for field, value in (("cutoff_at_utc", None), ("cutoff_at_utc", "not-UTC"),
+                             ("cutoff_at_utc", "2026-01-01T00:00:00"),
+                             ("cutoff_at_utc", (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()),
+                             ("ledger_anchor_id", None), ("ledger_anchor_id", "invalid")):
+            with self.subTest(field=field, value=value):
+                declared = self.prospective_policy()
+                if value is None:
+                    del declared["recovery_boundary"][field]
+                else:
+                    declared["recovery_boundary"][field] = value
+                result = recovery.classify_account_restore_generation(policy_path=self.save_policy(declared),
+                                                                       database_path=self.db)
+                self.assertEqual(result["status"], recovery.UNKNOWN)
+        for anchor in (None, {"bytes": 0, "sha256": "invalid"}):
+            declared = self.prospective_policy()
+            if anchor is None:
+                del declared["anchor"]
+            else:
+                declared["anchor"] = anchor
+            self.assertEqual(recovery.classify_account_restore_generation(
+                policy_path=self.save_policy(declared), database_path=self.db)["status"], recovery.UNKNOWN)
+
+    def test_partial_prospective_policy_has_no_silent_legacy_fallback(self):
+        for key in sorted(recovery.PROSPECTIVE_FIELDS):
+            with self.subTest(key=key):
+                declared = self.prospective_policy()
+                declared["recovery_boundary"]["baseline_database_sha256"] = recovery.digest(self.db.read_bytes())
+                del declared["recovery_boundary"][key]
+                self.assertEqual(recovery.classify_account_restore_generation(
+                    policy_path=self.save_policy(declared), database_path=self.db)["status"], recovery.UNKNOWN)
+        declared = self.cutoff_policy()
+        declared["generation_receipts"] = {}
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=self.save_policy(declared), database_path=self.db)["status"], recovery.UNKNOWN)
+
+    def test_prospective_invalid_policy_and_gate_versions_are_blocked(self):
+        for key, value in (("admission_mode", "legacy"), ("policy_version", True), ("policy_version", 2),
+                           ("gate_version", recovery.GENERATION_GATE_VERSION), ("gate_version", "99")):
+            with self.subTest(key=key, value=value):
+                declared = self.prospective_policy()
+                declared["recovery_boundary"][key] = value
+                self.assertEqual(recovery.classify_account_restore_generation(
+                    policy_path=self.save_policy(declared), database_path=self.db)["status"], recovery.UNKNOWN)
+
+    def test_prospective_missing_receipt_or_receipt_for_other_generation_is_unknown(self):
+        generation, declared, policy = self.prospective_fixture()
+        for receipts in (None, {}, {"recovery_set_20260101T000000Z_" + "0" * 32: "1" * 64}):
+            with self.subTest(receipts=receipts):
+                if receipts is None:
+                    declared.pop("generation_receipts", None)
+                else:
+                    declared["generation_receipts"] = receipts
+                self.save_policy(declared)
+                self.assertEqual(recovery.classify_account_restore_generation(
+                    policy_path=policy, set_path=generation)["status"], recovery.UNKNOWN)
+
+    def test_prospective_receipt_cannot_be_replaced_by_baseline_hash(self):
+        generation, declared, policy = self.prospective_fixture()
+        declared["generation_receipts"][generation.name] = recovery.digest((generation / "database/clarity.db").read_bytes())
+        self.save_policy(declared)
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result["reason"], "generation_manifest_receipt_mismatch")
+        self.assertEqual(result["status"], recovery.UNSAFE_FOR_ACCOUNT_RESTORE)
+
+    def test_prospective_manipulated_timestamp_fails_even_with_rebound_self_safety(self):
+        generation, _, policy = self.prospective_fixture()
+        manifest = self.manifest(generation)
+        manifest["created_at_utc"] = self.changed_created_at(manifest)
+        manifest["account_restore_safety"] = recovery.generation_manifest_safety(manifest)
+        (generation / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+        recovery.verify_recovery_set(generation)
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result["reason"], "generation_manifest_receipt_mismatch")
+        self.assertEqual(result["status"], recovery.UNSAFE_FOR_ACCOUNT_RESTORE)
+
+    def test_prospective_timestamp_without_safety_binding_is_blocked(self):
+        generation, declared, policy = self.prospective_fixture()
+        manifest = self.manifest(generation)
+        manifest["created_at_utc"] = self.changed_created_at(manifest)
+        raw = recovery.json_bytes(manifest)
+        (generation / "manifest.json").write_bytes(raw)
+        declared["generation_receipts"][generation.name] = recovery.digest(raw)
+        self.save_policy(declared)
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result["reason"], "generation_safety_binding_invalid")
+        self.assertEqual(result["status"], recovery.UNKNOWN)
+
+    def test_prospective_invalid_generation_id_and_id_time_mismatch_are_blocked(self):
+        generation, declared, policy = self.prospective_fixture()
+        original = self.manifest(generation)
+        for identity in ("arbitrary", "recovery_set_20260101T000000Z_" + "0" * 32):
+            with self.subTest(identity=identity):
+                manifest = json.loads(json.dumps(original))
+                manifest["recovery_set_id"] = identity
+                with self.assertRaises(recovery.RecoveryError):
+                    recovery.generation_manifest_safety(manifest)
+        manifest = json.loads(json.dumps(original))
+        manifest["created_at_utc"] = (recovery.utc_timestamp(manifest["created_at_utc"])
+                                      - timedelta(seconds=1)).isoformat()
+        raw = recovery.json_bytes(manifest)
+        (generation / "manifest.json").write_bytes(raw)
+        declared["generation_receipts"][generation.name] = recovery.digest(raw)
+        self.save_policy(declared)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["reason"], "generation_time_identity_mismatch")
+
+    def test_prospective_wrong_trusted_anchor_id_or_prefix_cannot_admit_set(self):
+        generation, declared, policy = self.prospective_fixture()
+        declared["recovery_boundary"]["ledger_anchor_id"] = "ledger_anchor_" + "2" * 32
+        self.save_policy(declared)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["reason"], "generation_policy_mismatch")
+        declared["recovery_boundary"]["ledger_anchor_id"] = "ledger_anchor_" + "1" * 32
+        declared["anchor"]["sha256"] = "0" * 64
+        self.save_policy(declared)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["reason"], "ledger_history_changed")
+
+    def test_prospective_missing_manifest_anchor_id_is_blocked(self):
+        generation, declared, policy = self.prospective_fixture()
+        manifest = self.manifest(generation)
+        del manifest["ledger"]["anchor_id"]
+        raw = recovery.json_bytes(manifest)
+        (generation / "manifest.json").write_bytes(raw)
+        declared["generation_receipts"][generation.name] = recovery.digest(raw)
+        self.save_policy(declared)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["reason"], "generation_ledger_anchor_mismatch")
+
+    def test_prospective_git_and_schema_are_bound_to_independent_policy(self):
+        generation, declared, policy = self.prospective_fixture()
+        for field in ("expected_git_sha", "expected_schema_sha256"):
+            with self.subTest(field=field):
+                original = declared["recovery_boundary"][field]
+                declared["recovery_boundary"][field] = "0" * len(original)
+                self.save_policy(declared)
+                self.assertEqual(recovery.classify_account_restore_generation(
+                    policy_path=policy, set_path=generation)["reason"], "generation_policy_mismatch")
+                declared["recovery_boundary"][field] = original
+
+    def test_prospective_missing_required_file_and_incomplete_set_are_blocked(self):
+        generation, declared, policy = self.prospective_fixture()
+        runtime = generation / "runtime/metadata.json"
+        original_runtime = runtime.read_bytes()
+        runtime.unlink()
+        self.assertNotEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["status"], recovery.SAFE_FOR_ACCOUNT_RESTORE)
+        recovery.private_write(runtime, original_runtime)
+        manifest = self.manifest(generation)
+        manifest["status"] = "FAILED"
+        raw = recovery.json_bytes(manifest)
+        (generation / "manifest.json").write_bytes(raw)
+        declared["generation_receipts"][generation.name] = recovery.digest(raw)
+        self.save_policy(declared)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["reason"], "set_not_complete")
+
+    def test_prospective_unknown_and_unsafe_are_blocked_even_with_matching_receipt(self):
+        generation, declared, policy = self.prospective_fixture()
+        original = self.manifest(generation)
+        for status in (recovery.UNKNOWN, recovery.UNSAFE_FOR_ACCOUNT_RESTORE):
+            with self.subTest(status=status):
+                manifest = json.loads(json.dumps(original))
+                manifest["account_restore_safety"]["status"] = status
+                raw = recovery.json_bytes(manifest)
+                (generation / "manifest.json").write_bytes(raw)
+                declared["generation_receipts"][generation.name] = recovery.digest(raw)
+                self.save_policy(declared)
+                self.assertEqual(recovery.classify_account_restore_generation(
+                    policy_path=policy, set_path=generation)["status"], status)
+
+    def test_prospective_mode_cannot_be_downgraded_by_cli_expectation(self):
+        generation, _, policy = self.prospective_fixture()
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation, admission_mode="legacy")["reason"],
+            "generation_admission_mode_mismatch")
+        legacy = self.cutoff_policy()
+        legacy.pop("generation_receipts", None)
+        policy = self.save_policy(legacy)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, database_path=self.db, admission_mode="prospective")["reason"],
+            "generation_admission_mode_mismatch")
+
+    def test_prospective_canonical_replay_baseline_blocks_before_import_or_write(self):
+        policy = self.save_policy(self.prospective_policy())
+        target = self.root / "staged.db"
+        shutil.copyfile(self.db, target)
+        target.chmod(0o600)
+        output = self.assert_replay_blocked(["reapply_account_delete_tombstones.py", "--db", str(target),
+                                             "--policy", str(policy), "--baseline", str(self.db)], target)
+        self.assertIn("prospective_complete_set_required", output)
+
+    def test_prospective_canonical_replay_check_only_accepts_complete_set_without_mutation(self):
+        generation, _, policy = self.prospective_fixture()
+        target = self.root / "staged.db"
+        shutil.copyfile(generation / "database/clarity.db", target)
+        target.chmod(0o600)
+        before = target.read_bytes(), self.ledger.read_bytes(), policy.read_bytes()
+        output = io.StringIO()
+        with patch.object(sys, "argv", self.replay_command(generation, policy, target, "--check-only")), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(reapply.main(), 0)
+        self.assertIn("REPLAY=NOT_RUN", output.getvalue())
+        self.assertEqual(before, (target.read_bytes(), self.ledger.read_bytes(), policy.read_bytes()))
+
+    def test_prospective_canonical_cli_accepts_only_bound_complete_sets(self):
+        generation, declared, policy = self.prospective_fixture()
+        command = [sys.executable, "-B", str(Path(recovery.__file__)), "generation-gate", "--policy", str(policy)]
+        for arguments, code, status in ((["--set", str(generation)], 0, recovery.SAFE_FOR_ACCOUNT_RESTORE),
+                                        (["--db", str(self.db)], 1, recovery.UNSAFE_FOR_ACCOUNT_RESTORE),
+                                        (["--set", str(generation), "--admission-mode", "legacy"], 1,
+                                         recovery.UNSAFE_FOR_ACCOUNT_RESTORE)):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run([*command, *arguments], capture_output=True, text=True)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn("ACCOUNT_RESTORE_GATE=" + status, result.stdout)
+                self.assertNotIn(self.secret, result.stdout + result.stderr)
+        for field in ("cutoff_at_utc", "ledger_anchor_id"):
+            value = declared["recovery_boundary"].pop(field)
+            self.save_policy(declared)
+            result = subprocess.run([*command, "--set", str(generation)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("ACCOUNT_RESTORE_GATE=UNKNOWN", result.stdout)
+            declared["recovery_boundary"][field] = value
+        self.save_policy(declared)
+        result = subprocess.run([*command, "--set", str(generation), "--force"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+
+    def test_prospective_cli_rejects_full_set_provenance_failures(self):
+        generation, declared, policy = self.prospective_fixture()
+        original = self.manifest(generation)
+        command = [sys.executable, "-B", str(Path(recovery.__file__)), "generation-gate",
+                   "--policy", str(policy), "--set", str(generation), "--admission-mode", "prospective"]
+        cutoff = declared["recovery_boundary"]["cutoff_at_utc"]
+        for category in ("pre-t0", "equal-t0", "unbound-time", "changed-time", "wrong-anchor", "unknown", "manual-safe"):
+            with self.subTest(category=category):
+                manifest = json.loads(json.dumps(original))
+                if category in {"pre-t0", "equal-t0"}:
+                    manifest["created_at_utc"] = (recovery.utc_timestamp(cutoff) - timedelta(
+                        seconds=1 if category == "pre-t0" else 0)).isoformat()
+                elif category in {"unbound-time", "changed-time"}:
+                    manifest["created_at_utc"] = self.changed_created_at(manifest)
+                    if category == "changed-time":
+                        manifest["account_restore_safety"] = recovery.generation_manifest_safety(manifest)
+                elif category == "wrong-anchor":
+                    manifest["ledger"]["anchor_id"] = "ledger_anchor_" + "2" * 32
+                elif category == "unknown":
+                    manifest["account_restore_safety"]["status"] = recovery.UNKNOWN
+                else:
+                    manifest["account_restore_safety"] = {"status": recovery.SAFE_FOR_ACCOUNT_RESTORE}
+                raw = recovery.json_bytes(manifest)
+                (generation / "manifest.json").write_bytes(raw)
+                # Even a receipt cannot authorize a structurally invalid set;
+                # a self-rebound valid timestamp still cannot replace the receipt.
+                declared["generation_receipts"][generation.name] = recovery.digest(
+                    recovery.json_bytes(original) if category == "changed-time" else raw)
+                self.save_policy(declared)
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertNotIn("ACCOUNT_RESTORE_GATE=" + recovery.SAFE_FOR_ACCOUNT_RESTORE, result.stdout)
+                self.assertNotIn(self.secret, result.stdout + result.stderr)
+
+    def test_prospective_malformed_receipts_are_blocked_without_fallback(self):
+        for receipts in ([], None, {"invalid-id": "1" * 64},
+                         {"recovery_set_20260101T000000Z_" + "0" * 32: "invalid-hash"}):
+            with self.subTest(receipts=receipts):
+                declared = self.prospective_policy()
+                declared["generation_receipts"] = receipts
+                result = recovery.classify_account_restore_generation(
+                    policy_path=self.save_policy(declared), database_path=self.db)
+                self.assertEqual(result, {"status": recovery.UNKNOWN, "reason": "generation_receipts_invalid"})
+
+    def test_prospective_manifest_change_during_verification_is_blocked(self):
+        generation, _, policy = self.prospective_fixture()
+        original_verify = recovery.verify_recovery_set
+
+        def change_after_verify(path):
+            manifest = original_verify(path)
+            manifest["completed_at_utc"] = "tampered-after-verification"
+            (path / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+            return manifest
+
+        with patch.object(recovery, "verify_recovery_set", side_effect=change_after_verify):
+            result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result, {"status": recovery.UNKNOWN, "reason": "generation_manifest_changed"})
+
+    def test_prospective_collection_at_t0_never_marks_set_safe(self):
+        declared = self.prospective_policy()
+        self.inventory["ledger"] = declared
+        self.save_inventory()
+        with patch.object(recovery, "utc_now", return_value=declared["recovery_boundary"]["cutoff_at_utc"]):
+            generation = self.collect()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["status"], "FAILED")
+        self.assertEqual(manifest["error_code"], "generation_before_recovery_cutoff")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.UNSAFE_FOR_ACCOUNT_RESTORE)
 
 
 class EffectiveSystemdInventoryTests(unittest.TestCase):
