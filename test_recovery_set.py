@@ -64,9 +64,10 @@ class RecoverySetTests(unittest.TestCase):
         for role in sorted(recovery.CONFIG_ROLES):
             path = self.root / (role + ".conf")
             path.write_text("# synthetic " + role + "\n")
-            configurations.append({"role": role, "path": str(path), "custody_ref": "escrow:runtime-fixture"})
+            configurations.append({"role": role, "path": str(path), "custody_ref": "escrow:runtime-fixture",
+                                  "external_content_revision": "fixture-config-v1"})
         self.inventory = {
-            "inventory_version": 1, "database": str(self.db),
+            "inventory_version": recovery.INVENTORY_VERSION, "database": str(self.db),
             "ledger": {"path": str(self.ledger), "history_confirmed_complete": True,
                        "audit_reference": "offline:synthetic-ledger-audit",
                        "anchor": {"bytes": self.ledger.stat().st_size,
@@ -77,7 +78,9 @@ class RecoverySetTests(unittest.TestCase):
                         "gunicorn_version": "26.2.2", "entrypoint": "rove_app_wsgi:app",
                         "worker_class": "gthread", "workers": 1, "threads": 4,
                         "bind": "127.0.0.1:5057", "timezone": "UTC",
-                        "environment_files": [str(self.env)], "config_files": configurations},
+                        "environment_files": [{"path": str(self.env), "custody_ref": "vault:runtime-config",
+                                               "external_content_revision": "fixture-env-v1"}],
+                        "config_files": configurations},
             "secret_dependencies": [
                 {"name": name, "version": "fixture-v1", "custody_ref": "offline:fixture-keys"}
                 for name in ("ROVE_APP_AUTH_SECRET", "BREVO_API_KEY")
@@ -310,6 +313,218 @@ class RecoverySetTests(unittest.TestCase):
                          {"ROVE_APP_AUTH_SECRET", "BREVO_API_KEY"})
         self.assertFalse(list(result.rglob("*.env")))
 
+    def test_verified_environment_and_config_revisions_are_bound(self):
+        inventory = recovery.load_inventory(self.inventory_path, self.db, self.ledger)
+        self.assertEqual(inventory["runtime"]["environment_files"][0]["external_content_revision"],
+                         "fixture-env-v1")
+        metadata, _ = recovery.runtime_metadata(inventory)
+        self.assertEqual(metadata["environment_files"][0]["external_content_revision"], "fixture-env-v1")
+        self.assertEqual({item["external_content_revision"] for item in metadata["config_files"]},
+                         {"fixture-config-v1"})
+        self.assertEqual(recovery.runtime_revision_binding(metadata)["status"], "VERIFIED")
+
+    def test_legacy_inventory_v1_with_historical_ledger_is_complete_but_never_safe(self):
+        self.inventory["inventory_version"] = recovery.LEGACY_INVENTORY_VERSION
+        self.inventory["runtime"]["environment_files"] = [str(self.env)]
+        for item in self.inventory["runtime"]["config_files"]:
+            item.pop("external_content_revision")
+        self.save_inventory()
+        generation = self.collect()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["status"], "COMPLETE")
+        self.assertEqual(manifest["account_restore_coverage"]["mode"], "historical")
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "UNVERIFIED")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.UNKNOWN)
+        recovery.verify_recovery_set(generation)
+        result = recovery.classify_account_restore_generation(
+            policy_path=self.save_policy(self.inventory["ledger"]), set_path=generation)
+        self.assertEqual(result, {"status": recovery.UNKNOWN, "reason": "generation_safety_unknown"})
+
+    def test_inventory_v2_unverified_revisions_block_historical_generation(self):
+        marker = recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = marker
+        for item in self.inventory["runtime"]["config_files"]:
+            item["external_content_revision"] = marker
+        self.save_inventory()
+        generation = self.collect()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "UNVERIFIED")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.UNKNOWN)
+        result = recovery.classify_account_restore_generation(
+            policy_path=self.save_policy(self.inventory["ledger"]), set_path=generation)
+        self.assertEqual(result["status"], recovery.UNKNOWN)
+
+    def test_runtime_revision_binding_status_must_be_exact_and_present(self):
+        generation = self.collect()
+        policy = self.save_policy(self.inventory["ledger"])
+        original = self.manifest(generation)
+        self.assertEqual(original["runtime_revision_binding"]["status"], "VERIFIED")
+        for status in ("UNVERIFIED", "UNKNOWN", "CONFIRMED", None):
+            with self.subTest(status=status):
+                manifest = json.loads(json.dumps(original))
+                if status is None:
+                    del manifest["runtime_revision_binding"]["status"]
+                else:
+                    manifest["runtime_revision_binding"]["status"] = status
+                (generation / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+                result = recovery.classify_account_restore_generation(
+                    policy_path=policy, set_path=generation)
+                self.assertEqual(result["status"], recovery.UNKNOWN)
+        manifest = json.loads(json.dumps(original))
+        del manifest["runtime_revision_binding"]
+        (generation / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result["status"], recovery.UNKNOWN)
+
+    def test_verified_to_unverified_manifest_tampering_is_blocked(self):
+        generation = self.collect()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "VERIFIED")
+        manifest["runtime_revision_binding"]["status"] = "UNVERIFIED"
+        (generation / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+        result = recovery.classify_account_restore_generation(
+            policy_path=self.save_policy(self.inventory["ledger"]), set_path=generation)
+        self.assertNotEqual(result["status"], recovery.SAFE_FOR_ACCOUNT_RESTORE)
+
+    def test_unverified_historical_generation_blocks_cli_and_replay(self):
+        marker = recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = marker
+        for item in self.inventory["runtime"]["config_files"]:
+            item["external_content_revision"] = marker
+        self.save_inventory()
+        generation = self.collect()
+        policy = self.save_policy(self.inventory["ledger"])
+        target = self.root / "staged-unverified-historical.db"
+        shutil.copyfile(generation / "database/clarity.db", target)
+        target.chmod(0o600)
+        result = subprocess.run(
+            [sys.executable, "-B", str(Path(recovery.__file__)), "generation-gate",
+             "--policy", str(policy), "--set", str(generation)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ACCOUNT_RESTORE_GATE=UNKNOWN", result.stdout)
+        self.assert_replay_blocked(self.replay_command(generation, policy, target), target)
+
+    def test_exact_approved_bare_baseline_is_blocked_without_runtime_manifest(self):
+        policy = self.save_policy(self.cutoff_policy())
+        before = self.db.read_bytes(), self.ledger.read_bytes()
+        result = recovery.classify_account_restore_generation(policy_path=policy, database_path=self.db)
+        self.assertEqual(result, {"status": recovery.UNKNOWN,
+                                  "reason": "runtime_revision_binding_missing"})
+        self.assertEqual(before, (self.db.read_bytes(), self.ledger.read_bytes()))
+        target = self.root / "staged-baseline.db"
+        shutil.copyfile(self.db, target)
+        target.chmod(0o600)
+        self.assert_replay_blocked(
+            ["reapply_account_delete_tombstones.py", "--db", str(target), "--policy", str(policy),
+             "--baseline", str(self.db)], target)
+
+    def test_unverified_revisions_are_manifest_bound_but_not_restore_safe_in_prospective_mode(self):
+        marker = recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = marker
+        self.inventory["runtime"]["config_files"][0]["external_content_revision"] = marker
+        generation, declared, policy = self.prospective_fixture()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "UNVERIFIED")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.UNKNOWN)
+        runtime = json.loads((generation / manifest["runtime"]["path"]).read_text())
+        self.assertEqual(runtime["expected_runtime"]["environment_files"][0]["external_content_revision"], marker)
+        self.assertEqual(runtime["expected_runtime"]["config_files"][0]["external_content_revision"], marker)
+        self.assertEqual(recovery.digest((generation / "manifest.json").read_bytes()),
+                         declared["generation_receipts"][generation.name])
+        result = recovery.classify_account_restore_generation(policy_path=policy, set_path=generation)
+        self.assertEqual(result, {"status": recovery.UNKNOWN, "reason": "generation_safety_unknown"})
+        target = self.root / "staged-unverified.db"
+        shutil.copyfile(generation / "database/clarity.db", target)
+        target.chmod(0o600)
+        self.assert_replay_blocked(self.replay_command(generation, policy, target), target)
+
+    def test_legacy_inventory_without_revisions_is_explicitly_unverified_and_blocked_prospectively(self):
+        self.inventory["inventory_version"] = recovery.LEGACY_INVENTORY_VERSION
+        self.inventory["runtime"]["environment_files"] = [str(self.env)]
+        for item in self.inventory["runtime"]["config_files"]:
+            item.pop("external_content_revision")
+        generation, _, policy = self.prospective_fixture()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "UNVERIFIED")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.UNKNOWN)
+        self.assertEqual(recovery.classify_account_restore_generation(
+            policy_path=policy, set_path=generation)["status"], recovery.UNKNOWN)
+
+    def test_inventory_revision_changes_change_bound_metadata_hash(self):
+        first = self.collect()
+        first_manifest = self.manifest(first)
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = "fixture-env-v2"
+        self.save_inventory()
+        env_changed = self.manifest(self.collect())
+        self.assertNotEqual(first_manifest["runtime"]["sha256"], env_changed["runtime"]["sha256"])
+        self.assertNotEqual(first_manifest["runtime_revision_binding"]["sha256"],
+                            env_changed["runtime_revision_binding"]["sha256"])
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = "fixture-env-v1"
+        self.inventory["runtime"]["config_files"][0]["external_content_revision"] = "fixture-config-v2"
+        self.save_inventory()
+        config_changed = self.manifest(self.collect())
+        self.assertNotEqual(first_manifest["runtime"]["sha256"], config_changed["runtime"]["sha256"])
+        self.assertNotEqual(first_manifest["runtime_revision_binding"]["sha256"],
+                            config_changed["runtime_revision_binding"]["sha256"])
+
+    def test_post_collection_revision_tampering_is_blocked_even_if_member_hash_is_recomputed(self):
+        generation = self.collect()
+        manifest = self.manifest(generation)
+        runtime_path = generation / manifest["runtime"]["path"]
+        runtime = json.loads(runtime_path.read_text())
+        runtime["expected_runtime"]["environment_files"][0]["external_content_revision"] = "tampered-v2"
+        runtime_raw = recovery.json_bytes(runtime)
+        runtime_path.write_bytes(runtime_raw)
+        manifest["runtime"]["bytes"] = len(runtime_raw)
+        manifest["runtime"]["sha256"] = recovery.digest(runtime_raw)
+        (generation / "manifest.json").write_bytes(recovery.json_bytes(manifest))
+        with self.assertRaisesRegex(recovery.RecoveryError, "runtime_revision_binding_mismatch"):
+            recovery.verify_recovery_set(generation)
+
+    def test_secret_revision_stays_separate_from_runtime_file_revisions(self):
+        first = self.collect()
+        first_manifest = self.manifest(first)
+        self.inventory["secret_dependencies"][0]["version"] = "runtime-secret-20261006"
+        self.save_inventory()
+        second = self.collect()
+        second_manifest = self.manifest(second)
+        self.assertEqual(first_manifest["runtime_revision_binding"], second_manifest["runtime_revision_binding"])
+        self.assertEqual(first_manifest["runtime"]["sha256"], second_manifest["runtime"]["sha256"])
+        self.assertNotEqual(first_manifest["secret_dependencies"], second_manifest["secret_dependencies"])
+
+    def test_new_inventory_requires_revision_fields_and_rejects_unknown_fields(self):
+        baseline = json.loads(json.dumps(self.inventory))
+        for mutate, code in (
+            (lambda: self.inventory["runtime"]["environment_files"][0].pop("external_content_revision"),
+             "inventory_fields_invalid"),
+            (lambda: self.inventory["runtime"]["config_files"][0].pop("external_content_revision"),
+             "inventory_fields_invalid"),
+            (lambda: self.inventory["runtime"]["environment_files"][0].update(unexpected="x"),
+             "inventory_fields_invalid"),
+            (lambda: self.inventory["runtime"]["config_files"][0].update(unexpected="x"),
+             "inventory_fields_invalid"),
+        ):
+            with self.subTest(code=code):
+                self.inventory = json.loads(json.dumps(baseline))
+                mutate()
+                self.save_inventory()
+                with self.assertRaisesRegex(recovery.RecoveryError, code):
+                    recovery.load_inventory(self.inventory_path, self.db, self.ledger)
+
+    def test_unverified_marker_is_accepted_but_invalid_revision_values_fail_closed(self):
+        self.inventory["runtime"]["environment_files"][0]["external_content_revision"] = \
+            recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        self.inventory["runtime"]["config_files"][0]["external_content_revision"] = \
+            recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        self.save_inventory()
+        self.assertEqual(recovery.load_inventory(self.inventory_path, self.db, self.ledger)["runtime"]
+                         ["environment_files"][0]["external_content_revision"],
+                         recovery.EXTERNAL_CONTENT_REVISION_UNVERIFIED)
+        self.inventory["runtime"]["config_files"][0]["external_content_revision"] = " "
+        self.save_inventory()
+        with self.assertRaisesRegex(recovery.RecoveryError, "config_inventory_invalid"):
+            recovery.load_inventory(self.inventory_path, self.db, self.ledger)
+
     def test_missing_secret_dependency_fails(self):
         self.inventory["secret_dependencies"] = []
         self.save_inventory()
@@ -420,15 +635,12 @@ class RecoverySetTests(unittest.TestCase):
         with self.assertRaisesRegex(recovery.RecoveryError, "legacy_generation_not_approved"):
             recovery.check_account_restore_generation(policy_path=policy, database_path=self.db)
 
-    def test_only_exact_approved_sealed_legacy_baseline_can_pass_gate(self):
+    def test_exact_approved_bare_baseline_without_runtime_binding_is_unknown(self):
         policy = self.save_policy(self.cutoff_policy())
         before = self.db.read_bytes(), self.ledger.read_bytes()
-        recovery.check_account_restore_generation(policy_path=policy, database_path=self.db)
-        self.assertEqual(before, (self.db.read_bytes(), self.ledger.read_bytes()))
-        sidecar = Path(str(self.db) + "-wal")
-        sidecar.write_bytes(b"synthetic WAL")
-        with self.assertRaisesRegex(recovery.RecoveryError, "baseline_not_sealed"):
+        with self.assertRaisesRegex(recovery.RecoveryError, "runtime_revision_binding_missing"):
             recovery.check_account_restore_generation(policy_path=policy, database_path=self.db)
+        self.assertEqual(before, (self.db.read_bytes(), self.ledger.read_bytes()))
 
     def test_latest_external_ledger_append_is_required_without_mutating_set(self):
         result = self.collect()
@@ -451,11 +663,15 @@ class RecoverySetTests(unittest.TestCase):
 
     def test_old_manifest_version_cannot_pass_generation_gate(self):
         result = self.collect()
-        manifest = self.manifest(result)
-        manifest["manifest_version"] = 1
-        (result / "manifest.json").write_text(json.dumps(manifest))
-        with self.assertRaisesRegex(recovery.RecoveryError, "set_not_complete"):
-            recovery.check_account_restore_generation(policy_path=self.save_policy(self.inventory["ledger"]), set_path=result)
+        original = self.manifest(result)
+        for version in (1, 3):
+            with self.subTest(version=version):
+                manifest = json.loads(json.dumps(original))
+                manifest["manifest_version"] = version
+                (result / "manifest.json").write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(recovery.RecoveryError, "set_not_complete"):
+                    recovery.check_account_restore_generation(
+                        policy_path=self.save_policy(self.inventory["ledger"]), set_path=result)
 
     def test_generation_gate_cli_requires_policy_and_marks_unknown_generation_unsafe(self):
         policy = self.save_policy(self.cutoff_policy())
@@ -495,7 +711,8 @@ class RecoverySetTests(unittest.TestCase):
             path.write_text("# " + name + "\nEnvironment=BREVO_API_KEY=" + self.secret + "\n")
             paths.append(str(path))
             self.inventory["runtime"]["config_files"].insert(0, {
-                "role": "api_dropin", "path": str(path), "custody_ref": "offline:runtime-configuration"})
+                "role": "api_dropin", "path": str(path), "custody_ref": "offline:runtime-configuration",
+                "external_content_revision": "fixture-dropin-v1"})
         self.effective_api["drop_in_paths"] = sorted(paths)
         self.save_inventory()
         result = self.collect()
@@ -626,7 +843,8 @@ class RecoverySetTests(unittest.TestCase):
     def test_expected_production_environment_is_the_only_untracked_exception(self):
         env = self.repo / ".rove-app-api.env"
         shutil.copyfile(self.env, env)
-        self.inventory["runtime"]["environment_files"] = [str(env)]
+        self.inventory["runtime"]["environment_files"] = [{
+            "path": str(env), "custody_ref": "vault:runtime-config", "external_content_revision": "fixture-env-v1"}]
         self.effective_api["environment_files"] = [str(env)]
         self.save_inventory()
         manifest = self.manifest(self.collect())
@@ -839,6 +1057,10 @@ class RecoverySetTests(unittest.TestCase):
 
     def test_canonical_replay_accepts_safe_generation_and_is_user_scoped(self):
         generation, policy, target = self.replay_fixture()
+        manifest = self.manifest(generation)
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "VERIFIED")
+        self.assertEqual(manifest["account_restore_coverage"]["mode"], "historical")
+        self.assertEqual(manifest["account_restore_safety"]["status"], recovery.SAFE_FOR_ACCOUNT_RESTORE)
         source_before = (generation / "database/clarity.db").read_bytes()
         with patch.object(sys, "argv", self.replay_command(generation, policy, target)), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -1101,6 +1323,7 @@ class RecoverySetTests(unittest.TestCase):
         policy_before, ledger_before, db_before = policy.read_bytes(), self.ledger.read_bytes(), self.db.read_bytes()
         manifest = recovery.verify_recovery_set(generation)
         self.assertEqual(manifest["ledger"]["anchor_id"], declared["recovery_boundary"]["ledger_anchor_id"])
+        self.assertEqual(manifest["runtime_revision_binding"]["status"], "VERIFIED")
         self.assertEqual(manifest["account_restore_safety"]["gate_version"], recovery.PROSPECTIVE_GATE_VERSION)
         self.assertIsNone(manifest["account_restore_coverage"]["baseline_database_sha256"])
         with patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connect:
@@ -1111,6 +1334,13 @@ class RecoverySetTests(unittest.TestCase):
         self.assertEqual(before, {p: p.read_bytes() for p in generation.rglob("*") if p.is_file()})
         self.assertEqual((policy_before, ledger_before, db_before),
                          (policy.read_bytes(), self.ledger.read_bytes(), self.db.read_bytes()))
+
+    def test_recovery_version_contract_is_consistent(self):
+        self.assertEqual(recovery.INVENTORY_VERSION, 2)
+        self.assertEqual(recovery.MANIFEST_VERSION, 4)
+        self.assertEqual(recovery.PROSPECTIVE_GATE_VERSION, "3")
+        self.assertEqual(recovery.GENERATION_GATE_VERSION, "1")
+        self.assertEqual(recovery.TOOL_VERSION, "1.3")
 
     def test_prospective_old_full_set_is_unsafe_without_admission_receipt(self):
         generation, declared, policy = self.prospective_fixture()

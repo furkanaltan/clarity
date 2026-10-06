@@ -262,8 +262,17 @@ truncation. A zero-length prefix attests only the start of prospective coverage,
 not any earlier deletion. Continued operator assurance that no unlogged deletes
 or ledger loss occurred is still necessary; file hashes cannot prove that alone.
 
-Tool 1.2 / manifest 3 stores `account_restore_coverage`, including the cutoff,
-approved baseline hash and evidence reference. Cutoff sets are labeled
+Inventory v2 binds every runtime ENV/config file's configured path, independent
+`custody_ref` and `external_content_revision`; ENV entries contain `path`,
+`custody_ref` and `external_content_revision`, while config entries also contain
+`role`. Secret dependency revisions remain separate from runtime file revisions.
+Legacy Inventory v1 is still readable but is explicitly `UNVERIFIED`; it is never
+silently upgraded. An unverified/missing/unsupported runtime revision binding is
+never restore-safe, regardless of ledger coverage or admission mode.
+
+Tool 1.3 / manifest 4 stores `account_restore_coverage`, including the cutoff,
+approved baseline hash and evidence reference. Manifest v3 is rejected
+fail-closed. Cutoff sets are labeled
 `FROM_VERIFIED_CUTOFF_ONLY`, never historically complete. Set creation that
 started before the boundary is rejected even if the snapshot completed later.
 An empty ledger can never authorize historical coverage, even if the declaration
@@ -274,8 +283,13 @@ only with the explicitly verified prospective boundary and baseline conditions.
 ledger prefix anchor, coverage declaration, database SHA-256, Git SHA, schema
 fingerprint, explicit SQLite `user_version`, manifest version and generation-gate
 version `1`. Its status is
-`SAFE_FOR_ACCOUNT_RESTORE` only for a successfully verified candidate under that
-coverage, with reason `historical_coverage_attested` or
+`SAFE_FOR_ACCOUNT_RESTORE` only when the manifest-bound runtime revision status is
+exactly `VERIFIED` AND the candidate satisfies the applicable coverage policy.
+This independent prerequisite applies to historical, cutoff/baseline and
+prospective generations; historical ledger coverage cannot replace runtime
+revision verification. Prospective Gate version `3` continues to require the
+independent manifest receipt, expected Git/schema, ledger anchor and strict post-T0
+snapshot provenance. Verified candidates use reason `historical_coverage_attested` or
 `after_verified_recovery_cutoff`. Failed sets record `UNSAFE_FOR_ACCOUNT_RESTORE`
 and their safe error code; incomplete/unclassified candidates are `UNKNOWN`.
 Verification rejects missing or inconsistent bindings. Eligibility still requires
@@ -294,10 +308,11 @@ python rove_recovery_set.py generation-gate --policy <trusted-ledger-policy.json
 An old manifest, missing proof or unavailable evidence classifies as `UNKNOWN`;
 pre-cutoff, explicitly unsafe, mismatched or unapproved bare generations classify
 as `UNSAFE_FOR_ACCOUNT_RESTORE`. BOTH statuses return a nonzero exit and block.
-All bare legacy DB copies remain blocked irrespective of mtime, except the
-exact independently approved baseline hash; even that exception requires a
-sealed, integrity/FK-valid DB and ledger replay before any account use.
-Append-only newer ledger records are accepted and MUST also be replayed.
+All bare legacy DB copies, including an exact approved baseline hash, are blocked:
+a bare DB has no manifest-bound `runtime_revision_binding=VERIFIED`. The baseline
+must first be sealed into a complete current-version recovery set with a verified
+runtime binding; a hash approval alone cannot authorize it. Newer ledger records
+are accepted only for an otherwise safe set and MUST also be replayed.
 Passing the generation gate does not copy/restore a DB, scrub files, validate
 key possession, or authorize publication. Source/set bytes are unchanged.
 
@@ -312,7 +327,6 @@ importing application code or opening any writable SQLite connection:
 
 ```text
 python reapply_account_delete_tombstones.py --db <separate-staging.db> --policy <trusted-ledger-policy.json> --recovery-set <approved-set>
-python reapply_account_delete_tombstones.py --db <separate-staging.db> --policy <trusted-ledger-policy.json> --baseline <exact-approved-baseline.db>
 ```
 
 These are documentation contracts, NOT commands to run on Production now.
@@ -323,7 +337,9 @@ the source baseline, active configured DBs, sidecars and missing targets cannot 
 mutated or silently created by replay. There is no `--force` or env bypass.
 Only validated latest-ledger IDs are passed to the existing user-scoped deletion
 function. Ledger changes during replay roll back the entire staging transaction.
-The old bare `--db --ledger` invocation is blocked. Core account-delete/runtime
+The legacy `--baseline` option remains fail-closed because a bare DB cannot carry
+the mandatory manifest-bound runtime revision status. The old bare `--db --ledger`
+invocation is blocked. Core account-delete/runtime
 logic is unchanged; no service startup or schema migration is added.
 
 Local tests enforce the executable replay entry point. Root can always bypass
@@ -538,3 +554,170 @@ Only AFTER that GO, next single block:
 OFFSITE REPLICATION OF THE COMPLETE RECOVERY SET.
 Do not claim Recovery FROZEN until independent retrieval, current ledger/key
 coverage, isolated financial checks and measured RPO/RTO are demonstrated.
+
+## Block 2B.1: local encryption and offline verification
+
+`rove_recovery_crypto.py` wraps an existing sealed set; it does not collect a
+live database, retrieve artifacts, activate a service or authorize restore.
+This block is local and synthetic. Production Runtime, Monitoring Block 1 and
+the installed Block 2A generation gate are unchanged. Production compatibility
+was accepted separately after the preceding local gate; that acceptance does
+not establish offsite replication or a complete restore.
+
+### Archive and envelope
+
+The wrapper accepts only a COMPLETE set with the current manifest/tool versions,
+internally bound `SAFE_FOR_ACCOUNT_RESTORE` metadata, and the exact canonical
+inventory. It copies files into a private disposable workspace before invoking
+SQLite verification. Source database paths and custody references in metadata
+are never followed. The input set is not modified.
+
+USTAR entries are sorted, with zero timestamps/UIDs/GIDs, empty owner names,
+0700 directories and 0600 files. gzip uses a fixed level, zero timestamp and no
+filename. Repeated archives of the same bytes are deterministic under the same
+Python/zlib implementation. GPG ciphertext is intentionally randomized. Offline
+verification checks the original compressed archive hash and compares canonical
+uncompressed TAR bytes; it does not require identical gzip compression output
+from a different recovery machine.
+
+The published envelope contains exactly:
+
+- `recovery_set_<id>.tar.gz.gpg`
+- `crypto.json`
+
+Metadata binds wrapper version, set ID, the Git SHA from the sealed set manifest,
+manifest/archive/ciphertext SHA-256, ciphertext length, encryption UTC, primary
+public-key fingerprint and the selected encryption-key/subkey fingerprint.
+No key exports, UIDs, passphrases, raw ENV or systemd configuration are added.
+The original validated set's bytes are preserved, including its private account
+data; the wrapper does not attempt to redact or reinterpret that data.
+
+### Dedicated keys and independent receipt
+
+The later Production encryptor receives only a dedicated recovery PUBLIC key.
+Its complete uppercase 40-character fingerprint must match an independently
+verified identity. Short key IDs are rejected. A single primary key and exactly
+one currently usable encryption key/subkey are required. Encryption pins that
+exact fingerprint with GPG's `!` suffix; no recipient fallback is allowed.
+Expired/revoked keys cannot encrypt new archives.
+
+The PRIVATE key remains on an independent offline recovery machine/in the
+operator's encrypted recovery custody, never on Production. Keep its passphrase
+and recovery access separately. Retain historical private key/subkey versions
+for as long as retained archives depend on them; expiry stops new encryption
+but does not prevent historical decryption of the pinned key. Rotation requires
+an explicit later operator gate and a new verified public-key fingerprint.
+
+Encryption prints `METADATA_SHA256`. Preserve this nonsecret receipt separately
+in trusted, versioned recovery custody alongside the verified public-key
+fingerprint. The verifier REQUIRES that independently retained receipt.
+Calculating it from an untrusted downloaded `crypto.json` is not an authenticity
+check. OpenPGP public-key encryption/MDC detects corruption but does not identify
+the producer: anybody with the public key can encrypt a different artifact.
+Replacing both envelope and sidecar must fail against the trusted receipt.
+This implementation does not introduce a separate signing key.
+
+GPG >= 2.4.4 uses a fresh private temporary home under the operation's private
+workspace, no user configuration/keyring, no automatic key retrieval/import and
+no default-agent access. For productive offline verification, pass a short,
+private `--gpg-temp-parent` on an encrypted local volume. The path is checked
+for ownership, permissions and Unix-socket length before GPG starts. Encryption
+uses AES-256 public-key encryption with an integrity-protected OpenPGP message
+and does not start a private-key agent. Offline import/decryption uses a
+disposable agent; the matching `gpgconf` executable is required to shut it down.
+GPG stdout and stderr are captured; the CLI prints only fixed status messages
+and the nonsecret receipt. Passphrases use hidden terminal input or an inherited
+file descriptor, never a command-line literal, environment variable or script
+value. An unavailable echo-free terminal fails closed.
+
+### Offline verification
+
+The verifier checks, in order:
+
+1. Independent metadata receipt, pinned fingerprint, metadata schema and limits.
+2. Ciphertext byte length/SHA-256 in its private copied input.
+3. Correct private primary/subkey identity, exact single recipient, successful
+   decryption and OpenPGP integrity; no extraction before decryption succeeds.
+4. Original archive SHA-256, bounded decompression and canonical TAR structure.
+5. Safe exact extraction, manifest and every file hash, SQLite integrity and
+   foreign keys, schema fingerprint, ledger anchor and generation bindings.
+6. Optional direct comparison with the original set's file hashes/bytes using
+   `--reference-set`. This is exercised by the synthetic acceptance tests.
+
+Without the optional reference, all original bytes remain bound by the trusted
+archive/manifest hashes and exact manifest inventory. Production/source files
+are not needed. An output is published only after all checks pass and always
+reports `ACCOUNT_RESTORE=NOT_AUTHORIZED`. The separate trusted generation policy,
+latest complete ledger and file scrub remain mandatory for any later restore.
+
+Absolute paths, traversal, symlinks, hardlinks, special files, duplicate members,
+extra files/directories, noncanonical TAR data, changed sources and missing
+required files are rejected. Extraction never uses `extractall`. Limits are
+1 GiB total set bytes, up to 10,000 files, and 32 MiB extra archive overhead;
+larger sets fail and require an explicitly reviewed limit change. Existing
+output paths and source/output overlaps are rejected. Output parents must be
+private and owned by the executing operator.
+
+### Local interfaces (synthetic fixtures only in this block)
+
+Absolute, verified paths are required. Both output directories must be NEW,
+with an existing private parent. For productive offline verification, place the
+private output parent on the encrypted recovery volume. The example placeholders
+describe the interface; they do not provision keys or enable Production.
+
+```bash
+python3.12 rove_recovery_crypto.py --gpg /absolute/gpg encrypt \
+  --gpg-temp-parent /absolute/private/encrypted-volume/gpg-work \
+  --set /absolute/private/recovery_set_<id> \
+  --public-key /absolute/private/synthetic-public.asc \
+  --fingerprint <independently-verified-full-public-fingerprint> \
+  --output /absolute/private/new-envelope
+
+python3.12 rove_recovery_crypto.py --gpg /absolute/gpg verify-offline \
+  --gpg-temp-parent /absolute/private/encrypted-volume/gpg-work \
+  --ciphertext /absolute/private/new-envelope/recovery_set_<id>.tar.gz.gpg \
+  --metadata /absolute/private/new-envelope/crypto.json \
+  --metadata-sha256 <independently-preserved-receipt> \
+  --private-key /absolute/private/synthetic-private.asc \
+  --fingerprint <independently-verified-full-public-fingerprint> \
+  --reference-set /absolute/private/recovery_set_<id> \
+  --output /absolute/private/new-verified-copy
+```
+
+No productive key is generated or installed by these commands. Synthetic tests
+generate disposable RSA keys and a certificate/encryption-subkey pair in private
+temporary homes, with passphrase-protected private exports. They exercise real
+GPG encryption/decryption, not a mocked successful transport.
+
+The local test suite requires `gpg` >= 2.4.4 (plus its agent/`gpgconf`) on PATH and
+Python 3.12 with the existing regression-test dependencies. If GPG is installed
+in an isolated tool directory, prepend that directory to PATH for the test
+process. Missing GPG is a failed gate, never a silently skipped crypto suite.
+
+Local acceptance: Python 3.12.14 / GPG 2.4.4, 184/184 tests PASS, zero failures,
+errors or skips: 132 existing recovery/generation/privacy/logging/SQLite tests
+plus 52 encryption/offline tests. Negatives cover FAILED/unsafe/unknown sets,
+wrong fingerprints/recipients/private keys/passphrases, ciphertext/hash/archive/
+manifest/file tampering, traversal/links/duplicates/missing or extra files,
+SQLite corruption/FK violations, ledger/generation bindings, output isolation,
+key permissions, no-private-key encryption and redacted diagnostics. A synthetic
+offline run succeeds after original DB/ENV/set inputs have been removed. No
+Production data, keys, configuration, services or frozen code were changed.
+
+### Operational limits and next gate
+
+Use an encrypted local disk for offline private-key handling and plaintext
+verification. Temporary files are removed on normal success/failure and agents
+are stopped. Unlinking is not secure erasure on SSDs; abrupt process/machine loss
+can leave temporary plaintext/keyring material requiring controlled cleanup on
+that recovery machine. The wrapper assumes private workspace ownership and does
+not defend against a compromised operator/root account.
+
+Production key custody, a real recovery-set encryption/verification, independent
+storage/retrieval, automation, retention, current deletion coverage and measured
+RPO/RTO are subsequent gates. This local block is GO only after its synthetic
+and existing regression tests pass; it is not FROZEN.
+
+Next single step (not performed):
+PRODUKTIVEN RECOVERY-PUBLIC-KEY ERZEUGEN / VERWAHREN UND ISOLIERTEN
+END-TO-END-TEST FREIGEBEN.

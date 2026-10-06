@@ -24,11 +24,13 @@ from zoneinfo import ZoneInfo
 from backup_clarity_db import BackupValidationError, create_verified_backup, verify_database
 
 
-TOOL_VERSION = "1.2"
-MANIFEST_VERSION = 3
+TOOL_VERSION = "1.3"
+INVENTORY_VERSION = 2
+LEGACY_INVENTORY_VERSION = 1
+MANIFEST_VERSION = 4
 GENERATION_GATE_VERSION = "1"
 PROSPECTIVE_POLICY_VERSION = 1
-PROSPECTIVE_GATE_VERSION = "2"
+PROSPECTIVE_GATE_VERSION = "3"
 PROSPECTIVE_FIELDS = {"admission_mode", "policy_version", "gate_version", "ledger_anchor_id",
                       "expected_git_sha", "expected_schema_sha256"}
 SAFE_FOR_ACCOUNT_RESTORE = "SAFE_FOR_ACCOUNT_RESTORE"
@@ -39,6 +41,8 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 PDF = re.compile(r"(?:rove|clarity)_report_([1-9][0-9]*)_[0-9]{4}-(?:0[1-9]|1[0-2])\.pdf(?:\.gz)?\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{16,128}\Z")
 REFERENCE = re.compile(r"(?:escrow|vault|offline):[A-Za-z0-9_.:/-]{1,160}\Z")
+EXTERNAL_CONTENT_REVISION_UNVERIFIED = "NOT_YET_INDEPENDENTLY_VERIFIED"
+EXTERNAL_CONTENT_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 GENERATION_ID = re.compile(r"recovery_set_([0-9]{8}T[0-9]{6}Z)_[0-9a-f]{32}\Z")
 LEDGER_ANCHOR_ID = re.compile(r"ledger_anchor_[0-9a-f]{32}\Z")
 CONFIG_ROLES = {"api_service", "api_dropin", "nginx_site", "nginx_headers"}
@@ -411,9 +415,16 @@ def generation_manifest_safety(manifest: dict) -> dict:
     prospective = coverage["mode"] == "prospective"
     if prospective and manifest["ledger"].get("anchor_id") != coverage["ledger_anchor_id"]:
         raise RecoveryError("generation_ledger_anchor_mismatch")
+    revision_binding = fields(manifest.get("runtime_revision_binding"), {"status", "sha256"})
+    if (revision_binding["status"] not in {"VERIFIED", "UNVERIFIED"}
+            or not HASH.fullmatch(str(revision_binding["sha256"]))):
+        raise RecoveryError("runtime_revision_binding_invalid")
+    revision_ready = revision_binding["status"] == "VERIFIED"
+    safe = revision_ready
     return {
-        "status": SAFE_FOR_ACCOUNT_RESTORE,
-        "reason": ("historical_coverage_attested" if coverage["mode"] == "historical"
+        "status": SAFE_FOR_ACCOUNT_RESTORE if safe else UNKNOWN,
+        "reason": ("runtime_external_revisions_unverified" if not revision_ready
+                   else "historical_coverage_attested" if coverage["mode"] == "historical"
                    else "after_verified_recovery_cutoff"),
         "gate_version": PROSPECTIVE_GATE_VERSION if prospective else GENERATION_GATE_VERSION,
         "recovery_set_id": manifest["recovery_set_id"],
@@ -426,6 +437,7 @@ def generation_manifest_safety(manifest: dict) -> dict:
         "schema_sha256": manifest["runtime"]["schema_sha256"],
         "sqlite_user_version": manifest["runtime"]["sqlite_user_version"],
         "database_sha256": manifest["database"]["sha256"],
+        "runtime_revision_binding": revision_binding,
     }
 
 
@@ -461,14 +473,9 @@ def check_account_restore_generation(*, policy_path: Path, set_path: Path | None
         # approved exact baseline can pass; every other bare DB remains unclassified.
         if coverage["mode"] != "cutoff" or info["sha256"] != coverage["baseline_database_sha256"]:
             raise RecoveryError("legacy_generation_not_approved")
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = Path(str(database_path) + suffix)
-            if sidecar.exists() or sidecar.is_symlink():
-                raise RecoveryError("baseline_not_sealed")
-        verify_database(database_path, immutable=True)
-        source_database = database_path
-        source_sha256 = info["sha256"]
-        captured = latest
+        # A bare DB has no manifest-bound runtime revision status, so it cannot
+        # satisfy the global VERIFIED prerequisite even with an approved hash.
+        raise RecoveryError("runtime_revision_binding_missing")
     else:
         raw_manifest, _ = stable_bytes(set_path / "manifest.json", limit=8 * 1024 * 1024)
         candidate = strict_json(raw_manifest)
@@ -533,9 +540,10 @@ def schema_metadata(conn: sqlite3.Connection) -> dict:
     return {**schema, "sha256": digest(json_bytes(schema))}
 
 
-def git_metadata(repo: Path, expected_sha: str, environment_files: list[str]) -> dict:
+def git_metadata(repo: Path, expected_sha: str, environment_files: list[dict]) -> dict:
     if not SHA.fullmatch(expected_sha):
         raise RecoveryError("expected_git_sha_invalid")
+    environment_paths = {item["path"] for item in environment_files}
     def git(*args):
         return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL).decode().strip()
     if git("rev-parse", "--show-toplevel") != str(repo) or git("rev-parse", "HEAD") != expected_sha:
@@ -547,7 +555,7 @@ def git_metadata(repo: Path, expected_sha: str, environment_files: list[str]) ->
     untracked_env = []
     for change in filter(None, changes):
         name = change[3:]
-        if change[:3] != "?? " or name not in allowed or str(repo / name) not in environment_files:
+        if change[:3] != "?? " or name not in allowed or str(repo / name) not in environment_paths:
             raise RecoveryError("git_worktree_dirty")
         untracked_env.append(name)
     tools = {}
@@ -569,7 +577,9 @@ def load_inventory(path: Path, db: Path, ledger: Path) -> dict:
     raw, _ = stable_bytes(path, limit=1024 * 1024)
     data = fields(strict_json(raw), {"inventory_version", "database", "ledger", "artifact_roots",
                                    "expected_schema_sha256", "runtime", "secret_dependencies"})
-    if type(data["inventory_version"]) is not int or data["inventory_version"] != 1:
+    inventory_version = data["inventory_version"]
+    if (type(inventory_version) is not int
+            or inventory_version not in {LEGACY_INVENTORY_VERSION, INVENTORY_VERSION}):
         raise RecoveryError("inventory_version_invalid")
     if absolute_path(data["database"]) != db:
         raise RecoveryError("inventory_database_mismatch")
@@ -598,19 +608,45 @@ def load_inventory(path: Path, db: Path, ledger: Path) -> dict:
         raise RecoveryError("runtime_timezone_invalid") from exc
     if not isinstance(runtime["environment_files"], list) or not runtime["environment_files"]:
         raise RecoveryError("environment_inventory_missing")
+    normalized_environment_files = []
+    environment_paths = set()
     for value in runtime["environment_files"]:
-        absolute_path(value)
+        if inventory_version == LEGACY_INVENTORY_VERSION:
+            if not isinstance(value, str):
+                raise RecoveryError("environment_inventory_invalid")
+            item = {"path": value, "custody_ref": None,
+                    "external_content_revision": EXTERNAL_CONTENT_REVISION_UNVERIFIED}
+        else:
+            item = fields(value, {"path", "custody_ref", "external_content_revision"})
+            if not REFERENCE.fullmatch(str(item["custody_ref"])):
+                raise RecoveryError("environment_inventory_invalid")
+            item = dict(item)
+        absolute_path(item["path"])
+        item["external_content_revision"] = validate_external_content_revision(
+            item["external_content_revision"], "environment_inventory_invalid")
+        if item["path"] in environment_paths:
+            raise RecoveryError("environment_inventory_duplicate")
+        environment_paths.add(item["path"])
+        normalized_environment_files.append(item)
+    runtime["environment_files"] = normalized_environment_files
     if not isinstance(runtime["config_files"], list):
         raise RecoveryError("config_inventory_missing")
     roles = []
     configured_paths = set()
     for item in runtime["config_files"]:
-        fields(item, {"role", "path", "custody_ref"})
+        expected_fields = {"role", "path", "custody_ref"}
+        if inventory_version == INVENTORY_VERSION:
+            expected_fields.add("external_content_revision")
+        item = fields(item, expected_fields)
         if item["role"] not in CONFIG_ROLES or not REFERENCE.fullmatch(str(item["custody_ref"])):
             raise RecoveryError("config_inventory_invalid")
         configuration_path(item["path"])
         if item["path"] in configured_paths:
             raise RecoveryError("config_inventory_duplicate")
+        if inventory_version == LEGACY_INVENTORY_VERSION:
+            item["external_content_revision"] = EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        item["external_content_revision"] = validate_external_content_revision(
+            item["external_content_revision"], "config_inventory_invalid")
         configured_paths.add(item["path"])
         roles.append(item["role"])
     if any(roles.count(role) != 1 for role in REQUIRED_CONFIG_ROLES):
@@ -628,9 +664,18 @@ def load_inventory(path: Path, db: Path, ledger: Path) -> dict:
     return data
 
 
+def validate_external_content_revision(value: object, error_code: str) -> str:
+    if value == EXTERNAL_CONTENT_REVISION_UNVERIFIED:
+        return value
+    if not isinstance(value, str) or not EXTERNAL_CONTENT_REVISION.fullmatch(value):
+        raise RecoveryError(error_code)
+    return value
+
+
 def runtime_metadata(inventory: dict) -> tuple[dict, set[str]]:
     runtime = inventory["runtime"]
     metadata = {key: value for key, value in runtime.items() if key not in {"config_files", "environment_files"}}
+    metadata["inventory_version"] = inventory["inventory_version"]
     metadata["config_files"] = []
     metadata["environment_files"] = []
     required = set()
@@ -639,7 +684,8 @@ def runtime_metadata(inventory: dict) -> tuple[dict, set[str]]:
     dropins = sorted(item["path"] for item in runtime["config_files"] if item["role"] == "api_dropin")
     if services != [effective["fragment_path"]] or dropins != effective["drop_in_paths"]:
         raise RecoveryError("effective_api_configuration_not_inventoried")
-    if sorted(runtime["environment_files"]) != effective["environment_files"]:
+    environment_paths = [item["path"] for item in runtime["environment_files"]]
+    if sorted(environment_paths) != effective["environment_files"]:
         raise RecoveryError("effective_environment_not_inventoried")
     metadata["effective_api_configuration"] = effective
     for item in sorted(runtime["config_files"], key=lambda item: (item["role"], item["path"])):
@@ -649,14 +695,134 @@ def runtime_metadata(inventory: dict) -> tuple[dict, set[str]]:
             raise RecoveryError("configuration_link_changed")
         metadata["config_files"].append({**info, "configured_path": item["path"],
                                          "symlink_resolved": target != Path(item["path"]),
-                                         "role": item["role"], "custody_ref": item["custody_ref"]})
+                                         "role": item["role"], "custody_ref": item["custody_ref"],
+                                         "external_content_revision": item["external_content_revision"]})
         if item["role"] in {"api_service", "api_dropin"}:
             required |= credential_names(raw, unit=True)
-    for value in sorted(runtime["environment_files"]):
-        raw, info = stable_bytes(Path(value))
-        metadata["environment_files"].append(info)
+    for item in sorted(runtime["environment_files"], key=lambda item: item["path"]):
+        raw, info = stable_bytes(Path(item["path"]))
+        metadata["environment_files"].append({**info, "configured_path": item["path"],
+                                               "custody_ref": item["custody_ref"],
+                                               "external_content_revision": item["external_content_revision"]})
         required |= credential_names(raw)
     return metadata, required
+
+
+def runtime_revision_binding(metadata: object) -> dict:
+    if not isinstance(metadata, dict):
+        raise RecoveryError("runtime_revision_metadata_invalid")
+    descriptors = []
+    for kind, key in (("environment", "environment_files"), ("config", "config_files")):
+        entries = metadata.get(key)
+        if not isinstance(entries, list) or not entries:
+            raise RecoveryError("runtime_revision_metadata_invalid")
+        for item in entries:
+            if not isinstance(item, dict):
+                raise RecoveryError("runtime_revision_metadata_invalid")
+            path = item.get("configured_path")
+            custody_ref = item.get("custody_ref")
+            revision = item.get("external_content_revision")
+            if (not isinstance(path, str) or not Path(path).is_absolute() or ".." in Path(path).parts
+                    or "\\" in path
+                    or (custody_ref is not None and not REFERENCE.fullmatch(str(custody_ref)))):
+                raise RecoveryError("runtime_revision_metadata_invalid")
+            revision = validate_external_content_revision(
+                revision, "runtime_revision_metadata_invalid")
+            descriptor = {"kind": kind, "configured_path": path, "custody_ref": custody_ref,
+                          "external_content_revision": revision}
+            if kind == "config":
+                role = item.get("role")
+                if not isinstance(role, str) or role not in CONFIG_ROLES:
+                    raise RecoveryError("runtime_revision_metadata_invalid")
+                descriptor["role"] = role
+            descriptors.append(descriptor)
+    descriptors.sort(key=lambda item: (item["kind"], item.get("role", ""), item["configured_path"]))
+    status = ("VERIFIED" if all(
+        item["external_content_revision"] != EXTERNAL_CONTENT_REVISION_UNVERIFIED
+        and item["custody_ref"] is not None for item in descriptors) else "UNVERIFIED")
+    return {"status": status, "sha256": digest(json_bytes(descriptors))}
+
+
+def validate_runtime_metadata(metadata: object) -> dict:
+    runtime_fields = {"python_version", "sqlite_version", "gunicorn_version", "entrypoint", "worker_class",
+                      "workers", "threads", "bind", "timezone", "inventory_version",
+                      "effective_api_configuration", "config_files", "environment_files"}
+    runtime = fields(metadata, runtime_fields)
+    if (type(runtime["inventory_version"]) is not int
+            or runtime["inventory_version"] not in {LEGACY_INVENTORY_VERSION, INVENTORY_VERSION}
+            or not re.fullmatch(r"3\.12\.[0-9]+", str(runtime["python_version"]))
+            or not re.fullmatch(r"3\.[0-9]+\.[0-9]+", str(runtime["sqlite_version"]))
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(runtime["gunicorn_version"]))
+            or runtime["entrypoint"] != "rove_app_wsgi:app" or runtime["worker_class"] != "gthread"
+            or type(runtime["workers"]) is not int or runtime["workers"] != 1
+            or type(runtime["threads"]) is not int or runtime["threads"] != 4
+            or runtime["bind"] != "127.0.0.1:5057"):
+        raise RecoveryError("runtime_metadata_invalid")
+    try:
+        ZoneInfo(runtime["timezone"])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RecoveryError("runtime_metadata_invalid") from exc
+    file_fields = {"source_path", "source_mode", "source_uid", "source_gid", "bytes", "sha256",
+                   "configured_path", "custody_ref", "external_content_revision"}
+    config_fields = file_fields | {"symlink_resolved", "role"}
+    if (not isinstance(runtime["environment_files"], list) or not runtime["environment_files"]
+            or not isinstance(runtime["config_files"], list)):
+        raise RecoveryError("runtime_metadata_invalid")
+    for item in runtime["environment_files"]:
+        fields(item, file_fields)
+        validate_runtime_file_record(item)
+    for item in runtime["config_files"]:
+        fields(item, config_fields)
+        validate_runtime_file_record(item, config=True)
+    roles = [item["role"] for item in runtime["config_files"]]
+    if any(roles.count(role) != 1 for role in REQUIRED_CONFIG_ROLES):
+        raise RecoveryError("runtime_metadata_invalid")
+    configured_paths = [item["configured_path"] for item in runtime["config_files"]]
+    if len(configured_paths) != len(set(configured_paths)):
+        raise RecoveryError("runtime_metadata_invalid")
+    revision_binding = runtime_revision_binding(runtime)
+    if revision_binding["status"] not in {"VERIFIED", "UNVERIFIED"}:
+        raise RecoveryError("runtime_metadata_invalid")
+    effective_fields = {"fragment_path", "drop_in_paths", "environment_files", "absent_optional_environment_files"}
+    effective = fields(runtime["effective_api_configuration"], effective_fields)
+    if (not isinstance(effective["fragment_path"], str)
+            or not isinstance(effective["drop_in_paths"], list)
+            or not isinstance(effective["environment_files"], list)
+            or not isinstance(effective["absent_optional_environment_files"], list)):
+        raise RecoveryError("runtime_metadata_invalid")
+    service_paths = [item["configured_path"] for item in runtime["config_files"] if item["role"] == "api_service"]
+    dropin_paths = sorted(item["configured_path"] for item in runtime["config_files"]
+                          if item["role"] == "api_dropin")
+    environment_paths = sorted(item["configured_path"] for item in runtime["environment_files"])
+    if (service_paths != [effective["fragment_path"]]
+            or dropin_paths != effective["drop_in_paths"]
+            or environment_paths != effective["environment_files"]):
+        raise RecoveryError("runtime_metadata_invalid")
+    return runtime
+
+
+def validate_runtime_file_record(item: dict, *, config: bool = False) -> None:
+    for key in ("source_path", "configured_path"):
+        value = item[key]
+        path = Path(value) if isinstance(value, str) else None
+        if path is None or not path.is_absolute() or ".." in path.parts or "\\" in value:
+            raise RecoveryError("runtime_metadata_invalid")
+    if (not re.fullmatch(r"[0-7]{4}", str(item["source_mode"]))
+            or type(item["source_uid"]) is not int or item["source_uid"] < 0
+            or type(item["source_gid"]) is not int or item["source_gid"] < 0
+            or type(item["bytes"]) is not int or item["bytes"] < 0
+            or not HASH.fullmatch(str(item["sha256"]))
+            or (item["custody_ref"] is not None
+                and not REFERENCE.fullmatch(str(item["custody_ref"])) )):
+        raise RecoveryError("runtime_metadata_invalid")
+    validate_external_content_revision(item["external_content_revision"], "runtime_metadata_invalid")
+    if config:
+        if (not isinstance(item["role"], str) or item["role"] not in CONFIG_ROLES
+                or type(item["symlink_resolved"]) is not bool
+                or (item["symlink_resolved"] == (item["source_path"] == item["configured_path"]))):
+            raise RecoveryError("runtime_metadata_invalid")
+    elif item["source_path"] != item["configured_path"]:
+        raise RecoveryError("runtime_metadata_invalid")
 
 
 def provider_key_dependencies(conn: sqlite3.Connection) -> set[str]:
@@ -820,7 +986,7 @@ def build_recovery_set(*, db: Path, ledger: Path, inventory_path: Path, repo: Pa
     inventory = load_inventory(inventory_path, db, ledger)
     protected = [db, ledger, inventory_path, repo]
     protected += [Path(p) for p in inventory["artifact_roots"].values()]
-    protected += [Path(p) for p in inventory["runtime"]["environment_files"]]
+    protected += [Path(item["path"]) for item in inventory["runtime"]["environment_files"]]
     protected += [Path(item["path"]) for item in inventory["runtime"]["config_files"]]
     protected += [configuration_path(item["path"]) for item in inventory["runtime"]["config_files"]]
     prepare_output(output, protected)
@@ -846,6 +1012,7 @@ def build_recovery_set(*, db: Path, ledger: Path, inventory_path: Path, repo: Pa
         manifest["software"] = git_metadata(repo, expected_git_sha, inventory["runtime"]["environment_files"])
         metadata, required_secrets = runtime_metadata(inventory)
         manifest["configuration"] = metadata["config_files"]
+        manifest["runtime_revision_binding"] = runtime_revision_binding(metadata)
         db_target = staging / "database" / "clarity.db"
         db_target.parent.mkdir(mode=0o700)
         db_before = db.stat()
@@ -1005,8 +1172,13 @@ def verify_recovery_set(path: Path, *, pending: bool = False) -> dict:
         raise RecoveryError("set_inventory_mismatch")
     runtime_raw, _ = stable_bytes(path / manifest["runtime"]["path"])
     runtime = strict_json(runtime_raw)
-    if manifest.get("configuration") != runtime["expected_runtime"]["config_files"]:
+    if not isinstance(runtime, dict) or not isinstance(runtime.get("expected_runtime"), dict):
+        raise RecoveryError("runtime_metadata_invalid")
+    expected_runtime = validate_runtime_metadata(runtime["expected_runtime"])
+    if manifest.get("configuration") != expected_runtime["config_files"]:
         raise RecoveryError("set_configuration_metadata_mismatch")
+    if runtime_revision_binding(expected_runtime) != manifest.get("runtime_revision_binding"):
+        raise RecoveryError("runtime_revision_binding_mismatch")
     # These are sealed copies with an exact inventory, never live WAL databases.
     verify_database(path / manifest["database"]["path"], immutable=True)
     ledger_raw, _ = stable_bytes(path / manifest["ledger"]["path"])
