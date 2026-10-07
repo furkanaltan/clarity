@@ -38,9 +38,10 @@ requires independent storage and an isolated restore acceptance test.
 - There is no canonical global migration sequence/version. Record the exact
   schema fingerprint and Git SHA, not an invented migration version.
 
-Production inventory/activation is NOT performed by Block 2A. The collector
-accepts no implicit DB, ledger, artifact root, or output directory defaults.
-No real Production set has been demonstrated by the synthetic test suite.
+Production inventory/activation was not part of the local code/test work. The
+collector accepts no implicit DB, ledger, artifact root, or output directory
+defaults. A later read-only Production preflight is recorded below; no real
+Production recovery set has yet been created or demonstrated.
 
 ### Production compatibility evidence (2026-10-01)
 
@@ -57,12 +58,44 @@ Production Runtime and Monitoring Block 1 were not changed for this correction.
 The metadata inventory found 41 DB files, not 41 validated recovery generations.
 No historical deletion completeness or safe baseline has been demonstrated for
 any of them. Their current account-restore classification is
-`UNSAFE FOR ACCOUNT-RESTORE`, including files with recent modification times.
+`UNSAFE_FOR_ACCOUNT_RESTORE`, including files with recent modification times.
 Do not delete them, overwrite them, or declare them safe to make a gate pass.
 No numerical Production cutoff date is assigned by this document.
 
 The current active report has no demonstrated missing `support.js` dependency;
 that is not one of this correction's three Production blockers.
+
+### Current Production compatibility state (2026-10-07)
+
+The operator-reported deployed code revision is
+`4e6c29074acb7f08f7908ea34f2d405051b4925b`. The deployed contract versions
+are:
+
+| Component | Version |
+| --- | --- |
+| Tool | `1.3` |
+| Inventory | `2` (legacy `1` reads as `UNVERIFIED`) |
+| Manifest | `4` |
+| Prospective Gate | `3` |
+| Generation Gate | `1` |
+
+Its read-only preflight reported the API active under Gunicorn, the bot
+inactive, local/public health passing, zero relevant API journal errors in 24
+hours, and no runtime configuration or ledger mutation. The operator reported
+all 11 effective ENV/config files independently content-checked and bound under
+runtime-files revision `runtime-files-20261006`; runtime secrets remain a
+separate vault revision,
+`runtime-20261006`. These are operator-attested custody facts: the collector
+records and binds the references but does not inspect vault contents or prove
+that those external copies match the live files.
+
+The same preflight reported `HISTORY_PROOF=NOT_ESTABLISHED`, an empty ledger,
+and no recovery-control or recovery-set directories. Therefore T0, the ledger
+anchor, trusted policy, inventory file and first generation do not yet exist.
+The deployed and accepted generation-gate contract is not evidence that a
+generation is currently restore-safe, and it does not complete offsite or
+restore acceptance. All generations predating a future T0 remain
+`UNSAFE_FOR_ACCOUNT_RESTORE`.
 
 ## Recovery directory contract
 
@@ -103,7 +136,7 @@ only the following fields, with actual independently checked values:
 
 | Field | Required content |
 | --- | --- |
-| `inventory_version` | Integer `1` |
+| `inventory_version` | Integer `2` for new sets. Version `1` remains readable only as legacy input and is always `UNVERIFIED`, never restore-safe. |
 | `database` | Absolute canonical DB path, equal to `--db` |
 | `expected_schema_sha256` | `schema_metadata(conn)["sha256"]`, covering ordered schema objects and SQLite `user_version`; obtained read-only from the known compatible release |
 | `ledger.path` | Effective absolute ledger path, equal to `--ledger` |
@@ -121,8 +154,10 @@ only the following fields, with actual independently checked values:
   `threads`: `4`; `bind`: `127.0.0.1:5057`. Different runtime inventory fails
   rather than silently describing an unreviewed runtime.
 - `timezone`: effective system timezone used by naive Web report expiry strings.
-- `environment_files`: absolute paths of ALL effective existing EnvironmentFiles.
-- `config_files`: exactly one `{ "role", "path", "custody_ref" }` for each of
+- `environment_files`: one `{ "path", "custody_ref", "external_content_revision" }`
+  record for every effective existing EnvironmentFile.
+- `config_files`: exactly one `{ "role", "path", "custody_ref",
+  "external_content_revision" }` for each of
   `api_service`, `nginx_site`, `nginx_headers`, and zero or more `api_dropin`
   entries, one per effective file. Roles and paths cannot silently be omitted.
   Configuration symlinks alone are resolved strictly, preserving the configured
@@ -156,9 +191,13 @@ inventory/custody entry; no raw unit, Nginx or ENV contents enter the set.
 
 Configuration/ENV files are hashed and inventoried but their contents are NOT
 copied. Version-controlled runtime templates plus expected settings are included
-by reference to the Git SHA; exact effective external configuration must have
-the declared independent custody reference. The collector records that custody
-is NOT independently verified. A reference string is not a restore test.
+by reference to the Git SHA. Each effective file must bind its configured path
+to an external `custody_ref` and `external_content_revision`. The resulting
+`runtime_revision_binding.status` is `VERIFIED` only when every required record
+has both fields and a non-legacy revision. This is a completeness check over
+operator-supplied references; the collector does not open the vault or prove
+that its attachment bytes match the live file. `external_custody_verified`
+therefore remains `false`. A reference string alone is not a restore test.
 
 Secret dependencies must identify current signing/HMAC keys, transport keys,
 webhook/push secrets, TLS/Cockpit recovery dependencies where applicable, and
@@ -233,13 +272,14 @@ Historical tombstones would need an independently validated source retaining
 the actual deletion identities/times. No such source has been demonstrated yet.
 
 If complete historic identity/time coverage cannot be recovered, establish a
-prospective boundary from a separately approved, verified, sealed SQLite
-snapshot of the authoritative current DB. Prove the ledger's effective path
-and fail-closed/fsynced deletion path, rule out other unledgered account-delete
-entry points, and independently record the accepted baseline hash and the
-start of continuous forward coverage. Do not use a filename, file mtime,
-empty ledger or a fresh code deployment as the proof. If these prerequisites
-cannot be established, there is no safe cutoff and the gate stays closed.
+prospective boundary only after the effective runtime files and secret
+dependencies have independent, separately versioned custody evidence, and the
+ledger path, fail-closed/fsynced deletion path, and absence of unledgered
+account-delete entry points have been verified. T0 is the start of continuous
+forward coverage, not a historical proof and not a standalone authorization.
+Do not use a filename, file mtime, empty ledger or fresh deployment as evidence.
+The first candidate is a complete recovery-set generation captured strictly
+after T0; it is not a bare pre-T0 database promoted by a hash.
 
 The trusted ledger declaration then has `history_confirmed_complete: false`
 and this additional object, with real independently verified values:
@@ -248,54 +288,88 @@ and this additional object, with real independently verified values:
 {
   "recovery_boundary": {
     "cutoff_at_utc": "<verified-UTC-boundary>",
-    "baseline_database_sha256": "<approved-sealed-baseline-SHA-256>",
     "evidence_ref": "offline:<independent-approval-reference>",
-    "forward_coverage_confirmed": true
+    "forward_coverage_confirmed": true,
+    "admission_mode": "prospective",
+    "policy_version": 1,
+    "gate_version": "3",
+    "ledger_anchor_id": "<independently-recorded-anchor-id>",
+    "expected_git_sha": "<exact-approved-commit-SHA>",
+    "expected_schema_sha256": "<verified-schema-SHA-256>"
   }
 }
 ```
 
-This fragment is a contract, NOT a runnable Production policy or an assertion
-that approval already exists. Keep the ledger prefix anchor and approval
-outside the VPS under independent custody; never reset the anchor to hide
-truncation. A zero-length prefix attests only the start of prospective coverage,
-not any earlier deletion. Continued operator assurance that no unlogged deletes
-or ledger loss occurred is still necessary; file hashes cannot prove that alone.
+This fragment describes the prospective Gate-v3 boundary; it is not a runnable
+Production policy or an assertion that T0 approval exists. The prospective
+contract does not require `baseline_database_sha256`; do not use a DB hash as a
+substitute for a complete, provenance-bound generation or its manifest receipt.
+The older non-prospective `cutoff` compatibility mode has a separate baseline
+hash field, but it is not the prospective admission contract. Keep the ledger
+prefix anchor and policy outside the VPS under independent custody; never reset
+the anchor to hide truncation. A zero-length prefix attests only the ledger
+state at T0, not any earlier deletion. Continued operator assurance that no
+unlogged deletes or ledger loss occurred is still necessary; file hashes
+cannot prove that alone.
 
-Inventory v2 binds every runtime ENV/config file's configured path, independent
-`custody_ref` and `external_content_revision`; ENV entries contain `path`,
-`custody_ref` and `external_content_revision`, while config entries also contain
-`role`. Secret dependency revisions remain separate from runtime file revisions.
+Inventory v2 records every runtime ENV/config file's configured path,
+operator-supplied `custody_ref` and `external_content_revision`; ENV entries
+contain `path`, `custody_ref` and `external_content_revision`, while config
+entries also contain `role`. The operator must independently verify the
+external content before assigning the revision. The collector validates and
+binds the supplied fields but cannot authenticate that verification. Secret
+dependency revisions remain separate from runtime file revisions.
 Legacy Inventory v1 is still readable but is explicitly `UNVERIFIED`; it is never
 silently upgraded. An unverified/missing/unsupported runtime revision binding is
 never restore-safe, regardless of ledger coverage or admission mode.
 
-Tool 1.3 / manifest 4 stores `account_restore_coverage`, including the cutoff,
-approved baseline hash and evidence reference. Manifest v3 is rejected
-fail-closed. Cutoff sets are labeled
-`FROM_VERIFIED_CUTOFF_ONLY`, never historically complete. Set creation that
-started before the boundary is rejected even if the snapshot completed later.
+Tool 1.3 / manifest 4 stores `account_restore_coverage`, including the mode,
+cutoff, evidence reference and prospective policy bindings. For Gate-v3
+prospective coverage, `baseline_database_sha256` is null in the manifest and is
+not an admission prerequisite. The separate legacy `cutoff` mode can carry a
+baseline hash. Manifest v3 is rejected fail-closed. Prospective sets are
+classified only from a complete current-version set and its verified
+provenance; no bare DB/hash-only input is a prospective generation. Set
+creation that started at or before T0 is rejected even if the snapshot
+completed later.
 An empty ledger can never authorize historical coverage, even if the declaration
-sets `history_confirmed_complete: true`. An empty future-only ledger is acceptable
-only with the explicitly verified prospective boundary and baseline conditions.
+sets `history_confirmed_complete: true`. An empty future-only ledger is
+acceptable only with the complete, independently approved prospective policy,
+verified anchor and forward-coverage controls.
 
 `account_restore_safety` binds the generation ID, capture start/completion UTC,
 ledger prefix anchor, coverage declaration, database SHA-256, Git SHA, schema
-fingerprint, explicit SQLite `user_version`, manifest version and generation-gate
-version `1`. Its status is
-`SAFE_FOR_ACCOUNT_RESTORE` only when the manifest-bound runtime revision status is
-exactly `VERIFIED` AND the candidate satisfies the applicable coverage policy.
-This independent prerequisite applies to historical, cutoff/baseline and
-prospective generations; historical ledger coverage cannot replace runtime
-revision verification. Prospective Gate version `3` continues to require the
-independent manifest receipt, expected Git/schema, ledger anchor and strict post-T0
-snapshot provenance. Verified candidates use reason `historical_coverage_attested` or
-`after_verified_recovery_cutoff`. Failed sets record `UNSAFE_FOR_ACCOUNT_RESTORE`
-and their safe error code; incomplete/unclassified candidates are `UNKNOWN`.
-Verification rejects missing or inconsistent bindings. Eligibility still requires
-the separate current trusted policy and latest ledger; a self-declared manifest
-label and `COMPLETE`/integrity alone never authorize replay. There is no invented
-global DB migration version: `schema_sha256` includes SQLite `user_version`.
+fingerprint, explicit SQLite `user_version`, manifest version and applicable
+gate version. `runtime_revision_binding.status` must be exactly `VERIFIED` for
+SAFE in every coverage mode. That status means every required ENV/config entry
+has a custody reference and external content revision and that the binding
+matches the captured metadata; it is not itself proof that the external vault
+copy was inspected. Secret revision and runtime-files revision are separate
+bindings.
+
+The manifest's `account_restore_safety` is an internal, manifest-bound
+classification. For a prospective set it may say SAFE before the independent
+receipt has been admitted; this is an intermediate state, not final restore
+eligibility. The external generation gate is authoritative. It requires a
+complete current-version set, VERIFIED runtime binding, expected Git/schema,
+matching ledger anchor, strict post-T0 provenance, latest-ledger consistency,
+and the exact independent manifest receipt. A receipt is the SHA-256 of the
+exact `manifest.json` for that generation ID, recorded in the separately held
+prospective policy only after the finished manifest is independently captured.
+
+Prospective Gate version `3` rejects a set started at or before T0. A valid
+prospective generation must be a COMPLETE manifest-v4 set created with the
+SQLite backup API, passing integrity and foreign-key checks, with the set ID's
+UTC timestamp matching the capture-start second and the expected Git/schema,
+ledger anchor, runtime binding and complete file hashes all verified. Its first
+generation moves from intermediate manifest-only status to
+`SAFE_FOR_ACCOUNT_RESTORE` only after the exact receipt is present in trusted
+custody and the external gate re-verifies the set and latest ledger. Missing
+receipt or unavailable evidence is `UNKNOWN`; a mismatched receipt, pre-T0
+generation, or explicit unsafe state is `UNSAFE_FOR_ACCOUNT_RESTORE`. Failed
+sets record their safe error code. A self-declared manifest label and
+`COMPLETE`/integrity alone never authorize replay. There is no invented global
+DB migration version: `schema_sha256` includes SQLite `user_version`.
 
 The new `generation-gate` is read-only and requires a separate trusted policy
 and the latest external ledger, not merely a policy inside the candidate set:
@@ -305,16 +379,46 @@ python rove_recovery_set.py generation-gate --policy <trusted-ledger-policy.json
 python rove_recovery_set.py generation-gate --policy <trusted-ledger-policy.json> --db <candidate-sealed-legacy.db>
 ```
 
-An old manifest, missing proof or unavailable evidence classifies as `UNKNOWN`;
-pre-cutoff, explicitly unsafe, mismatched or unapproved bare generations classify
-as `UNSAFE_FOR_ACCOUNT_RESTORE`. BOTH statuses return a nonzero exit and block.
-All bare legacy DB copies, including an exact approved baseline hash, are blocked:
-a bare DB has no manifest-bound `runtime_revision_binding=VERIFIED`. The baseline
-must first be sealed into a complete current-version recovery set with a verified
-runtime binding; a hash approval alone cannot authorize it. Newer ledger records
-are accepted only for an otherwise safe set and MUST also be replayed.
+An old manifest, missing receipt or unavailable evidence classifies as `UNKNOWN`;
+pre-T0, explicitly unsafe, mismatched or unapproved bare prospective generations
+classify as `UNSAFE_FOR_ACCOUNT_RESTORE`. Both statuses return a nonzero exit and
+block. A naked/hash-only database cannot satisfy prospective admission. In the
+legacy cutoff path, even an exact approved DB hash still lacks the required
+manifest-bound runtime revision status and is blocked. A prospective generation
+must be a complete current-version recovery set with verified provenance; a DB
+hash alone cannot authorize it. Newer ledger records are accepted only for an
+otherwise safe set and MUST also be replayed.
 Passing the generation gate does not copy/restore a DB, scrub files, validate
 key possession, or authorize publication. Source/set bytes are unchanged.
+
+### Gate-v3 contract answers
+
+1. A valid prospective generation is a COMPLETE manifest-v4 set captured with
+   the SQLite backup API strictly after T0; it must pass integrity/FK checks and
+   bind the generation ID/time, expected Git SHA/schema, ledger anchor, all
+   manifest file hashes and `runtime_revision_binding=VERIFIED`.
+2. T0 starts prospective forward-coverage obligations. Creation at or before T0
+   is rejected; T0 alone does not make any generation SAFE.
+3. The ledger anchor binds the byte length and SHA-256 of the known ledger prefix
+   at T0. An empty prefix proves no earlier history.
+4. Every effective ENV file and required service/drop-in/Nginx config must have
+   a `custody_ref` plus `external_content_revision`; all secret dependencies
+   have separate version/custody bindings. The operator verifies external bytes;
+   collector `VERIFIED` means the reference/revision binding is complete and
+   consistent, not that the collector opened the vault.
+5. A naked or hash-only DB is not a prospective generation: it lacks the
+   manifest, snapshot provenance, runtime revision binding, artifact inventory
+   and generation receipt. Gate v3 rejects the `--db` prospective path.
+6. `baseline_database_sha256` is not a prospective Gate-v3 SAFE prerequisite.
+   The first baseline is the complete post-T0 recovery-set generation itself;
+   the separate legacy `cutoff` mode retains its distinct hash contract.
+7. The first generation is only intermediate until its exact
+   `SHA256(manifest.json)` is independently recorded under that set ID in the
+   trusted prospective policy. Only then can the external generation gate
+   re-verify it against the current ledger and return SAFE.
+8. Under the prospective policy, every generation started at or before T0 is
+   UNSAFE because it cannot prove continuous deletion coverage from T0. Until
+   T0/policy exist, `HISTORY_PROOF=NOT_ESTABLISHED` and no generation is eligible.
 
 ### Canonical replay integration
 
@@ -344,16 +448,20 @@ logic is unchanged; no service startup or schema migration is added.
 
 Local tests enforce the executable replay entry point. Root can always bypass
 application tooling by manually copying files or running arbitrary SQL; that is
-not a supported recovery path. Mandatory gate deployment and operator acceptance
-are still outstanding. The currently deployed old replay CLI has NOT been changed
-by local implementation. Do not claim Production enforcement or a freeze yet.
+not a supported recovery path. The current gate contract was deployed in
+`4e6c29074acb7f08f7908ea34f2d405051b4925b` and operator-accepted as described
+above. This means the supported replay entry point has the gate; it does not
+mean an actual Production generation has passed it. No replay or restore has
+been run.
 
 No historical cutoff can be derived from the supplied Production facts. The 41
-inventoried historical bare DB files remain `UNSAFE FOR ACCOUNT-RESTORE`. New SAFE
-generations require a separately attested, sealed baseline and continuous durable
-ledger coverage from a recorded prospective UTC boundary, an independently held
-policy/anchor, then a manifest-bound snapshot started at or after that boundary.
-The cutoff is never backdated from file times, DB integrity or empty-ledger metadata.
+historical bare DB files in the earlier metadata inventory remain
+`UNSAFE_FOR_ACCOUNT_RESTORE`; no file is upgraded based on age, name or hash. The
+first prospective baseline is itself a complete manifest-v4 recovery generation
+captured strictly after T0, with continuous durable ledger coverage, an
+independently held policy/anchor and the full provenance above. A separate
+`baseline_database_sha256` is not a Gate-v3 prospective prerequisite. The cutoff
+is never backdated from file times, DB integrity or empty-ledger metadata.
 
 ## Recovery key/config inventory and independent custody
 
@@ -504,9 +612,9 @@ SHA-256 detects corruption but is NOT a signature against an attacker
 who can replace the whole manifest. Authenticated encryption and protected
 independent versions belong to the next block, not this implementation.
 
-## Separate activation gate (NOT RUN)
+## Production generation gate and activation status
 
-### Local generation-gate acceptance
+### Earlier local generation-gate acceptance
 
 Python 3.12.14: 132/132 relevant tests passed, comprising 99 recovery/backup/gate
 tests and 33 existing privacy/logging/SQLite-read-lifecycle tests. Syntax and
@@ -515,17 +623,34 @@ for unsafe/unknown/missing proofs, empty or corrupt ledgers, missing/mismatched
 anchors, pre-cutoff timestamps, manifest binding, source/target isolation,
 no force option, latest-ledger replay and rollback on policy/ledger changes.
 No real account restore, Production change, commit, push or deploy was performed.
-Production read-only acceptance of the installed gate is pending operator output
-and the separately approved release; local success is not a Production freeze.
+This is a historical local test snapshot, not the current full-suite result and
+not proof that a real generation passed the gate.
 
-Before any Production use, explicitly approve and verify the inventory, ledger
-history/anchor, source file permissions, external custody, roots, exact release
-SHA/schema compatibility, available disk space and interference with retention.
-Check current foreign keys read-only: adding the FK gate can expose existing
-violations and intentionally stop creation; do not auto-repair Production data.
+### Deployed contract and current state (2026-10-07)
 
-After this code is separately reviewed/committed/deployed and the inventory is
-verified, the collector interface is:
+The operator-reported release and version matrix above are deployed. The
+supplied release output reports the production artifact match, API/Gunicorn
+active, local and public health passing, bot inactive, zero API restarts, zero
+relevant journal errors and no runtime/ledger mutation.
+The read-only collector preflight reports 11/11 effective runtime files,
+one active report, six retained report PDFs, and no unknown files or symlinks.
+This accepts the deployed code/configuration contract; it is not a SAFE
+generation or restore acceptance.
+
+At the latest supplied preflight, `HISTORY_PROOF=NOT_ESTABLISHED`, the ledger
+was empty, and the recovery-control/recovery-set directories were absent. No T0,
+anchor, trusted prospective policy, inventory file or first recovery generation
+has been created. Do not infer T0 or a SAFE generation from the deployment,
+runtime revision references, empty ledger, health, or collector preflight.
+
+Before creating T0 and the first set, recheck and approve the effective
+inventory, ledger history/anchor, source permissions, independent external
+runtime-file and secret revisions, artifact roots, exact release SHA/schema,
+available disk space, and retention interference. Check current foreign keys
+read-only; violations intentionally stop collection and must not be auto-fixed.
+
+After those prerequisites are independently verified and the trusted policy is
+placed in independent custody, the collector interface is:
 
 ```bash
 python rove_recovery_set.py create \
@@ -545,10 +670,12 @@ before a separately approved successful real-set verification. Rollback of
 future collection means disable only the new collector, retain the existing
 backup job and keep all prior backups/sets.
 
-Production compatibility is still NO-GO until a historically proven ledger or
-approved enforced cutoff, complete effective config inventory, and independent
-key/config possession are all demonstrated. Local tests are not Production
-acceptance. Do not mark Block 2A frozen while any of these is missing.
+The Production code/configuration compatibility gate is deployed and was
+operator-accepted. Recovery readiness remains NO-GO: historical deletion
+coverage is unproven and no prospective T0, anchor, policy, generation receipt,
+or complete recovery set exists. Do not mark any generation SAFE or claim
+offsite/restore completion until the prospective set passes the independent
+generation gate and the later retrieval/restore checks.
 
 Only AFTER that GO, next single block:
 OFFSITE REPLICATION OF THE COMPLETE RECOVERY SET.
@@ -568,9 +695,15 @@ not establish offsite replication or a complete restore.
 
 The wrapper accepts only a COMPLETE set with the current manifest/tool versions,
 internally bound `SAFE_FOR_ACCOUNT_RESTORE` metadata, and the exact canonical
-inventory. It copies files into a private disposable workspace before invoking
-SQLite verification. Source database paths and custody references in metadata
-are never followed. The input set is not modified.
+inventory. This is an input-integrity check, not the final generation approval:
+the wrapper does not evaluate the independently held prospective policy or its
+`generation_receipts`. For prospective recovery, the operator must first run the
+external generation gate on the exact set and obtain
+`SAFE_FOR_ACCOUNT_RESTORE`; an internal manifest label or successful encryption
+alone does not authorize restore or upload. It copies files into a private
+disposable workspace before invoking SQLite verification. Source database
+paths and custody references in metadata are never followed. The input set is
+not modified.
 
 USTAR entries are sorted, with zero timestamps/UIDs/GIDs, empty owner names,
 0700 directories and 0600 files. gzip uses a fixed level, zero timestamp and no
