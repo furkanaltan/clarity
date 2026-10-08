@@ -1,0 +1,11 @@
+[Unit]
+Description=Rov.E recovery watchdog every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=1s
+Unit=rove-recovery-watch.service
+
+[Install]
+WantedBy=timers.target

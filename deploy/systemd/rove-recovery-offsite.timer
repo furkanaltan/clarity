@@ -1,0 +1,12 @@
+[Unit]
+Description=Rov.E recovery every four hours UTC
+
+[Timer]
+OnCalendar=*-*-* 00,04,08,12,16,20:20:00 UTC
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=rove-recovery-offsite.service
+
+[Install]
+WantedBy=timers.target
