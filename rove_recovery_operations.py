@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import fcntl
 import hashlib
 import importlib.metadata
@@ -46,6 +47,127 @@ class OperationError(RuntimeError):
 def require(value, code):
     if not value:
         raise OperationError(code)
+
+
+# Only these reviewed codes can be persisted or printed; never serialize an exception.
+OPERATION_CODES = frozenset("""alert_probe_failed alert_probe_not_current app_binding_invalid
+configuration_invalid credential_invalid credential_name_invalid credential_permissions_invalid
+external_verification_missing frozen_code_not_compatible frozen_input_paths_invalid input_hash_invalid
+inventory_changed live_authority_code_not_compatible lock_file_invalid operations_paths_invalid
+operator_alert_delivery_not_verified policy_binding_invalid private_directory_required private_file_required
+production_pins_invalid public_key_changed_or_private public_key_or_gpg_path_invalid recipients_invalid
+recovery_dependency_mismatch release_commit_invalid release_directory_not_immutable release_file_changed
+release_file_inventory_invalid release_file_not_immutable release_manifest_not_immutable release_provenance_invalid
+runtime_invalid safe_cleanup_unavailable success_record_invalid systemd_credentials_missing unexpected_release_file
+upload_confirmation_invalid upload_source_changed upload_source_mismatch watch_state_invalid work_cleanup_outside_job
+conditional_collision upload_failed_or_ambiguous job_already_running job_terminated""".split())
+COLLECTION_CODES = frozenset("""path_invalid absolute_path_required symlink_not_allowed config_path_invalid
+config_file_unavailable source_file_invalid source_changed_during_capture output_overlaps_source output_not_private
+effective_systemd_inventory_unavailable effective_api_configuration_not_inventoried effective_environment_not_inventoried
+effective_environment_file_missing configuration_link_changed runtime_changed_during_capture git_revision_mismatch
+git_worktree_dirty tool_not_bound_to_git_revision git_changed_during_capture schema_fingerprint_mismatch
+secret_dependency_missing report_layout_unknown report_directory_missing report_directory_invalid report_owner_invalid
+pdf_owner_unknown report_local_dependency_unclassified provider_schema_invalid provider_key_version_invalid
+ledger_invalid ledger_incomplete_record ledger_history_changed empty_ledger_history_not_proven
+generation_before_recovery_cutoff generation_policy_mismatch generation_ledger_anchor_mismatch
+generation_declared_unsafe generation_safety_unknown generation_receipt_missing generation_manifest_receipt_mismatch
+runtime_revision_binding_missing runtime_revision_binding_invalid set_not_complete set_checksum_mismatch
+integrity_check_failed foreign_key_check_failed""".split())
+TRUST_CODES = frozenset("""lambda_endpoint_invalid policy_revision_invalid policy_contract_invalid
+authority_identity_invalid authority_version_mismatch invoke_failed invocation_failed external_response_invalid
+receipt_invalid receipt_binding_invalid response_schema_invalid object_version_required""".split())
+AWS_CODES = frozenset("""AccessDenied AccessDeniedException InvalidAccessKeyId InvalidClientTokenId
+UnrecognizedClientException SignatureDoesNotMatch ExpiredToken ExpiredTokenException NoSuchKey NoSuchVersion
+ResourceNotFoundException TooManyRequestsException ThrottlingException PreconditionFailed
+ConditionalRequestConflict ServiceUnavailable InternalError ServiceException""".split())
+
+
+def failure_details(exc):
+    def details(category, kind, code):
+        return {"category": category, "type": kind, "code": code}
+    if isinstance(exc, OperationError):
+        code = str(exc)
+        code = code if code in OPERATION_CODES else "operation_validation_failed"
+        category = "CREDENTIAL_LOADING" if code.startswith("credential_") or code == "systemd_credentials_missing" else "LOCAL_VALIDATION"
+        if code == "recovery_dependency_mismatch":
+            category = "DEPENDENCY"
+        return details(category, "OperationError", code)
+    if isinstance(exc, (ImportError, importlib.metadata.PackageNotFoundError)):
+        return details("DEPENDENCY", "ImportError", "dependency_import_failed")
+    if isinstance(exc, OSError):
+        code = {errno.ENOENT: "file_missing", errno.EACCES: "file_permission_denied",
+                errno.EPERM: "file_permission_denied", errno.EROFS: "readonly_filesystem",
+                errno.ENOSPC: "filesystem_full"}.get(exc.errno, "filesystem_io_failed")
+        return details("LOCAL_PATH_PERMISSION", "OSError", code)
+    if isinstance(exc, recovery.sqlite3.Error):
+        return details("SQLITE", "SQLiteError", "sqlite_operation_failed")
+    if isinstance(exc, recovery.RecoveryError):
+        code = str(exc)
+        category = "RECOVERY_VALIDATION"
+        if code in {"path_invalid", "absolute_path_required", "symlink_not_allowed", "config_path_invalid",
+                    "config_file_unavailable", "source_file_invalid", "output_overlaps_source", "output_not_private"}:
+            category = "LOCAL_PATH_PERMISSION"
+        elif code.startswith("generation_") or code.startswith("runtime_revision_binding_"):
+            category = "RECEIPT_GATE"
+        elif code in {"integrity_check_failed", "foreign_key_check_failed"}:
+            category = "SQLITE"
+        return details(category, "RecoveryError",
+                       code if code in COLLECTION_CODES else "recovery_validation_failed")
+    if isinstance(exc, recovery.BackupValidationError):
+        code = str(exc)
+        return details("SQLITE", "BackupValidationError",
+                       code if code in COLLECTION_CODES else "backup_validation_failed")
+    if isinstance(exc, trust.TrustError):
+        code = str(exc)
+        return details("RECEIPT_GATE", "TrustError", code if code in TRUST_CODES else "trust_verification_failed")
+    if isinstance(exc, crypto.CryptoError):
+        return details("ENCRYPTION", "CryptoError", "crypto_operation_failed")
+    if type(exc).__module__ == "botocore.exceptions":
+        if type(exc).__name__ == "ClientError":
+            response = getattr(exc, "response", None)
+            error = response.get("Error") if isinstance(response, dict) else None
+            code = error.get("Code") if isinstance(error, dict) else None
+            return details("AWS_NETWORK", "ClientError", code if isinstance(code, str) and code in AWS_CODES else "aws_client_failed")
+        kind = type(exc).__name__
+        if kind in {"EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError", "ConnectionClosedError"}:
+            return details("AWS_NETWORK", kind, "aws_network_failed")
+        return details("AWS_NETWORK", "SDKError", "aws_sdk_failed")
+    if isinstance(exc, subprocess.CalledProcessError):
+        return details("LOCAL_PROGRAM", "CalledProcessError", "local_program_failed")
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return details("LOCAL_PROGRAM", "TimeoutExpired", "local_program_timeout")
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return details("INTERRUPTED", "Interrupted", "job_interrupted")
+    return details("OTHER", "Exception", "unclassified_local_failure")
+
+
+def failed_collection_details(source, job, fallback):
+    # Failed collector manifests contain a fixed code, but cleanup removes the manifest.
+    try:
+        source = recovery.absolute_path(source)
+        require(source.is_relative_to(job), "work_cleanup_outside_job")
+        manifest = recovery.strict_json(private_read(source / "manifest.json"))
+        if (manifest.get("status") == "FAILED" and manifest.get("manifest_version") == recovery.MANIFEST_VERSION
+                and manifest.get("tool_version") == recovery.TOOL_VERSION):
+            code = manifest.get("error_code")
+            if isinstance(code, str) and code in COLLECTION_CODES:
+                return failure_details(recovery.RecoveryError(code))
+            kinds = {"PermissionError": PermissionError(errno.EACCES, ""),
+                     "FileNotFoundError": FileNotFoundError(errno.ENOENT, ""),
+                     "OperationalError": recovery.sqlite3.OperationalError(),
+                     "ImportError": ImportError(), "ModuleNotFoundError": ModuleNotFoundError()}
+            if isinstance(code, str) and code in kinds:
+                return failure_details(kinds[code])
+    except Exception:
+        pass
+    return fallback
+
+
+def report_failure(stage, step, details, *, secondary=False):
+    record = {"stage": stage, "step": step, **details}
+    if secondary:
+        record["secondary"] = True
+    print("RECOVERY_FAILURE=" + json.dumps(record, sort_keys=True), flush=True)
 
 
 def now():
@@ -316,6 +438,20 @@ class Operations:
         require(shutil.rmtree.avoids_symlink_attacks, "safe_cleanup_unavailable")
         shutil.rmtree(path)
 
+    def record_failure(self, attempt, *, notify=True):
+        # Secondary state/alert failures must not replace the primary pipeline error.
+        if notify:
+            report_failure(attempt["stage"], attempt["step"], attempt["error"])
+        try:
+            atomic_state(self.state / "attempt.json", attempt)
+        except BaseException as exc:
+            report_failure(attempt["stage"], "FAILURE_STATE", failure_details(exc), secondary=True)
+        if notify:
+            try:
+                self.alert("FAILURE", attempt["stage"], attempt["run_id"])
+            except BaseException as exc:
+                report_failure(attempt["stage"], "FAILURE_ALERT", failure_details(exc), secondary=True)
+
     def run(self):
         with exclusive(self.state / "job.lock"):
             try:
@@ -326,11 +462,12 @@ class Operations:
                 # exit while the previous success still looks healthy.
                 for path in self.work.iterdir():
                     self.clean_work(path)
-            except BaseException:
+            except BaseException as exc:
                 failed_id = uuid.uuid4().hex.upper()
-                atomic_state(self.state / "attempt.json", {"status": "FAILED", "stage": "PREFLIGHT",
-                    "run_id": failed_id, "started_at_utc": stamp(), "completed_at_utc": stamp()})
-                self.alert("FAILURE", "PREFLIGHT", failed_id)
+                error = failure_details(exc)
+                self.record_failure({"status": "FAILED", "stage": "PREFLIGHT",
+                    "run_id": failed_id, "started_at_utc": stamp(), "completed_at_utc": stamp(),
+                    "step": "PREFLIGHT", "error": error})
                 raise
             interrupted = state_read(self.state / "attempt.json")
             if interrupted and interrupted.get("status") == "RUNNING":
@@ -338,20 +475,31 @@ class Operations:
                 atomic_state(self.state / "attempt.json", {**interrupted, "status": "ABORTED"})
             run_id = uuid.uuid4().hex.upper()
             job = private_dir(self.work / ("job-" + run_id))
-            attempt = {"status": "RUNNING", "run_id": run_id, "stage": "COLLECTION", "started_at_utc": stamp()}
+            attempt = {"status": "RUNNING", "run_id": run_id, "stage": "COLLECTION", "started_at_utc": stamp(),
+                       "step": "AWS_CLIENT_SETUP"}
             stage = "COLLECTION"
-            atomic_state(self.state / "attempt.json", attempt)
+            source = None
+            failed_attempt = None
+            cleanup_attempted = False
             def checkpoint(next_stage):
                 nonlocal stage
                 stage = next_stage
                 attempt["stage"] = stage
+                attempt["step"] = stage
+                atomic_state(self.state / "attempt.json", attempt)
+            def collection_step(step):
+                attempt["step"] = step
                 atomic_state(self.state / "attempt.json", attempt)
             try:
+                atomic_state(self.state / "attempt.json", attempt)
                 s3, lambdas = self.clients()
+                collection_step("TRUST_CLIENT_SETUP")
                 client = trust.RecoveryTrustClient(self.config["pins"], policy, client=lambdas)
+                collection_step("COLLECTOR")
                 source = self.collect(db=self.config["database"], ledger=self.config["ledger"],
                     inventory_path=self.config["inventory"], repo=self.config["app_repo"],
                     expected_git_sha=self.config["app_commit"], output=job / "sets")
+                collection_step("SET_VALIDATION")
                 manifest = recovery.verify_recovery_set(source)
                 attempt["generation_id"] = manifest["recovery_set_id"]
                 checkpoint("MANIFEST_RECEIPT_GATE")
@@ -379,7 +527,13 @@ class Operations:
                         "ciphertext_bytes": metadata["ciphertext_bytes"], "version_id": version,
                         "manifest_receipt": approved.manifest_receipt, "crypto_receipt": approved.crypto_receipt,
                         "external_verifier": verified}
-                    atomic_state(self.state / "success.json", success)
+                # Publish success only after the authorized session and workspace cleanup finish.
+                attempt["step"] = "CLEANUP"
+                atomic_state(self.state / "attempt.json", attempt)
+                cleanup_attempted = True
+                self.clean_work(job)
+                attempt["step"] = stage
+                atomic_state(self.state / "success.json", success)
                 atomic_state(self.state / "attempt.json", {**attempt, "status": "SUCCESS", "stage": stage,
                                                           "completed_at_utc": stamp()})
                 print("OFFSITE_RUN=SUCCESS; EXTERNAL_RECEIPTS=VERIFIED; EXACT_VERSION=VERIFIED")
@@ -390,12 +544,24 @@ class Operations:
             except BaseException as exc:
                 if isinstance(exc, OperationError) and str(exc) == "conditional_collision":
                     stage = "CONDITIONAL_COLLISION"
-                atomic_state(self.state / "attempt.json", {**attempt, "status": "FAILED", "stage": stage,
-                                                          "completed_at_utc": stamp()})
-                self.alert("FAILURE", stage, run_id)
+                error = failure_details(exc)
+                if attempt["step"] == "SET_VALIDATION" and source is not None:
+                    error = failed_collection_details(source, job, error)
+                failed_attempt = {**attempt, "status": "FAILED", "stage": stage,
+                                  "completed_at_utc": stamp(), "error": error}
+                self.record_failure(failed_attempt)
                 raise
             finally:
-                self.clean_work(job)
+                if not cleanup_attempted:
+                    try:
+                        self.clean_work(job)
+                    except BaseException as exc:
+                        if failed_attempt is None:
+                            raise
+                        cleanup_error = failure_details(exc)
+                        report_failure(stage, "CLEANUP", cleanup_error, secondary=True)
+                        failed_attempt["cleanup_error"] = cleanup_error
+                        self.record_failure(failed_attempt, notify=False)
 
     def watch(self, *, check_timer=timer_active):
         with exclusive(self.state / "watch.lock"):
@@ -474,11 +640,11 @@ def main():
             operations.confirm_alerts(args.both_received)
         return 0
     except OperationError as exc:
-        # Every OperationError above has a fixed, non-sensitive code.
-        print("RECOVERY_OPERATIONS=STOP; CODE=" + str(exc))
-        return 75 if str(exc) == "job_already_running" else 1
-    except BaseException:
-        print("RECOVERY_OPERATIONS=STOP; CODE=local_or_dependency_failure")
+        code = failure_details(exc)["code"]
+        print("RECOVERY_OPERATIONS=STOP; CODE=" + code)
+        return 75 if code == "job_already_running" else 1
+    except BaseException as exc:
+        print("RECOVERY_OPERATIONS=STOP; CODE=" + failure_details(exc)["code"])
         return 1
 
 
