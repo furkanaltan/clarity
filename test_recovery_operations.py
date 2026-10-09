@@ -547,6 +547,88 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
         self.job.collect = rejected
         self.failure("set_not_complete", "SET_VALIDATION")
 
+    def test_sqlite_diagnostic_runs_before_cleanup_and_cannot_create_success(self):
+        original_verify = recovery.verify_recovery_set
+        verify_calls = 0
+        events = []
+
+        def fail_validation_after_collection(path, **kwargs):
+            nonlocal verify_calls
+            verify_calls += 1
+            if verify_calls == 1:
+                return original_verify(path, **kwargs)
+            raise recovery.sqlite3.OperationalError("synthetic-secret-sqlite-detail")
+
+        diagnose = ops.diagnose_failed_sqlite_candidate
+        clean = self.job.clean_work
+
+        def diagnostic(*args):
+            events.append("diagnostic")
+            return diagnose(*args)
+
+        def cleanup(path):
+            events.append("cleanup")
+            return clean(path)
+
+        output = io.StringIO()
+        with patch.object(recovery, "verify_recovery_set", side_effect=fail_validation_after_collection), \
+             patch.object(ops, "diagnose_failed_sqlite_candidate", side_effect=diagnostic), \
+             patch.object(self.job, "clean_work", side_effect=cleanup), \
+             patch("sys.stdout", output), self.assertRaises(recovery.sqlite3.OperationalError):
+            self.job.run()
+
+        attempt = ops.state_read(self.job.state / "attempt.json")
+        self.assertEqual(attempt["status"], "FAILED")
+        self.assertEqual((attempt["stage"], attempt["step"]), ("COLLECTION", "SET_VALIDATION"))
+        self.assertEqual(attempt["error"]["code"], "sqlite_operation_failed")
+        self.assertEqual(attempt["error"]["sqlite_diagnostic"], {
+            "status": "CHECKS_PASS_AFTER_PRIMARY_FAILURE",
+            "stage": "POST_FAILURE_READONLY_CHECKS",
+            "code": "sqlite_checks_passed_after_primary_error",
+            "manifest_trust": "UNVERIFIED",
+        })
+        self.assertEqual(events, ["diagnostic", "cleanup"])
+        self.assertFalse((self.job.state / "success.json").exists())
+        self.assertFalse(self.case.upload.calls or self.case.fixture.sdk.calls)
+        self.assertEqual(list(self.job.work.iterdir()), [])
+        self.assertNotIn("synthetic-secret", output.getvalue() + str(attempt))
+
+    def test_sqlite_diagnostic_failure_is_sanitized_and_primary_error_survives_cleanup_error(self):
+        original_verify = recovery.verify_recovery_set
+        verify_calls = 0
+
+        def fail_validation_after_collection(path, **kwargs):
+            nonlocal verify_calls
+            verify_calls += 1
+            if verify_calls == 1:
+                return original_verify(path, **kwargs)
+            raise recovery.sqlite3.OperationalError("synthetic-secret-primary")
+
+        output = io.StringIO()
+        with patch.object(recovery, "verify_recovery_set", side_effect=fail_validation_after_collection), \
+             patch.object(ops.sqlite_diagnostics, "diagnose_failed_candidate",
+                          side_effect=RuntimeError("synthetic-secret-diagnostic")), \
+             patch.object(self.job, "clean_work", side_effect=OSError(errno.EROFS, "synthetic-secret-cleanup")), \
+             patch("sys.stdout", output), self.assertRaises(recovery.sqlite3.OperationalError):
+            self.job.run()
+
+        attempt = ops.state_read(self.job.state / "attempt.json")
+        self.assertEqual(attempt["error"]["code"], "sqlite_operation_failed")
+        self.assertEqual(attempt["error"]["sqlite_diagnostic"]["code"], "sqlite_diagnostic_unavailable")
+        self.assertEqual(attempt["cleanup_error"]["code"], "readonly_filesystem")
+        self.assertEqual((attempt["stage"], attempt["step"]), ("COLLECTION", "SET_VALIDATION"))
+        self.assertFalse((self.job.state / "success.json").exists())
+        self.assertFalse(self.case.upload.calls or self.case.fixture.sdk.calls)
+        self.assertNotIn("synthetic-secret", output.getvalue() + str(attempt))
+
+    def test_non_sqlite_set_validation_failure_does_not_run_sqlite_diagnostics(self):
+        with patch.object(ops, "diagnose_failed_sqlite_candidate") as diagnostic, \
+             patch.object(recovery, "create_verified_backup",
+                          side_effect=PermissionError(errno.EACCES, "synthetic-secret")):
+            attempt, _ = self.failure("file_permission_denied", "SET_VALIDATION")
+        diagnostic.assert_not_called()
+        self.assertNotIn("sqlite_diagnostic", attempt["error"])
+
     def test_unknown_error_remains_unknown_and_never_successful(self):
         self.job.clients = lambda: (_ for _ in ()).throw(RuntimeError("synthetic-secret-payload"))
         self.failure("unclassified_local_failure", "AWS_CLIENT_SETUP")

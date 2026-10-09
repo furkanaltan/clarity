@@ -29,6 +29,7 @@ if __name__ == "__main__":
 
 import rove_recovery_crypto as crypto
 import rove_recovery_set as recovery
+import rove_recovery_sqlite_diagnostics as sqlite_diagnostics
 import rove_recovery_trust as trust
 from rove_recovery_alerts import OperatorAlerts
 from scripts.build_recovery_operations_release import APP_COMMIT, TRUST_COMMIT, FROZEN, RELEASE_FILES
@@ -161,6 +162,29 @@ def failed_collection_details(source, job, fallback):
     except Exception:
         pass
     return fallback
+
+
+def diagnose_failed_sqlite_candidate(source, job, work_root):
+    """Return bounded diagnostics only; this result can never authorize a set."""
+    unavailable = {"status": "DIAGNOSTIC_UNAVAILABLE", "stage": "DIAGNOSTIC",
+                   "code": "sqlite_diagnostic_unavailable", "manifest_trust": "UNVERIFIED"}
+    try:
+        result = sqlite_diagnostics.diagnose_failed_candidate(
+            source, job, work_root, manifest_version=recovery.MANIFEST_VERSION,
+            tool_version=recovery.TOOL_VERSION)
+        if (not isinstance(result, dict)
+                or result.get("status") not in {"CHECKS_PASS_AFTER_PRIMARY_FAILURE", "DIAGNOSTIC_FAILED",
+                                                "DIAGNOSTIC_UNAVAILABLE"}
+                or result.get("manifest_trust") != "UNVERIFIED"
+                or not isinstance(result.get("stage"), str)
+                or not re.fullmatch(r"[A-Z0-9_]{1,64}", result["stage"])
+                or not isinstance(result.get("code"), str)
+                or not re.fullmatch(r"[a-z0-9_]{1,64}", result["code"])):
+            return unavailable
+        return {"status": result["status"], "stage": result["stage"],
+                "code": result["code"], "manifest_trust": "UNVERIFIED"}
+    except BaseException:
+        return unavailable
 
 
 def report_failure(stage, step, details, *, secondary=False):
@@ -547,6 +571,9 @@ class Operations:
                 error = failure_details(exc)
                 if attempt["step"] == "SET_VALIDATION" and source is not None:
                     error = failed_collection_details(source, job, error)
+                    if error.get("category") == "SQLITE":
+                        error = {**error, "sqlite_diagnostic": diagnose_failed_sqlite_candidate(
+                            source, job, self.work)}
                 failed_attempt = {**attempt, "status": "FAILED", "stage": stage,
                                   "completed_at_utc": stamp(), "error": error}
                 self.record_failure(failed_attempt)

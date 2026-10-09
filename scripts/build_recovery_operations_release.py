@@ -14,7 +14,8 @@ APP_COMMIT = "4e6c29074acb7f08f7908ea34f2d405051b4925b"
 TRUST_COMMIT = "5a8cdc4b39110fc92f4fc1612d421e2f6b9df301"
 FROZEN = ("rove_recovery_set.py", "backup_clarity_db.py", "reapply_account_delete_tombstones.py",
           "rove_recovery_crypto.py", "rove_recovery_trust.py")
-RELEASE_FILES = (*FROZEN, "rove_recovery_operations.py", "rove_recovery_alerts.py", "requirements/recovery.txt",
+RELEASE_FILES = (*FROZEN, "rove_recovery_operations.py", "rove_recovery_sqlite_diagnostics.py",
+    "rove_recovery_alerts.py", "requirements/recovery.txt",
     "scripts/build_recovery_operations_release.py", "docs/RECOVERY_OPERATIONS.md",
     "deploy/systemd/rove-recovery-offsite.service", "deploy/systemd/rove-recovery-offsite.timer",
     "deploy/systemd/rove-recovery-watch.service", "deploy/systemd/rove-recovery-watch.timer")
