@@ -477,6 +477,27 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
         self.assertNotIn("synthetic-secret", output.getvalue() + str(attempt))
         return attempt, output.getvalue()
 
+    def failed_candidate_collector(self):
+        collect = self.job.collect
+
+        def make_failed_candidate(**kwargs):
+            source = collect(**kwargs)
+            manifest_path = source / "manifest.json"
+            manifest = recovery.strict_json(manifest_path.read_bytes())
+            manifest["status"] = "FAILED"
+            manifest["error_code"] = "OperationalError"
+            manifest["account_restore_safety"] = {
+                "status": "UNSAFE_FOR_ACCOUNT_RESTORE", "reason": "OperationalError",
+                "gate_version": recovery.GENERATION_GATE_VERSION,
+            }
+            manifest_path.unlink()
+            recovery.private_write(manifest_path, recovery.json_bytes(manifest))
+            failed = source.with_name(source.name + ".failed")
+            source.rename(failed)
+            return failed
+
+        return make_failed_candidate
+
     def test_reproduce_old_generic_error_and_lost_failure_details(self):
         root = Path(__file__).resolve().parent
         raw = subprocess.check_output(["git", "-C", str(root), "show",
@@ -548,16 +569,14 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
         self.failure("set_not_complete", "SET_VALIDATION")
 
     def test_sqlite_diagnostic_runs_before_cleanup_and_cannot_create_success(self):
-        original_verify = recovery.verify_recovery_set
-        verify_calls = 0
         events = []
 
-        def fail_validation_after_collection(path, **kwargs):
-            nonlocal verify_calls
-            verify_calls += 1
-            if verify_calls == 1:
-                return original_verify(path, **kwargs)
-            raise recovery.sqlite3.OperationalError("synthetic-secret-sqlite-detail")
+        original_verify = recovery.verify_recovery_set
+
+        def reject_failed_candidate(path, **kwargs):
+            if path.name.endswith(".failed"):
+                raise recovery.sqlite3.OperationalError("synthetic-secret-sqlite-detail")
+            return original_verify(path, **kwargs)
 
         diagnose = ops.diagnose_failed_sqlite_candidate
         clean = self.job.clean_work
@@ -571,7 +590,8 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
             return clean(path)
 
         output = io.StringIO()
-        with patch.object(recovery, "verify_recovery_set", side_effect=fail_validation_after_collection), \
+        with patch.object(self.job, "collect", side_effect=self.failed_candidate_collector()), \
+             patch.object(recovery, "verify_recovery_set", side_effect=reject_failed_candidate), \
              patch.object(ops, "diagnose_failed_sqlite_candidate", side_effect=diagnostic), \
              patch.object(self.job, "clean_work", side_effect=cleanup), \
              patch("sys.stdout", output), self.assertRaises(recovery.sqlite3.OperationalError):
@@ -595,17 +615,15 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
 
     def test_sqlite_diagnostic_failure_is_sanitized_and_primary_error_survives_cleanup_error(self):
         original_verify = recovery.verify_recovery_set
-        verify_calls = 0
 
-        def fail_validation_after_collection(path, **kwargs):
-            nonlocal verify_calls
-            verify_calls += 1
-            if verify_calls == 1:
-                return original_verify(path, **kwargs)
-            raise recovery.sqlite3.OperationalError("synthetic-secret-primary")
+        def reject_failed_candidate(path, **kwargs):
+            if path.name.endswith(".failed"):
+                raise recovery.sqlite3.OperationalError("synthetic-secret-primary")
+            return original_verify(path, **kwargs)
 
         output = io.StringIO()
-        with patch.object(recovery, "verify_recovery_set", side_effect=fail_validation_after_collection), \
+        with patch.object(self.job, "collect", side_effect=self.failed_candidate_collector()), \
+             patch.object(recovery, "verify_recovery_set", side_effect=reject_failed_candidate), \
              patch.object(ops.sqlite_diagnostics, "diagnose_failed_candidate",
                           side_effect=RuntimeError("synthetic-secret-diagnostic")), \
              patch.object(self.job, "clean_work", side_effect=OSError(errno.EROFS, "synthetic-secret-cleanup")), \

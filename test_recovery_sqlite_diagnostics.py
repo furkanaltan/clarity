@@ -66,7 +66,7 @@ class FailedCandidateSQLiteDiagnosticsTests(unittest.TestCase):
         self.job.mkdir(mode=0o700)
         self.sets = self.job / "sets"
         self.sets.mkdir(mode=0o700)
-        self.set_dir = self.sets / SET_ID
+        self.set_dir = self.sets / (SET_ID + ".failed")
         self.set_dir.mkdir(mode=0o700)
         self.db_dir = self.set_dir / "database"
         self.db_dir.mkdir(mode=0o700)
@@ -95,25 +95,19 @@ class FailedCandidateSQLiteDiagnosticsTests(unittest.TestCase):
         return objects, version
 
     def _manifest(self):
-        size = self.db.stat().st_size
-        digest = hashlib.sha256(self.db.read_bytes()).hexdigest()
         return {
             "manifest_version": 4,
             "tool_version": "1.3",
             "recovery_set_id": SET_ID,
-            "status": "COMPLETE",
+            "status": "FAILED",
+            "error_code": "integrity_check_failed",
+            "account_restore_safety": {"status": "UNSAFE_FOR_ACCOUNT_RESTORE"},
             "database": {
                 "path": "database/clarity.db",
-                "bytes": size,
-                "sha256": digest,
-                "integrity_check": "ok",
-                "foreign_key_check": "ok",
-                "snapshot_method": "sqlite_backup_api",
-                "live_sidecars_included": False,
-            },
-            "runtime": {
-                "schema_sha256": diagnostics._schema_hash(self.schema_rows, self.user_version),
-                "sqlite_user_version": self.user_version,
+                "bytes": None,
+                "sha256": None,
+                "integrity_check": "FAILED",
+                "foreign_key_check": "NOT_RUN",
             },
         }
 
@@ -144,15 +138,16 @@ class FailedCandidateSQLiteDiagnosticsTests(unittest.TestCase):
             "code": "sqlite_checks_passed_after_primary_error",
             "manifest_trust": "UNVERIFIED",
         })
+        self.assertNotIn("SUCCESS", result.values())
         self.assertEqual(before, self._tree_state())
         for suffix in ("-wal", "-shm", "-journal"):
             self.assertFalse((self.db_dir / ("clarity.db" + suffix)).exists())
 
-    def test_manifest_database_hash_mismatch_is_rejected(self):
+    def test_failed_manifest_metadata_is_not_a_trust_anchor(self):
         self.db.write_bytes(self.db.read_bytes() + b"changed")
         result = self._diagnose()
-        self.assertEqual((result["stage"], result["code"]),
-                         ("DATABASE_HASH", "sqlite_database_manifest_mismatch"))
+        self.assertEqual((result["status"], result["manifest_trust"]),
+                         ("CHECKS_PASS_AFTER_PRIMARY_FAILURE", "UNVERIFIED"))
 
     def test_malformed_sqlite_is_rejected_at_integrity_check(self):
         self.db.write_bytes(b"not a sqlite database")
@@ -160,7 +155,83 @@ class FailedCandidateSQLiteDiagnosticsTests(unittest.TestCase):
         self._write_manifest()
         result = self._diagnose()
         self.assertEqual((result["stage"], result["code"]),
-                         ("INTEGRITY_CHECK", "sqlite_integrity_check_failed"))
+                         ("SQLITE_HEADER", "sqlite_database_format_invalid"))
+
+    def test_complete_candidate_is_rejected_even_inside_failed_directory(self):
+        manifest = self._manifest()
+        manifest["status"] = "COMPLETE"
+        self._write_manifest(manifest)
+        result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("MANIFEST_BINDING", "sqlite_failed_candidate_manifest_invalid"))
+
+    def test_non_failed_candidate_name_is_rejected(self):
+        complete_dir = self.sets / SET_ID
+        self.set_dir.rename(complete_dir)
+        try:
+            result = diagnostics.diagnose_failed_candidate(
+                complete_dir, self.job, self.work, manifest_version=4, tool_version="1.3")
+            self.assertEqual((result["stage"], result["code"]),
+                             ("DIAGNOSTIC_SCOPE", "sqlite_diagnostic_scope_invalid"))
+        finally:
+            complete_dir.rename(self.set_dir)
+
+    def test_manifest_id_must_match_failed_candidate_name(self):
+        manifest = self._manifest()
+        manifest["recovery_set_id"] = "recovery_set_20261009T000000Z_" + "b" * 32
+        self._write_manifest(manifest)
+        result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("MANIFEST_BINDING", "sqlite_failed_candidate_manifest_invalid"))
+
+    def test_candidate_symlink_and_unsupported_entry_are_rejected(self):
+        moved = self.sets / ("recovery_set_20261009T000000Z_" + "b" * 32 + ".failed")
+        self.set_dir.rename(moved)
+        self.set_dir.symlink_to(moved, target_is_directory=True)
+        try:
+            result = self._diagnose()
+            self.assertEqual((result["stage"], result["code"]),
+                             ("DIAGNOSTIC_SCOPE", "sqlite_diagnostic_scope_invalid"))
+        finally:
+            self.set_dir.unlink()
+            moved.rename(self.set_dir)
+
+        moved_db = self.db_dir / "clarity.db.real"
+        self.db.rename(moved_db)
+        self.db.symlink_to(moved_db)
+        result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("DIAGNOSTIC_SCOPE", "sqlite_candidate_tree_invalid"))
+        self.db.unlink()
+        moved_db.rename(self.db)
+
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(self.set_dir / "unexpected-pipe", 0o600)
+            result = self._diagnose()
+            self.assertEqual((result["stage"], result["code"]),
+                             ("DIAGNOSTIC_SCOPE", "sqlite_candidate_tree_invalid"))
+            (self.set_dir / "unexpected-pipe").unlink()
+
+    def test_missing_manifest_or_database_is_rejected(self):
+        manifest_path = self.set_dir / "manifest.json"
+        manifest_path.unlink()
+        result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("MANIFEST_READ", "sqlite_manifest_unavailable"))
+        self._write_manifest()
+        self.db.unlink()
+        result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("DATABASE_HASH", "sqlite_database_unavailable"))
+
+    def test_manifest_claims_never_upgrade_diagnostic_trust(self):
+        manifest = self._manifest()
+        manifest["external_custody_verified"] = True
+        manifest["account_restore_safety"] = {"status": "UNSAFE_FOR_ACCOUNT_RESTORE"}
+        self._write_manifest(manifest)
+        result = self._diagnose()
+        self.assertEqual(result["manifest_trust"], "UNVERIFIED")
+        self.assertNotIn("generation_gate", result)
 
     def test_each_sqlite_operation_has_a_fixed_safe_error_code(self):
         expected = {
@@ -207,15 +278,30 @@ class FailedCandidateSQLiteDiagnosticsTests(unittest.TestCase):
 
     def test_schema_mismatch_and_sidecars_are_rejected(self):
         manifest = self._manifest()
-        manifest["runtime"]["schema_sha256"] = "0" * 64
+        manifest["runtime"] = {"schema_sha256": "0" * 64, "sqlite_user_version": -1}
         self._write_manifest(manifest)
         result = self._diagnose()
-        self.assertEqual((result["stage"], result["code"]),
-                         ("MANIFEST_COMPARE", "sqlite_schema_manifest_mismatch"))
-        (self.db_dir / "clarity.db-shm").write_bytes(b"synthetic")
+        self.assertEqual((result["status"], result["manifest_trust"]),
+                         ("CHECKS_PASS_AFTER_PRIMARY_FAILURE", "UNVERIFIED"))
+        sidecar = self.db_dir / "clarity.db-shm"
+        sidecar.write_bytes(b"synthetic")
+        sidecar.chmod(0o600)
         result = self._diagnose()
         self.assertEqual((result["stage"], result["code"]),
                          ("SNAPSHOT_SIDECARS", "sqlite_snapshot_sidecar_present"))
+
+    def test_invalid_user_version_result_has_fixed_code(self):
+        original_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            raw = original_connect(*args, **kwargs)
+            return ReadOnlyProxy(raw, schema=self.schema_rows, user_version="private-value")
+
+        with patch.object(diagnostics.sqlite3, "connect", side_effect=connect):
+            result = self._diagnose()
+        self.assertEqual((result["stage"], result["code"]),
+                         ("USER_VERSION", "sqlite_user_version_result_invalid"))
+        self.assertNotIn("private-value", str(result))
 
     def test_scope_escape_is_rejected(self):
         result = diagnostics.diagnose_failed_candidate(
