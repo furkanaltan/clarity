@@ -960,5 +960,167 @@ class ReportRenderV2Tests(unittest.TestCase):
             self.assertNotIn(phrase, html)
 
 
+class PdfMonthlyDetailsTests(unittest.TestCase):
+    def test_largest_single_expense_uses_engine_fact_not_merchant_total(self):
+        data = july_truth_payload()
+        rows = [
+            {"classification": "consumption", "amount": 500.25,
+             "merchant": "Elektronikmarkt", "category": "SHOPPING", "created_at": "2026-07-18 14:00:00"},
+            {"classification": "transfer", "amount": 9000.0,
+             "merchant": "Eigenes Konto", "category": "TRANSFER", "created_at": "2026-07-19 14:00:00"},
+        ]
+        with patch.object(report_engine, "get_report_expense_rows", return_value=rows):
+            expense = report_engine.get_biggest_expense(1, "2026-07")
+        data["pages"]["month"] = {"biggest_expense": expense}
+        data["report_truth"]["expenses"]["largest_expense"] = {
+            key: expense[key] for key in ("amount", "merchant", "category")
+        }
+        before = copy.deepcopy(data)
+
+        context = build_render_context(data)
+        page = _render_hell_pages(data)[4]
+
+        self.assertEqual(context["pdf_largest_expense"]["amount"], "500,25 €")
+        self.assertEqual(context["pdf_largest_expense"]["detail"], "Elektronikmarkt")
+        self.assertEqual(context["biggest_name"], "Breuninger")
+        self.assertIn("Größte Einzelausgabe", page)
+        self.assertIn("500,25 €", page)
+        self.assertNotIn("18.07.2026", page)
+        self.assertEqual(data, before)
+        data["report_truth"]["expenses"]["largest_expense"]["created_at"] = expense["created_at"]
+        self.assertEqual(build_render_context(data)["pdf_largest_expense"]["detail"], "Elektronikmarkt · 18.07.2026")
+
+    def test_missing_or_invalid_single_expense_does_not_invent_zero(self):
+        for expense in (None, {}, {"amount": None}, {"amount": 0}, {"amount": float("nan")}):
+            with self.subTest(expense=expense):
+                data = july_truth_payload()
+                data["report_truth"]["expenses"]["largest_expense"] = expense
+                context = build_render_context(data)
+                page = _render_hell_pages(data)[4]
+                self.assertFalse(context["pdf_largest_expense"]["available"])
+                block = page.split('data-report-block="largest-expense"', 1)[1]
+                self.assertIn("Keine verlässliche Einzelbuchung verfügbar.", block)
+                self.assertNotIn("0 €", block)
+
+    def test_single_expense_omits_unreliable_merchant_and_mismatched_date(self):
+        data = july_truth_payload()
+        data["report_truth"]["expenses"]["largest_expense"] = {
+            "amount": 500.0, "merchant": "Shopping", "category": "SHOPPING",
+        }
+        data["pages"]["month"] = {"biggest_expense": {
+            "amount": 380.0, "merchant": "Breuninger", "category": "SHOPPING",
+            "created_at": "2026-07-18",
+        }}
+        self.assertEqual(build_render_context(data)["pdf_largest_expense"]["detail"], "")
+        for date in ("invalid", "2026-08-18"):
+            data["report_truth"]["expenses"]["largest_expense"]["created_at"] = date
+            self.assertEqual(build_render_context(data)["pdf_largest_expense"]["detail"], "")
+
+    def test_single_expense_escapes_counterparty_text(self):
+        data = july_truth_payload()
+        data["report_truth"]["expenses"]["largest_expense"]["merchant"] = '<script>alert("test")</script>'
+        block = _render_hell_pages(data)[4].split('data-report-block="largest-expense"', 1)[1]
+        self.assertNotIn("<script>", block)
+        self.assertIn("&lt;script&gt;", block)
+
+    def test_cashflow_reuses_frozen_value_and_preserves_financial_truth(self):
+        data = report_payload()
+        data["report_story_v2"]["pages"]["page_2"]["primary_metric"]["value"] = 123.45
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        page = _render_hell_pages(data)[1]
+
+        self.assertEqual(context["pdf_cashflow"]["income"], "4.000 €")
+        self.assertEqual(context["pdf_cashflow"]["fixed_costs"], "1.500 €")
+        self.assertEqual(context["pdf_cashflow"]["consumption"], "900 €")
+        self.assertEqual(context["pdf_cashflow"]["net"], "123,45 €")
+        for text in ("Einnahmen", "Ausgaben", "Konsum 900 €", "Fixkosten 1.500 €",
+                     "Netto-Geldfluss", "123,45 €", "bestätigter Sparleistung (800 €)"):
+            self.assertIn(text, page)
+        self.assertEqual(data, before)
+
+    def test_cashflow_missing_inputs_are_not_replaced_with_zero(self):
+        for section, key in (("income", "amount"), ("fixed_costs", "amount"),
+                             ("expenses", "total_consumption"), ("savings", "actual_amount")):
+            for missing in (True, False):
+                with self.subTest(section=section, missing=missing):
+                    data = report_payload()
+                    if missing:
+                        del data["report_truth"][section][key]
+                    else:
+                        data["report_truth"][section][key] = None
+                    summary = build_render_context(data)["pdf_cashflow"]
+                    self.assertEqual(summary["net"], "—")
+                    self.assertIn("nicht verfügbar", summary["note"])
+                    if section != "savings":
+                        field = {"income": "income", "fixed_costs": "fixed_costs", "expenses": "consumption"}[section]
+                        self.assertEqual(summary[field], "—")
+        data = report_payload()
+        data["report_truth"]["income"]["source"] = "unavailable"
+        self.assertEqual(build_render_context(data)["pdf_cashflow"]["income"], "—")
+        self.assertEqual(build_render_context(data)["pdf_cashflow"]["net"], "—")
+
+    def test_cashflow_unconfirmed_inputs_suppress_net_value(self):
+        for section in ("income", "fixed_costs", "savings"):
+            with self.subTest(section=section):
+                data = report_payload()
+                data["report_truth"][section]["confirmed"] = False
+                summary = build_render_context(data)["pdf_cashflow"]
+                self.assertEqual(summary["net"], "—")
+                self.assertIn("nicht vollständig bestätigt", summary["note"])
+                if section != "savings":
+                    self.assertEqual(summary["income_status" if section == "income" else "fixed_status"], "Noch nicht bestätigt")
+
+    def test_cashflow_zero_and_negative_values_keep_existing_semantics(self):
+        data = report_payload()
+        for section, key in (("fixed_costs", "amount"), ("expenses", "total_consumption"), ("savings", "actual_amount")):
+            data["report_truth"][section][key] = 0.0
+        data["report_story_v2"] = build_report_story_v2(data)
+        summary = build_render_context(data)["pdf_cashflow"]
+        self.assertEqual(summary["net"], "4.000 €")
+        self.assertEqual(summary["fixed_costs"], "0 €")
+        self.assertEqual(summary["consumption"], "0 €")
+        data = report_payload()
+        data["report_truth"]["expenses"]["total_consumption"] = 2000.0
+        data["report_story_v2"] = build_report_story_v2(data)
+        self.assertEqual(build_render_context(data)["pdf_cashflow"]["net"], "-300 €")
+
+    def test_cashflow_does_not_treat_transfers_or_investments_as_consumption(self):
+        data = report_payload()
+        expected = build_render_context(data)["pdf_cashflow"]
+        data["report_truth"]["expenses"]["classification_totals"].update({
+            "transfer": 90000.0, "investment_contribution": 70000.0,
+        })
+        data["report_story_v2"] = build_report_story_v2(data)
+        self.assertEqual(build_render_context(data)["pdf_cashflow"], expected)
+
+    def test_new_blocks_fit_ten_pages_without_footer_overlap(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                data = july_review_payload()
+                if missing:
+                    data["report_truth"]["income"]["amount"] = None
+                    data["report_truth"]["expenses"]["largest_expense"] = None
+                else:
+                    data["report_truth"]["savings"].update({"confirmed": True, "actual_amount": 800.0})
+                    data["report_truth"]["expenses"]["largest_expense"].update({
+                        "merchant": "SehrLangerHaendlernameOhneLeerzeichen123456789" * 40,
+                        "created_at": "2026-07-18",
+                    })
+                    detail = build_render_context(data)["pdf_largest_expense"]["detail"]
+                    self.assertIn("… · 18.07.2026", detail)
+                    self.assertLessEqual(len(detail), 93)
+                data["report_story_v2"] = build_report_story_v2(data)
+                document = HTML(string=build_html_document(_render_hell_pages(data))).render()
+                self.assertEqual(len(document.pages), 10)
+                for page_index, name in ((1, "monthly-cashflow"), (4, "largest-expense")):
+                    boxes = list(document.pages[page_index]._page_box.descendants())
+                    block = next(box for box in boxes if box.element is not None and box.element.get("data-report-block") == name)
+                    footer = next(box for box in boxes if box.element is not None and box.element.get("data-report-footer") == str(page_index + 1))
+                    self.assertLessEqual(block.border_box_y() + block.border_height(), footer.border_box_y() - 8)
+                    for box in block.descendants():
+                        self.assertLessEqual(box.position_x + box.width, 760.1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1009,6 +1009,78 @@ def build_story_render_context(data: dict) -> dict:
     }
 
 
+def _pdf_month_details(data: dict, report: dict) -> dict:
+    """Present existing snapshot facts without querying or recalculating them."""
+    truth = data.get("report_truth") or {}
+    expenses = truth.get("expenses") or {}
+    original_expense = (data.get("pages", {}).get("month") or {}).get("biggest_expense") or {}
+    expense = (expenses.get("largest_expense") if truth else original_expense) or {}
+
+    def known_amount(item: dict, key: str = "amount") -> bool:
+        value = item.get(key)
+        return (
+            item.get("source") != "unavailable"
+            and isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value)
+        )
+
+    largest_available = known_amount(expense) and expense["amount"] > 0
+    merchant = str(expense.get("merchant") or "").strip()
+    merchant = merchant if valid_report_merchant(merchant, expense.get("category")) else ""
+    merchant = merchant if len(merchant) <= 80 else merchant[:79].rstrip() + "…"
+    expense_date = ""
+    # Equal-valued transactions need not identify the same booking in legacy data.
+    try:
+        date = datetime.fromisoformat(str(expense.get("created_at") or "")[:10])
+        if date.strftime("%Y-%m") == (data.get("meta") or {}).get("report_month"):
+            expense_date = date.strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+
+    income = truth.get("income") or {}
+    fixed = truth.get("fixed_costs") or {}
+    savings = truth.get("savings") or {}
+    flow_page = (report.get("pages") or {}).get("page_2") or {}
+    flow_metric = flow_page.get("primary_metric") or {}
+    income_available = known_amount(income)
+    fixed_available = known_amount(fixed)
+    consumption_available = known_amount(expenses, "total_consumption")
+    flow_available = bool(
+        income_available and fixed_available and consumption_available
+        and known_amount(savings, "actual_amount")
+        and income.get("confirmed") and fixed.get("confirmed") and savings.get("confirmed")
+        and flow_page.get("available")
+        and flow_metric.get("semantic_key") == "cashflow_difference"
+        and known_amount(flow_metric, "value")
+    )
+
+    def confirmation(item: dict, available: bool) -> str:
+        if not available:
+            return "Nicht verfügbar"
+        return "Bestätigt" if item.get("confirmed") else "Noch nicht bestätigt"
+
+    return {
+        "pdf_largest_expense": {
+            "available": largest_available,
+            "amount": _story_money(expense["amount"]) if largest_available else "—",
+            "detail": h(" · ".join(value for value in (merchant, expense_date) if value)) if largest_available else "",
+        },
+        "pdf_cashflow": {
+            "income": _story_money(income["amount"]) if income_available else "—",
+            "income_status": confirmation(income, income_available),
+            "consumption": _story_money(expenses["total_consumption"]) if consumption_available else "—",
+            "fixed_costs": _story_money(fixed["amount"]) if fixed_available else "—",
+            "fixed_status": confirmation(fixed, fixed_available),
+            "net": _story_money(flow_metric["value"]) if flow_available else "—",
+            "note": (
+                f"Rest nach Fixkosten, Konsum und bestätigter Sparleistung ({_story_money(savings['actual_amount'])}). Kein Kontosaldo."
+                if flow_available else
+                "Netto-Geldfluss nicht verfügbar: Monatswerte fehlen oder sind noch nicht vollständig bestätigt."
+            ),
+        },
+    }
+
+
 def _v2_legacy_visual_context(data: dict) -> dict:
     """Map immutable Story V2 data onto the original web report visual language."""
     report = build_story_render_context(data)
@@ -1475,6 +1547,7 @@ def _v2_legacy_visual_context(data: dict) -> dict:
     milestone_fact = f"Dir fehlen noch {_story_money(milestone_remaining)} bis {_story_money(mband['to_amount'])}."
 
     return {
+        **_pdf_month_details(data, report),
         "report": report,
         "month_label": h(report["month_label"]),
         "next_label": h(report["next_month_label"]),
@@ -2089,6 +2162,7 @@ def build_render_context(data: dict) -> dict:
         "plan_step3_sub": "Dieser Betrag stammt aus dem ursprünglichen Monatsplan.",
     })
 
+    context.update(_pdf_month_details(data, context["report"]))
     return context
 
 
