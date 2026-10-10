@@ -5,6 +5,7 @@ import copy
 import errno
 import hashlib
 import io
+import json
 import multiprocessing
 import os
 import shutil
@@ -25,6 +26,33 @@ import rove_recovery_trust as trust
 import test_recovery_trust as fixtures
 from rove_recovery_alerts import AlertError, OperatorAlerts
 from scripts.build_recovery_operations_release import build, RELEASE_FILES
+
+
+def in_process_cli(module=ops):
+    # The real CLI exits its process; these tests must not leak its umask to other tests.
+    previous = os.umask(0o077)
+    try:
+        return module.main()
+    finally:
+        os.umask(previous)
+
+
+class CLIIsolationTests(unittest.TestCase):
+    def test_cli_hardens_its_umask_without_leaking_to_subsequent_tests(self):
+        original = os.umask(0o022)
+        self.addCleanup(os.umask, original)
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)):
+                os.umask(mask)
+                def rejected_config(path):
+                    self.assertEqual(os.umask(0o077), 0o077)
+                    raise ops.OperationError("configuration_invalid")
+                with patch.object(ops, "load_config", side_effect=rejected_config), \
+                     patch.object(ops.os, "geteuid", return_value=0), \
+                     patch.object(ops.sys, "argv", ["ops", "run", "--config", "synthetic.json"]), \
+                     patch("sys.stdout", io.StringIO()):
+                    self.assertEqual(in_process_cli(), 1)
+                self.assertEqual(os.umask(mask), mask)
 
 
 class Alerts:
@@ -79,14 +107,15 @@ class OperationsTests(unittest.TestCase):
         self.upload = Upload(self.fixture.s3)
         self.job = ops.Operations(self.config, self.alerts,
             clients=lambda: (self.upload, self.fixture.sdk), encrypt=self.encrypt,
-            preflight=lambda config: None)
+            preflight=lambda config: None, credentials_binding=lambda: "d" * 64)
         self.activate()
         self.inputs_before = {path: path.read_bytes() for path in
                               (f.db, f.ledger, f.inventory_path, self.fixture.policy_path)}
 
     def activate(self):
-        ops.atomic_state(self.job.state / "activation.json", {"both_received_operator_confirmed": True,
-            "both_accepted": True, "config_sha256": self.config["config_sha256"]})
+        with patch("sys.stdout", io.StringIO()):
+            self.job.confirm_alerts(self.job.probe_alerts())
+        self.alerts.calls.clear()
 
     def encrypt(self, source, public, fingerprint, envelope, **kwargs):
         # Deterministic transport fixture. The separate real-GPG E2E test below does not use this.
@@ -131,9 +160,19 @@ class OperationsTests(unittest.TestCase):
         self.job.run()
 
     def test_missing_operator_delivery_proof_blocks_before_collection(self):
-        (self.job.state / "activation.json").unlink()
+        (self.job.state / "alert-history-head.json").unlink()
         self.blocked()
         self.assertFalse(self.upload.calls)
+
+    def test_changed_credential_binding_after_verifier_never_publishes_success(self):
+        original = self.fixture.sdk.mutate
+        def verify(value):
+            if value.get("status") == "PASS" and "version_id" in value:
+                self.job.credentials_binding = lambda: "0" * 64
+            return original(value)
+        self.fixture.sdk.mutate = verify
+        self.blocked()
+        self.assertEqual(ops.state_read(self.job.state / "attempt.json")["stage"], "EXTERNAL_VERIFIER")
 
     def test_missing_manifest_receipt(self):
         self.fixture.sdk.mutate = lambda data: {"response_version": 1, "status": "BLOCK"}
@@ -301,20 +340,20 @@ class OperationsTests(unittest.TestCase):
         self.assertFalse(ops.state_read(self.job.state / "watch.json")["both_accepted"])
 
     def test_alert_probe_requires_both_channels_and_explicit_confirmation(self):
-        (self.job.state / "activation.json").unlink()
-        self.job.probe_alerts()
-        self.assertFalse((self.job.state / "activation.json").exists())
-        probe = ops.state_read(self.job.state / "alert-probe.json")
-        self.job.confirm_alerts(probe["probe_id"])
+        identifier = self.job.probe_alerts()
+        _, probes, _ = self.job.alert_history()
+        self.assertIsNone(probes[identifier]["confirmation"])
+        self.job.confirm_alerts(identifier)
         self.job.activation()
 
     def test_failed_alert_probe_cannot_authorize_activation(self):
         self.alerts.delivery["telegram"] = False
         with self.assertRaises(ops.OperationError):
             self.job.probe_alerts()
-        probe = ops.state_read(self.job.state / "alert-probe.json")
+        _, probes, _ = self.job.alert_history()
+        identifier = next(reversed(probes))
         with self.assertRaises(ops.OperationError):
-            self.job.confirm_alerts(probe["probe_id"])
+            self.job.confirm_alerts(identifier)
 
     def test_cleanup_rejects_frozen_or_unknown_path(self):
         with self.assertRaises(ops.OperationError):
@@ -351,7 +390,7 @@ class OperationsTests(unittest.TestCase):
              patch.object(ops, "verify_release", side_effect=AssertionError("preflight must be inside run")), \
              patch.object(ops.os, "geteuid", side_effect=lambda: next(context_check, owner)), \
              patch.object(ops.sys, "argv", ["operations", "run", "--config", "synthetic.json"]):
-            self.assertEqual(ops.main(), 1)
+            self.assertEqual(in_process_cli(), 1)
         self.assertEqual(self.alerts.calls[-1][1], "PREFLIGHT")
         self.assertFalse((self.job.state / "success.json").exists())
 
@@ -374,6 +413,341 @@ class OperationsTests(unittest.TestCase):
             raise RuntimeError("synthetic systemd failure")
         self.assertEqual(self.job.watch(check_timer=unavailable), "CRITICAL")
         self.assertEqual(self.alerts.calls[-1][1], "TIMER_STOPPED")
+
+
+class AlertRenewalTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="rva-", dir="/private/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.credentials = ops.private_dir(self.root / "credentials")
+        os.chown(self.credentials, -1, os.getegid())
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "TELEGRAM_TOKEN", "BREVO_API_KEY"):
+            recovery.private_write(self.credentials / name, b"synthetic-secret-never-log")
+        self.config = {"state_root": self.root / "state", "work_root": self.root / "work",
+                       "config_sha256": "a" * 64, "release_commit": "b" * 40}
+        self.alerts = Alerts()
+        self.job = ops.Operations(self.config, self.alerts,
+                                  credentials_binding=lambda: ops.credential_binding(self.credentials))
+        self.output = io.StringIO()
+        self.stdout = patch("sys.stdout", self.output)
+        self.stdout.start()
+        self.addCleanup(self.stdout.stop)
+
+    def activate(self):
+        identifier = self.job.probe_alerts()
+        self.job.confirm_alerts(identifier)
+        self.job.activation()
+        return identifier
+
+    def evidence(self):
+        return {path.relative_to(self.job.state): path.read_bytes()
+                for path in self.job.state.rglob("*") if path.is_file() and path.name != "watch.lock"}
+
+    def unchanged_evidence(self, before):
+        after = self.evidence()
+        for name, raw in before.items():
+            if name != Path("alert-history-head.json"):
+                self.assertEqual(after[name], raw)
+
+    def test_first_activation_requires_provider_and_operator_receipt(self):
+        with self.assertRaisesRegex(ops.OperationError, "operator_alert_delivery_not_verified"):
+            self.job.activation()
+        identifier = self.job.probe_alerts()
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+        self.job.confirm_alerts(identifier)
+        self.job.activation()
+        self.assertFalse((self.job.state / "success.json").exists())
+        self.assertFalse((self.job.state / "activation.json").exists())
+
+    def test_renewal_preserves_history_and_selects_confirmed_probe(self):
+        old = self.activate()
+        before = self.evidence()
+        new = self.job.probe_alerts()
+        self.assertNotEqual(old, new)
+        self.assertEqual(self.job.alert_history()[2]["request"]["probe_id"], old)
+        self.job.confirm_alerts(new)
+        self.assertEqual(self.job.alert_history()[2]["request"]["probe_id"], new)
+        self.unchanged_evidence(before)
+        self.assertEqual(len(self.alerts.calls), 2)
+
+    def test_legacy_evidence_retained_exactly_without_implicit_activation(self):
+        for name in ("alert-probe.json", "activation.json"):
+            recovery.private_write(self.job.state / name, b'{"legacy": "unchanged"}\n')
+        before = self.evidence()
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+        self.activate()
+        self.unchanged_evidence(before)
+        self.assertEqual(self.job.alert_history()[0][0]["value"], self.job.legacy_alert_hashes())
+
+    def test_changed_or_missing_legacy_evidence_blocks_without_sending(self):
+        path = self.job.state / "activation.json"
+        recovery.private_write(path, b"original")
+        self.activate()
+        path.unlink()
+        before = len(self.alerts.calls)
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.probe_alerts()
+        self.assertEqual(len(self.alerts.calls), before)
+
+    def test_confirmed_activation_survives_normal_four_hour_timer_interval(self):
+        when = ops.now()
+        with patch.object(ops, "now", return_value=when):
+            self.activate()
+        with patch.object(ops, "now", return_value=when + timedelta(hours=4)):
+            self.job.activation()
+
+    def test_expired_probe_rejected_and_new_probe_allowed(self):
+        when = ops.now()
+        with patch.object(ops, "now", return_value=when):
+            identifier = self.job.probe_alerts()
+        before = self.evidence()
+        with patch.object(ops, "now", return_value=when + timedelta(seconds=3601)):
+            with self.assertRaisesRegex(ops.OperationError, "alert_probe_not_current"):
+                self.job.confirm_alerts(identifier)
+            self.activate()
+        self.unchanged_evidence(before)
+
+    def test_future_probe_cannot_be_confirmed(self):
+        when = ops.now()
+        with patch.object(ops, "now", return_value=when + timedelta(seconds=1)):
+            identifier = self.job.probe_alerts()
+        with patch.object(ops, "now", return_value=when), self.assertRaises(ops.OperationError):
+            self.job.confirm_alerts(identifier)
+
+    def test_double_confirmation_is_rejected_without_writes(self):
+        identifier = self.activate()
+        before = self.evidence()
+        with self.assertRaisesRegex(ops.OperationError, "alert_probe_not_current"):
+            self.job.confirm_alerts(identifier)
+        self.assertEqual(self.evidence(), before)
+
+    def test_wrong_probe_id_is_rejected_without_writes(self):
+        self.job.probe_alerts()
+        before = self.evidence()
+        for identifier in ("0" * 32, "../activation", "short", None):
+            with self.subTest(identifier=identifier), self.assertRaises(ops.OperationError):
+                self.job.confirm_alerts(identifier)
+        self.assertEqual(self.evidence(), before)
+
+    def test_config_and_release_changes_invalidate_both_confirmation_and_activation(self):
+        self.activate()
+        identifier = self.job.probe_alerts()
+        before = self.evidence()
+        for key, changed in (("config_sha256", "0" * 64), ("release_commit", "0" * 40)):
+            with self.subTest(key=key), patch.dict(self.config, {key: changed}):
+                with self.assertRaises(ops.OperationError):
+                    self.job.confirm_alerts(identifier)
+                with self.assertRaises(ops.OperationError):
+                    self.job.activation()
+        self.assertEqual(self.evidence(), before)
+
+    def test_each_credential_change_invalidates_activation_without_secret_reads(self):
+        self.activate()
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "TELEGRAM_TOKEN", "BREVO_API_KEY"):
+            with self.subTest(name=name):
+                path = self.credentials / name
+                before = path.stat()
+                path.write_bytes(b"x" * before.st_size)
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                self.assertEqual(path.stat().st_size, before.st_size)
+                self.assertEqual(path.stat().st_mtime_ns, before.st_mtime_ns)
+                with patch.object(Path, "read_bytes", side_effect=AssertionError("no secret reads")):
+                    ops.credential_binding(self.credentials)
+                with self.assertRaises(ops.OperationError):
+                    self.job.activation()
+                self.activate()
+        self.assertNotIn("synthetic-secret", self.output.getvalue() + str(self.evidence()))
+        self.assertNotIn("changed-secret", self.output.getvalue() + str(self.evidence()))
+
+    def test_changed_credentials_before_confirmation_are_rejected(self):
+        identifier = self.job.probe_alerts()
+        (self.credentials / "TELEGRAM_TOKEN").write_bytes(b"changed")
+        with self.assertRaisesRegex(ops.OperationError, "alert_probe_not_current"):
+            self.job.confirm_alerts(identifier)
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+
+    def test_changed_credentials_during_send_cannot_produce_confirmation(self):
+        def changed(*args):
+            (self.credentials / "BREVO_API_KEY").write_bytes(b"changed")
+            return {"telegram": True, "email": True}
+        self.alerts.notify = changed
+        with self.assertRaisesRegex(ops.OperationError, "credential_binding_changed"):
+            self.job.probe_alerts()
+        _, probes, proof = self.job.alert_history()
+        self.assertIsNone(proof)
+        self.assertTrue(all(probe["result"] is None for probe in probes.values()))
+
+    def test_failed_delivery_preserves_previous_activation_but_never_confirms_new_probe(self):
+        old = self.activate()
+        before = self.evidence()
+        self.alerts.delivery["email"] = False
+        with self.assertRaisesRegex(ops.OperationError, "alert_probe_failed"):
+            self.job.probe_alerts()
+        _, probes, proof = self.job.alert_history()
+        identifier = next(reversed(probes))
+        self.assertEqual(proof["request"]["probe_id"], old)
+        with self.assertRaises(ops.OperationError):
+            self.job.confirm_alerts(identifier)
+        self.job.activation()
+        self.unchanged_evidence(before)
+
+    def test_duplicate_probe_id_never_sends_twice(self):
+        identifier = self.activate()
+        before = self.evidence()
+        with patch.object(ops.uuid, "uuid4", return_value=types.SimpleNamespace(hex=identifier.lower())):
+            with self.assertRaisesRegex(ops.OperationError, "alert_evidence_exists"):
+                self.job.probe_alerts()
+        self.assertEqual(len(self.alerts.calls), 1)
+        self.assertEqual(self.evidence(), before)
+
+    def test_new_probe_after_failed_delivery_is_confirmable_without_reset(self):
+        self.activate()
+        self.alerts.delivery["telegram"] = False
+        with self.assertRaises(ops.OperationError):
+            self.job.probe_alerts()
+        before = self.evidence()
+        self.alerts.delivery["telegram"] = True
+        self.activate()
+        self.unchanged_evidence(before)
+
+    def test_interrupted_publish_before_link_preserves_valid_activation(self):
+        self.activate()
+        before = self.evidence()
+        with patch.object(ops.os, "link", side_effect=OSError("synthetic-secret")):
+            with self.assertRaises(OSError):
+                self.job.probe_alerts()
+        self.assertEqual(self.evidence(), before)
+        self.job.activation()
+        self.assertEqual(len(self.alerts.calls), 1)
+
+    def test_interrupted_head_write_after_publication_fails_closed(self):
+        self.activate()
+        before = self.evidence()
+        with patch.object(ops, "atomic_state", side_effect=OSError("synthetic-secret")):
+            with self.assertRaises(OSError):
+                self.job.probe_alerts()
+        self.unchanged_evidence(before)
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.activation()
+        self.assertEqual(len(self.alerts.calls), 1)
+
+    def test_interrupted_confirmation_cannot_fake_activation(self):
+        identifier = self.job.probe_alerts()
+        with patch.object(ops.os, "link", side_effect=OSError("synthetic-secret")):
+            with self.assertRaises(OSError):
+                self.job.confirm_alerts(identifier)
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+        self.assertFalse((self.job.state / "success.json").exists())
+
+    def test_deleted_history_record_invalidates_activation(self):
+        self.activate()
+        (self.job.state / "alert-history" / "00000002.json").unlink()
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.activation()
+
+    def test_deleted_head_invalidates_activation_without_reinitialization(self):
+        self.activate()
+        (self.job.state / "alert-history-head.json").unlink()
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.probe_alerts()
+        self.assertEqual(len(self.alerts.calls), 1)
+
+    def test_null_head_is_not_treated_as_a_new_history(self):
+        recovery.private_write(self.job.state / "alert-history-head.json", b"null\n")
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.probe_alerts()
+        self.assertFalse(self.alerts.calls)
+
+    def test_tampered_record_invalidates_activation(self):
+        self.activate()
+        path = self.job.state / "alert-history" / "00000002.json"
+        value = json.loads(path.read_bytes())
+        value["value"]["config_sha256"] = "c" * 64
+        path.write_bytes(recovery.json_bytes(value))
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.activation()
+
+    def test_tampered_confirmation_semantics_rejected_even_with_matching_head_hash(self):
+        self.activate()
+        directory = self.job.state / "alert-history"
+        path = directory / "00000004.json"
+        value = json.loads(path.read_bytes())
+        value["value"]["both_received_operator_confirmed"] = False
+        path.write_bytes(recovery.json_bytes(value))
+        ops.atomic_state(self.job.state / "alert-history-head.json",
+                         {"version": 1, "sequence": 4, "sha256": trust.sha(path.read_bytes())})
+        with self.assertRaisesRegex(ops.OperationError, "alert_history_invalid"):
+            self.job.activation()
+
+    def test_unsafe_history_files_and_directories_rejected(self):
+        self.activate()
+        directory = self.job.state / "alert-history"
+        directory.chmod(0o755)
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+        directory.chmod(0o700)
+        path = directory / "00000002.json"
+        path.chmod(0o644)
+        with self.assertRaises(ops.OperationError):
+            self.job.activation()
+        path.chmod(0o600)
+        original = path.read_bytes()
+        path.unlink()
+        target = self.root / "target.json"
+        recovery.private_write(target, original)
+        path.symlink_to(target)
+        with self.assertRaises(recovery.RecoveryError):
+            self.job.activation()
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_unsafe_missing_symlinked_credentials_rejected(self):
+        path = self.credentials / "TELEGRAM_TOKEN"
+        path.chmod(0o644)
+        with self.assertRaises(ops.OperationError):
+            self.job.probe_alerts()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.job.probe_alerts()
+        target = self.root / "unread-secret"
+        recovery.private_write(target, b"secret")
+        path.symlink_to(target)
+        with self.assertRaises(recovery.RecoveryError):
+            self.job.probe_alerts()
+        self.assertFalse(self.alerts.calls)
+
+    def test_concurrent_watch_lock_blocks_send_and_confirmation(self):
+        identifier = self.job.probe_alerts()
+        before = self.evidence()
+        with ops.exclusive(self.job.state / "watch.lock"):
+            with self.assertRaisesRegex(ops.OperationError, "job_already_running"):
+                self.job.probe_alerts()
+            with self.assertRaisesRegex(ops.OperationError, "job_already_running"):
+                self.job.confirm_alerts(identifier)
+        self.assertEqual(self.evidence(), before)
+        self.assertEqual(len(self.alerts.calls), 1)
+
+    def test_evidence_publication_refuses_existing_file_without_replacement(self):
+        path = self.job.state / "evidence.json"
+        ops.append_evidence(path, {"original": True})
+        raw = path.read_bytes()
+        with self.assertRaisesRegex(ops.OperationError, "alert_evidence_exists"):
+            ops.append_evidence(path, {"original": False})
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertEqual(path.stat().st_nlink, 1)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_alarm_history_never_writes_success_or_invokes_pipeline_or_timers(self):
+        self.job.clients = self.job.collect = self.job.encrypt = lambda *a, **k: self.fail("pipeline called")
+        with patch.object(ops.subprocess, "run", side_effect=AssertionError("no service or timer commands")):
+            self.activate()
+            self.activate()
+        self.assertFalse((self.job.state / "success.json").exists())
+        self.assertEqual(list(self.job.work.iterdir()), [])
 
 
 class FailureClassificationTests(unittest.TestCase):
@@ -512,6 +886,9 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
         self.case.config["recipients"] = {"telegram_chat_id": "123", "email": "operator@example.invalid",
                                          "from_email": "sender@example.invalid"}
         job = old.Operations(self.case.config, self.case.alerts, clients=failure, preflight=lambda config: None)
+        # The historical implementation needs its historical evidence format.
+        ops.atomic_state(job.state / "activation.json", {"both_received_operator_confirmed": True,
+            "both_accepted": True, "config_sha256": self.case.config["config_sha256"]})
         owner, first = os.geteuid(), iter([0])
         output = io.StringIO()
         with patch.object(old, "load_config", return_value=self.case.config), \
@@ -519,7 +896,7 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
              patch.object(old.os, "geteuid", side_effect=lambda: next(first, owner)), \
              patch.object(old.sys, "argv", ["ops", "run", "--config", "synthetic.json"]), \
              patch("sys.stdout", output):
-            self.assertEqual(old.main(), 1)
+            self.assertEqual(in_process_cli(old), 1)
         self.assertIn("CODE=local_or_dependency_failure", output.getvalue())
         attempt = old.state_read(job.state / "attempt.json")
         self.assertEqual(attempt["stage"], "COLLECTION")
@@ -662,7 +1039,7 @@ class FailureDiagnosticsPipelineTests(unittest.TestCase):
              patch.object(ops.os, "geteuid", side_effect=lambda: next(first, owner)), \
              patch.object(ops.sys, "argv", ["ops", "run", "--config", "synthetic.json"]), \
              patch("sys.stdout", output):
-            self.assertEqual(ops.main(), 1)
+            self.assertEqual(in_process_cli(), 1)
         self.assertIn("CODE=dependency_import_failed", output.getvalue())
         self.assertNotIn("local_or_dependency_failure", output.getvalue())
         self.assertNotIn("synthetic-secret", output.getvalue())
@@ -702,6 +1079,8 @@ class CleanupDiagnosticsTests(unittest.TestCase):
         secondary = PermissionError(errno.EACCES, "synthetic-secret-cleanup")
         job = old.Operations(self.case.config, self.case.alerts,
             clients=lambda: (_ for _ in ()).throw(primary), preflight=lambda config: None)
+        ops.atomic_state(job.state / "activation.json", {"both_received_operator_confirmed": True,
+            "both_accepted": True, "config_sha256": self.case.config["config_sha256"]})
         with patch.object(job, "clean_work", side_effect=secondary), patch("sys.stdout", io.StringIO()), \
              self.assertRaises(PermissionError) as caught:
             job.run()
@@ -844,7 +1223,7 @@ class CleanupDiagnosticsTests(unittest.TestCase):
              patch.object(self.job, "clean_work", side_effect=OSError(errno.EROFS, "synthetic-secret")), \
              patch.object(ops.os, "geteuid", side_effect=lambda: next(first, owner)), \
              patch.object(ops.sys, "argv", ["ops", "run", "--config", "synthetic.json"]), patch("sys.stdout", output):
-            self.assertEqual(ops.main(), 1)
+            self.assertEqual(in_process_cli(), 1)
         self.records(output.getvalue())
         self.assertTrue(output.getvalue().rstrip().endswith("RECOVERY_OPERATIONS=STOP; CODE=dependency_import_failed"))
 

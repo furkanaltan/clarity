@@ -62,6 +62,8 @@ release_file_inventory_invalid release_file_not_immutable release_manifest_not_i
 runtime_invalid safe_cleanup_unavailable success_record_invalid systemd_credentials_missing unexpected_release_file
 upload_confirmation_invalid upload_source_changed upload_source_mismatch watch_state_invalid work_cleanup_outside_job
 conditional_collision upload_failed_or_ambiguous job_already_running job_terminated""".split())
+OPERATION_CODES |= frozenset("""alert_history_invalid alert_evidence_exists alert_probe_id_invalid
+credential_binding_changed""".split())
 COLLECTION_CODES = frozenset("""path_invalid absolute_path_required symlink_not_allowed config_path_invalid
 config_file_unavailable source_file_invalid source_changed_during_capture output_overlaps_source output_not_private
 effective_systemd_inventory_unavailable effective_api_configuration_not_inventoried effective_environment_not_inventoried
@@ -245,6 +247,56 @@ def atomic_state(path, value):
             os.unlink(temporary)
 
 
+def append_evidence(path, value):
+    """Publish a complete record without ever replacing an existing record."""
+    private_dir(path.parent)
+    fd, temporary = tempfile.mkstemp(prefix=".evidence-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(recovery.json_bytes(value))
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            raise OperationError("alert_evidence_exists") from None
+        os.unlink(temporary)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def credential_binding(directory=Path("/etc/rove-recovery/credentials")):
+    # Bind stable source identities, not systemd's per-invocation credential copies.
+    # ctime also detects in-place writes even if mtime is restored. No secret reads.
+    directory = recovery.absolute_path(directory)
+    root = directory.lstat()
+    require(stat.S_ISDIR(root.st_mode) and root.st_uid == os.geteuid()
+            and root.st_gid == os.getegid() and stat.S_IMODE(root.st_mode) == 0o700,
+            "credential_permissions_invalid")
+    identities = {}
+    for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "TELEGRAM_TOKEN", "BREVO_API_KEY"):
+        info = recovery.absolute_path(directory / name).lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and info.st_uid == root.st_uid and info.st_gid == root.st_gid
+                and stat.S_IMODE(info.st_mode) == 0o600 and 0 < info.st_size <= 8192,
+                "credential_permissions_invalid")
+        identities[name] = [info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+                            info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+    for name, identity in identities.items():
+        info = recovery.absolute_path(directory / name).lstat()
+        require([info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+                 info.st_size, info.st_mtime_ns, info.st_ctime_ns] == identity,
+                "credential_binding_changed")
+    require(directory.lstat() == root, "credential_binding_changed")
+    return trust.sha(recovery.json_bytes(identities))
+
+
 @contextmanager
 def exclusive(path):
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
@@ -418,11 +470,13 @@ def timer_active():
 
 class Operations:
     def __init__(self, config, alerts, *, clients=aws_clients, encrypt=crypto.encrypt_set,
-                 collect=recovery.build_recovery_set, preflight=verify_release):
+                 collect=recovery.build_recovery_set, preflight=verify_release,
+                 credentials_binding=credential_binding):
         self.config, self.alerts = config, alerts
         self.clients, self.encrypt, self.collect, self.preflight = clients, encrypt, collect, preflight
         self.state = private_dir(config["state_root"])
         self.work = private_dir(config["work_root"])
+        self.credentials_binding = credentials_binding
 
     def alert(self, level, stage, run_id):
         delivered = self.alerts.notify(level, stage, run_id)
@@ -430,30 +484,143 @@ class Operations:
         print("ALERT_EMAIL=" + ("ACCEPTED" if delivered["email"] else "FAILED"))
         return all(delivered.values())
 
+    def legacy_alert_hashes(self):
+        return {name: trust.sha(private_read(self.state / name))
+                if (self.state / name).exists() or (self.state / name).is_symlink() else None
+                for name in ("alert-probe.json", "activation.json")}
+
+    def alert_history(self):
+        directory = self.state / "alert-history"
+        head = state_read(self.state / "alert-history-head.json")
+        if head is None:
+            require(not (self.state / "alert-history-head.json").exists()
+                    and not directory.exists() and not directory.is_symlink(), "alert_history_invalid")
+            return [], {}, None
+        require(isinstance(head, dict) and set(head) == {"version", "sequence", "sha256"}
+                and type(head["version"]) is int and head["version"] == 1
+                and type(head["sequence"]) is int and 1 <= head["sequence"] <= 100000
+                and isinstance(head["sha256"], str) and trust.HASH.fullmatch(head["sha256"]),
+                "alert_history_invalid")
+        require(directory.exists(), "alert_history_invalid")
+        private_dir(directory)
+        require({path.name for path in directory.iterdir()} ==
+                {f"{index:08d}.json" for index in range(1, head["sequence"] + 1)},
+                "alert_history_invalid")
+        events, probes, activated = [], {}, None
+        previous = None
+        for index in range(1, head["sequence"] + 1):
+            raw = private_read(directory / f"{index:08d}.json")
+            record = recovery.strict_json(raw)
+            require(isinstance(record, dict) and set(record) ==
+                    {"version", "sequence", "previous_sha256", "kind", "value"}
+                    and type(record["version"]) is int and record["version"] == 1
+                    and type(record["sequence"]) is int and record["sequence"] == index
+                    and record["previous_sha256"] == previous and isinstance(record["value"], dict),
+                    "alert_history_invalid")
+            value, kind = record["value"], record["kind"]
+            if index == 1:
+                # Legacy evidence is preserved byte-for-byte, never promoted to authorization.
+                require(kind == "LEGACY" and value == self.legacy_alert_hashes(), "alert_history_invalid")
+            else:
+                identifier = value.get("probe_id")
+                require(isinstance(identifier, str) and re.fullmatch(r"[0-9A-F]{32}", identifier),
+                        "alert_history_invalid")
+                try:
+                    timestamp = trust.timestamp(value.get("at_utc"))
+                except (TypeError, ValueError, trust.TrustError):
+                    raise OperationError("alert_history_invalid") from None
+                if kind == "PROBE_STARTED":
+                    require(set(value) == {"probe_id", "at_utc", "config_sha256", "release_commit",
+                                          "credential_binding_sha256"} and identifier not in probes
+                            and all(isinstance(value[key], str) and trust.HASH.fullmatch(value[key])
+                                    for key in ("config_sha256", "credential_binding_sha256"))
+                            and isinstance(value["release_commit"], str)
+                            and re.fullmatch(r"[0-9a-f]{40}", value["release_commit"]), "alert_history_invalid")
+                    probes[identifier] = {"request": value, "result": None, "confirmation": None}
+                else:
+                    require(identifier in probes, "alert_history_invalid")
+                    probe = probes[identifier]
+                    started = trust.timestamp(probe["request"]["at_utc"])
+                    if kind == "PROBE_RESULT":
+                        require(set(value) == {"probe_id", "at_utc", "both_accepted"}
+                                and type(value["both_accepted"]) is bool and probe["result"] is None
+                                and timestamp >= started, "alert_history_invalid")
+                        probe["result"] = value
+                    else:
+                        require(kind == "ACTIVATED" and set(value) ==
+                                {"probe_id", "at_utc", "both_received_operator_confirmed"}
+                                and value["both_received_operator_confirmed"] is True
+                                and probe["result"] is not None and probe["result"]["both_accepted"] is True
+                                and probe["confirmation"] is None
+                                and trust.timestamp(probe["result"]["at_utc"]) <= timestamp
+                                and 0 <= (timestamp - started).total_seconds() <= 3600,
+                                "alert_history_invalid")
+                        probe["confirmation"] = value
+                        activated = probe
+            previous = trust.sha(raw)
+            events.append(record)
+        require(previous == head["sha256"], "alert_history_invalid")
+        return events, probes, activated
+
+    def append_alert_event(self, events, kind, value):
+        directory = private_dir(self.state / "alert-history")
+        sequence = len(events) + 1
+        require(sequence <= 100000, "alert_history_invalid")
+        record = {"version": 1, "sequence": sequence, "previous_sha256":
+                  trust.sha(recovery.json_bytes(events[-1])) if events else None,
+                  "kind": kind, "value": value}
+        append_evidence(directory / f"{sequence:08d}.json", record)
+        # This replaceable index is not evidence. Orphans or a stale index fail closed.
+        atomic_state(self.state / "alert-history-head.json",
+                     {"version": 1, "sequence": sequence, "sha256": trust.sha(recovery.json_bytes(record))})
+        events.append(record)
+
+    def alert_binding(self):
+        binding = self.credentials_binding()
+        require(isinstance(binding, str) and trust.HASH.fullmatch(binding), "credential_binding_changed")
+        return {"config_sha256": self.config["config_sha256"], "release_commit": self.config["release_commit"],
+                "credential_binding_sha256": binding}
+
     def probe_alerts(self):
         with exclusive(self.state / "watch.lock"):
+            events, probes, _ = self.alert_history()
+            binding = self.alert_binding()
             identifier = uuid.uuid4().hex.upper()
+            require(identifier not in probes, "alert_evidence_exists")
+            if not events:
+                self.append_alert_event(events, "LEGACY", self.legacy_alert_hashes())
+            self.append_alert_event(events, "PROBE_STARTED", {"probe_id": identifier, "at_utc": stamp(), **binding})
             accepted = self.alert("TEST", "OPERATOR_DELIVERY_TEST", identifier)
-            atomic_state(self.state / "alert-probe.json", {"probe_id": identifier, "at_utc": stamp(),
-                "config_sha256": self.config["config_sha256"], "both_accepted": accepted})
+            require(self.alert_binding() == binding, "credential_binding_changed")
+            self.append_alert_event(events, "PROBE_RESULT",
+                                    {"probe_id": identifier, "at_utc": stamp(), "both_accepted": accepted})
             print("ALERT_PROBE_ID=" + identifier)
             print("ACTUAL_OPERATOR_RECEIPT=REQUIRES_CONFIRMATION")
             require(accepted, "alert_probe_failed")
+            return identifier
 
     def confirm_alerts(self, identifier):
         with exclusive(self.state / "watch.lock"):
-            probe = state_read(self.state / "alert-probe.json")
-            require(probe and probe["probe_id"] == identifier and probe["both_accepted"] is True
-                    and probe["config_sha256"] == self.config["config_sha256"]
-                    and 0 <= (now() - trust.timestamp(probe["at_utc"])).total_seconds() <= 3600,
+            require(isinstance(identifier, str) and re.fullmatch(r"[0-9A-F]{32}", identifier),
+                    "alert_probe_id_invalid")
+            events, probes, _ = self.alert_history()
+            probe = probes.get(identifier)
+            binding = self.alert_binding()
+            confirmed_at = now()
+            require(probe and probe["result"] and probe["result"]["both_accepted"] is True
+                    and probe["confirmation"] is None
+                    and all(probe["request"][key] == value for key, value in binding.items())
+                    and 0 <= (confirmed_at - trust.timestamp(probe["request"]["at_utc"])).total_seconds() <= 3600,
                     "alert_probe_not_current")
-            atomic_state(self.state / "activation.json", {**probe, "both_received_operator_confirmed": True})
+            self.append_alert_event(events, "ACTIVATED", {"probe_id": identifier, "at_utc": confirmed_at.isoformat(),
+                                                         "both_received_operator_confirmed": True})
 
     def activation(self):
-        proof = state_read(self.state / "activation.json")
-        require(proof and proof.get("both_received_operator_confirmed") is True
-                and proof.get("both_accepted") is True and proof.get("config_sha256") == self.config["config_sha256"],
-                "operator_alert_delivery_not_verified")
+        with exclusive(self.state / "watch.lock"):
+            _, _, proof = self.alert_history()
+            require(proof and all(proof["request"][key] == value for key, value in self.alert_binding().items())
+                    and trust.timestamp(proof["confirmation"]["at_utc"]) <= now(),
+                    "operator_alert_delivery_not_verified")
 
     def clean_work(self, path):
         require(path.parent == self.work and re.fullmatch(r"job-[0-9A-F]{32}", path.name)
@@ -543,6 +710,7 @@ class Operations:
                     verified = approved.verify_uploaded(version)
                     require(approved.offsite_verified is True, "external_verification_missing")
                     validate_inputs(self.config)
+                    self.activation()
                     checkpoint("DURABLE_SUCCESS")
                     success = {"status": "SUCCESS", "run_id": run_id, "verified_at_utc": stamp(),
                         "config_sha256": self.config["config_sha256"], "release_commit": self.config["release_commit"],

@@ -535,6 +535,7 @@ class RecoveryCryptoTests(unittest.TestCase):
     def test_output_parent_must_be_private_and_not_symlink(self):
         parent = self.root / "public-output"
         parent.mkdir(mode=0o755)
+        parent.chmod(0o755)
         self.assert_rejected(lambda: self.encrypt(output=parent / "cipher"), output=parent / "cipher")
         alias = self.root / "alias"
         alias.symlink_to(self.root, target_is_directory=True)
