@@ -8,7 +8,7 @@ from unittest.mock import patch
 from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
-from report_html_renderer import _pdf_design_details, _render_hell_pages, build_html_document, plan_items, render_777_score
+from report_html_renderer import _pdf_design_details, _pdf_monthly_recap, _render_hell_pages, build_html_document, plan_items, render_777_score
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
 from rove_consumer_debt import net_worth_total
 import rove_pdf_report_renderer
@@ -1409,6 +1409,201 @@ class PdfDesignPolishTests(unittest.TestCase):
         page5_boxes = list(document.pages[4]._page_box.descendants())
         amount = next(box for box in page5_boxes if box.element is not None and box.element.get("data-report-value") == "largest-expense-amount")
         self.assertEqual(amount.style["font_size"], 44)
+
+
+class PdfMonthlyRecapTests(unittest.TestCase):
+    def recap(self, data):
+        data["report_story_v2"] = build_report_story_v2(data)
+        return _pdf_monthly_recap(data, build_render_context(data))
+
+    def neutral_payload(self):
+        data = standard_payload()
+        truth = data["report_truth"]
+        data["profile"]["savings_plan"] = 0.0
+        truth["savings"].update({"confirmed": False, "actual_amount": 0.0})
+        truth["budget"] = {"has_budgets": False, "on_track": False, "items": []}
+        truth["investments"]["contributions"].update({"net_contributions": 0.0, "recurring_in": 0.0})
+        for item in truth["expenses"]["categories"]:
+            item["previous_transaction_count"] = item["transaction_count"]
+            item["transaction_count_delta"] = 0
+        truth["expenses"]["merchants"] = []
+        return data
+
+    def test_three_sections_reuse_ranked_facts_without_claiming_causality(self):
+        data = july_final_sample_payload()
+        recap = self.recap(data)
+        self.assertIn("1.420 €", " ".join(recap["good"]["facts"]))
+        self.assertIn("Monatsanfang bis Stand aktuell", recap["good"]["facts"][0])
+        self.assertIn("bestätigte Sparleistung beträgt 500 €", recap["good"]["facts"][1])
+        self.assertEqual(recap["attention"]["title"], "Sparziel und flexible Ausgaben")
+        self.assertIn("Dir fehlten 500 €", recap["attention"]["facts"][0])
+        self.assertIn("Shopping lag 783 €", recap["attention"]["facts"][1])
+        self.assertIn("keine nachgewiesene Ursache", recap["lever"]["facts"][0])
+        page = _render_hell_pages(data)[8]
+        for heading in ("Das lief gut", "Das fällt auf", "Dein nächster Hebel"):
+            self.assertIn(heading, page)
+        for step in data["report_story_v2"]["next_month_engine"]["steps"]:
+            self.assertNotIn(step["text"], " ".join(recap["lever"]["facts"]))
+
+    def test_unconfirmed_savings_never_become_a_verified_gap_or_goal_completion(self):
+        data = july_truth_payload()
+        recap = self.recap(data)
+        self.assertEqual(recap["attention"]["title"], "Abweichung vom gesetzten Budget")
+        self.assertNotIn("Dir fehlten", str(recap))
+        self.assertNotIn("Sparlücke", str(recap))
+        data = report_payload()
+        data["report_truth"]["savings"]["confirmed"] = False
+        recap = self.recap(data)
+        self.assertNotIn("geplante Sparrate erreicht", str(recap))
+        self.assertIn("wiederkehrende Beiträge investiert", str(recap))
+
+    def test_negative_wealth_and_savings_are_not_presented_as_positive_growth(self):
+        data = self.neutral_payload()
+        data["report_truth"]["wealth_period"] = {
+            "available": True, "opening_net_worth": 15100.0,
+            "closing_net_worth": 15000.0, "change_amount": -100.0,
+        }
+        data["report_truth"]["savings"].update({"confirmed": True, "actual_amount": -200.0})
+        recap = self.recap(data)
+        self.assertIn("noch nicht belegt", recap["good"]["title"])
+        self.assertNotIn("gesunken", str(recap["good"]))
+        self.assertNotIn("gestiegen", str(recap["good"]))
+        self.assertIn("gesunken", recap["attention"]["title"])
+        self.assertIn("−100 €", recap["attention"]["facts"][0])
+        self.assertIn("nicht seine Ursache", recap["lever"]["facts"][0])
+
+    def test_merchant_concentration_is_not_an_automatic_cutback_recommendation(self):
+        data = self.neutral_payload()
+        data["report_truth"]["expenses"]["merchants"] = [{
+            "merchant": "Rewe", "category": "LEBENSMITTEL", "amount": 360.0,
+            "transaction_count": 5, "avg_transaction": 72.0,
+        }]
+        recap = self.recap(data)
+        self.assertIn("Rewe machte mit 5 Buchungen 40,0 %", recap["attention"]["facts"][0])
+        self.assertIn("noch kein Sparpotenzial", recap["lever"]["title"])
+        self.assertIn("keine Kürzungsempfehlung", recap["lever"]["facts"][0])
+
+    def test_necessary_expense_frequency_has_a_neutral_lever(self):
+        data = self.neutral_payload()
+        data["report_truth"]["expenses"]["categories"][0]["previous_transaction_count"] = 4
+        recap = self.recap(data)
+        self.assertEqual(recap["attention"]["title"], "Veränderte Buchungshäufigkeit")
+        self.assertIn("Lebensmittel", str(recap["attention"]))
+        self.assertIn("keine pauschale Kürzungsempfehlung", recap["lever"]["facts"][0])
+
+    def test_necessary_budget_overrun_keeps_the_existing_budget_fact(self):
+        data = self.neutral_payload()
+        data["report_truth"]["budget"] = {
+            "has_budgets": True, "on_track": False,
+            "items": [{"category": "LEBENSMITTEL", "limit": 500.0, "used": 600.0, "over": True}],
+        }
+        recap = self.recap(data)
+        self.assertIn("Lebensmittel lag 100 €", recap["attention"]["facts"][0])
+        self.assertIn("Notwendiger Bedarf", recap["lever"]["facts"][0])
+        self.assertNotIn("Sparlücke", str(recap))
+
+    def test_reached_savings_goal_does_not_create_conflicting_savings_pressure(self):
+        data = july_final_sample_payload()
+        data["profile"]["savings_plan"] = 500.0
+        recap = self.recap(data)
+        self.assertIn("kein zusätzlicher Sparzwang", recap["lever"]["facts"][0])
+        self.assertNotIn("Sparlücke", str(recap))
+
+    def test_completed_goal_and_confirmed_budget_success_use_existing_candidates(self):
+        data = self.neutral_payload()
+        data["report_truth"]["goals"]["primary"]["current_amount"] = 5000.0
+        recap = self.recap(data)
+        self.assertIn("Dein Ziel Dubai ist vollständig gefüllt", str(recap["good"]))
+        recap = self.recap(report_payload())
+        self.assertIn("Budgets eingehalten", str(recap["good"]))
+        self.assertIn("geplante Sparrate erreicht", str(recap["good"]))
+
+    def test_missing_previous_month_does_not_invent_a_monthly_comparison(self):
+        data = july_final_sample_payload()
+        truth = data["report_truth"]
+        truth["previous_month"] = {}
+        for key in ("previous_total_consumption", "previous_transaction_count"):
+            truth["expenses"].pop(key, None)
+        for item in truth["expenses"]["categories"]:
+            item["previous_amount"] = 0.0
+            item["previous_transaction_count"] = 0
+        recap = self.recap(data)
+        self.assertNotIn("Vormonat", str(recap))
+        self.assertIn("Budgetabweichung", str(recap["lever"]))
+
+    def test_empty_and_legacy_snapshots_get_honest_fallbacks(self):
+        for data in (self.neutral_payload(), legacy_archive_payload(), {}):
+            with self.subTest(legacy=not data.get("report_truth")):
+                if data.get("report_truth"):
+                    recap = self.recap(data)
+                else:
+                    recap = _pdf_monthly_recap(data, {})
+                self.assertIn("noch nicht belegt", recap["good"]["title"])
+                self.assertIn("keine Bestätigung", recap["attention"]["facts"][0])
+                self.assertIn("kein konkreter Verbesserungshebel", recap["lever"]["facts"][0])
+
+    def test_labels_are_escaped_and_missing_or_nonfinite_positive_values_are_not_claimed(self):
+        data = self.neutral_payload()
+        data["report_truth"]["goals"]["primary"].update({
+            "name": "<script>Beispiel</script>" + "x" * 100,
+            "current_amount": 5000.0,
+        })
+        recap = self.recap(data)
+        self.assertNotIn("<script>", str(recap))
+        self.assertIn("&lt;script&gt;", str(recap))
+        self.assertIn("…", str(recap))
+        for value in (None, float("nan"), float("inf"), True, 0):
+            with self.subTest(value=value):
+                snapshot = {"report_truth": {"wealth_period": {"available": True, "change_amount": value},
+                                             "savings": {"confirmed": True, "actual_amount": value}}}
+                recap = _pdf_monthly_recap(snapshot, {})
+                self.assertIn("noch nicht belegt", recap["good"]["title"])
+                self.assertNotIn("gestiegen", str(recap))
+
+    def test_render_is_non_mutating_and_page_ten_and_web_are_unchanged(self):
+        data = july_final_sample_payload()
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        context_before = copy.deepcopy(context)
+        web = render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data)
+        baseline_pages = _render_hell_pages(data)
+        _pdf_monthly_recap(data, context)
+        with patch("report_html_renderer._pdf_monthly_recap", return_value={
+            key: {"title": "Andere Darstellung", "facts": ["Nur Seite neun"]}
+            for key in ("good", "attention", "lever")
+        }):
+            changed_pages = _render_hell_pages(data)
+        self.assertNotEqual(baseline_pages[8], changed_pages[8])
+        for index in range(10):
+            if index != 8:
+                self.assertEqual(baseline_pages[index], changed_pages[index])
+        self.assertEqual(render_template(WEB_TEMPLATE.read_text(encoding="utf-8"), data), web)
+        self.assertEqual(context, context_before)
+        self.assertEqual(data, before)
+
+    def test_recap_cards_fit_ten_pages_without_footer_overlap(self):
+        long_labels = self.neutral_payload()
+        long_labels["report_truth"]["goals"]["primary"].update({"name": "Sehr langes Sparziel " * 20, "current_amount": 5000.0})
+        long_labels["report_truth"]["expenses"]["merchants"] = [{
+            "merchant": "SehrLangerHaendlername" * 20, "category": "LEBENSMITTEL",
+            "amount": 360.0, "transaction_count": 5, "avg_transaction": 72.0,
+        }]
+        for data in (july_final_sample_payload(), self.neutral_payload(), long_labels):
+            data["report_story_v2"] = build_report_story_v2(data)
+            pages = _render_hell_pages(july_final_sample_payload())
+            # Stress only the changed page; legacy goal-page typography is not
+            # part of this PDF recap change.
+            pages[8] = _render_hell_pages(data)[8]
+            document = HTML(string=build_html_document(pages)).render()
+            self.assertEqual(len(document.pages), 10)
+            boxes = list(document.pages[8]._page_box.descendants())
+            footer = next(box for box in boxes if box.element is not None and box.element.get("data-report-footer") == "9")
+            for name in ("good", "attention", "lever"):
+                card = next(box for box in boxes if box.element is not None and box.element.get("data-report-block") == "recap-" + name)
+                self.assertLessEqual(card.border_box_y() + card.border_height(), footer.border_box_y() - 8)
+                for box in card.descendants():
+                    self.assertLessEqual(box.position_x + box.width, 760.1)
+                    self.assertLessEqual(box.position_y + box.height, card.border_box_y() + card.border_height() + 0.1)
 
 
 if __name__ == "__main__":

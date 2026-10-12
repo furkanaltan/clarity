@@ -1368,6 +1368,7 @@ def _render_hell_pages(data: dict) -> list[str]:
     template = HELL_PAGES_TEMPLATE.read_text(encoding="utf-8")
     context = build_render_context(data)
     context.update(_pdf_design_details(data, context))
+    context["pdf_recap"] = _pdf_monthly_recap(data, context)
     rendered = jinja2.Template(template).render(**context)
     pages = _extract_labeled_pages(rendered)
     if len(pages) != 10:
@@ -1383,6 +1384,120 @@ def _pdf_display_date(value, report_month: str | None = None) -> str:
     if report_month and date.strftime("%Y-%m") != report_month:
         return ""
     return date.strftime("%d.%m.%Y")
+
+
+def _pdf_monthly_recap(data: dict, context: dict) -> dict:
+    """Select existing snapshot facts for the PDF; never calculate new insights."""
+    from rove_web_report_renderer import _localize_story_text
+
+    truth = data.get("report_truth") or {}
+    savings = truth.get("savings") or {}
+    period = truth.get("wealth_period") or {}
+    story = data.get("report_story_v2") or {}
+    candidates = (story.get("insight_engine") or {}).get("candidates") or []
+
+    def positive_number(value):
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value > 0)
+
+    def money(value):
+        return _localize_story_text(f"{value:.2f} EUR")
+
+    def label(value):
+        text = str(value or "").strip()
+        return text if len(text) <= 50 else text[:49].rstrip() + "…"
+
+    def candidate_text(item):
+        text = str(item.get("fallback_text") or "")
+        for key in ("category", "merchant", "goal_name"):
+            value = (item.get("supporting_metrics") or {}).get(key)
+            if value:
+                text = text.replace(str(value), label(value))
+        return re.sub(r"(\d+)\.(\d+)\s*%", r"\1,\2 %", _localize_story_text(text))
+
+    # The engine can compare investment contributions to a savings plan when
+    # savings are unconfirmed. That is not proof of total savings or a shortfall.
+    candidates = [item for item in candidates if item.get("type") not in {
+        "savings_goal_gap_vs_discretionary_delta", "positive_budget_and_saving"
+    } or savings.get("confirmed")]
+    good_facts = []
+    if period.get("available") and positive_number(period.get("change_amount")):
+        good_facts.append(
+            f"Dein Nettovermögen ist diesen Monat um {money(period['change_amount'])} gestiegen. "
+            f"Vergleich: Monatsanfang bis {html.unescape(context.get('wealth_closing_label') or 'zum ausgewiesenen Stand')}."
+        )
+    positive = next((item for item in candidates if item.get("suggested_tone") == "positive"), None)
+    if positive and positive.get("type") in {"positive_goal_completion", "positive_budget_and_saving"}:
+        good_facts.append(candidate_text(positive))
+    elif savings.get("confirmed") and positive_number(savings.get("actual_amount")):
+        good_facts.append(f"Deine bestätigte Sparleistung beträgt {money(savings['actual_amount'])}.")
+    elif positive:
+        good_facts.append(candidate_text(positive))
+    elif (truth.get("budget") or {}).get("has_budgets") and (truth.get("budget") or {}).get("on_track"):
+        good_facts.append("Deine gesetzten Budgets lagen im Rahmen.")
+    good_title = "Belegter Fortschritt"
+    if not good_facts:
+        good_title = "Positive Entwicklung noch nicht belegt"
+        good_facts = ["Die gespeicherten Monatsdaten enthalten keinen belegten positiven Vermögens- oder Spartrend. Fehlende Nachweise sind kein Beleg für Stillstand."]
+
+    attention = next((item for item in candidates if item.get("suggested_tone") != "positive"
+                      and item.get("type") != "stable_month"), None)
+    titles = {
+        "savings_goal_gap_vs_discretionary_delta": "Sparziel und flexible Ausgaben",
+        "budget_overrun_vs_flexible_category": "Abweichung vom gesetzten Budget",
+        "category_frequency_change": "Veränderte Buchungshäufigkeit",
+        "merchant_concentration": "Ausgaben konzentrieren sich",
+    }
+    attention_facts = [candidate_text(attention)] if attention else []
+    attention_title = titles.get((attention or {}).get("type"), "Keine belastbare Auffälligkeit ausgewählt")
+    lever_title = "Einordnung braucht Vergleichsdaten"
+    lever_text = "Ohne belegte Abweichung lässt sich kein konkreter Verbesserungshebel ableiten. Dieser Rückblick behauptet deshalb weder Einsparpotenzial noch Handlungsbedarf."
+    if attention:
+        kind = attention.get("type")
+        metrics = attention.get("supporting_metrics") or {}
+        category = label(metrics.get("category"))
+        if kind == "savings_goal_gap_vs_discretionary_delta":
+            budget_fact = next((item for item in candidates if item.get("type") == "budget_overrun_vs_flexible_category"
+                                and (item.get("supporting_metrics") or {}).get("category") == metrics.get("category")), None)
+            if budget_fact:
+                attention_facts.append(candidate_text(budget_fact))
+            lever_title = f"Spielraum bei {category} einordnen"
+            lever_text = f"Die Sparlücke und der Anstieg bei {category} sind gleichzeitig belegt. Flexible Ausgaben sind damit ein prüfbarer Ansatzpunkt, aber keine nachgewiesene Ursache der Sparlücke oder garantierte Ersparnis."
+        elif kind == "budget_overrun_vs_flexible_category":
+            lever_title = f"Budgetrahmen für {category}"
+            lever_text = (f"Die Abweichung bei {category} ist trotz erreichtem Sparziel belegt. Daraus folgt kein zusätzlicher Sparzwang."
+                          if metrics.get("savings_goal_reached") else
+                          f"Für {category} liegt eine belegte Budgetabweichung vor. Ob Einzelkäufe oder regelmäßige Ausgaben dahinterstehen, ist nicht belegt; diese Unterscheidung ist die Basis für einen realistischen Budgetrahmen.")
+        elif kind == "category_frequency_change":
+            lever_title = f"Häufigkeit bei {category} einordnen"
+            lever_text = ("Mehr oder weniger Buchungen sagen allein nichts über die Notwendigkeit oder Vermeidbarkeit dieser Ausgaben aus. Aus der Häufigkeit folgt deshalb keine pauschale Kürzungsempfehlung."
+                          if not attention.get("safe_to_coach") else
+                          f"Die veränderte Buchungshäufigkeit bei {category} ist belegt. Ob einzelne Käufe oder ein dauerhaftes Muster dahinterstehen, bleibt offen; erst diese Einordnung macht daraus einen sinnvollen Hebel.")
+        elif kind == "merchant_concentration":
+            lever_title = "Händleranteil ist noch kein Sparpotenzial"
+            lever_text = f"Der Anteil bei {label(metrics.get('merchant'))} zeigt eine Konzentration, nicht automatisch unnötige Ausgaben. Ohne belegte Budgetabweichung lässt sich daraus keine Kürzungsempfehlung ableiten."
+    elif (truth.get("budget") or {}).get("has_budgets") and any(
+        item.get("budget_over") for item in (context.get("report") or {}).get("categories") or []
+    ):
+        attention_title = "Abweichung vom gesetzten Budget"
+        attention_facts = [html.unescape(context["recap_attention_text"])]
+        lever_title = "Budget und Bedarf unterscheiden"
+        lever_text = "Die Abweichung vom gesetzten Budget ist belegt, nicht die Vermeidbarkeit dieser Ausgaben. Notwendiger Bedarf und ein realistischer Budgetrahmen dürfen nicht mit pauschalem Kürzen gleichgesetzt werden."
+    elif (period.get("available") and isinstance(period.get("change_amount"), (int, float))
+          and not isinstance(period.get("change_amount"), bool)
+          and math.isfinite(period["change_amount"]) and period["change_amount"] < 0):
+        attention_title = "Nettovermögen im Vergleich gesunken"
+        attention_facts = [f"Die ausgewiesene Vermögensveränderung beträgt {context['wealth_change_amount']}. Eine Ursache ist mit diesem Betrag allein nicht belegt."]
+        lever_title = "Vermögensbewegung einordnen"
+        lever_text = "Der Rückgang ist belegt, nicht seine Ursache. Er darf ohne weitere Nachweise weder Konsum noch Investmentbewegungen zugeschrieben werden."
+    if not attention_facts:
+        attention_facts = ["Die vorhandenen Regeln wählen keine belastbare Ausgabenauffälligkeit aus. Das ist keine Bestätigung, dass alle Ausgaben oder Budgets unauffällig sind."]
+
+    return {
+        "good": {"title": h(good_title), "facts": [h(text) for text in good_facts[:2]]},
+        "attention": {"title": h(attention_title), "facts": [h(text) for text in attention_facts]},
+        "lever": {"title": h(lever_title), "facts": [h(lever_text)]},
+    }
 
 
 def _pdf_design_details(data: dict, context: dict) -> dict:
