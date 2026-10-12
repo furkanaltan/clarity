@@ -166,6 +166,49 @@ def july_review_payload() -> dict:
     return data
 
 
+def july_final_sample_payload() -> dict:
+    """Coherent presentation sample; keep incomplete fixtures for negative tests."""
+    data = july_review_payload()
+    truth = data["report_truth"]
+    expenses = truth["expenses"]
+    data["meta"]["tracked_days"] = 20
+    expenses["tracked_days"] = 20
+    expenses["merchants"] = [
+        {"merchant": merchant, "category": category, "amount": amount,
+         "transaction_count": count, "avg_transaction": average,
+         "previous_amount": previous}
+        for merchant, category, amount, count, average, previous in (
+            ("Elektronikmarkt", "SHOPPING", 500.0, 1, 500.0, 0.0),
+            ("Breuninger", "SHOPPING", 380.0, 1, 380.0, 0.0),
+            ("REWE", "LEBENSMITTEL", 240.0, 4, 60.0, 210.0),
+            ("Tankstelle", "MOBILITAET", 217.54, 3, 72.51, 170.0),
+            ("Bistro", "RESTAURANTS", 193.0, 4, 48.25, 300.0),
+            ("ALDI", "LEBENSMITTEL", 108.0, 4, 27.0, 90.0),
+            ("Buchladen", "SHOPPING", 103.0, 2, 51.5, 200.0),
+            ("Postfiliale", "SONSTIGES", 90.0, 3, 30.0, 280.0),
+            ("Drogerie", "PFLEGE", 25.0, 1, 25.0, 150.0),
+        )
+    ]
+    for category in expenses["categories"]:
+        if category["category"] == "SHOPPING":
+            category.update({"amount": 983.0, "avg_transaction": 245.75, "share": 52.95})
+        elif category["category"] == "SONSTIGES":
+            category.update({"amount": 90.0, "avg_transaction": 30.0, "share": 4.85})
+    expenses["classification_totals"]["consumption"] = 1856.54
+    expenses["largest_expense"].update({"created_at": "2026-07-18 14:30:00"})
+    truth["budget"]["items"][0]["used"] = 983.0
+    truth["savings"].update({
+        "actual_amount": 500.0, "confirmed": True,
+        "automatic_etf_amount": 500.0, "source": "month_close",
+    })
+    journey = data["pages"]["wealth_journey"]
+    journey["monthly_execution"]["savings_confirmed"] = True
+    journey["savings_progress"].update({"full_plan_confirmed": True, "full_plan_amount": 500.0})
+    truth["buffer"].update({"monthly_basis": 1500.0, "covered_months": 9142.0 / 1500.0})
+    data["report_story_v2"] = build_report_story_v2(data)
+    return data
+
+
 def legacy_archive_payload() -> dict:
     return {
         "meta": {"report_month": "2026-07", "tracked_days": 18},
@@ -1035,8 +1078,9 @@ class PdfMonthlyDetailsTests(unittest.TestCase):
         self.assertEqual(context["pdf_cashflow"]["consumption"], "900 €")
         self.assertEqual(context["pdf_cashflow"]["net"], "123,45 €")
         for text in ("Einnahmen", "Ausgaben", "Konsum 900 €", "Fixkosten 1.500 €",
-                     "Netto-Geldfluss", "123,45 €", "bestätigter Sparleistung (800 €)"):
+                     "Verbleibend nach Sparen", "123,45 €", "bestätigter Sparleistung (800 €)"):
             self.assertIn(text, page)
+        self.assertNotIn("Netto-Geldfluss", page)
         self.assertEqual(data, before)
 
     def test_cashflow_missing_inputs_are_not_replaced_with_zero(self):
@@ -1120,6 +1164,99 @@ class PdfMonthlyDetailsTests(unittest.TestCase):
                     self.assertLessEqual(block.border_box_y() + block.border_height(), footer.border_box_y() - 8)
                     for box in block.descendants():
                         self.assertLessEqual(box.position_x + box.width, 760.1)
+
+
+class PdfFinalSampleTests(unittest.TestCase):
+    def test_sample_merchant_and_category_aggregates_reconcile(self):
+        data = july_final_sample_payload()
+        expenses = data["report_truth"]["expenses"]
+        merchants = expenses["merchants"]
+        categories = expenses["categories"]
+        self.assertEqual(round(sum(item["amount"] for item in merchants), 2), 1856.54)
+        self.assertEqual(round(sum(item["amount"] for item in categories), 2), 1856.54)
+        self.assertEqual(expenses["classification_totals"]["consumption"], 1856.54)
+        self.assertEqual(sum(item["transaction_count"] for item in merchants), 23)
+        self.assertEqual(sum(item["transaction_count"] for item in categories), 23)
+        for category in categories:
+            matching = [item for item in merchants if item["category"] == category["category"]]
+            self.assertEqual(round(sum(item["amount"] for item in matching), 2), category["amount"])
+            self.assertEqual(sum(item["transaction_count"] for item in matching), category["transaction_count"])
+            self.assertEqual(round(category["amount"] / category["transaction_count"], 2), category["avg_transaction"])
+            self.assertEqual(round(category["amount"] / 1856.54 * 100, 2), category["share"])
+        for merchant in merchants:
+            self.assertEqual(round(merchant["amount"] / merchant["transaction_count"], 2), merchant["avg_transaction"])
+        shopping = next(item for item in categories if item["category"] == "SHOPPING")
+        self.assertEqual(data["report_truth"]["budget"]["items"][0]["used"], shopping["amount"])
+        self.assertEqual(shopping["amount"], 983.0)
+        self.assertLessEqual(data["meta"]["tracked_days"], expenses["transaction_count"])
+
+    def test_sample_largest_expense_is_in_the_actual_rendered_ranking(self):
+        data = july_final_sample_payload()
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        self.assertEqual([item["name"] for item in context["merchant_rows"]],
+                         ["Elektronikmarkt", "Breuninger", "REWE"])
+        self.assertEqual([item["amount"] for item in context["merchant_rows"]], ["500 €", "380 €", "240 €"])
+        self.assertEqual(context["pdf_largest_expense"]["amount"], "500 €")
+        page = _render_hell_pages(data)[4]
+        self.assertEqual(page.count("Elektronikmarkt"), 2)
+        self.assertIn("18.07.2026", page)
+        self.assertEqual(data, before)
+
+    def test_confirmed_sample_displays_the_existing_remaining_amount(self):
+        data = july_final_sample_payload()
+        before = copy.deepcopy(data)
+        truth = data["report_truth"]
+        self.assertTrue(all(truth[key]["confirmed"] for key in ("income", "fixed_costs", "savings")))
+        self.assertEqual(truth["savings"]["actual_amount"], 500.0)
+        self.assertEqual(truth["investments"]["contributions"]["net_contributions"], 500.0)
+        self.assertEqual(data["pages"]["wealth_journey"]["savings_progress"]["full_plan_amount"], 500.0)
+        self.assertEqual(data["report_story_v2"]["pages"]["page_2"]["primary_metric"]["value"], 143.46)
+        context = build_render_context(data)
+        self.assertEqual(context["pdf_cashflow"]["net"], "143,46 €")
+        self.assertEqual(truth["buffer"]["monthly_basis"], truth["fixed_costs"]["amount"])
+        self.assertAlmostEqual(truth["buffer"]["covered_months"], 9142.0 / 1500.0)
+        self.assertEqual(context["buffer_months_amount"], "6,1 Monate")
+        page = _render_hell_pages(data)[1]
+        self.assertIn("Verbleibend nach Sparen", page)
+        self.assertIn("143,46 €", page)
+        self.assertIn("Einnahmen abzüglich Fixkosten, Konsum und bestätigter Sparleistung (500 €). Kein Kontosaldo.", page)
+        self.assertNotIn("Netto-Geldfluss", page)
+        self.assertEqual(data, before)
+
+    def test_label_change_keeps_missing_or_unconfirmed_savings_unavailable(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                data = july_final_sample_payload()
+                if missing:
+                    data["report_truth"]["savings"]["actual_amount"] = None
+                else:
+                    data["report_truth"]["savings"]["confirmed"] = False
+                data["report_story_v2"] = build_report_story_v2(data)
+                context = build_render_context(data)
+                self.assertEqual(context["pdf_cashflow"]["net"], "—")
+                page = _render_hell_pages(data)[1]
+                self.assertIn("Verbleibend nach Sparen", page)
+                self.assertIn("Verbleibender Betrag nicht verfügbar", page)
+                self.assertNotIn("Netto-Geldfluss", page)
+
+    def test_final_sample_fits_ten_pages_with_unchanged_milestones(self):
+        data = july_final_sample_payload()
+        pages = _render_hell_pages(data)
+        self.assertIn("38.620 €", pages[7])
+        self.assertIn("72,4 %", pages[7])
+        self.assertIn("1.380 €", pages[7])
+        document = HTML(string=build_html_document(pages)).render()
+        self.assertEqual(len(document.pages), 10)
+        for page_index, names in ((1, ("monthly-cashflow",)), (4, ("largest-expense",)), (7, ("milestone-summary",))):
+            boxes = list(document.pages[page_index]._page_box.descendants())
+            footer = next(box for box in boxes if box.element is not None and box.element.get("data-report-footer") == str(page_index + 1))
+            for name in names:
+                block = next(box for box in boxes if box.element is not None and box.element.get("data-report-block") == name)
+                self.assertLessEqual(block.border_box_y() + block.border_height(), footer.border_box_y() - 8)
+                for box in block.descendants():
+                    self.assertLessEqual(box.position_x + box.width, 760.1)
+                    self.assertLessEqual(box.position_y + box.height, block.border_box_y() + block.border_height() + 0.1)
 
 
 class PdfDesignPolishTests(unittest.TestCase):

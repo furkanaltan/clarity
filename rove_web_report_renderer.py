@@ -1073,9 +1073,9 @@ def _pdf_month_details(data: dict, report: dict) -> dict:
             "fixed_status": confirmation(fixed, fixed_available),
             "net": _story_money(flow_metric["value"]) if flow_available else "—",
             "note": (
-                f"Rest nach Fixkosten, Konsum und bestätigter Sparleistung ({_story_money(savings['actual_amount'])}). Kein Kontosaldo."
+                f"Einnahmen abzüglich Fixkosten, Konsum und bestätigter Sparleistung ({_story_money(savings['actual_amount'])}). Kein Kontosaldo."
                 if flow_available else
-                "Netto-Geldfluss nicht verfügbar: Monatswerte fehlen oder sind noch nicht vollständig bestätigt."
+                "Verbleibender Betrag nicht verfügbar: Monatswerte fehlen oder sind noch nicht vollständig bestätigt."
             ),
         },
     }
