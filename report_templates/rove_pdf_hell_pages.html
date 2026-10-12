@@ -167,9 +167,17 @@
       <div style="font-family:'Newsreader',serif;font-size:24px;line-height:1.3;margin-top:auto;">{{ recap_attention_text }}</div>
     </div>
   </div>
-  <div data-report-block="largest-expense" style="margin-top:12px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:16px;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:18px;">
-    <div style="min-width:0;"><div style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#155681;">Größte Einzelausgabe</div><div style="font-size:12px;color:#555E65;line-height:1.4;margin-top:6px;overflow-wrap:anywhere;">{% if pdf_largest_expense.available %}Einzelne Konsumbuchung{% if pdf_largest_expense.detail %} · {{ pdf_largest_expense.detail }}{% endif %}{% else %}Keine verlässliche Einzelbuchung verfügbar.{% endif %}</div></div>
-    {% if pdf_largest_expense.available %}<div style="flex-shrink:0;font-family:'Newsreader',serif;font-size:26px;color:#16161A;white-space:nowrap;font-variant-numeric:tabular-nums;">{{ pdf_largest_expense.amount }}</div>{% endif %}
+  <div data-report-block="largest-expense" style="margin-top:8px;background:#EAF3FB;border:1px solid #BFDFF3;border-radius:20px;padding:12px 22px;">
+    <div style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#155681;">Größte Einzelausgabe</div>
+    {% if pdf_largest_expense.available %}
+    <div style="display:flex;align-items:center;gap:24px;margin-top:6px;">
+      <div data-report-value="largest-expense-amount" style="flex-shrink:0;font-family:'Newsreader',serif;font-size:{{ 44 if pdf_largest_expense.amount|length < 14 else 34 }}px;line-height:1;color:#155681;white-space:nowrap;font-variant-numeric:tabular-nums;">{{ pdf_largest_expense.amount }}</div>
+      <div style="flex:1;min-width:0;overflow-wrap:anywhere;">
+        {% if pdf_largest_expense.merchant %}<div data-report-value="largest-expense-merchant" style="font-size:16px;font-weight:600;line-height:1.2;color:#16161A;">{{ pdf_largest_expense.merchant }}</div>{% else %}<div style="font-size:14px;color:#555E65;">Einzelne Konsumbuchung</div>{% endif %}
+        {% if pdf_largest_expense.category or pdf_largest_expense.date %}<div style="font-size:11px;color:#555E65;line-height:1.35;margin-top:4px;">{% if pdf_largest_expense.category %}<span data-report-value="largest-expense-category">{{ pdf_largest_expense.category }}</span>{% endif %}{% if pdf_largest_expense.category and pdf_largest_expense.date %} · {% endif %}{% if pdf_largest_expense.date %}<span data-report-value="largest-expense-date">{{ pdf_largest_expense.date }}</span>{% endif %}</div>{% endif %}
+      </div>
+    </div>
+    {% else %}<div style="font-size:13px;color:#555E65;line-height:1.45;margin-top:10px;">Keine verlässliche Einzelbuchung verfügbar.</div>{% endif %}
   </div>
   {{ footer(5) }}
 </div>
@@ -205,17 +213,24 @@
 {{ page_start('08 Meilensteine') }}
   {{ heading('Meilensteine', 'Deine nächste Etappe.') }}
   <div style="font-size:17px;line-height:1.45;color:#555E65;margin-top:10px;">{{ milestone_headline }}</div>
-  <div style="margin-top:34px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:42px;min-height:360px;">
-    <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Aktuell</div>
-    <div style="font-family:'Newsreader',serif;font-size:68px;line-height:1;color:#155681;margin-top:13px;">{{ net_worth_amount }}</div>
-    {% if wealth_available %}<div style="height:18px;border-radius:12px;background:#E8E6E1;overflow:hidden;margin-top:38px;"><div style="height:100%;width:{{ milestone_pct_raw }}%;background:#155681;"></div></div>{% endif %}
-    {% if wealth_available %}<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:34px;">
-      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Nächste Etappe</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ milestone_to }}</strong></div>
-      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Noch</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ milestone_remaining }}</strong></div>
-      {% if wealth_period_available %}<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Diesen Monat</div><strong style="display:block;font-family:'Newsreader',serif;font-size:28px;font-weight:400;color:#16161A;margin-top:10px;">{{ wealth_change_amount }}</strong></div>{% endif %}
+  <div data-report-block="milestone-summary" style="margin-top:34px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:22px;padding:32px 36px;">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:#75757B;">Aktuelles Nettovermögen</div>
+    <div data-report-value="milestone-current" style="font-family:'Newsreader',serif;font-size:74px;line-height:1;color:#155681;margin-top:16px;font-variant-numeric:tabular-nums;">{{ net_worth_amount }}</div>
+    {% if wealth_available %}<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;border-top:1px solid #E8E6E1;padding-top:24px;margin-top:28px;">
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Nächste Etappe</div><div data-report-value="milestone-next" style="font-family:'Newsreader',serif;font-size:32px;line-height:1.1;color:#16161A;margin-top:8px;">{{ milestone_to }}</div></div>
+      <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:#75757B;">Noch bis zur Etappe</div><div data-report-value="milestone-remaining" style="font-family:'Newsreader',serif;font-size:32px;line-height:1.1;color:#16161A;margin-top:8px;">{{ milestone_remaining }}</div></div>
     </div>{% endif %}
+    {% if pdf_milestones.progress_available %}<div data-report-block="milestone-progress" style="margin-top:28px;">
+      <div style="display:flex;justify-content:space-between;gap:16px;font-size:11px;color:#555E65;"><span>Fortschritt in dieser Etappe</span><span>{{ pdf_milestones.progress_text }}</span></div>
+      <div style="height:12px;border-radius:8px;background:#E8E6E1;overflow:hidden;margin-top:10px;"><div data-report-value="milestone-progress" style="height:100%;width:{{ pdf_milestones.progress_raw }}%;background:#155681;"></div></div>
+      <div style="display:flex;justify-content:space-between;gap:16px;font-size:11px;color:#75757B;margin-top:8px;"><span>{{ milestone_from }}</span><span>{{ milestone_to }}</span></div>
+    </div>{% endif %}
+    {% if wealth_period_available %}<div data-report-block="milestone-month-change" style="display:flex;align-items:baseline;gap:12px;border-top:1px solid #E8E6E1;padding-top:16px;margin-top:22px;"><span style="font-size:11px;color:#75757B;">Veränderung im Monat</span><span style="font-family:'Newsreader',serif;font-size:22px;color:#555E65;">{{ wealth_change_amount }}</span></div>{% endif %}
   </div>
-  {% if badges %}<div style="display:flex;gap:14px;margin-top:18px;">{% for badge in badges %}<div style="flex:1;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:18px;padding:20px;"><div style="font-size:14px;font-weight:600;">{{ badge.label }}</div><div style="font-size:11px;color:#75757B;margin-top:8px;">{{ badge.date }}</div></div>{% endfor %}</div>{% endif %}
+  {% if pdf_milestones.badges %}<div data-report-block="milestone-badges" style="margin-top:24px;">
+    <div style="font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#75757B;">Erreichte Meilensteine</div>
+    {% for badge in pdf_milestones.badges %}<div style="display:flex;justify-content:space-between;align-items:center;gap:18px;background:#FFFFFF;border:1px solid #D9D8D4;border-radius:14px;padding:12px 18px;margin-top:8px;"><div style="min-width:0;font-size:14px;font-weight:600;line-height:1.35;overflow-wrap:anywhere;">{{ badge.label }}</div>{% if badge.date %}<div style="flex-shrink:0;font-size:11px;color:#75757B;white-space:nowrap;">{{ badge.date }}</div>{% endif %}</div>{% endfor %}
+  </div>{% endif %}
   {{ footer(8) }}
 </div>
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 import secrets
@@ -10,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from report_engine import (
+    BADGE_LABELS,
     GERMAN_MONTHS,
     build_report_data,
     get_db,
@@ -1364,11 +1366,67 @@ def _render_hell_pages(data: dict) -> list[str]:
     from rove_web_report_renderer import build_render_context
 
     template = HELL_PAGES_TEMPLATE.read_text(encoding="utf-8")
-    rendered = jinja2.Template(template).render(**build_render_context(data))
+    context = build_render_context(data)
+    context.update(_pdf_design_details(data, context))
+    rendered = jinja2.Template(template).render(**context)
     pages = _extract_labeled_pages(rendered)
     if len(pages) != 10:
         raise ValueError(f"Die helle PDF-Vorlage muss exakt 10 Seiten liefern, erhalten: {len(pages)}")
     return pages
+
+
+def _pdf_display_date(value, report_month: str | None = None) -> str:
+    try:
+        date = datetime.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return ""
+    if report_month and date.strftime("%Y-%m") != report_month:
+        return ""
+    return date.strftime("%d.%m.%Y")
+
+
+def _pdf_design_details(data: dict, context: dict) -> dict:
+    """Format PDF-only metadata; keep the selected amount and milestone band."""
+    from report_story_v2 import valid_report_merchant
+
+    largest = dict(context["pdf_largest_expense"])
+    truth = data.get("report_truth") or {}
+    expense = (
+        (truth.get("expenses") or {}).get("largest_expense") if truth else
+        (data.get("pages", {}).get("month") or {}).get("biggest_expense")
+    ) or {}
+    merchant = str(expense.get("merchant") or "").strip()
+    merchant = merchant if valid_report_merchant(merchant, expense.get("category")) else ""
+    merchant = merchant if len(merchant) <= 80 else merchant[:79].rstrip() + "…"
+    category = expense.get("category")
+    category = category.strip() if isinstance(category, str) else ""
+    largest.update({
+        "merchant": h(merchant) if largest["available"] else "",
+        "category": h(category_label(category)) if largest["available"] and category else "",
+        "date": _pdf_display_date(expense.get("created_at"), (data.get("meta") or {}).get("report_month")) if largest["available"] else "",
+    })
+
+    progress = context.get("milestone_pct_raw")
+    progress_available = bool(
+        context.get("wealth_available")
+        and isinstance(progress, (int, float)) and not isinstance(progress, bool)
+        and math.isfinite(progress) and 0 <= progress <= 100
+    )
+    # Reuse the existing band, not net worth divided by the next threshold.
+    badges = (data.get("pages", {}).get("milestones") or {}).get("badges") or []
+    return {
+        "pdf_largest_expense": largest,
+        "pdf_milestones": {
+            "progress_available": progress_available,
+            "progress_raw": progress if progress_available else None,
+            "progress_text": fmt_percent(progress, 1) if progress_available else "",
+            "badges": [
+                {"label": h(BADGE_LABELS.get(item.get("key"), item.get("label") or item.get("key") or "")),
+                 "date": _pdf_display_date(item.get("earned_at"))}
+                for item in badges[:len(context.get("badges") or [])]
+            ],
+        },
+    }
 
 
 def render_page(page_filename: str, data: dict) -> str:

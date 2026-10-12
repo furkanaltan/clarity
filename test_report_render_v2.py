@@ -8,7 +8,7 @@ from unittest.mock import patch
 from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
-from report_html_renderer import _render_hell_pages, build_html_document, plan_items, render_777_score
+from report_html_renderer import _pdf_design_details, _render_hell_pages, build_html_document, plan_items, render_777_score
 from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
 from rove_consumer_debt import net_worth_total
 import rove_pdf_report_renderer
@@ -1120,6 +1120,158 @@ class PdfMonthlyDetailsTests(unittest.TestCase):
                     self.assertLessEqual(block.border_box_y() + block.border_height(), footer.border_box_y() - 8)
                     for box in block.descendants():
                         self.assertLessEqual(box.position_x + box.width, 760.1)
+
+
+class PdfDesignPolishTests(unittest.TestCase):
+    def test_expense_metadata_uses_only_the_selected_snapshot_fact(self):
+        data = july_truth_payload()
+        data["report_truth"]["expenses"]["largest_expense"].update({
+            "merchant": "Elektronikmarkt", "category": "MOBILITAET",
+            "created_at": "2026-07-18 14:30:00",
+        })
+        data["pages"]["month"] = {"biggest_expense": {
+            "amount": 9000, "merchant": "Anderer Händler", "created_at": "2026-07-01",
+        }}
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        details = _pdf_design_details(data, context)["pdf_largest_expense"]
+        self.assertEqual(details["amount"], context["pdf_largest_expense"]["amount"])
+        self.assertEqual(details["merchant"], "Elektronikmarkt")
+        self.assertEqual(details["category"], "Mobilität")
+        self.assertEqual(details["date"], "18.07.2026")
+        self.assertIn('data-report-value="largest-expense-amount"', _render_hell_pages(data)[4])
+        self.assertEqual(data, before)
+        self.assertEqual(build_render_context(data), context)
+
+    def test_missing_or_invalid_expense_metadata_is_omitted(self):
+        for category, date in ((None, None), ("", "bad-date"), (None, "2026-08-18")):
+            with self.subTest(category=category, date=date):
+                data = july_truth_payload()
+                data["report_truth"]["expenses"]["largest_expense"].update({
+                    "category": category, "created_at": date,
+                })
+                details = _pdf_design_details(data, build_render_context(data))["pdf_largest_expense"]
+                self.assertEqual(details["category"], "")
+                self.assertEqual(details["date"], "")
+                page = _render_hell_pages(data)[4]
+                self.assertNotIn('data-report-value="largest-expense-category"', page)
+                self.assertNotIn('data-report-value="largest-expense-date"', page)
+
+    def test_unavailable_expense_does_not_publish_metadata(self):
+        data = july_truth_payload()
+        data["report_truth"]["expenses"]["largest_expense"].update({
+            "amount": None, "merchant": "Elektronikmarkt", "created_at": "2026-07-18",
+        })
+        details = _pdf_design_details(data, build_render_context(data))["pdf_largest_expense"]
+        self.assertFalse(details["available"])
+        self.assertEqual((details["merchant"], details["category"], details["date"]), ("", "", ""))
+
+    def test_legacy_expense_metadata_stays_on_its_original_fact(self):
+        data = legacy_archive_payload()
+        data["pages"]["month"]["biggest_expense"] = {
+            "amount": 42, "merchant": "Beispielmarkt", "category": "LEBENSMITTEL",
+            "created_at": "2026-07-03",
+        }
+        details = _pdf_design_details(data, build_render_context(data))["pdf_largest_expense"]
+        self.assertEqual((details["amount"], details["merchant"], details["date"]),
+                         ("42 €", "Beispielmarkt", "03.07.2026"))
+
+    def test_milestone_progress_reuses_the_existing_band(self):
+        for total, lower, upper, remaining, pct in (
+            (12500, "10.000 €", "15.000 €", "2.500 €", 50),
+            (15000, "15.000 €", "20.000 €", "5.000 €", 0),
+            (0, "0 €", "5.000 €", "5.000 €", 0),
+            (-15000, "0 €", "5.000 €", "20.000 €", 0),
+        ):
+            with self.subTest(total=total):
+                data = july_truth_payload()
+                data["report_truth"]["wealth"]["total"] = total
+                data["report_story_v2"] = build_report_story_v2(data)
+                before = copy.deepcopy(data)
+                context = build_render_context(data)
+                details = _pdf_design_details(data, context)["pdf_milestones"]
+                self.assertTrue(details["progress_available"])
+                self.assertEqual(details["progress_raw"], context["milestone_pct_raw"])
+                self.assertEqual(details["progress_raw"], pct)
+                self.assertEqual((context["milestone_from"], context["milestone_to"], context["milestone_remaining"]),
+                                 (lower, upper, remaining))
+                page = _render_hell_pages(data)[7]
+                for text in ("Fortschritt in dieser Etappe", lower, upper, remaining):
+                    self.assertIn(text, page)
+                self.assertEqual(data, before)
+
+    def test_unknown_wealth_or_invalid_progress_suppresses_the_bar(self):
+        data = july_truth_payload()
+        for progress in (None, True, -1, 101, float("nan"), float("inf"), "50"):
+            with self.subTest(progress=progress):
+                context = build_render_context(data)
+                context["milestone_pct_raw"] = progress
+                self.assertFalse(_pdf_design_details(data, context)["pdf_milestones"]["progress_available"])
+        context = build_render_context(data)
+        context["wealth_available"] = False
+        self.assertFalse(_pdf_design_details(data, context)["pdf_milestones"]["progress_available"])
+        with patch("rove_web_report_renderer.build_render_context", return_value=context):
+            self.assertNotIn('data-report-block="milestone-progress"', _render_hell_pages(data)[7])
+
+    def test_pdf_badges_localize_known_labels_and_safe_dates_without_mutation(self):
+        data = july_truth_payload()
+        data["pages"]["milestones"] = {"badges": [
+            {"key": "ten_k_club", "label": "Fuenfstellige Freiheit", "earned_at": "2026-07-20T14:00:00+02:00"},
+            {"key": "streak_7", "label": "Erste Woche", "earned_at": "bad-date"},
+            {"key": "custom", "label": '<script>alert("test")</script>', "earned_at": None},
+        ]}
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        details = _pdf_design_details(data, context)["pdf_milestones"]
+        self.assertEqual(len(details["badges"]), len(context["badges"]))
+        self.assertEqual(details["badges"][0], {"label": "Fünfstellige Freiheit", "date": "20.07.2026"})
+        self.assertEqual(details["badges"][1]["date"], "")
+        self.assertEqual(details["badges"][2]["date"], "")
+        page = _render_hell_pages(data)[7]
+        self.assertIn("Fünfstellige Freiheit", page)
+        self.assertIn("20.07.2026", page)
+        self.assertNotIn("Fuenfstellige", page)
+        self.assertNotIn("bad-date", page)
+        self.assertNotIn("<script>", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertEqual(data, before)
+        self.assertEqual(build_render_context(data), context)
+
+    def test_pdf_metadata_does_not_change_web_report_or_financial_context(self):
+        data = july_review_payload()
+        before = copy.deepcopy(data)
+        context = build_render_context(data)
+        template = WEB_TEMPLATE.read_text(encoding="utf-8")
+        web_before = render_template(template, data)
+        _render_hell_pages(data)
+        self.assertEqual(render_template(template, data), web_before)
+        self.assertEqual(build_render_context(data), context)
+        self.assertEqual(data, before)
+
+    def test_polished_blocks_fit_with_long_labels_and_four_badges(self):
+        data = july_review_payload()
+        data["report_truth"]["expenses"]["largest_expense"].update({
+            "merchant": "SehrLangerHaendlernameOhneLeerzeichen" * 4,
+            "created_at": "2026-07-18",
+        })
+        data["pages"]["milestones"] = {"badges": [
+            {"key": key, "label": "Ignored legacy label", "earned_at": "2026-07-20"}
+            for key in ("ten_k_club", "first_investment", "thousand_club", "emergency_fund")
+        ]}
+        document = HTML(string=build_html_document(_render_hell_pages(data))).render()
+        self.assertEqual(len(document.pages), 10)
+        for page_index, names in ((4, ("largest-expense",)), (7, ("milestone-summary", "milestone-badges"))):
+            boxes = list(document.pages[page_index]._page_box.descendants())
+            footer = next(box for box in boxes if box.element is not None and box.element.get("data-report-footer") == str(page_index + 1))
+            for name in names:
+                block = next(box for box in boxes if box.element is not None and box.element.get("data-report-block") == name)
+                self.assertLessEqual(block.border_box_y() + block.border_height(), footer.border_box_y() - 8)
+                for box in block.descendants():
+                    self.assertLessEqual(box.position_x + box.width, 760.1)
+                    self.assertLessEqual(box.position_y + box.height, block.border_box_y() + block.border_height() + 0.1)
+        page5_boxes = list(document.pages[4]._page_box.descendants())
+        amount = next(box for box in page5_boxes if box.element is not None and box.element.get("data-report-value") == "largest-expense-amount")
+        self.assertEqual(amount.style["font_size"], 44)
 
 
 if __name__ == "__main__":
