@@ -167,10 +167,19 @@ def category_label(value: str) -> str:
 
 
 def data_count_span(value, decimals: int = 0) -> str:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return "—"
-    raw = f"{float(value or 0):.{decimals}f}"
-    label = de_number(value, decimals)
+    try:
+        amount = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+    if not math.isfinite(amount):
+        return "—"
+    # Preserve cents in monetary values; explicit percentage precision stays fixed.
+    if decimals == 0 and not amount.is_integer():
+        decimals = 2
+    raw = f"{amount:.{decimals}f}"
+    label = de_number(amount, decimals)
     extra = f' data-decimals="{decimals}"' if decimals else ""
     return f'<span data-count="{raw}"{extra}>{label}</span>'
 
@@ -459,7 +468,7 @@ def standalone_script() -> str:
     return true;
   }
 
-  document.addEventListener('DOMContentLoaded', function () {
+  function initialize() {
     if (showExpiredState()) return;
 
     const bar = document.querySelector('[data-progressbar]');
@@ -473,7 +482,7 @@ def standalone_script() -> str:
       onScroll();
     }
 
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !window.IntersectionObserver) return;
 
     const ease = 'cubic-bezier(0.2, 0.7, 0.2, 1)';
     const fmt = (v, d) => new Intl.NumberFormat('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d }).format(v);
@@ -495,23 +504,32 @@ def standalone_script() -> str:
 
     const rings = Array.from(document.querySelectorAll('[data-ring]'));
     rings.forEach(el => {
-      el._target = el.getAttribute('data-ring');
+      const circumference = Number(el.getAttribute('data-ring-circumference')) || 540.4;
+      const target = Number(el.getAttribute('data-ring'));
+      el._target = Number.isFinite(target) ? Math.max(0, Math.min(circumference, target)) : circumference;
       el.style.transition = 'stroke-dashoffset 1.6s ' + ease;
-      el.setAttribute('stroke-dashoffset', '540.4');
+      el.style.strokeDasharray = String(circumference);
+      el.style.strokeDashoffset = String(circumference);
     });
 
-    const counts = Array.from(document.querySelectorAll('[data-count]'));
-    counts.forEach(el => {
-      el._targetVal = parseFloat(el.getAttribute('data-count'));
-      el._decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
+    const counts = Array.from(document.querySelectorAll('[data-count]')).filter(el => {
+      if (!el.getAttribute('data-count').trim()) return false;
+      el._targetVal = Number(el.getAttribute('data-count'));
+      el._decimals = Number(el.getAttribute('data-decimals') || '0');
+      if (!Number.isFinite(el._targetVal) || !Number.isInteger(el._decimals) || el._decimals < 0 || el._decimals > 2) return false;
+      el._finalText = el.textContent;
+      el.textContent = fmt(0, el._decimals);
+      return true;
     });
 
     const runCount = (el) => {
-      const dur = 1500, start = performance.now();
+      const dur = 1500;
+      let start;
       const tick = (now) => {
-        const t = Math.min(1, (now - start) / dur);
+        if (start === undefined) start = now;
+        const t = Math.max(0, Math.min(1, (now - start) / dur));
         const e = 1 - Math.pow(1 - t, 3);
-        el.textContent = fmt(el._targetVal * e, el._decimals);
+        el.textContent = t === 1 ? el._finalText : fmt(el._targetVal * e, el._decimals);
         if (t < 1) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
@@ -526,7 +544,10 @@ def standalone_script() -> str:
           el.style.transform = 'translateY(0)';
         }
         if (el.hasAttribute('data-grow')) el.style.width = el._target;
-        if (el.hasAttribute('data-ring')) el.style.strokeDashoffset = el._target;
+        if (el.hasAttribute('data-ring')) {
+          void el.getBoundingClientRect();
+          requestAnimationFrame(() => { el.style.strokeDashoffset = String(el._target); });
+        }
         if (el.hasAttribute('data-count') && !el._done) { el._done = true; runCount(el); }
         io.unobserve(el);
       });
@@ -556,7 +577,9 @@ def standalone_script() -> str:
       }, { threshold: 0.6 });
       wealthIo.observe(wealthEl);
     }
-  });
+  }
+  // The published script follows the report markup: initialize before first paint.
+  initialize();
 })();
 </script>
 """.strip()
@@ -2166,11 +2189,76 @@ def build_render_context(data: dict) -> dict:
     return context
 
 
+def web_story_details(data: dict, context: dict) -> dict:
+    """Reuse approved PDF presentation rules only in the web render path."""
+    from report_html_renderer import _pdf_design_details, _pdf_monthly_recap
+
+    report = context["report"]
+    details_context = {**context, **_pdf_month_details(data, report)}
+    details = _pdf_design_details(data, details_context)
+    truth = data.get("report_truth") or {}
+    flow = details_context["pdf_cashflow"]
+    metric = ((report.get("pages") or {}).get("page_2") or {}).get("primary_metric") or {}
+    items = (
+        ("income", "Einnahmen", (truth.get("income") or {}).get("amount"), flow["income_status"]),
+        ("fixed_costs", "Fixkosten", (truth.get("fixed_costs") or {}).get("amount"), flow["fixed_status"]),
+        ("consumption", "Konsum", (truth.get("expenses") or {}).get("total_consumption"), "Erfasste Konsumausgaben"),
+        ("net", "Verbleibend nach Sparen", metric.get("value"), "Kein Kontosaldo"),
+    )
+    category_sources = {
+        str(item.get("category") or "SONSTIGES"): item
+        for item in (truth.get("expenses") or {}).get("categories") or []
+    }
+    web_categories = []
+    metrics = ((report.get("pages") or {}).get("page_3") or {}).get("supporting_metrics") or []
+    for item, metric_item in zip(context.get("money_map_categories") or [], metrics):
+        source = category_sources.get(metric_item.get("category_key"), {})
+        count = source.get("transaction_count")
+        average = source.get("avg_transaction")
+        web_categories.append({
+            **item,
+            "count_available": isinstance(count, int) and not isinstance(count, bool) and count > 0,
+            "average_available": isinstance(average, (int, float)) and not isinstance(average, bool)
+            and math.isfinite(average) and average >= 0,
+        })
+    return {
+        "web_categories": web_categories if truth else context.get("money_map_categories") or [],
+        "web_cashflow": {
+            "items": [{"key": key, "label": label, "status": status,
+                       "available": flow[key] != "—",
+                       "span": data_count_span(value) if flow[key] != "—" else "—"}
+                      for key, label, value, status in items],
+            "note": h(flow["note"]),
+        },
+        "web_largest_expense": details["pdf_largest_expense"],
+        "web_milestones": details["pdf_milestones"],
+        "web_recap": _pdf_monthly_recap(data, details_context) if truth else {
+            key: {"title": label, "facts": [context.get(field) or "Für diesen historischen Monat nicht belegt."]}
+            for key, label, field in (
+                ("good", "Das lief gut", "recap_good_text"),
+                ("attention", "Das fällt auf", "recap_attention_text"),
+                ("lever", "Dein nächster Hebel", "recap_lever_text"),
+            )
+        },
+        "web_allocation": [{**item, "key": h(item["key"]), "label": h(item["label"]),
+                            "share_span": data_count_span(item["share_raw"], 1)}
+                           for item in report["allocation"]],
+    }
+
+
+def web_euro_spacing(value):
+    """Keep a displayed amount and its currency together without changing its value."""
+    if isinstance(value, str):
+        return re.sub(r"(?<=\d)[ \u00a0\u202f]+€", "\u00a0€", value)
+    return value
+
+
 def render_template(template: str, data: dict) -> str:
     context = build_render_context(data)
+    context.update(web_story_details(data, context))
     html_doc = strip_dc_runtime(template)
     html_doc = inject_report_css(html_doc)
-    return jinja2.Template(html_doc).render(**context)
+    return jinja2.Template(html_doc, finalize=web_euro_spacing).render(**context)
 
 
 def remove_unregistered_report_dir(output_dir: Path) -> None:

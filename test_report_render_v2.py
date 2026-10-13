@@ -9,7 +9,7 @@ from weasyprint import CSS, HTML
 
 from report_story_v2 import build_report_story_v2
 from report_html_renderer import _pdf_design_details, _pdf_monthly_recap, _render_hell_pages, build_html_document, plan_items, render_777_score
-from rove_web_report_renderer import build_render_context, build_story_render_context, render_template
+from rove_web_report_renderer import build_render_context, build_story_render_context, render_template as render_web_template
 from rove_consumer_debt import net_worth_total
 import rove_pdf_report_renderer
 import report_engine
@@ -21,6 +21,11 @@ from test_report_story_v2 import standard_payload
 ROOT = Path(__file__).resolve().parent
 WEB_TEMPLATE = ROOT / "report_templates" / "rove_web_report.html"
 PDF_TEMPLATE = ROOT / "report_templates" / "rove_pdf_report.html"
+
+
+def render_template(template: str, data: dict) -> str:
+    # Content assertions ignore currency's non-breaking presentation space.
+    return render_web_template(template, data).replace("\u00a0", " ")
 
 
 def report_payload() -> dict:
@@ -660,7 +665,7 @@ class ReportRenderV2Tests(unittest.TestCase):
         self.assertEqual(context["money_map_transaction_count"], 23)
         self.assertIn('data-screen-label="05 Vormonatsvergleich"', html)
         self.assertIn("Vergleichsbasis", html)
-        self.assertEqual(html.count("Shopping lag 533 € über deinem gesetzten Budget von 200 €."), 1)
+        self.assertEqual(html.count("Shopping lag 533 € über deinem gesetzten Budget."), 1)
         for category in context["money_map_categories"]:
             self.assertIn(category["name"], html)
             self.assertIn(category["amount_text"], html)
