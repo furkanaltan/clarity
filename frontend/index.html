@@ -2704,11 +2704,65 @@
   .tab.on .rove-module-icon{--rove-icon-ink:var(--blue);--rove-icon-accent:var(--blue)}
   :root[data-theme="light"] .tab .rove-module-icon{--rove-icon-ink:currentColor;--rove-icon-accent:currentColor}
   :root[data-theme="light"] .tab.on .rove-module-icon{--rove-icon-ink:var(--blue-deep);--rove-icon-accent:var(--blue-deep)}
+
+  /* Black-glass badges: static layers, no backdrop blur or compositing blend. */
+  .rv-glass{--rv-glass-size:52px;--rv-glass-top:#34383A;--rv-glass-bottom:#0B0C0C;
+    position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
+    width:var(--rv-glass-size);height:var(--rv-glass-size);border-radius:50%;overflow:hidden;color:#fff;
+    background:linear-gradient(160deg,var(--rv-glass-top),var(--rv-glass-bottom));
+    box-shadow:inset 0 1px 1px rgba(255,255,255,.45),inset 0 0 0 1px rgba(255,255,255,.08),
+      inset 0 -6px 11px rgba(0,0,0,.55),0 5px 12px rgba(0,0,0,.5)}
+  .rv-glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:repeating-linear-gradient(90deg,rgba(255,255,255,.04) 0 1px,rgba(0,0,0,.08) 1px 3px)}
+  .rv-glass::after{content:"";position:absolute;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
+    background:linear-gradient(180deg,rgba(255,255,255,.28),rgba(255,255,255,0));pointer-events:none}
+  .rv-glass > svg{position:relative;z-index:1;display:block;width:46%;height:46%;flex:none;
+    fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;filter:none}
+  .rv-glass--30{--rv-glass-size:30px}
+  .rv-glass--44{--rv-glass-size:44px}
+  .rv-glass--52{--rv-glass-size:52px}
+  .rv-glass--60{--rv-glass-size:60px}
+  .rv-glass--96{--rv-glass-size:96px}
+  .rv-glass--30::before,.rv-glass--plain::before,.rv-glass-list .rv-glass::before{display:none}
+  .rv-glass[data-state="warning"]{--rv-glass-top:#E2554F;--rv-glass-bottom:#4A1412}
+  .tabbar > .tab{justify-content:flex-end;transition:color .2s ease}
+  .tabbar > .tab::before{content:none}
+  .tabbar > .tab.on > .rv-glass{--rv-glass-top:#4A9EEC;--rv-glass-bottom:#143B63}
+  .tabbar .rv-glass{pointer-events:none}
+  .tabbar .rv-glass > svg{width:46%;height:46%;stroke:currentColor;stroke-width:1.75;filter:none}
+  .tabbar > .tab:active:not(.add){transform:none;opacity:1}
+  .tabbar > .tab:focus-visible{outline:none}
+  .tabbar > .tab:focus-visible .rv-glass{outline:2px solid var(--blue);outline-offset:3px}
+  /* Leave the last content row clear of the taller badges and iPhone safe area. */
+  .screen{padding-bottom:calc(120px + var(--safe-bot))}
 </style>
 </head>
 <body>
 <svg class="rove-icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
   <defs>
+    <!-- Tabler Icons v3.42.0, MIT: THIRD_PARTY_NOTICES. Existing module glyphs remain unchanged. -->
+    <symbol id="rove-module-tab-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12l-2 0l9 -9l9 9l-2 0"/>
+      <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7"/>
+      <path d="M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6"/>
+    </symbol>
+    <symbol id="rove-module-tab-flag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 5a5 5 0 0 1 7 0a5 5 0 0 0 7 0v9a5 5 0 0 1 -7 0a5 5 0 0 0 -7 0v-9"/>
+      <path d="M5 21v-7"/>
+    </symbol>
+    <symbol id="rove-module-tab-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 5l0 14"/>
+      <path d="M5 12l14 0"/>
+    </symbol>
+    <symbol id="rove-module-tab-arrows-exchange" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 10h14l-4 -4"/>
+      <path d="M17 14h-14l4 4"/>
+    </symbol>
+    <symbol id="rove-module-tab-file-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
+      <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2"/>
+      <path d="M9 15l2 2l4 -4"/>
+    </symbol>
     <symbol id="rove-module-checking" viewBox="0 0 28 28">
       <g class="rove-icon-strokes">
         <rect class="rove-icon-wash" x="3.5" y="6.5" width="21" height="15" rx="3.5"/>
@@ -3054,15 +3108,15 @@
   <!-- ========== TAB BAR ========== -->
   <nav class="tabbar tabbar-layout-pending">
     <button class="tab on" data-tab="home">
-      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-home"/></svg>Übersicht</button>
+      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-home"/></svg></span>Übersicht</button>
     <button class="tab" data-tab="ziele">
-      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-goals"/></svg>Ziele</button>
+      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-flag"/></svg></span>Ziele</button>
     <button class="tab add" id="addBtn" aria-label="Schnell erfassen">
-      <div class="plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div></button>
+      <span class="rv-glass rv-glass--60" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-plus"/></svg></span>Erfassen</button>
     <button class="tab" data-tab="tx">
-      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-cashflow"/></svg><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
+      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-arrows-exchange"/></svg></span><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
     <button class="tab" data-tab="vertraege">
-      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-contracts"/></svg>Verträge</button>
+      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-file-check"/></svg></span>Verträge</button>
   </nav>
 
   <!-- Eingabe-Sheet -->

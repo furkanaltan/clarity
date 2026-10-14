@@ -109,7 +109,31 @@ class FrontendDetailIconTests(unittest.TestCase):
             self.assertTrue(reference.startswith("#rove-module-"))
             self.assertIn(reference[1:], ids)
         for symbol in symbols:
-            self.assertEqual(symbol.attrib["viewBox"], "0 0 28 28")
+            expected_viewbox = "0 0 24 24" if symbol.attrib["id"].startswith("rove-module-tab-") else "0 0 28 28"
+            self.assertEqual(symbol.attrib["viewBox"], expected_viewbox)
+
+    def test_navigation_uses_five_local_outline_glyphs_and_existing_routes(self):
+        nav = ET.fromstring(re.search(r'<nav class="tabbar.*?</nav>', self.frontend, re.S).group())
+        buttons = nav.findall("button")
+        self.assertEqual(len(buttons), 5)
+        self.assertEqual([button.get("data-tab") for button in buttons], ["home", "ziele", None, "tx", "vertraege"])
+        self.assertEqual(buttons[2].get("id"), "addBtn")
+        self.assertEqual(buttons[2].get("aria-label"), "Schnell erfassen")
+        for button, glyph in zip(buttons, ["home", "flag", "plus", "arrows-exchange", "file-check"]):
+            badge = button.find("span")
+            self.assertEqual(badge.get("aria-hidden"), "true")
+            self.assertIn("rv-glass", badge.get("class").split())
+            self.assertEqual(badge.find("svg/use").get("href"), f"#rove-module-tab-{glyph}")
+
+    def test_navigation_symbols_have_the_requested_tabler_outline_style(self):
+        sprite = ET.fromstring(re.search(r'<svg class="rove-icon-library".*?</svg>', self.frontend, re.S).group())
+        ns = "{http://www.w3.org/2000/svg}"
+        symbols = [item for item in sprite.findall(f".//{ns}symbol") if item.get("id").startswith("rove-module-tab-")]
+        self.assertEqual(len(symbols), 5)
+        for symbol in symbols:
+            for key, value in {"viewBox": "0 0 24 24", "fill": "none", "stroke": "currentColor", "stroke-width": "1.75", "stroke-linecap": "round", "stroke-linejoin": "round"}.items():
+                self.assertEqual(symbol.get(key), value)
+            self.assertGreater(len(symbol.findall(f"{ns}path")), 0)
 
     def test_renamed_accounts_keep_type_icons_on_home_and_detail(self):
         result = self.run_icon_js("""['checking','savings','wallet'].map(accountType=>{
