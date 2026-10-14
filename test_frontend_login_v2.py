@@ -150,7 +150,7 @@ assert.equal(get('loginPassword')!==null,true);assert.equal(message().textConten
         self.run_flow("""
 assert.equal(message().textContent,'');fillLogin();
 routes.set('/v1/auth/password/login',()=>response(401,{ok:false,error:'invalid_credentials'}));
-await submit();assert.match(message().textContent,/Prüfe E-Mail-Adresse und Passwort/);
+await submit();assert.equal(message().textContent,'E-Mail oder Passwort ist nicht korrekt.');
 """)
 
     def test_password_visibility_is_reversible(self):
@@ -170,9 +170,15 @@ assert.equal(get('onboard').hidden,true);assert.equal(get('app').hidden,false);
     def test_false_credentials_preserve_inputs_and_have_neutral_wait_hint(self):
         self.run_flow("""
 fillLogin();routes.set('/v1/auth/password/login',()=>response(401,{ok:false,error:'invalid_credentials'}));
-await submit();assert.match(message().textContent,/Prüfe E-Mail-Adresse und Passwort/);
-assert.match(message().textContent,/mehreren Fehlversuchen/);assert.equal(get('loginEmail').value,'synthetic@example.test');
+await submit();assert.equal(message().textContent,'E-Mail oder Passwort ist nicht korrekt.');
+assert.equal(get('loginEmail').value,'synthetic@example.test');
 assert.equal(button('password-login').disabled,false);
+""")
+
+    def test_rate_limit_keeps_its_specific_feedback(self):
+        self.run_flow("""
+fillLogin();routes.set('/v1/auth/password/login',()=>response(429,{ok:false,error:'too_many_login_attempts'}));
+await submit();assert.equal(message().textContent,'Zu viele Versuche. Warte kurz und versuche es später erneut.');
 """)
 
     def test_invalid_email_is_rejected_before_request(self):

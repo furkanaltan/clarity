@@ -14383,7 +14383,7 @@ async function passwordLogin(){
   try{
     setAuthMessage("");
     const {response:res,data}=await authRequest("/v1/auth/password/login",{email,password});
-    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Anmeldung nicht möglich. Prüfe E-Mail-Adresse und Passwort. Warte nach mehreren Fehlversuchen einige Minuten und versuche es erneut."));
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"E-Mail oder Passwort ist nicht korrekt."));
     await continueWithSession();
   }catch(error){
     setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
