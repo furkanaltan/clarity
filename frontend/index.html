@@ -68,8 +68,7 @@
     --grid:rgba(0,0,0,.06); --grid2:rgba(0,0,0,.04);
     --bar-bg:rgba(255,255,255,.92);
   }
-  /* Hell-Modus: dunkle Verläufe/Avatare hell überschreiben */
-  :root[data-theme="light"] .avatar,
+  /* Hell-Modus: nur den Profilkopf im Sheet hell halten; das F bleibt schwarzes Glas. */
   :root[data-theme="light"] .phead .pav{background:linear-gradient(145deg,#E8EEF5,#F7FAFD)}
   :root[data-theme="light"] .prow.premium{background:linear-gradient(150deg,#FBF5E6,#FFFFFF)}
   :root[data-theme="light"] .bub.me{background:var(--blue-deep);color:#fff}
@@ -780,11 +779,14 @@
   #splash img{width:168px;height:auto;animation:splashIn .7s cubic-bezier(.22,1,.36,1) both}
   @keyframes splashIn{0%{opacity:0;transform:scale(.92)}55%{opacity:1;transform:scale(1)}100%{opacity:1;transform:scale(1)}}
   @keyframes splashOut{to{opacity:0;visibility:hidden}}
-  /* Profil-Avatar (F): gleiche blaue Glas-Optik wie die Glocke, ebenfalls ohne Glow. */
-  .avatar{width:40px;height:40px;border-radius:50%;color:#F4F1EA;
-    background:linear-gradient(145deg,rgba(244,241,234,.28),rgba(244,241,234,.10));
-    border:1px solid rgba(244,241,234,.5);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.38),inset 0 -8px 14px -10px rgba(0,0,0,.34);
+  /* Profil-Avatar (F): dieselbe ruhige schwarze Glasoberfläche wie die Feature-Icons. */
+  .avatar{width:40px;height:40px;border-radius:50%;color:#fff;
+    background:radial-gradient(ellipse at 35% 14%,rgba(255,255,255,.24),transparent 46%),
+      repeating-linear-gradient(90deg,rgba(255,255,255,.035) 0 1px,rgba(0,0,0,.08) 1px 3px),
+      linear-gradient(160deg,#34383a,#0b0c0c);
+    border:1px solid rgba(255,255,255,.38);
+    box-shadow:inset 0 1px 1px rgba(255,255,255,.42),inset 0 0 0 1px rgba(255,255,255,.08),
+      inset 0 -6px 11px rgba(0,0,0,.55),0 5px 12px rgba(0,0,0,.34);
     display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700}
   /* Profil-Menue: dieselbe ruhige Neutralitaet wie die Detail-Sheets; Farbe bleibt nur
      fuer funktionale Status-Badges erhalten, nicht fuer Rov.E-eigene Icons. */
@@ -994,10 +996,8 @@
     border-color:color-mix(in srgb, currentColor 45%, transparent);
     box-shadow:inset 0 1px 0 rgba(255,255,255,.55), 0 4px 10px -6px color-mix(in srgb, currentColor 38%, transparent);
   }
-  /* Licht-Modus: Glocke + F tragen im Dunkeln die Report-Creme — die wäre auf hellem Grund
-     unsichtbar. Deshalb hier saubere weiße Kachel mit dunklem, lesbarem Icon/Buchstaben. */
-  :root[data-theme="light"] .iconbtn,
-  :root[data-theme="light"] .avatar{
+  /* Licht-Modus: nur die Glocke wechselt auf eine helle Kachel; das F bleibt schwarzes Glas. */
+  :root[data-theme="light"] .iconbtn{
     color:#4B5563;
     background:linear-gradient(145deg,#FFFFFF,#EDF1F6);
     border-color:rgba(0,0,0,.08);
@@ -2730,7 +2730,7 @@
 
   /* Rov.E black-glass icon family: one circular, monochrome surface for feature icons.
      Merchant/coin logos, data visualizations and small inline action glyphs stay untouched. */
-  #app .iconbtn,#app .tab .plus,#app .gicon,#app .empty .eic,
+  #app .iconbtn,#app .gicon,#app .empty .eic,
   #app .ob-path .ic,#app .ob-item .iic,#app .act .ai,#app .announce-icon,
   #app .prow .pic,#app .support-icon,
   #app .sts .ic,#app .analysis-category-icon,#app .wealth-class-icon,
@@ -2743,7 +2743,7 @@
       inset 0 -6px 11px rgba(0,0,0,.55),0 5px 12px rgba(0,0,0,.34)!important;
     --rove-icon-ink:#fff;--rove-icon-accent:#fff;--rove-icon-wash:rgba(255,255,255,.16)
   }
-  #app .iconbtn::before,#app .tab .plus::before,#app .gicon::before,#app .empty .eic::before,
+  #app .iconbtn::before,#app .gicon::before,#app .empty .eic::before,
   #app .ob-path .ic::before,#app .ob-item .iic::before,#app .act .ai::before,#app .announce-icon::before,
   #app .prow .pic::before,#app .support-icon::before,
   #app .sts .ic::before,#app .analysis-category-icon::before,#app .wealth-class-icon::before,
@@ -2752,7 +2752,7 @@
     content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
     background:repeating-linear-gradient(90deg,rgba(255,255,255,.035) 0 1px,rgba(0,0,0,.08) 1px 3px)
   }
-  #app .iconbtn::after,#app .tab .plus::after,#app .gicon::after,#app .empty .eic::after,
+  #app .iconbtn::after,#app .gicon::after,#app .empty .eic::after,
   #app .ob-path .ic::after,#app .ob-item .iic::after,#app .act .ai::after,#app .announce-icon::after,
   #app .prow .pic::after,#app .support-icon::after,
   #app .sts .ic::after,#app .analysis-category-icon::after,#app .wealth-class-icon::after,
@@ -2761,7 +2761,7 @@
     content:"";position:absolute;z-index:0;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
     background:linear-gradient(180deg,rgba(255,255,255,.24),transparent);pointer-events:none
   }
-  #app .iconbtn svg,#app .tab .plus svg,#app .gicon svg,#app .empty .eic svg,
+  #app .iconbtn svg,#app .gicon svg,#app .empty .eic svg,
   #app .ob-path .ic svg,#app .ob-item .iic svg,#app .act .ai svg,#app .announce-icon svg,
   #app .prow .pic svg,#app .support-icon svg,
   #app .sts .ic svg,#app .analysis-category-icon svg,#app .wealth-class-icon svg,
@@ -2775,9 +2775,6 @@
   #app .logo[style*="color:"] .rove-module-icon{
     --rove-icon-ink:#fff!important;--rove-icon-accent:#fff!important;--rove-icon-wash:rgba(255,255,255,.16)!important
   }
-  #app .tab.on>.rv-glass{--rv-glass-top:#3486bd;--rv-glass-bottom:#102b46}
-  #app .tab.add .plus{width:42px;height:42px;border-radius:50%;color:#fff}
-  #app .tab.add .plus svg{width:20px;height:20px}
   #app .act .ai.is-warning,#app .vks-status--failure .vks-status-mark{
     border-color:rgba(226,85,79,.78)!important;
     box-shadow:inset 0 1px 1px rgba(255,255,255,.32),inset 0 -6px 11px rgba(0,0,0,.55),
@@ -3202,15 +3199,15 @@
   <!-- ========== TAB BAR ========== -->
   <nav class="tabbar tabbar-layout-pending">
     <button class="tab on" data-tab="home">
-      <span class="rv-glass rv-glass--44" aria-hidden="true"><svg class="rove-module-icon rv-glass-symbol" viewBox="0 0 28 28" focusable="false"><use href="#rove-module-home"/></svg></span>Übersicht</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-home"/></svg>Übersicht</button>
     <button class="tab" data-tab="ziele">
-      <span class="rv-glass rv-glass--44" aria-hidden="true"><svg class="rove-module-icon rv-glass-symbol" viewBox="0 0 28 28" focusable="false"><use href="#rove-module-goals"/></svg></span>Ziele</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-goals"/></svg>Ziele</button>
     <button class="tab add" id="addBtn" aria-label="Schnell erfassen">
       <div class="plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div></button>
     <button class="tab" data-tab="tx">
-      <span class="rv-glass rv-glass--44" aria-hidden="true"><svg class="rove-module-icon rv-glass-symbol" viewBox="0 0 28 28" focusable="false"><use href="#rove-module-cashflow"/></svg></span><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-cashflow"/></svg><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
     <button class="tab" data-tab="vertraege">
-      <span class="rv-glass rv-glass--44" aria-hidden="true"><svg class="rove-module-icon rv-glass-symbol" viewBox="0 0 28 28" focusable="false"><use href="#rove-module-contracts"/></svg></span>Verträge</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-contracts"/></svg>Verträge</button>
   </nav>
 
   <!-- Eingabe-Sheet -->

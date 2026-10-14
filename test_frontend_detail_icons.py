@@ -115,7 +115,7 @@ class FrontendDetailIconTests(unittest.TestCase):
             expected_viewbox = "0 0 24 24" if symbol.attrib["id"].startswith("rove-module-asset-") else "0 0 28 28"
             self.assertEqual(symbol.attrib["viewBox"], expected_viewbox)
 
-    def test_navigation_uses_glass_badges_without_changing_quick_entry(self):
+    def test_navigation_keeps_original_icons_and_quick_entry(self):
         nav = ET.fromstring(re.search(r'<nav class="tabbar.*?</nav>', self.frontend, re.S).group())
         buttons = nav.findall("button")
         self.assertEqual(len(buttons), 5)
@@ -126,17 +126,24 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertEqual(buttons[2].find('div/svg/path').get('d'), "M12 5v14M5 12h14")
         for button, glyph in zip([buttons[0], buttons[1], buttons[3], buttons[4]],
                                  ["home", "goals", "cashflow", "contracts"]):
-            badge = button.find('span[@class="rv-glass rv-glass--44"]')
-            self.assertIsNotNone(badge)
-            icon = badge.find("svg")
-            self.assertIn("rv-glass-symbol", icon.get("class"))
+            self.assertFalse(any("rv-glass" in span.get("class", "") for span in button.findall(".//span")))
+            icon = button.find("svg")
+            self.assertEqual(icon.get("class"), "rove-module-icon")
             self.assertEqual(icon.get("viewBox"), "0 0 28 28")
             self.assertEqual(icon.find("use").get("href"), f"#rove-module-{glyph}")
-        self.assertIn("#app .tab.on>.rv-glass", self.frontend)
-        self.assertIn("#app .tab.add .plus{width:42px;height:42px;border-radius:50%", self.frontend)
+        self.assertNotIn("#app .tab .plus", self.frontend)
+        self.assertNotIn("#app .tab.on>.rv-glass", self.frontend)
         self.assertNotIn('.tabbar > .tab::before{content:none}', self.frontend)
         self.assertNotIn('.tabbar > .tab:active:not(.add){transform:none', self.frontend)
         self.assertIn('.tab:active:not(.add){transform:scale(.94);opacity:.8}', self.frontend)
+
+    def test_top_right_profile_initial_uses_black_glass_in_both_themes(self):
+        self.assertIn('id="avatar" type="button" aria-label="Profil">F</button>', self.frontend)
+        avatar_css = re.search(r"\.avatar\{[^}]+\}", self.frontend).group()
+        self.assertIn("#34383a", avatar_css)
+        self.assertIn("#0b0c0c", avatar_css)
+        self.assertIn("color:#fff", avatar_css)
+        self.assertNotIn(':root[data-theme="light"] .avatar', self.frontend)
 
     def test_seven_asset_symbols_have_the_requested_tabler_outline_style(self):
         sprite = ET.fromstring(re.search(r'<svg class="rove-icon-library".*?</svg>', self.frontend, re.S).group())
@@ -187,7 +194,8 @@ class FrontendDetailIconTests(unittest.TestCase):
             self.assertIn(selector, self.frontend)
         self.assertIn("#app .act .ai.is-warning", self.frontend)
         self.assertIn("#app .vks-status--failure .vks-status-mark", self.frontend)
-        self.assertIn("#app .tab.on>.rv-glass", self.frontend)
+        self.assertNotIn("#app .tab .plus", self.frontend)
+        self.assertNotIn("#app .tab.on>.rv-glass", self.frontend)
         self.assertIn("#app .rv-glass .rove-module-icon", self.frontend)
         self.assertIn("--rove-icon-ink:#fff!important;--rove-icon-accent:#fff!important", self.frontend)
         self.assertIn('data-tab="vertraege"', self.frontend)
