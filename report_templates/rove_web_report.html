@@ -17,7 +17,7 @@
 <helmet>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
-  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&amp;display=swap" rel="stylesheet">
   <style>
     html, body { margin: 0; padding: 0; background: #08090B; }
     body { -webkit-font-smoothing: antialiased; }
@@ -117,8 +117,9 @@
     .report-recap-body { min-width: 0; }
     .report-recap-fact + .report-recap-fact { margin-top: 12px; }
     .report-category-share { white-space: nowrap; }
-    .report-chapter-label { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; line-height: 1.5; text-transform: uppercase; }
-    .report-chapter-title { font-family: 'Newsreader', serif; font-size: clamp(36px, 6vw, 64px); font-weight: 400; letter-spacing: -0.02em; line-height: 1.08; margin-top: 22px; text-wrap: balance; }
+    .report-chapter-label { display: flex; align-items: center; gap: 12px; margin: 0; font-family: 'Hanken Grotesk', sans-serif; font-size: 12px; font-weight: 600; letter-spacing: 0.24em; line-height: 1.5; text-transform: uppercase; color: #3BA7FF; }
+    .report-chapter-title { font-family: 'Newsreader', serif; font-size: clamp(36px, 6vw, 64px); font-weight: 300; letter-spacing: -0.015em; line-height: 1.08; margin: 22px 0 0; text-wrap: balance; }
+    .report-milestone-title { font-weight: 400; letter-spacing: -0.02em; }
     .report-label { font-size: 11px; font-weight: 600; letter-spacing: 0.16em; line-height: 1.5; text-transform: uppercase; }
     .report-card-title { font-family: 'Newsreader', serif; font-size: 25px; font-weight: 400; line-height: 1.25; }
     .report-body { font-size: 16px; line-height: 1.65; }
@@ -141,8 +142,8 @@
       .report-reserve-card { padding: 22px 20px; }
       .report-plan-card { padding: 28px 22px !important; gap: 20px !important; }
       .report-plan-copy { min-width: 0; flex-basis: 100% !important; }
+      .report-plan-intro { margin-top: 90px !important; }
       .report-plan-impact-value { font-size: 23px !important; }
-      .report-body { font-size: 16px; }
       .report-flow-card { padding: 24px 20px !important; }
       .report-flow-grid { gap: 24px 16px; }
       .report-flow-value { font-size: clamp(23px, 6.3vw, 30px); }
@@ -295,7 +296,7 @@
         <div style="font-family: 'Newsreader', serif; font-size: clamp(76px, 12vw, 148px); line-height: 0.9; font-weight: 420; letter-spacing: -0.03em;">Rov.<span style="font-family: 'Hanken Grotesk', sans-serif; font-size: 0.88em; font-weight: 600; letter-spacing: -0.06em; vertical-align: 0.015em;">E</span></div>
         <div style="font-family: 'Newsreader', serif; font-size: clamp(76px, 12vw, 148px); line-height: 0.92; font-weight: 420; letter-spacing: -0.03em; font-style: italic; color: #3BA7FF;">Report</div>
       </div>
-      <div style="margin-top: 34px; font-size: 19px; line-height: 1.65; color: #9EA4A0; max-width: 520px; animation: clarity-hero-in 1s 0.24s cubic-bezier(0.2,0.7,0.2,1) both;">Vermögen, Verhalten und der nächste Schritt zu deinem Ziel ehrlich ausgewertet, auf den Punkt gebracht.</div>
+      <div style="margin-top: 34px; font-size: 19px; line-height: 1.65; color: #9EA4A0; max-width: 520px; animation: clarity-hero-in 1s 0.24s cubic-bezier(0.2,0.7,0.2,1) both;">Vermögen, Verhalten und der nächste Schritt zu deinem Ziel auf einen Blick.</div>
 
       <div style="display: flex; flex-wrap: wrap; gap: 16px; margin-top: 54px; animation: clarity-hero-in 1s 0.36s cubic-bezier(0.2,0.7,0.2,1) both;">
         <div style="flex: 1 1 260px; min-height: 148px; box-sizing: border-box; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 34px 32px; backdrop-filter: blur(6px);">
@@ -324,7 +325,7 @@
   <section data-screen-label="02 Überblick" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">02</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Überblick</div>
+      <div data-reveal="1" class="report-chapter-label">Überblick</div>
       <div data-reveal="1" class="report-chapter-title" style="max-width:700px;">Dein Monat auf einen Blick.</div>
 
       <div data-reveal="1" style="margin-top:50px;background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:22px;padding:30px 34px;">
@@ -367,7 +368,7 @@
           {% for item in web_cashflow['items'] %}<div data-flow="{{ item.key }}" style="min-width:0;">
             <div style="font-size:13px;color:#C8CBC9;line-height:1.4;">{{ item.label }}</div>
             <div class="report-flow-value"{% if item.key == 'net' %} style="color:#75C4FF;"{% endif %}>{{ item.span }}{% if item.available %}&nbsp;€{% endif %}</div>
-            <div style="font-size:11px;color:#9EA4A0;line-height:1.5;margin-top:8px;">{{ item.status }}</div>
+            {% if item.status %}<div style="font-size:11px;color:#9EA4A0;line-height:1.5;margin-top:8px;">{{ item.status }}</div>{% endif %}
           </div>{% endfor %}
         </div>
         <div class="report-meta" style="color:#9EA4A0;border-top:1px solid rgba(255,255,255,0.07);padding-top:16px;margin-top:22px;">{{ web_cashflow.note }}</div>
@@ -414,7 +415,7 @@
     <div data-glow="1" style="position: absolute; top: 10%; left: -240px; width: 620px; height: 620px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.09) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift 16s ease-in-out infinite; pointer-events: none;"></div>
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">03</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Kategorien</div>
+      <div data-reveal="1" class="report-chapter-label">Kategorien</div>
       <div data-reveal="1" class="report-chapter-title" style="max-width:820px;">Wohin dein Geld geflossen ist.</div>
 
       <div data-reveal="1" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:28px;padding:12px 16px;border-top:1px solid rgba(255,255,255,0.08);border-bottom:1px solid rgba(255,255,255,0.08);font-size:14px;color:#C8CBC9;font-variant-numeric:tabular-nums;">
@@ -440,7 +441,7 @@
   <section data-screen-label="04 Händler und Ausgabenmuster" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">04</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Händler</div>
+      <div data-reveal="1" class="report-chapter-label">Händler</div>
       <div data-reveal="1" class="report-chapter-title" style="max-width:780px;">Hier hast du am meisten ausgegeben.</div>
 
       <div data-reveal="1" class="report-merchant-card" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 52px 54px;">
@@ -478,7 +479,7 @@
   <section data-screen-label="05 Vormonatsvergleich" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">05</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Vormonatsvergleich</div>
+      <div data-reveal="1" class="report-chapter-label">Vormonatsvergleich</div>
       <div data-reveal="1" class="report-chapter-title" style="max-width:700px;">Was hat sich verändert?</div>
 
       <div data-reveal="1" class="report-comparison-card" style="margin-top: 56px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 22px; padding: 44px 48px; display: flex; flex-direction: column; gap: 32px;">
@@ -495,7 +496,7 @@
         <div data-reveal="1" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 40px;">
           <div class="report-label" style="color:#9EA4A0;">Vergleichsbasis</div>
           <div style="font-family: 'Newsreader', serif; font-size: 27px; line-height: 1.4; margin-top: 16px;">{{ milestone_eta_text }}</div>
-          <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 14px;">Beträge zeigen die Veränderung, Prozentwerte den relativen Unterschied.</div>
+          <div class="report-meta" style="color:#9EA4A0;margin-top:14px;">Ausgabenwerte zeigen die Veränderung zum Vormonat, nicht die Abweichung vom Budget.{% if wealth_period_available %} Beim Nettovermögen gilt der Vergleich vom Monatsanfang bis zum ausgewiesenen Stand.{% endif %}</div>
         </div>
         <div data-reveal="1" data-delay="100" style="background: rgba(42,171,238,0.05); border: 1px solid rgba(42,171,238,0.2); border-radius: 20px; padding: 28px 32px; display: flex; flex-direction: column; justify-content: center;">
           <div class="report-label" style="display:flex;align-items:center;gap:8px;color:#3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="8,1.5 10,6 15,6 11,9 12.5,14 8,11 3.5,14 5,9 1,6 6,6"></polygon></svg>Belegte Vermögensbewegungen</div>
@@ -514,8 +515,8 @@
     <div data-glow="1" style="position: absolute; top: 15%; right: -260px; width: 640px; height: 640px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.09) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift-b 15s ease-in-out infinite; pointer-events: none;"></div>
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">06</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Rov.E Score</div>
-      <div data-reveal="1" class="report-chapter-title" style="max-width:780px;">Dein Rov.E Score im Überblick.</div>
+      <div data-reveal="1" class="report-chapter-label">Rov.E Score</div>
+      <div data-reveal="1" class="report-chapter-title" style="max-width:780px;">Dein Rov.E Score</div>
       <div data-reveal="1" style="font-size:17px;line-height:1.5;color:#C8CBC9;margin-top:10px;">{% if score_available %}{{ score_value }} von 100 Punkten.{% else %}Score nicht verfügbar.{% endif %}</div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 56px;">
@@ -571,7 +572,7 @@
   <section data-screen-label="07 Dein Ziel" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">07</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Dein Ziel</div>
+      <div data-reveal="1" class="report-chapter-label">Dein Ziel</div>
 
       <div data-reveal="1" style="margin-top: 28px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 32px 54px 52px;">
         <div style="display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 20px;">
@@ -592,14 +593,14 @@
 
         <div style="margin-top: 44px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 36px; border-top: 1px solid rgba(255,255,255,0.07); padding-top: 36px;">
           <div>
-            <div class="report-label" style="color:#9EA4A0;">Dein aktueller Stand</div>
+            <div class="report-label" style="color:#9EA4A0;">Einordnung</div>
             <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_honest_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_honest_subtext }}</div>
+            <div class="report-meta" style="color:#9EA4A0;margin-top:10px;">{{ goal_honest_subtext }}</div>
           </div>
           <div>
             <div class="report-label" style="display:flex;align-items:center;gap:8px;color:#3BA7FF;"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#3BA7FF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13L13 3M7 3h6v6"></path></svg>{{ goal_lever_label }}</div>
             <div style="font-family: 'Newsreader', serif; font-size: 21px; line-height: 1.45; margin-top: 14px; overflow-wrap: break-word; word-break: break-word;">{{ goal_lever_text }}</div>
-            <div style="font-size: 14px; color: #9EA4A0; line-height: 1.65; margin-top: 10px;">{{ goal_lever_subtext }}</div>
+            <div class="report-meta" style="color:#9EA4A0;margin-top:10px;">{{ goal_lever_subtext }}</div>
           </div>
         </div>
       </div>
@@ -611,7 +612,7 @@
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">08</div>
       <div data-reveal="1" class="report-chapter-label" style="color:#D8B66A;">Meilensteine</div>
-      <div data-reveal="1" class="report-chapter-title">Deine nächste Etappe.</div>
+      <div data-reveal="1" class="report-chapter-title report-milestone-title">Deine nächste Etappe.</div>
       <div data-reveal="1" style="font-size:18px;line-height:1.5;color:#C8CBC9;margin-top:10px;">{{ milestone_headline }}</div>
 
       <div data-reveal="1" style="margin-top: 28px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 28px 32px;">
@@ -634,8 +635,8 @@
   <section data-screen-label="09 Recap" style="position: relative; border-top: 1px solid rgba(255,255,255,0.06); padding: 130px 32px;">
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">09</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Monatsrückblick</div>
-      <div data-reveal="1" class="report-chapter-title" style="max-width:780px;">Dein Monatsrückblick.</div>
+      <div data-reveal="1" class="report-chapter-label">Monatsrückblick</div>
+      <div data-reveal="1" class="report-chapter-title" style="max-width:780px;">Was deinen Monat geprägt hat.</div>
 
       <div style="display: flex; flex-direction: column; gap: 16px; margin-top: 56px;">
         <div data-reveal="1" class="report-recap-card" data-recap="good" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 36px 42px; display: flex; gap: 26px; align-items: flex-start;">
@@ -671,7 +672,7 @@
     <div data-glow="1" style="position: absolute; bottom: -280px; right: -200px; width: 700px; height: 700px; border-radius: 50%; background: radial-gradient(circle, rgba(42,171,238,0.1) 0%, rgba(42,171,238,0) 65%); filter: blur(10px); animation: clarity-drift 17s ease-in-out infinite; pointer-events: none;"></div>
     <div style="max-width: 1040px; margin: 0 auto; position: relative;">
       <div style="position: absolute; top: -60px; right: 0; font-family: 'Newsreader', serif; font-size: 170px; line-height: 1; color: rgba(255,255,255,0.035); font-variant-numeric: tabular-nums; user-select: none; pointer-events: none;">10</div>
-      <div data-reveal="1" class="report-chapter-label" style="color:#3BA7FF;">Nächster Monat</div>
+      <div data-reveal="1" class="report-chapter-label">Nächster Monat</div>
       <div data-reveal="1" class="report-chapter-title">Dein Plan für {{ next_month_name }}.</div>
       <div class="rove-report-assistant" data-rove-assistant role="img" aria-label="Rov.E zeigt auf deinen Plan">
         <svg viewBox="0 0 120 130" xmlns="http://www.w3.org/2000/svg">
@@ -709,7 +710,7 @@
           </g>
         </svg>
       </div>
-      <div data-reveal="1" class="report-body" style="color:#9EA4A0;margin-top:18px;max-width:560px;">Drei Schritte aus deinem Monatsrückblick für den nächsten Monat.</div>
+      <div data-reveal="1" class="report-body report-plan-intro" style="color:#9EA4A0;margin-top:18px;max-width:560px;">Drei Schritte aus deinem Monatsrückblick für den nächsten Monat.</div>
 
       <div style="display: flex; flex-direction: column; gap: 16px; margin-top: 56px;">
         <div data-reveal="1" class="report-plan-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 38px 42px; display: flex; gap: 30px; align-items: center; flex-wrap: wrap;">

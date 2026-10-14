@@ -44,7 +44,7 @@ class WebReportV2Tests(unittest.TestCase):
         net = next(item for item in detail["web_cashflow"]["items"] if item["key"] == "net")
         self.assertFalse(net["available"])
         self.assertEqual(net["span"], "—")
-        self.assertIn("nicht vollständig bestätigt", detail["web_cashflow"]["note"])
+        self.assertIn("fehlen noch vollständige, bestätigte Monatswerte", detail["web_cashflow"]["note"])
 
     def test_missing_income_is_not_presented_as_zero(self):
         self.data["report_truth"]["income"] = {"source": "unavailable", "amount": None}
@@ -162,24 +162,106 @@ class WebReportV2Tests(unittest.TestCase):
 
     def test_requested_headings_and_natural_copy_keep_financial_facts(self):
         doc = self.render()
-        for label in ("Hier hast du am meisten ausgegeben.", "Dein Rov.E Score im Überblick.",
-                      "Dein Monatsrückblick.", "Dein aktueller Stand"):
+        for label in ("Hier hast du am meisten ausgegeben.", ">Dein Rov.E Score</div>",
+                      "Was deinen Monat geprägt hat.", ">Einordnung</div>"):
             self.assertIn(label, doc)
         for old in ("Deine größten Händler.", "So steht dein Monat da.",
-                    "Ehrlich gesagt", "Ehrlich zusammengefasst"):
+                    "Ehrlich gesagt", "Ehrlich zusammengefasst", "Kein Kontosaldo",
+                    "Dein Rov.E Score im Überblick.", "Dein Monatsrückblick."):
             self.assertNotIn(old, doc)
+        web_context = {**self.context, **self.details}
         for key in ("goal_honest_text", "goal_honest_subtext", "plan_step1_title",
                     "plan_step2_title", "plan_step3_title"):
-            self.assertIn(web_euro_spacing(self.context[key]), doc)
+            self.assertIn(web_euro_spacing(web_context[key]), doc)
 
     def test_chapter_and_card_hierarchy_uses_shared_preserved_fonts(self):
         doc = self.render()
         self.assertEqual(doc.count('class="report-chapter-label"'), 9)
-        self.assertEqual(doc.count('class="report-chapter-title"'), 8)
+        self.assertEqual(doc.count('class="report-chapter-title"'), 7)
+        self.assertIn('class="report-chapter-title report-milestone-title"', doc)
         self.assertIn(".report-chapter-title { font-family: 'Newsreader', serif;", doc)
+        self.assertIn("font-weight: 300; letter-spacing: -0.015em;", doc)
+        self.assertIn("0,6..72,300;0,6..72,400", doc)
+        self.assertIn(".report-milestone-title { font-weight: 400;", doc)
         self.assertIn(".report-label { font-size: 11px; font-weight: 600;", doc)
         self.assertIn('class="report-chapter-label" style="color:#D8B66A;"', doc)
         self.assertEqual(doc.count('class="report-card-title"'), 6)
+
+    def test_cashflow_explains_the_remainder_once_without_implying_bank_balance(self):
+        doc = html.unescape(self.render()).replace("\u00a0", " ")
+        flow = doc[doc.index('class="report-flow-card"'):doc.index('>Vermögensstruktur</div>')]
+        self.assertEqual(flow.count("kein Kontostand"), 1)
+        self.assertNotIn("Kein Kontosaldo", flow)
+        self.assertIn("Einnahmen abzüglich Fixkosten, Konsum und bestätigter Sparleistung (500 €)", flow)
+        self.assertIn('data-count="143.46"', flow)
+        self.assertEqual(self.details["web_cashflow"]["items"][-1]["status"], "")
+
+    def test_goal_without_target_rate_is_not_given_a_forecast(self):
+        for rate in (None, 0, -50):
+            with self.subTest(rate=rate):
+                self.data["report_truth"]["goals"]["primary"]["goal_monthly_rate"] = rate
+                self.data["report_story_v2"] = build_report_story_v2(self.data)
+                doc = self.render()
+                self.assertIn("noch keine monatliche Sparrate hinterlegt", doc)
+                self.assertIn("Deshalb lässt sich noch keine Dauer abschätzen.", doc)
+                self.assertNotIn("kein monatlicher Zeitraum hinterlegt", doc)
+                self.assertNotIn("Bei deiner geplanten Zielrate", doc)
+                self.assertNotIn("Die Schätzung gilt bei gleichbleibender", doc)
+
+    def test_goal_with_target_rate_keeps_the_existing_forecast_and_amount(self):
+        self.data["report_truth"]["goals"]["primary"].update(current_amount=0, goal_monthly_rate=50)
+        self.data["report_story_v2"] = build_report_story_v2(self.data)
+        context = build_render_context(self.data)
+        details = web_story_details(self.data, context)
+        doc = self.render()
+        self.assertNotIn("goal_honest_text", details)
+        self.assertIn(web_euro_spacing(context["goal_honest_text"]), doc)
+        self.assertIn("80 Monaten", doc)
+        self.assertIn("Zielrate von 50\u00a0€ pro Monat", doc)
+        self.assertIn("gleichbleibender monatlicher Zielrate", doc)
+        self.assertNotIn("noch keine monatliche Sparrate hinterlegt", doc)
+
+    def test_completed_goal_does_not_claim_a_missing_rate_or_need_more_saving(self):
+        for rate in (None, 50):
+            with self.subTest(rate=rate):
+                self.data["report_truth"]["goals"]["primary"].update(current_amount=4000, goal_monthly_rate=rate)
+                self.data["report_story_v2"] = build_report_story_v2(self.data)
+                doc = self.render()
+                self.assertIn("Dein Zielbetrag ist erreicht.", doc)
+                self.assertIn("Du kannst ein neues Sparziel festlegen.", doc)
+                self.assertNotIn("noch keine monatliche Sparrate hinterlegt", doc)
+                self.assertNotIn("Lege eine monatliche Rate für dieses Ziel fest.", doc)
+
+    def test_missing_goal_does_not_claim_existing_target_or_rate(self):
+        self.data["report_truth"]["goals"] = {"primary": None, "goals": []}
+        self.data["report_story_v2"] = build_report_story_v2(self.data)
+        doc = self.render()
+        self.assertIn("Für diesen Monat ist kein gültiger Zielbetrag verfügbar.", doc)
+        self.assertIn("Ohne Zielbetrag lässt sich dein Fortschritt nicht einordnen.", doc)
+        self.assertNotIn("Dein Zielbetrag ist erreicht.", doc)
+
+    def test_existing_goal_without_valid_target_is_not_claimed_to_be_absent_or_complete(self):
+        for target in (0, -100):
+            with self.subTest(target=target):
+                self.data["report_truth"]["goals"]["primary"]["target_amount"] = target
+                self.data["report_story_v2"] = build_report_story_v2(self.data)
+                doc = self.render()
+                self.assertIn("kein gültiger Zielbetrag verfügbar", doc)
+                self.assertNotIn("kein Sparziel hinterlegt", doc)
+                self.assertNotIn("Dein Zielbetrag ist erreicht.", doc)
+
+    def test_budget_and_previous_month_comparisons_keep_distinct_evidence(self):
+        self.data["report_truth"]["expenses"]["categories"][0]["previous_amount"] = 300
+        self.data["report_story_v2"] = build_report_story_v2(self.data)
+        context = build_render_context(self.data)
+        details = web_story_details(self.data, context)
+        doc = html.unescape(self.render()).replace("\u00a0", " ")
+        self.assertEqual(details["web_recap"], _pdf_monthly_recap(self.data, context))
+        self.assertIn("Shopping 683 € über dem Vormonat", doc)
+        self.assertIn("Shopping lag 783 € über deinem gesetzten Budget", doc)
+        self.assertIn("zum Vormonat, nicht die Abweichung vom Budget", doc)
+        self.assertIn("Beim Nettovermögen gilt der Vergleich vom Monatsanfang bis zum ausgewiesenen Stand.", doc)
+        self.assertNotIn("Shopping 783 € über dem Vormonat", doc)
 
     def test_reserve_cards_have_no_fixed_height_and_keep_all_information(self):
         doc = self.render().replace("\u00a0", " ")

@@ -2199,11 +2199,48 @@ def web_story_details(data: dict, context: dict) -> dict:
     truth = data.get("report_truth") or {}
     flow = details_context["pdf_cashflow"]
     metric = ((report.get("pages") or {}).get("page_2") or {}).get("primary_metric") or {}
+    flow_note = (
+        flow["note"].removesuffix(" Kein Kontosaldo.")
+        + " Das ist ein rechnerischer Rest, kein Kontostand."
+        if flow["net"] != "—" else
+        "Für den verbleibenden Betrag fehlen noch vollständige, bestätigte Monatswerte."
+    )
+    # Copy follows the existing goal/plan state; no new goal forecast is calculated.
+    goal_copy = {}
+    if truth:
+        goal_copy = {
+            "goal_honest_subtext": "Die Schätzung gilt bei gleichbleibender monatlicher Zielrate.",
+            "goal_lever_label": "Deine Zielrate",
+            "goal_lever_subtext": "Eine andere Rate verändert die voraussichtliche Dauer.",
+        }
+        if not report["goal"]["available"]:
+            goal_copy.update(
+                goal_honest_text="Für diesen Monat ist kein gültiger Zielbetrag verfügbar.",
+                goal_honest_subtext="Ohne Zielbetrag lässt sich dein Fortschritt nicht einordnen.",
+                goal_lever_label="Dein nächster Schritt",
+                goal_lever_text="Lege ein persönliches Sparziel fest.",
+                goal_lever_subtext="Mit einer monatlichen Zielrate lässt sich auch die Dauer abschätzen.",
+            )
+        elif report["goal"]["progress_raw"] >= 100:
+            goal_copy.update(
+                goal_honest_text="Dein Zielbetrag ist erreicht.",
+                goal_honest_subtext="Der ausgewiesene Zielstand deckt deinen Zielbetrag.",
+                goal_lever_label="Wie es weitergeht",
+                goal_lever_text="Du kannst ein neues Sparziel festlegen.",
+                goal_lever_subtext="Der bisherige Zielstand bleibt nachvollziehbar.",
+            )
+        elif context["plan_step3_target"] == "—":
+            goal_copy.update(
+                goal_honest_text="Für dein Ziel ist noch keine monatliche Sparrate hinterlegt.",
+                goal_honest_subtext="Deshalb lässt sich noch keine Dauer abschätzen.",
+                goal_lever_text="Lege eine monatliche Rate für dieses Ziel fest.",
+                goal_lever_subtext="Der aktuelle Zielstand bleibt unverändert.",
+            )
     items = (
         ("income", "Einnahmen", (truth.get("income") or {}).get("amount"), flow["income_status"]),
         ("fixed_costs", "Fixkosten", (truth.get("fixed_costs") or {}).get("amount"), flow["fixed_status"]),
         ("consumption", "Konsum", (truth.get("expenses") or {}).get("total_consumption"), "Erfasste Konsumausgaben"),
-        ("net", "Verbleibend nach Sparen", metric.get("value"), "Kein Kontosaldo"),
+        ("net", "Verbleibend nach Sparen", metric.get("value"), ""),
     )
     category_sources = {
         str(item.get("category") or "SONSTIGES"): item
@@ -2222,13 +2259,14 @@ def web_story_details(data: dict, context: dict) -> dict:
             and math.isfinite(average) and average >= 0,
         })
     return {
+        **goal_copy,
         "web_categories": web_categories if truth else context.get("money_map_categories") or [],
         "web_cashflow": {
             "items": [{"key": key, "label": label, "status": status,
                        "available": flow[key] != "—",
                        "span": data_count_span(value) if flow[key] != "—" else "—"}
                       for key, label, value, status in items],
-            "note": h(flow["note"]),
+            "note": h(flow_note),
         },
         "web_largest_expense": details["pdf_largest_expense"],
         "web_milestones": details["pdf_milestones"],
