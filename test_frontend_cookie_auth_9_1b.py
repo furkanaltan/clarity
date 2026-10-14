@@ -239,22 +239,23 @@ class FrontendCookieAuthTests(unittest.TestCase):
         login = re.search(r"async function passwordLogin\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
         self.assertIsNotNone(login)
         body = login.group("body")
-        self.assertIn("Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut.", body)
-        self.assertIn("Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.", body)
+        self.assertIn("Anmeldung nicht möglich. Prüfe E-Mail-Adresse und Passwort.", body)
+        self.assertIn("Warte nach mehreren Fehlversuchen einige Minuten", body)
+        self.assertIn("authRequestError(error)", body)
         self.assertIn("Zu viele Versuche. Warte kurz und versuche es später erneut.", self.frontend)
         self.assertIn('data?.error==="too_many_login_attempts"', self.frontend)
         self.assertNotIn("E-Mail-Adresse oder Passwort stimmen nicht.", body)
 
         verify = re.search(r"async function verifyEmailLoginCode\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
         self.assertIsNotNone(verify)
-        self.assertIn("Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.", verify.group("body"))
+        self.assertIn("authRequestError(error)", verify.group("body"))
 
     def test_password_setup_reports_success_before_continuing(self):
         setup = re.search(r"async function completePasswordSetup\(\)(?P<body>.*?)\n\}", self.frontend, re.DOTALL)
         self.assertIsNotNone(setup)
         body = setup.group("body")
         self.assertIn("Passwort gespeichert. Wir bringen dich weiter ...", body)
-        self.assertLess(body.index("endAuthAction(action"), body.index("continueWithSession("))
+        self.assertLess(body.index("await continueWithSession("), body.index("endAuthAction(action"))
 
     def test_auth_surface_hides_financial_app_and_tabbar(self):
         self.assertIn('body.auth-flow-active #app,body.auth-flow-active .tabbar', self.frontend)

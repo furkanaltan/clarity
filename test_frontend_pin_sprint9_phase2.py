@@ -134,8 +134,10 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('PIN_SESSION_STATE="reauth_required"', transition)
 
         login = self.function_body("showAppConnect")
-        self.assertIn('onboard.classList.remove("pin-mode")', login)
-        self.assertIn('body.classList.remove("pin-lock-layout","pin-setup-layout")', login)
+        self.assertIn('prepareAuthForm("login")', login)
+        prepare = self.function_body("prepareAuthForm")
+        self.assertIn('onboard.classList.remove("pin-mode")', prepare)
+        self.assertIn('body.classList.remove("pin-lock-layout","pin-setup-layout","ob-dense","ob-hero")', prepare)
 
         password_login = self.function_body("passwordLogin")
         self.assertIn('continueWithSession();', password_login)

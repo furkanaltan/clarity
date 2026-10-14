@@ -120,6 +120,33 @@
   .ob-auth-card{width:100%;max-width:390px;margin:12px auto 0;padding:14px;border:1px solid var(--line);
     border-radius:18px;background:rgba(255,255,255,.035)}
   .ob-auth-card .ob-field:first-child{margin-top:0}
+  #onboard.auth-v2 .ob-top{width:100%;max-width:380px;margin:0 auto}
+  #onboard.auth-v2 .ob-body{width:100%;max-width:380px;margin:0 auto;padding:16px 0 32px;min-height:0}
+  #onboard.auth-v2 .ob-foot:empty{display:none}
+  .auth-shell{width:100%;margin:auto 0}
+  .auth-brand{text-align:center;margin-bottom:32px}
+  .auth-brand .ob-logo{width:158px;max-width:60%;margin:0 auto 26px;display:block}
+  .auth-title{font-size:23px;font-weight:500;letter-spacing:-.025em;line-height:1.3;margin:0;color:var(--ink)}
+  .auth-intro{font-size:14px;line-height:1.55;color:var(--muted);margin:12px auto 0;max-width:32ch}
+  .auth-form{width:100%}
+  .auth-form fieldset{border:0;padding:0;margin:0;min-width:0}
+  .auth-form .ob-field{max-width:none;margin:0 0 20px}
+  .auth-label{display:block;font-size:13px;font-weight:600;line-height:1.4;margin:0 0 8px;color:var(--ink)}
+  .auth-form .ob-field input{box-sizing:border-box;min-height:52px;padding:14px 15px;font-family:inherit;font-size:16px}
+  .auth-password{position:relative}
+  .auth-password input{padding-right:90px!important}
+  .auth-password-toggle{position:absolute;right:6px;top:4px;bottom:4px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;padding:0 10px;cursor:pointer;border-radius:10px}
+  .auth-form .ob-cta{font-weight:650;font-size:16px;border-radius:14px;min-height:52px}
+  .auth-link{display:block;border:0;background:transparent;color:var(--blue);font:inherit;font-size:13px;line-height:1.5;padding:12px 8px;min-height:44px;margin:0 auto;cursor:pointer;text-align:center}
+  .auth-link.subtle{color:var(--muted)}
+  .auth-link:disabled,.auth-password-toggle:disabled{opacity:.5;cursor:wait}
+  .auth-link:focus-visible,.auth-password-toggle:focus-visible,.auth-form input:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+  .auth-message{margin:0 0 16px;font-size:13px;line-height:1.55;color:var(--muted);overflow-wrap:anywhere}
+  .auth-message:empty{display:none}
+  .auth-message.error{color:var(--red)}
+  .auth-registration{text-align:center;color:var(--muted);font-size:13px;margin:28px 0 0}
+  .auth-registration .auth-link{display:inline;padding:10px 3px}
+  .auth-form [hidden]{display:none!important}
   .pin-card{width:100%;max-width:360px;margin:18px auto 0}
   .pin-input{width:100%;text-align:center;font-size:30px!important;font-weight:800;letter-spacing:.42em;
     padding-left:calc(16px + .42em)!important;font-variant-numeric:tabular-nums}
@@ -3872,17 +3899,20 @@ function restoreBridgeLocal(snapshot,userId){
 const PAIR_API_BASE_URL = "https://getrove.de/app-api";
 let EMAIL_AUTH_PENDING = {email:"",mode:"login"};
 const AUTH_ACTIONS_IN_FLIGHT = new Set();
+let AUTH_FORM_STATE="login";
 
 function setAuthSurface(active){
   const onboard=document.getElementById("onboard");
   document.body.classList.toggle("auth-flow-active",active);
   onboard?.classList.toggle("auth-mode",active);
+  if(!active) onboard?.classList.remove("auth-v2");
   if(active) document.getElementById("app")?.setAttribute("hidden","");
 }
 
 function beginAuthAction(key, selector, label){
-  if(AUTH_ACTIONS_IN_FLIGHT.has(key)) return false;
+  if(AUTH_ACTIONS_IN_FLIGHT.size || AUTH_BOOTSTRAP_IN_FLIGHT) return false;
   AUTH_ACTIONS_IN_FLIGHT.add(key);
+  setAuthBusy(true);
   const button=document.querySelector(selector);
   if(button){ button.disabled=true; button.dataset.authIdleLabel=button.textContent; button.textContent=label; }
   return true;
@@ -3890,12 +3920,49 @@ function beginAuthAction(key, selector, label){
 
 function endAuthAction(key, selector, label){
   AUTH_ACTIONS_IN_FLIGHT.delete(key);
+  setAuthBusy(AUTH_ACTIONS_IN_FLIGHT.size>0);
   const button=document.querySelector(selector);
   if(button){ button.disabled=false; button.textContent=label||button.dataset.authIdleLabel||button.textContent; delete button.dataset.authIdleLabel; }
 }
 
+function setAuthBusy(busy){
+  document.querySelectorAll('#onboard .auth-form fieldset, #onboard [data-auth], #onboard [data-pair], #obBack').forEach(control=>{control.disabled=busy;});
+  document.querySelectorAll('#onboard .auth-form').forEach(form=>form.setAttribute("aria-busy",String(busy)));
+}
+
+function setAuthMessage(message,error=false){
+  const hint=document.getElementById("registerHint")||document.getElementById("authHint");
+  if(!hint)return;
+  hint.textContent=message;
+  hint.classList.toggle("error",error);
+}
+
+function authRequestError(error){
+  return error?.name==="AbortError"
+    ? "Die Anfrage hat zu lange gedauert. Prüfe deine Verbindung und versuche es erneut."
+    : "Rov.E ist gerade nicht erreichbar. Prüfe deine Verbindung und versuche es erneut.";
+}
+
+async function authRequest(path,payload){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),STARTUP_AUTH_TIMEOUT_MS);
+  try{
+    const response=await fetch(`${PAIR_API_BASE_URL}${path}`,{
+      method:payload===undefined?"GET":"POST",credentials:"include",cache:"no-store",
+      headers:{"Content-Type":"application/json"},signal:controller.signal,
+      ...(payload===undefined?{}:{body:JSON.stringify(payload)})
+    });
+    const data=await response.json().catch(error=>{
+      if(controller.signal.aborted)throw error;
+      return {};
+    });
+    return {response,data};
+  }finally{clearTimeout(timer);}
+}
+
 function authErrorMessage(response, data, fallback){
   if(response?.status===429 || data?.error==="too_many_login_attempts") return "Zu viele Versuche. Warte kurz und versuche es später erneut.";
+  if(response?.status>=500)return "Die Anmeldung ist gerade nicht verfügbar. Bitte versuche es später erneut.";
   return fallback;
 }
 let SERVER_ONBOARDING_REQUIRED = false;
@@ -3950,6 +4017,7 @@ function handleApiSessionStatus(status,body=null){
   showAppConnect();
   const onboard=document.getElementById("onboard");
   if(onboard) onboard.hidden=false;
+  setAuthMessage("Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.",true);
 }
 async function apiFetch(path,options={}){
   if(!apiReady()) throw new Error("not_authenticated");
@@ -13677,6 +13745,7 @@ function showPinScreen(mode="locked"){
   const common=`<div class="ob-glow"></div><img class="ob-logo" src="logo.png" alt="Rov.E">`;
   onboard.hidden=false;
   onboard.classList.add("go");
+  onboard.classList.remove("auth-v2");
   onboard.classList.add("pin-mode");
   body.classList.remove("ob-dense","ob-hero","ob-login","pin-setup-layout");
   body.classList.add("pin-lock-layout");
@@ -13725,10 +13794,9 @@ function pinValue(id){ return (document.getElementById(id)?.value||"").replace(/
 
 async function fetchPinStatus(){
   try{
-    const res=await pinRequest("/v1/auth/pin/status",{timeoutMs:STARTUP_AUTH_TIMEOUT_MS});
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/pin/status");
     if(res.status===401)return {state:"login"};
-    if(!res.ok||!data.ok)return {state:"login"};
+    if(!res.ok||!data.ok)return {state:"error"};
     ROVE_API={baseUrl:PAIR_API_BASE_URL,authenticated:true};
     API_SESSION_FAILURE_HANDLED=false;
     SERVER_ONBOARDING_REQUIRED=!!data.onboarding_required;
@@ -13745,7 +13813,7 @@ async function fetchPinStatus(){
     PIN_LAST_LOCAL_ACTIVITY=Date.now();
     PIN_LAST_SERVER_TOUCH=Date.now();
     return {state:"unlocked"};
-  }catch(_){ return {state:"login"}; }
+  }catch(_){ return {state:"error"}; }
 }
 
 async function resumeAfterPin(){
@@ -13856,9 +13924,15 @@ async function resumePinAfterBackground(){
   // Keep finance data covered until the server confirms the session is still unlocked.
   document.getElementById("app")?.setAttribute("hidden","");
   const pin=await fetchPinStatus();
+  if(pin.state==="login"||pin.state==="error"){
+    showAuthRecovery(pin.state==="login"
+      ? "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an."
+      : "Deine Sitzung konnte gerade nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.");
+    return;
+  }
   if(pin.state!=="unlocked")return;
   const loaded=await loadBridgeState();
-  if(!loaded){ showAppConnect(); return; }
+  if(!loaded){ showAuthRecovery("Deine Daten konnten gerade nicht geladen werden. Bitte versuche es erneut."); return; }
   PIN_SCREEN_ACTIVE=false;
   document.getElementById("onboard").hidden=true;
   document.getElementById("app")?.removeAttribute("hidden");
@@ -13867,7 +13941,11 @@ async function resumePinAfterBackground(){
 
 async function bootstrapAuthenticatedApp(){
   const pin=await fetchPinStatus();
-  if(pin.state==="unlocked")return (await loadBridgeState())?"ready":"login";
+  if(pin.state==="unlocked"){
+    if(!await loadBridgeState())return "error";
+    document.getElementById("onboard").hidden=true;
+    return "ready";
+  }
   return pin.state;
 }
 
@@ -13875,7 +13953,7 @@ function showServerOnboarding(){
   const onboard=document.getElementById("onboard");
   if(!onboard)return;
   setAuthSurface(true);
-  onboard.classList.remove("pin-mode");
+  onboard.classList.remove("pin-mode","auth-v2");
   document.getElementById("obBody")?.classList.remove("pin-lock-layout","pin-setup-layout","ob-login");
   OB.step=0;
   obRender();
@@ -14029,113 +14107,137 @@ async function loadBridgeState(){
 }
 
 // Web-Login und installierte PWA nutzen denselben verifizierten E-Mail-Zugang.
-function showAppConnect(){
-  const onboard=document.getElementById("onboard"), body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
-  setAuthSurface(true);
-  if(onboard){
-    onboard.hidden=false;
-    onboard.classList.remove("pin-mode");
-  }
-  body.classList.remove("pin-lock-layout","pin-setup-layout");
-  body.classList.remove("ob-dense");
-  body.classList.remove("ob-hero");
+function prepareAuthForm(state){
+  AUTH_FORM_STATE=state;
+  const onboard=document.getElementById("onboard"),body=document.getElementById("obBody");
+  onboard.hidden=false;
+  onboard.classList.remove("pin-mode");
+  onboard.classList.add("auth-v2");
+  body.classList.remove("pin-lock-layout","pin-setup-layout","ob-dense","ob-hero");
   body.classList.add("ob-login");
   document.getElementById("obDots").innerHTML="";
-  document.getElementById("obBack").hidden=true;
+  document.getElementById("obBack").hidden=state==="login"||state==="password-setup";
   document.getElementById("obSkip").hidden=true;
   document.getElementById("obLive").classList.remove("on");
-  // Neu-Nutzer = Held (großer „Jetzt starten"-Button im Fuß), Beta-Login bewusst blass darunter
-  // (Furkan 24.07.: neue Nutzer sind der Fokus, Beta-Tester lesen das Blasse unten).
-  body.innerHTML=`
-    <div class="ob-glow"></div>
-    <img class="ob-logo" src="logo.png" alt="Rov.E">
-    <div class="ob-title">Willkommen bei Rov.E</div>
-    <div class="ob-sub">Dein Geld an einem Ort — Vermögen, Ausgaben und Ziele im Blick. In unter 3 Minuten eingerichtet.</div>
-    <div class="ob-auth-divider">Schon registriert?</div>
-    <div class="ob-auth-card" style="opacity:.82">
-      <div class="ob-field"><input id="loginEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de"></div>
-      <div class="ob-field"><input id="loginPassword" type="password" autocomplete="current-password" autocorrect="off" spellcheck="false" placeholder="Passwort"></div>
-      <button class="ob-cta" data-auth="password-login" style="margin-top:12px">Einloggen</button>
-      <button class="ob-cta" data-auth="show-reset" style="background:transparent;border:0;color:var(--muted);box-shadow:none;margin-top:2px;font-size:13px">Passwort vergessen?</button>
-      <div class="ob-sub" style="font-size:12px;margin:4px 0 0;text-align:center">Oder einmalig mit E-Mail-Code:</div>
-      <div class="ob-field" id="loginCodeWrap" style="display:none"><input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-stelliger E-Mail-Code"></div>
-      <button class="ob-cta" data-auth="send-code" style="background:transparent;border:1px solid var(--line2);color:var(--ink);box-shadow:none;margin-top:12px">Login-Code senden</button>
-      <button class="ob-cta" data-auth="verify-code" style="display:none;margin-top:12px">Code bestätigen</button>
-    </div>
-    <div class="ob-sub" id="authHint" style="font-size:12.5px;margin-top:10px;text-align:center">Melde dich mit der E-Mail-Adresse deines Rov.E Kontos an.</div>`;
-  foot.innerHTML=`
-    <button class="ob-cta" data-pair="new">Jetzt starten</button>`;
+  document.getElementById("obFoot").innerHTML="";
+  body.scrollTop=0;
+}
+
+function showAuthRecovery(message){
+  const email=document.getElementById("loginEmail")?.value||document.getElementById("resetEmail")?.value||EMAIL_AUTH_PENDING.email||"";
+  const keepLogin=AUTH_FORM_STATE==="login"&&!!document.getElementById("loginPassword");
+  ROVE_API=null;
+  BRIDGE_LIVE_STATE_READY=false;
+  PIN_SCREEN_ACTIVE=false;
+  PIN_SESSION_STATE="unknown";
+  if(!keepLogin)showAppConnect();
+  setAuthSurface(true);
+  document.getElementById("onboard").hidden=false;
+  document.getElementById("loginEmail").value=email;
+  setAuthMessage(message,true);
+}
+
+function authBrand(title,intro=""){
+  return `<div class="auth-brand"><img class="ob-logo" src="logo.png" alt="Rov.E">
+    <h1 class="auth-title" id="authTitle">${title}</h1>${intro?`<p class="auth-intro">${intro}</p>`:""}</div>`;
+}
+
+function showAppConnect(){
+  const body=document.getElementById("obBody");
+  setAuthSurface(true);
+  prepareAuthForm("login");
+  body.innerHTML=`<section class="auth-shell" aria-labelledby="authTitle">
+    ${authBrand("Willkommen zurück")}
+    <form class="auth-form" data-auth-submit="password-login" novalidate><fieldset>
+      <div class="ob-field"><label class="auth-label" for="loginEmail">E-Mail-Adresse</label>
+        <input id="loginEmail" name="email" type="email" inputmode="email" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de" required></div>
+      <div class="ob-field"><label class="auth-label" for="loginPassword">Passwort</label><div class="auth-password">
+        <input id="loginPassword" name="password" type="password" autocomplete="current-password" autocorrect="off" spellcheck="false" aria-describedby="authHint" required>
+        <button type="button" class="auth-password-toggle" data-auth="toggle-password" aria-controls="loginPassword" aria-label="Passwort anzeigen" aria-pressed="false">Anzeigen</button></div></div>
+      <div class="auth-message" id="authHint" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button type="submit" class="ob-cta" data-auth="password-login">Einloggen</button>
+      <button type="button" class="auth-link subtle" data-auth="show-reset">Passwort vergessen?</button>
+    </fieldset></form>
+    <p class="auth-registration">Neu bei Rov.E? <button type="button" class="auth-link" data-pair="new">Registrieren</button></p>
+  </section>`;
+  EMAIL_AUTH_PENDING={email:"",mode:"login"};
 }
 
 function showNewAccountRegistration(){
-  const body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
+  const body=document.getElementById("obBody");
   setAuthSurface(true);
-  body.classList.remove("ob-dense","ob-hero");
-  body.classList.add("ob-login");
-  document.getElementById("obDots").innerHTML="";
-  document.getElementById("obBack").hidden=false;
-  document.getElementById("obSkip").hidden=true;
-  document.getElementById("obLive").classList.remove("on");
-  body.innerHTML=`
-    <div class="ob-glow"></div>
-    <img class="ob-logo" src="logo.png" alt="Rov.E">
-    <div class="ob-title">Dein Rov.E Konto</div>
-    <div class="ob-sub">Gib die E-Mail-Adresse ein, mit der du eingeladen wurdest.</div>
-    <div class="ob-auth-card">
-      <div class="ob-field"><input id="registerEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de"></div>
-      <div class="ob-field" id="registerCodeWrap" style="display:none"><input id="registerCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-stelliger E-Mail-Code"></div>
-      <button class="ob-cta" data-auth="register-send">Code senden</button>
-      <button class="ob-cta" data-auth="register-verify" style="display:none;margin-top:12px">Code bestätigen</button>
-    </div>
-    <div class="ob-sub" id="registerHint" style="font-size:12.5px;margin-top:10px;text-align:center">Der Code ist 10 Minuten gültig.</div>`;
-  foot.innerHTML="";
+  prepareAuthForm("registration");
+  body.innerHTML=`<section class="auth-shell" aria-labelledby="authTitle">
+    ${authBrand("Dein Rov.E Konto","Gib die E-Mail-Adresse ein, mit der du eingeladen wurdest.")}
+    <form class="auth-form" data-auth-submit="register-send" novalidate><fieldset>
+      <div class="ob-field"><label class="auth-label" for="registerEmail">E-Mail-Adresse</label><input id="registerEmail" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de" required></div>
+      <div class="ob-field" id="registerCodeWrap" hidden><label class="auth-label" for="registerCode">E-Mail-Code</label><input id="registerCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-stelliger E-Mail-Code"></div>
+      <div class="auth-message" id="registerHint" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button type="submit" class="ob-cta" data-auth="register-send">Code senden</button>
+      <button type="submit" class="ob-cta" data-auth="register-verify" hidden>Code bestätigen</button>
+    </fieldset></form></section>`;
+  EMAIL_AUTH_PENDING={email:"",mode:"registration"};
 }
 
 function showPasswordSetup(mandatory){
-  const body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
+  const body=document.getElementById("obBody");
   setAuthSurface(true);
-  body.classList.remove("ob-dense","ob-hero"); body.classList.add("ob-login");
-  document.getElementById("obDots").innerHTML=""; document.getElementById("obBack").hidden=!mandatory;
-  body.innerHTML=`
-    <div class="ob-glow"></div><img class="ob-logo" src="logo.png" alt="Rov.E">
-    <div class="ob-title">Passwort festlegen</div>
-    <div class="ob-sub">Wähle ein Passwort mit mindestens 10 Zeichen. Es gehört nur zu deinem Rov.E Konto.</div>
-    <div class="ob-auth-card">
-      <div class="ob-field"><input id="passwordSetup" type="password" autocomplete="new-password" autocorrect="off" spellcheck="false" placeholder="Neues Passwort"></div>
-      <div class="ob-field"><input id="passwordSetupConfirm" type="password" autocomplete="new-password" autocorrect="off" spellcheck="false" placeholder="Passwort wiederholen"></div>
-      <button class="ob-cta" data-auth="password-setup">Passwort speichern</button>
-    </div>
-    <div class="ob-sub" id="authHint" style="font-size:12.5px;margin-top:10px;text-align:center"></div>`;
-  foot.innerHTML=mandatory?"":`<button class="ob-cta" data-auth="password-continue">Später fortfahren</button>`;
+  prepareAuthForm("password-setup");
+  body.innerHTML=`<section class="auth-shell" aria-labelledby="authTitle">
+    ${authBrand("Passwort festlegen","Wähle ein Passwort mit mindestens 10 Zeichen.")}
+    <form class="auth-form" data-auth-submit="password-setup" novalidate><fieldset>
+      <div class="ob-field"><label class="auth-label" for="passwordSetup">Neues Passwort</label><input id="passwordSetup" type="password" autocomplete="new-password" minlength="10" autocorrect="off" spellcheck="false" required></div>
+      <div class="ob-field"><label class="auth-label" for="passwordSetupConfirm">Passwort wiederholen</label><input id="passwordSetupConfirm" type="password" autocomplete="new-password" minlength="10" autocorrect="off" spellcheck="false" required></div>
+      <div class="auth-message" id="authHint" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button type="submit" class="ob-cta" data-auth="password-setup">Passwort speichern</button>
+      ${mandatory?"":`<button type="button" class="auth-link" data-auth="password-continue">Später fortfahren</button>`}
+    </fieldset></form></section>`;
   EMAIL_AUTH_PENDING={email:"",mode:"password-setup",mandatory:!!mandatory};
 }
 
 function showPasswordReset(){
-  const body=document.getElementById("obBody"), foot=document.getElementById("obFoot");
+  const email=document.getElementById("loginEmail")?.value||"";
+  const body=document.getElementById("obBody");
   setAuthSurface(true);
-  body.classList.remove("ob-dense","ob-hero"); body.classList.add("ob-login");
-  document.getElementById("obDots").innerHTML=""; document.getElementById("obBack").hidden=false;
-  body.innerHTML=`
-    <div class="ob-glow"></div><img class="ob-logo" src="logo.png" alt="Rov.E">
-    <div class="ob-title">Passwort zurücksetzen</div>
-    <div class="ob-sub">Wir senden dir einen einmalig verwendbaren Code.</div>
-    <div class="ob-auth-card">
-      <div class="ob-field"><input id="resetEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de"></div>
-      <div class="ob-field" id="resetCodeWrap" style="display:none"><input id="resetCode" type="text" inputmode="numeric" autocomplete="one-time-code" autocorrect="off" spellcheck="false" placeholder="6-stelliger Code"></div>
-      <div class="ob-field" id="resetPasswordWrap" style="display:none"><input id="resetPassword" type="password" autocomplete="new-password" autocorrect="off" spellcheck="false" placeholder="Neues Passwort"></div>
-      <div class="ob-field" id="resetConfirmWrap" style="display:none"><input id="resetConfirm" type="password" autocomplete="new-password" autocorrect="off" spellcheck="false" placeholder="Passwort wiederholen"></div>
-      <button class="ob-cta" data-auth="reset-request">Code senden</button>
-      <button class="ob-cta" data-auth="reset-confirm" style="display:none;margin-top:12px">Passwort speichern</button>
-    </div><div class="ob-sub" id="authHint" style="font-size:12.5px;margin-top:10px;text-align:center"></div>`;
-  foot.innerHTML="";
+  prepareAuthForm("reset");
+  body.innerHTML=`<section class="auth-shell" aria-labelledby="authTitle">
+    ${authBrand("Passwort zurücksetzen","Du erhältst einen einmaligen Code. Er ist 10 Minuten gültig.")}
+    <form class="auth-form" data-auth-submit="reset-request" novalidate><fieldset>
+      <div class="ob-field"><label class="auth-label" for="resetEmail">E-Mail-Adresse</label><input id="resetEmail" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de" required></div>
+      <div class="ob-field" id="resetCodeWrap" hidden><label class="auth-label" for="resetCode">E-Mail-Code</label><input id="resetCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" autocorrect="off" spellcheck="false" placeholder="6-stelliger Code"></div>
+      <div class="ob-field" id="resetPasswordWrap" hidden><label class="auth-label" for="resetPassword">Neues Passwort</label><input id="resetPassword" type="password" autocomplete="new-password" minlength="10" autocorrect="off" spellcheck="false"></div>
+      <div class="ob-field" id="resetConfirmWrap" hidden><label class="auth-label" for="resetConfirm">Passwort wiederholen</label><input id="resetConfirm" type="password" autocomplete="new-password" minlength="10" autocorrect="off" spellcheck="false"></div>
+      <div class="auth-message" id="authHint" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button type="submit" class="ob-cta" data-auth="reset-request">Code senden</button>
+      <button type="submit" class="ob-cta" data-auth="reset-confirm" hidden>Passwort speichern</button>
+      <button type="button" class="auth-link" data-auth="show-code">Stattdessen mit E-Mail-Code anmelden</button>
+    </fieldset></form></section>`;
+  document.getElementById("resetEmail").value=email;
+  EMAIL_AUTH_PENDING={email:"",mode:"reset"};
+}
+
+function showEmailCodeLogin(){
+  const email=document.getElementById("resetEmail")?.value||"";
+  setAuthSurface(true);
+  prepareAuthForm("code");
+  document.getElementById("obBody").innerHTML=`<section class="auth-shell" aria-labelledby="authTitle">
+    ${authBrand("Mit E-Mail-Code anmelden","Der Code ist 10 Minuten gültig.")}
+    <form class="auth-form" data-auth-submit="send-code" novalidate><fieldset>
+      <div class="ob-field"><label class="auth-label" for="loginEmail">E-Mail-Adresse</label><input id="loginEmail" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="deine@email.de" required></div>
+      <div class="ob-field" id="loginCodeWrap" hidden><label class="auth-label" for="loginCode">E-Mail-Code</label><input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-stelliger E-Mail-Code"></div>
+      <div class="auth-message" id="authHint" role="status" aria-live="polite" aria-atomic="true"></div>
+      <button type="submit" class="ob-cta" data-auth="send-code">Code senden</button>
+      <button type="submit" class="ob-cta" data-auth="verify-code" hidden>Code bestätigen</button>
+    </fieldset></form></section>`;
+  document.getElementById("loginEmail").value=email;
+  EMAIL_AUTH_PENDING={email:"",mode:"login"};
 }
 
 async function requestNewAccountCode(){
   const emailInput=document.getElementById("registerEmail");
-  const hint=document.getElementById("registerHint");
   const email=(emailInput?.value||"").trim().toLowerCase();
-  if(!email || !email.includes("@")){
-    if(hint) hint.textContent="Gib zuerst deine E-Mail-Adresse ein.";
+  if(!email || !emailInput.checkValidity()){
+    setAuthMessage("Gib eine gültige E-Mail-Adresse ein.",true);
     emailInput?.focus();
     return;
   }
@@ -14143,33 +14245,29 @@ async function requestNewAccountCode(){
   if(!beginAuthAction(action,'[data-auth="register-send"]',"Code wird gesendet ...")) return;
   const button=document.querySelector('[data-auth="register-send"]');
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/request-code`,{
-      method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({email,registration:true})
-    });
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/request-code",{email,registration:true});
     if(!res.ok || !data.ok){
       const message=data.error==="too_many_login_attempts" ? "Zu viele Versuche. Warte kurz und probier es später nochmal." :
         "Der Login-Code konnte gerade nicht gesendet werden.";
       throw new Error(message);
     }
     EMAIL_AUTH_PENDING={email,mode:"registration"};
-    document.getElementById("registerCodeWrap").style.display="block";
-    document.querySelector('[data-auth="register-verify"]').style.display="block";
-    if(button) button.style.display="none";
-    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
-    endAuthAction(action,'[data-auth="register-send"]');
+    document.getElementById("registerCodeWrap").hidden=false;
+    document.getElementById("registerCode").value="";
+    document.getElementById("registerEmail").readOnly=true;
+    document.querySelector('[data-auth="register-verify"]').hidden=false;
+    document.querySelector('.auth-form').dataset.authSubmit="register-verify";
+    if(button){button.type="button";button.className="auth-link";button.dataset.authIdleLabel="Neuen Code anfordern";}
+    setAuthMessage("Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.");
     setTimeout(()=>document.getElementById("registerCode")?.focus(),80);
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.");
-    endAuthAction(action,'[data-auth="register-send"]',"Code senden");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="register-send"]');}
 }
 
 async function restoreEmailSession(){
   try{
-    const res=await requestWithTimeout(`${PAIR_API_BASE_URL}/v1/auth/me`,{credentials:"include",cache:"no-store"});
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/me");
     return {valid:!!(res.ok && data.ok), definitive:res.status===401||res.ok};
   }catch(e){ return {valid:false,definitive:false}; }
 }
@@ -14202,10 +14300,9 @@ async function resolveAppMode(){
 
 async function requestEmailLoginCode(){
   const emailInput=document.getElementById("loginEmail");
-  const hint=document.getElementById("authHint");
   const email=(emailInput?.value||"").trim().toLowerCase();
-  if(!email || !email.includes("@")){
-    if(hint) hint.textContent="Gib zuerst deine E-Mail-Adresse ein.";
+  if(!email || !emailInput.checkValidity()){
+    setAuthMessage("Gib eine gültige E-Mail-Adresse ein.",true);
     emailInput?.focus();
     return;
   }
@@ -14213,13 +14310,7 @@ async function requestEmailLoginCode(){
   if(!beginAuthAction(action,'[data-auth="send-code"]',"Code wird gesendet ...")) return;
   const button=document.querySelector('[data-auth="send-code"]');
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/request-code`,{
-      method:"POST",
-      credentials:"include",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({email})
-    });
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/request-code",{email});
     if(!res.ok || !data.ok){
       const message=data.error==="too_many_login_attempts"
         ? "Zu viele Versuche. Warte kurz und probier es später nochmal."
@@ -14227,144 +14318,140 @@ async function requestEmailLoginCode(){
       throw new Error(message);
     }
     EMAIL_AUTH_PENDING={email,mode:"login"};
-    document.getElementById("loginCodeWrap").style.display="block";
-    document.querySelector('[data-auth="verify-code"]').style.display="block";
-    if(button) button.style.display="none";
-    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
-    endAuthAction(action,'[data-auth="send-code"]');
+    document.getElementById("loginCodeWrap").hidden=false;
+    document.getElementById("loginCode").value="";
+    document.getElementById("loginEmail").readOnly=true;
+    document.querySelector('[data-auth="verify-code"]').hidden=false;
+    document.querySelector('.auth-form').dataset.authSubmit="verify-code";
+    if(button){button.type="button";button.className="auth-link";button.dataset.authIdleLabel="Neuen Code anfordern";}
+    setAuthMessage("Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.");
     setTimeout(()=>document.getElementById("loginCode")?.focus(),80);
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message || "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut.");
-    endAuthAction(action,'[data-auth="send-code"]',"Login-Code senden");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="send-code"]');}
 }
 
 let AUTH_BOOTSTRAP_IN_FLIGHT=false;
 async function continueWithSession(){
   if(AUTH_BOOTSTRAP_IN_FLIGHT)return;
   AUTH_BOOTSTRAP_IN_FLIGHT=true;
+  setAuthBusy(true);
   try{
+    APP_MODE="bridge";
     const state=await bootstrapAuthenticatedApp();
     if(state==="ready")return;
     if(state==="onboarding"){
       showServerOnboarding();
       return;
     }
-    if(state==="login"){
-      showAppConnect();
-      document.getElementById("onboard").hidden=false;
+    if(state==="login"||state==="error"){
+      const saved=AUTH_FORM_STATE==="reset"||AUTH_FORM_STATE==="password-setup";
+      showAuthRecovery((saved?"Dein Passwort wurde gespeichert. ":"")+"Die Anmeldung konnte noch nicht bestätigt werden. Bitte versuche es erneut.");
     }
+    return state;
+  }catch(_){
+    showAuthRecovery("Die Anmeldung konnte noch nicht bestätigt werden. Prüfe deine Verbindung und versuche es erneut.");
+    return "error";
   }finally{
     AUTH_BOOTSTRAP_IN_FLIGHT=false;
+    if(!AUTH_ACTIONS_IN_FLIGHT.size)setAuthBusy(false);
   }
 }
 
 async function passwordLogin(){
   const email=(document.getElementById("loginEmail")?.value||"").trim().toLowerCase();
   const password=document.getElementById("loginPassword")?.value||"";
-  const hint=document.getElementById("authHint");
-  if(!email || !password){ if(hint) hint.textContent="Gib E-Mail-Adresse und Passwort ein."; return; }
+  if(!email || !password){ setAuthMessage("Gib E-Mail-Adresse und Passwort ein.",true); return; }
+  if(!document.getElementById("loginEmail").checkValidity()){setAuthMessage("Gib eine gültige E-Mail-Adresse ein.",true);return;}
   const action="password-login";
   if(!beginAuthAction(action,'[data-auth="password-login"]',"Anmeldung läuft ...")) return;
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/login`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password})});
-    const data=await res.json().catch(()=>({}));
-    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut."));
-    endAuthAction(action,'[data-auth="password-login"]');
-    continueWithSession();
+    setAuthMessage("");
+    const {response:res,data}=await authRequest("/v1/auth/password/login",{email,password});
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Anmeldung nicht möglich. Prüfe E-Mail-Adresse und Passwort. Warte nach mehreren Fehlversuchen einige Minuten und versuche es erneut."));
+    await continueWithSession();
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Anmeldung nicht möglich. Prüfe deine Angaben und versuche es erneut.");
-    endAuthAction(action,'[data-auth="password-login"]',"Einloggen");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="password-login"]',"Einloggen");}
 }
 
 async function completePasswordSetup(){
   const password=document.getElementById("passwordSetup")?.value||"";
   const password_confirmation=document.getElementById("passwordSetupConfirm")?.value||"";
-  const hint=document.getElementById("authHint");
+  if(password.length<10||password!==password_confirmation){setAuthMessage("Verwende mindestens 10 Zeichen und wiederhole dasselbe Passwort.",true);return;}
   const action="password-setup";
   if(!beginAuthAction(action,'[data-auth="password-setup"]',"Passwort wird gespeichert ...")) return;
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/setup`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({password,password_confirmation})});
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/password/setup",{password,password_confirmation});
     if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Das Passwort muss mindestens 10 Zeichen lang sein und zweimal gleich eingegeben werden."));
-    if(hint) hint.textContent="Passwort gespeichert. Wir bringen dich weiter ...";
-    endAuthAction(action,'[data-auth="password-setup"]');
-    continueWithSession();
+    setAuthMessage("Passwort gespeichert. Wir bringen dich weiter ...");
+    await continueWithSession();
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht gespeichert werden.");
-    endAuthAction(action,'[data-auth="password-setup"]',"Passwort speichern");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="password-setup"]',"Passwort speichern");}
 }
 
 async function requestPasswordReset(){
-  const email=(document.getElementById("resetEmail")?.value||"").trim().toLowerCase(), hint=document.getElementById("authHint");
-  if(!email){ if(hint) hint.textContent="Gib deine E-Mail-Adresse ein."; return; }
+  const email=(document.getElementById("resetEmail")?.value||"").trim().toLowerCase();
+  if(!email||!document.getElementById("resetEmail").checkValidity()){setAuthMessage("Gib eine gültige E-Mail-Adresse ein.",true);return;}
   const action="password-reset-request";
   if(!beginAuthAction(action,'[data-auth="reset-request"]',"Code wird gesendet ...")) return;
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/reset/request`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email})});
-    const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error("Der Code konnte gerade nicht angefordert werden.");
+    const {response:res,data}=await authRequest("/v1/auth/password/reset/request",{email});
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Der Code konnte gerade nicht angefordert werden."));
     EMAIL_AUTH_PENDING={email,mode:"reset"};
-    ["resetCodeWrap","resetPasswordWrap","resetConfirmWrap"].forEach(id=>document.getElementById(id).style.display="block");
-    document.querySelector('[data-auth="reset-request"]').style.display="none"; document.querySelector('[data-auth="reset-confirm"]').style.display="block";
-    if(hint) hint.textContent="Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.";
-    endAuthAction(action,'[data-auth="reset-request"]');
+    ["resetCodeWrap","resetPasswordWrap","resetConfirmWrap"].forEach(id=>document.getElementById(id).hidden=false);
+    document.getElementById("resetEmail").readOnly=true;
+    document.getElementById("resetCode").value="";
+    document.querySelector('.auth-form').dataset.authSubmit="reset-confirm";
+    const button=document.querySelector('[data-auth="reset-request"]');
+    button.type="button";button.className="auth-link";button.dataset.authIdleLabel="Neuen Code anfordern";
+    document.querySelector('[data-auth="reset-confirm"]').hidden=false;
+    setAuthMessage("Prüfe jetzt deine E-Mail und gib den Code ein. Falls kein Code ankommt, prüfe Spam oder versuche es später erneut.");
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Reset konnte nicht gestartet werden.");
-    endAuthAction(action,'[data-auth="reset-request"]',"Code senden");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="reset-request"]');}
 }
 
 async function confirmPasswordReset(){
-  const hint=document.getElementById("authHint"), code=(document.getElementById("resetCode")?.value||"").trim();
+  const code=(document.getElementById("resetCode")?.value||"").trim();
   const password=document.getElementById("resetPassword")?.value||"", password_confirmation=document.getElementById("resetConfirm")?.value||"";
+  if(!/^\d{6}$/.test(code)){setAuthMessage("Gib den 6-stelligen Code aus deiner E-Mail ein.",true);return;}
+  if(password.length<10||password!==password_confirmation){setAuthMessage("Verwende mindestens 10 Zeichen und wiederhole dasselbe Passwort.",true);return;}
   const action="password-reset-confirm";
   if(!beginAuthAction(action,'[data-auth="reset-confirm"]',"Passwort wird gespeichert ...")) return;
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/password/reset/confirm`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:EMAIL_AUTH_PENDING.email,code,password,password_confirmation})});
-    const data=await res.json().catch(()=>({})); if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Code oder Passwort sind nicht gültig."));
-    endAuthAction(action,'[data-auth="reset-confirm"]');
-    continueWithSession();
+    const {response:res,data}=await authRequest("/v1/auth/password/reset/confirm",{email:EMAIL_AUTH_PENDING.email,code,password,password_confirmation});
+    if(!res.ok || !data.ok) throw new Error(authErrorMessage(res,data,"Der Code ist ungültig oder abgelaufen. Fordere einen neuen Code an."));
+    await continueWithSession();
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message||"Passwort konnte nicht zurückgesetzt werden.");
-    endAuthAction(action,'[data-auth="reset-confirm"]',"Passwort speichern");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,'[data-auth="reset-confirm"]',"Passwort speichern");}
 }
 
 async function verifyEmailLoginCode(){
   const registration=EMAIL_AUTH_PENDING.mode==="registration";
-  const hint=document.getElementById(registration?"registerHint":"authHint");
   const email=EMAIL_AUTH_PENDING.email || (document.getElementById(registration?"registerEmail":"loginEmail")?.value||"").trim().toLowerCase();
   const code=(document.getElementById(registration?"registerCode":"loginCode")?.value||"").trim();
-  if(!email || !code){
-    if(hint) hint.textContent="Gib den Code aus deiner E-Mail ein.";
+  if(!email || !/^\d{6}$/.test(code)){
+    setAuthMessage("Gib den 6-stelligen Code aus deiner E-Mail ein.",true);
     return;
   }
   const action=registration?"register-verify":"login-code-verify";
   const selector=registration?'[data-auth="register-verify"]':'[data-auth="verify-code"]';
   if(!beginAuthAction(action,selector,"Wird geprüft ...")) return;
-  const button=document.querySelector(selector);
   try{
-    const res=await fetch(`${PAIR_API_BASE_URL}/v1/auth/verify-code`,{
-      method:"POST",
-      credentials:"include",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({email,code})
-    });
-    const data=await res.json().catch(()=>({}));
+    const {response:res,data}=await authRequest("/v1/auth/verify-code",{email,code});
     if(!res.ok || !data.ok){
       const message=data.error==="invalid_code" ? "Der Code stimmt nicht." :
         data.error==="code_expired" ? "Der Code ist abgelaufen. Lass dir einen neuen schicken." :
-        "Der Login hat gerade nicht funktioniert.";
+        authErrorMessage(res,data,"Der Login hat gerade nicht funktioniert.");
       throw new Error(message);
     }
-    endAuthAction(action,selector);
-    continueWithSession();
+    await continueWithSession();
   }catch(error){
-    if(hint) hint.textContent=error instanceof TypeError ? "Rov.E konnte die Anfrage gerade nicht abschließen. Bitte versuche es erneut." : (error.message || "Login fehlgeschlagen.");
-    endAuthAction(action,selector,"Code bestätigen");
-  }
+    setAuthMessage(error instanceof TypeError||error.name==="AbortError"?authRequestError(error):error.message,true);
+  }finally{endAuthAction(action,selector,"Code bestätigen");}
 }
 
 // Profil-Identität in die UI: Avatar-Buchstabe + Profil-Sheet-Kopf (statt der hart kodierten
@@ -14831,7 +14918,8 @@ function installProfileAutosave(){
       // gerendert. Ein zweiter Refresh vor dem ersten stabilen Paint lässt Karten und Tabbar
       // kurz neu messen und verursacht beim ersten PIN-Unlock den sichtbaren Höhensprung.
       if(state==="ready") return true;
-      if(state==="login") showStartupFallback("Deine Anmeldung konnte nicht bestätigt werden. Bitte melde dich erneut an.");
+      if(state==="login") showStartupFallback("");
+      if(state==="error") showStartupFallback("Deine Sitzung konnte gerade nicht geprüft werden. Bitte versuche es erneut.");
       return null;
     }).catch(()=>{ showStartupFallback(); return null; });
     const animationDurch = new Promise(r=>setTimeout(r,1750));
@@ -15371,12 +15459,24 @@ document.getElementById("onboard").addEventListener("click", e=>{
   }
   const pair=e.target.closest("[data-pair]");
   if(pair){
+    if(AUTH_ACTIONS_IN_FLIGHT.size||AUTH_BOOTSTRAP_IN_FLIGHT)return;
     if(pair.dataset.pair==="new") showNewAccountRegistration();
     return;
   }
   const auth=e.target.closest("[data-auth]");
   if(auth){
-    if(auth.dataset.auth==="send-code") requestEmailLoginCode();
+    if(AUTH_ACTIONS_IN_FLIGHT.size||AUTH_BOOTSTRAP_IN_FLIGHT)return;
+    if(auth.type==="submit")return;
+    if(auth.dataset.auth==="toggle-password"){
+      const input=document.getElementById(auth.getAttribute("aria-controls"));
+      const visible=input.type==="password";
+      input.type=visible?"text":"password";
+      auth.textContent=visible?"Verbergen":"Anzeigen";
+      auth.setAttribute("aria-pressed",String(visible));
+      auth.setAttribute("aria-label",visible?"Passwort verbergen":"Passwort anzeigen");
+    }
+    else if(auth.dataset.auth==="show-code")showEmailCodeLogin();
+    else if(auth.dataset.auth==="send-code") requestEmailLoginCode();
     else if(auth.dataset.auth==="verify-code") verifyEmailLoginCode();
     else if(auth.dataset.auth==="register-send") requestNewAccountCode();
     else if(auth.dataset.auth==="register-verify") verifyEmailLoginCode();
@@ -15494,22 +15594,29 @@ document.getElementById("onboard").addEventListener("input", e=>{
     obRefreshLive();
   }
 });
+document.getElementById("onboard").addEventListener("submit", e=>{
+  const action=e.target.dataset.authSubmit;
+  if(!action)return;
+  e.preventDefault();
+  if(AUTH_ACTIONS_IN_FLIGHT.size||AUTH_BOOTSTRAP_IN_FLIGHT)return;
+  if(action==="password-login")passwordLogin();
+  else if(action==="register-send")requestNewAccountCode();
+  else if(action==="register-verify"||action==="verify-code")verifyEmailLoginCode();
+  else if(action==="send-code")requestEmailLoginCode();
+  else if(action==="password-setup")completePasswordSetup();
+  else if(action==="reset-request")requestPasswordReset();
+  else if(action==="reset-confirm")confirmPasswordReset();
+});
 document.getElementById("onboard").addEventListener("keydown", e=>{
   if(e.key==="Enter" && e.target?.id==="pinUnlock"){e.preventDefault();submitPinUnlock();}
   if(e.key==="Enter" && e.target?.id==="pinSetupConfirm"){e.preventDefault();submitPinSetup();}
   if(e.key==="Enter" && e.target?.id==="pinRecoverConfirm"){e.preventDefault();submitPinRecovery();}
   if(e.key==="Enter" && e.target?.id==="pinChangeConfirm"){e.preventDefault();submitPinChange();}
-  if(e.key==="Enter" && e.target?.id==="loginEmail"){ e.preventDefault(); requestEmailLoginCode(); }
-  if(e.key==="Enter" && e.target?.id==="loginPassword"){ e.preventDefault(); passwordLogin(); }
-  if(e.key==="Enter" && e.target?.id==="loginCode"){ e.preventDefault(); verifyEmailLoginCode(); }
-  if(e.key==="Enter" && e.target?.id==="registerEmail"){ e.preventDefault(); requestNewAccountCode(); }
-  if(e.key==="Enter" && e.target?.id==="registerCode"){ e.preventDefault(); verifyEmailLoginCode(); }
-  if(e.key==="Enter" && e.target?.id==="passwordSetupConfirm"){ e.preventDefault(); completePasswordSetup(); }
-  if(e.key==="Enter" && e.target?.id==="resetConfirm"){ e.preventDefault(); confirmPasswordReset(); }
 });
 document.getElementById("obBack").addEventListener("click", ()=>{
+  if(AUTH_ACTIONS_IN_FLIGHT.size||AUTH_BOOTSTRAP_IN_FLIGHT)return;
   buzz();
-  if(document.getElementById("registerEmail")){ showAppConnect(); return; }
+  if(document.getElementById("onboard").classList.contains("auth-v2")){ showAppConnect(); return; }
   obCapture(); OB.step=Math.max(0,OB.step-1); obRender();
 });
 document.getElementById("obSkip").addEventListener("click", ()=>{

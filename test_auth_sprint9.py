@@ -204,6 +204,25 @@ class PasswordAuthTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_auth_login_limits").fetchone()[0], 0)
 
+    def test_password_backoff_keeps_existing_and_unknown_accounts_indistinguishable(self):
+        self.issue_session()
+        self.assertEqual(self.setup_password().status_code, 200)
+        with api.app.test_client() as client:
+            for _ in range(api.LOGIN_ACCOUNT_FAILURE_LIMIT):
+                denied = client.post("/v1/auth/password/login", json={
+                    "email": "first@example.test", "password": "wrong-synthetic-password",
+                })
+                self.assertEqual(denied.status_code, 401)
+            blocked = client.post("/v1/auth/password/login", json={
+                "email": "first@example.test", "password": "very-safe-password",
+            })
+            unknown = client.post("/v1/auth/password/login", json={
+                "email": "unknown@example.test", "password": "very-safe-password",
+            })
+        self.assertEqual((blocked.status_code, unknown.status_code), (401, 401))
+        self.assertEqual(blocked.get_json(), unknown.get_json())
+        self.assertEqual(blocked.get_json(), {"ok": False, "error": "invalid_credentials"})
+
     def test_distributed_account_attack_survives_memory_reset(self):
         self.issue_session()
         self.assertEqual(self.setup_password().status_code, 200)

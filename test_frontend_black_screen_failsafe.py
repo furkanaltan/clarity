@@ -14,8 +14,11 @@ class FrontendBlackScreenFailsafeTests(unittest.TestCase):
     def test_startup_auth_and_pin_requests_have_bounded_timeouts(self):
         self.assertIn("const STARTUP_AUTH_TIMEOUT_MS=8000;", self.frontend)
         self.assertIn("function requestWithTimeout(url,options={},timeoutMs=STARTUP_AUTH_TIMEOUT_MS)", self.frontend)
-        self.assertIn("requestWithTimeout(`${PAIR_API_BASE_URL}/v1/auth/me`", self.frontend)
-        self.assertIn('pinRequest("/v1/auth/pin/status",{timeoutMs:STARTUP_AUTH_TIMEOUT_MS})', self.frontend)
+        self.assertIn('authRequest("/v1/auth/me")', self.frontend)
+        self.assertIn('authRequest("/v1/auth/pin/status")', self.frontend)
+        request = self.frontend.split("async function authRequest", 1)[1].split("\n}", 1)[0]
+        self.assertIn("setTimeout(()=>controller.abort(),STARTUP_AUTH_TIMEOUT_MS)", request)
+        self.assertLess(request.index("await response.json()"), request.index("clearTimeout(timer)"))
 
     def test_pin_timeout_option_is_not_forwarded_to_fetch(self):
         pin = re.search(
@@ -33,7 +36,7 @@ class FrontendBlackScreenFailsafeTests(unittest.TestCase):
         restore = self.frontend.split("async function restoreEmailSession", 1)[1].split("\n}", 1)[0]
         self.assertIn("catch(e){ return {valid:false,definitive:false}; }", restore)
         pin_status = self.frontend.split("async function fetchPinStatus", 1)[1].split("\n}", 1)[0]
-        self.assertIn('catch(_){ return {state:"login"}; }', pin_status)
+        self.assertIn('catch(_){ return {state:"error"}; }', pin_status)
         self.assertIn("const showStartupFallback=(message=", self.frontend)
         self.assertIn("showAppConnect();", self.frontend)
         self.assertIn("if(onboard) onboard.hidden=false;", self.frontend)
