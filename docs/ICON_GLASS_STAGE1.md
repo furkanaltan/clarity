@@ -1,8 +1,9 @@
-# Icon glass: foundation and navigation acceptance
+# Icon glass: corrected asset-only scope
 
 Branch: `feature_icon-glass`.
-Scope: first stage only. Asset, expense, profile and status families require
-the operator's explicit design approval before implementation.
+Scope: the seven asset types only. This supersedes the navigation stage in
+`0a970be299c22966d906c43ef4d62012e98c624a` following the operator's explicit
+scope correction. No deployment or push is authorized.
 
 ## Preserved baseline
 
@@ -13,70 +14,94 @@ precedes the icon work. Login and report implementation remain unchanged.
 
 ## Implemented family
 
-The existing SVG sprite gains five separate `rove-module-tab-*` symbols:
+The existing SVG sprite gains seven separate `rove-module-asset-*` symbols:
 
-| Existing control | Tabler outline glyph | Badge |
+| Asset type | Tabler outline glyph | Badge |
 | --- | --- | --- |
-| `data-tab="home"` | `home` | 52 px |
-| `data-tab="ziele"` | `flag` | 52 px |
-| `id="addBtn"` | `plus` | 60 px |
-| `data-tab="tx"` | `arrows-exchange` | 52 px |
-| `data-tab="vertraege"` | `file-check` | 52 px |
+| Girokonto | `building-bank` | 44 px |
+| Tagesgeld | `pig-money` | 44 px |
+| Bargeld | `cash` | 44 px |
+| Investments / ETF | `trending-up` | 44 px |
+| Krypto | `circle-letter-b` | 44 px |
+| Immobilie | `building` | 44 px |
+| Sachwerte | `diamond` | 44 px |
 
 No mapping deviations. The original glyph paths are from Tabler Icons v3.42.0;
 stroke width is adapted to 1.75 in the 24x24 viewBox. The full MIT notice is in
 `THIRD_PARTY_NOTICES`. No webfont, CDN or runtime dependency is added. Existing
-module symbols are retained byte-for-byte; the other family mappings are not
-changed.
+module symbols are retained byte-for-byte. The five unused glass-navigation
+symbols have been removed. The non-asset family mappings remain unchanged.
+
+## Restored navigation and preserved behavior
+
+The bottom navigation HTML is byte-identical to `b28fd8f...`, including the
+original module symbols, the central `.plus` control and its accessible name.
+The icon-stage navigation overrides and compensating screen padding have been
+removed. All original CSS, including selected-state colors, size rules and
+press/selection animations, is byte-identical to that baseline. Only asset-
+specific glass CSS is appended.
+
+`assetIcon()` retains its original classification logic, including renamed
+cash accounts. Only the seven `ICONS.asset*` entries use `assetGlassIcon()`.
+Home, detail headers, account-type pickers and account-order lists share these
+local SVGs. The Krypto group header now shows the B-in-circle asset icon rather
+than a Bitcoin position logo. Individual crypto and investment position marks,
+their fallback letters, merchant logos, onboarding and action icons are
+unchanged. Generic unknown-asset SVG fallbacks retain bounded dimensions.
+
+The profile entry and chat title display "Ask Rovi". The existing talk route,
+assistant behavior and profile icon are unchanged. Login V2, Report V2,
+authentication, financial calculations, account data and backend files are
+not modified.
 
 ## Material and layout
 
 `.rv-glass` defines round badges with the supplied black gradient, upper
-reflection, inner contour and shadows. The supported size classes are 30, 44,
-52, 60 and 96 px. Only `.tab.on` applies the blue gradient. The explicit
-`data-state="warning"` variant is prepared but not applied to any current UI.
-Ridges are disabled at 30 px, with `.rv-glass--plain`, and inside
-`.rv-glass-list`. Five navigation badges use static gradient layers without
-backdrop blur, blend compositing, animation or scaling on selection/press.
-
-The central control retains its ID and accessible name and gains a visible
-"Erfassen" label. Existing navigation routes and the quick-entry handler are
-unchanged. All four inline script blocks are byte-identical to the baseline,
-including the iOS tab-bar anchoring code. The only shared layout compensation
-adds the existing bottom safe-area value to screen bottom padding so the taller
-badges do not cover the last content row.
+reflection, inner contour and shadows. The active asset badge size is 44 px,
+with white outline strokes in dark and light themes. No asset receives blue
+active-tab or red warning treatment. Ridges are disabled in account-order
+lists, below 36 px and through the existing plain/list variants. No backdrop
+blur, blend compositing or badge animation is added.
 
 ## Validation
 
-- 208/208 navigation, icon, build, auth, session, reset and report regression
-  tests PASS, including two new SVG/navigation checks.
-- 133/133 remaining targeted frontend regression tests PASS.
+- 345/345 targeted navigation, icon, build, auth, session, reset, frontend and
+  report regression tests PASS, including 21 focused icon tests.
+- The icon tests execute the real asset helpers, account-order renderer and
+  account-type picker with synthetic inputs; seven mappings and renamed
+  accounts are checked along with passive local SVG references and fallbacks.
 - Four inline JavaScript blocks parse successfully; `git diff --check` PASS.
 - Local synthetic app rendered at 390x844 and 1280x900 with external network
   connections blocked by the preview's Content Security Policy.
-- Five repeated tab changes preserve exact badge and bar rectangles. Badge
-  widths remain `[52, 52, 60, 52, 52]`; bar height is 104 px at zero safe-area.
-- Exactly one blue badge corresponds to the active tab; all glyph strokes are
-  white. The quick-entry control still opens and closes its existing sheet.
-- Light Mode preserves the same badge sizes, colors and white glyphs.
-- At the bottom of the synthetic home list, the last asset row ends at y=705.20
-  while the tab bar begins at y=740 on the 390x844 viewport.
+- Four tab changes preserve the original 68 px bar at zero safe-area and no
+  glass badges. Quick entry opens and closes its existing sheet.
+- All seven asset glyphs have actual paths, visible white strokes, 44x44 px
+  badges and 20.23x20.23 px SVGs. No missing-glyph font is used.
+- Light Mode preserves black glass, white outlines and unchanged navigation.
+- At 390x844 the screenshot shows all seven asset badges between y=201.70
+  and y=690.20; the tab bar begins at y=776. No horizontal overflow.
+- Original module SVGs, asset classification, crypto/investment position-logo
+  helpers and generic transaction-detail logo helper are byte-identical to
+  the pre-icon baseline.
 
 No test on physical iOS/Safari hardware or device frame-time measurement was
-performed. No long list uses the new badges in this first stage.
+performed. Account-order rendering is covered synthetically; its authenticated
+server-backed entry is not exercised against Production.
 
 ## Review artifacts
 
 Local synthetic preview: `http://127.0.0.1:65191/#offline`.
 
 Screenshots are outside the repository at
-`/Users/furkanaltan/Documents/Codex/icon-glass-review-20261014/`:
+`/Users/furkanaltan/Documents/Codex/icon-glass-assets-review-20261014/`:
 
-- `mobile-390-home.png`
-- `desktop-1280-home.png`
-- `mobile-390-light.png`
-- `mobile-390-bottom.png`
-- `mobile-navigation-checks.json` records the five geometry/state checks.
+- `mobile-390-assets.jpg`
+- `original-bottom-navigation.jpg`
+- `desktop-1280-assets.jpg`
+- `mobile-390-light.jpg`
+- `mobile-390-crypto-detail.jpg`
+- `browser-checks.json` records navigation and seven asset geometry checks.
+- `regression-tests.log` records the targeted regression run.
 
-No Production access, deployment or push was performed. Stop after this stage
-and await design approval before changing any other icon family.
+No Production access, deployment or push was performed. Other icon families
+must retain their original appearance. Stop after the corrected asset scope.

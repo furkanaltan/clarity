@@ -1,9 +1,10 @@
 Tabler Icons v3.42.0
 https://github.com/tabler/tabler-icons/tree/v3.42.0
 
-The local navigation SVG symbols in frontend/index.html use the outline glyphs
-home, flag, plus, arrows-exchange and file-check. Their original 24x24 geometry
-is preserved; the stroke width is adapted from 2 to 1.75.
+The local asset-type SVG symbols in frontend/index.html use the outline glyphs
+building-bank, pig-money, cash, trending-up, circle-letter-b, building and
+diamond. Their original 24x24 geometry is preserved; the stroke width is
+adapted from 2 to 1.75. Navigation uses the original Rov.E symbols.
 
 MIT License
 

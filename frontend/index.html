@@ -2706,7 +2706,7 @@
   :root[data-theme="light"] .tab.on .rove-module-icon{--rove-icon-ink:var(--blue-deep);--rove-icon-accent:var(--blue-deep)}
 
   /* Black-glass badges: static layers, no backdrop blur or compositing blend. */
-  .rv-glass{--rv-glass-size:52px;--rv-glass-top:#34383A;--rv-glass-bottom:#0B0C0C;
+  .rv-glass{--rv-glass-size:44px;--rv-glass-top:#34383A;--rv-glass-bottom:#0B0C0C;
     position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
     width:var(--rv-glass-size);height:var(--rv-glass-size);border-radius:50%;overflow:hidden;color:#fff;
     background:linear-gradient(160deg,var(--rv-glass-top),var(--rv-glass-bottom));
@@ -2716,7 +2716,7 @@
     background:repeating-linear-gradient(90deg,rgba(255,255,255,.04) 0 1px,rgba(0,0,0,.08) 1px 3px)}
   .rv-glass::after{content:"";position:absolute;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
     background:linear-gradient(180deg,rgba(255,255,255,.28),rgba(255,255,255,0));pointer-events:none}
-  .rv-glass > svg{position:relative;z-index:1;display:block;width:46%;height:46%;flex:none;
+  .rv-glass > svg.rv-glass-symbol{position:relative;z-index:1;display:block;width:46%;height:46%;flex:none;
     fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;filter:none}
   .rv-glass--30{--rv-glass-size:30px}
   .rv-glass--44{--rv-glass-size:44px}
@@ -2724,44 +2724,56 @@
   .rv-glass--60{--rv-glass-size:60px}
   .rv-glass--96{--rv-glass-size:96px}
   .rv-glass--30::before,.rv-glass--plain::before,.rv-glass-list .rv-glass::before{display:none}
-  .rv-glass[data-state="warning"]{--rv-glass-top:#E2554F;--rv-glass-bottom:#4A1412}
-  .tabbar > .tab{justify-content:flex-end;transition:color .2s ease}
-  .tabbar > .tab::before{content:none}
-  .tabbar > .tab.on > .rv-glass{--rv-glass-top:#4A9EEC;--rv-glass-bottom:#143B63}
-  .tabbar .rv-glass{pointer-events:none}
-  .tabbar .rv-glass > svg{width:46%;height:46%;stroke:currentColor;stroke-width:1.75;filter:none}
-  .tabbar > .tab:active:not(.add){transform:none;opacity:1}
-  .tabbar > .tab:focus-visible{outline:none}
-  .tabbar > .tab:focus-visible .rv-glass{outline:2px solid var(--blue);outline-offset:3px}
-  /* Leave the last content row clear of the taller badges and iPhone safe area. */
-  .screen{padding-bottom:calc(120px + var(--safe-bot))}
+  .asset-glass-slot{display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex:0 0 44px}
+  .asset-glass-slot > svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .asset-order-glass .rv-glass::before{display:none}
 </style>
 </head>
 <body>
 <svg class="rove-icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
   <defs>
-    <!-- Tabler Icons v3.42.0, MIT: THIRD_PARTY_NOTICES. Existing module glyphs remain unchanged. -->
-    <symbol id="rove-module-tab-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 12l-2 0l9 -9l9 9l-2 0"/>
-      <path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7"/>
-      <path d="M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6"/>
+    <!-- Tabler Icons v3.42.0, MIT: THIRD_PARTY_NOTICES. Asset types only. -->
+    <symbol id="rove-module-asset-building-bank" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 21l18 0"/>
+      <path d="M3 10l18 0"/>
+      <path d="M5 6l7 -3l7 3"/>
+      <path d="M4 10l0 11"/>
+      <path d="M20 10l0 11"/>
+      <path d="M8 14l0 3"/>
+      <path d="M12 14l0 3"/>
+      <path d="M16 14l0 3"/>
     </symbol>
-    <symbol id="rove-module-tab-flag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 5a5 5 0 0 1 7 0a5 5 0 0 0 7 0v9a5 5 0 0 1 -7 0a5 5 0 0 0 -7 0v-9"/>
-      <path d="M5 21v-7"/>
+    <symbol id="rove-module-asset-pig-money" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M15 11v.01"/>
+      <path d="M5.173 8.378a3 3 0 1 1 4.656 -1.377"/>
+      <path d="M16 4v3.803a6.019 6.019 0 0 1 2.658 3.197h1.341a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-1.342c-.336 .95 -.907 1.8 -1.658 2.473v2.027a1.5 1.5 0 0 1 -3 0v-.583a6.04 6.04 0 0 1 -1 .083h-4a6.04 6.04 0 0 1 -1 -.083v.583a1.5 1.5 0 0 1 -3 0v-2l0 -.027a6 6 0 0 1 4 -10.473h2.5l4.5 -3"/>
     </symbol>
-    <symbol id="rove-module-tab-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 5l0 14"/>
-      <path d="M5 12l14 0"/>
+    <symbol id="rove-module-asset-cash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 15h-3a1 1 0 0 1 -1 -1v-8a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v3"/>
+      <path d="M7 10a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v8a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1l0 -8"/>
+      <path d="M12 14a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/>
     </symbol>
-    <symbol id="rove-module-tab-arrows-exchange" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M7 10h14l-4 -4"/>
-      <path d="M17 14h-14l4 4"/>
+    <symbol id="rove-module-asset-trending-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 17l6 -6l4 4l8 -8"/>
+      <path d="M14 7l7 0l0 7"/>
     </symbol>
-    <symbol id="rove-module-tab-file-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
-      <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2"/>
-      <path d="M9 15l2 2l4 -4"/>
+    <symbol id="rove-module-asset-circle-letter-b" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/>
+      <path d="M10 16h2a2 2 0 1 0 0 -4h-2h2a2 2 0 1 0 0 -4h-2v8"/>
+    </symbol>
+    <symbol id="rove-module-asset-building" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 21l18 0"/>
+      <path d="M9 8l1 0"/>
+      <path d="M9 12l1 0"/>
+      <path d="M9 16l1 0"/>
+      <path d="M14 8l1 0"/>
+      <path d="M14 12l1 0"/>
+      <path d="M14 16l1 0"/>
+      <path d="M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16"/>
+    </symbol>
+    <symbol id="rove-module-asset-diamond" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 5h12l3 5l-8.5 9.5a.7 .7 0 0 1 -1 0l-8.5 -9.5l3 -5"/>
+      <path d="M10 12l-2 -2.2l.6 -1"/>
     </symbol>
     <symbol id="rove-module-checking" viewBox="0 0 28 28">
       <g class="rove-icon-strokes">
@@ -3108,15 +3120,15 @@
   <!-- ========== TAB BAR ========== -->
   <nav class="tabbar tabbar-layout-pending">
     <button class="tab on" data-tab="home">
-      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-home"/></svg></span>Übersicht</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-home"/></svg>Übersicht</button>
     <button class="tab" data-tab="ziele">
-      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-flag"/></svg></span>Ziele</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-goals"/></svg>Ziele</button>
     <button class="tab add" id="addBtn" aria-label="Schnell erfassen">
-      <span class="rv-glass rv-glass--60" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-plus"/></svg></span>Erfassen</button>
+      <div class="plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div></button>
     <button class="tab" data-tab="tx">
-      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-arrows-exchange"/></svg></span><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-cashflow"/></svg><span class="tab-badge" aria-label="Monatscheck offen"></span>Cashflow</button>
     <button class="tab" data-tab="vertraege">
-      <span class="rv-glass rv-glass--52" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="#rove-module-tab-file-check"/></svg></span>Verträge</button>
+      <svg class="rove-module-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-contracts"/></svg>Verträge</button>
   </nav>
 
   <!-- Eingabe-Sheet -->
@@ -3464,7 +3476,7 @@
           <rect class="eye" x="13.2" y="9.2" width="2.6" height="5" rx="1.3" fill="currentColor"/>
         </svg>
       </div>
-      <div><div class="tt">Rov.E</div><div class="tsub">Dein Finanzassistent · behält den Überblick für dich</div></div>
+      <div><div class="tt">Ask Rovi</div><div class="tsub">Dein Finanzassistent · behält den Überblick für dich</div></div>
     </div>
     <div class="feed" id="chat"></div>
     <div class="qsug" id="qsug"></div>
@@ -3766,6 +3778,13 @@ function moduleIcon(name){
   return `<svg class="rove-module-icon" data-tone="${tones[name]}" viewBox="0 0 28 28" aria-hidden="true" focusable="false"><use href="#rove-module-${name}"/></svg>`;
 }
 
+function assetGlassIcon(name){
+  const glyphs={checking:"building-bank",savings:"pig-money",cash:"cash",investments:"trending-up",
+    crypto:"circle-letter-b",property:"building",valuables:"diamond"};
+  if(!Object.prototype.hasOwnProperty.call(glyphs,name)) return "";
+  return `<span class="rv-glass" aria-hidden="true"><svg class="rv-glass-symbol" viewBox="0 0 24 24" focusable="false"><use href="#rove-module-asset-${glyphs[name]}"/></svg></span>`;
+}
+
 // General category/motif icons stay separate from the shared module family.
 const ICONS = {
   shield:'<svg viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.6-3.1 7.6-7 9.5-3.9-1.9-7-4.9-7-9.5V6z"/></svg>',
@@ -3785,13 +3804,13 @@ const ICONS = {
   bitcoin:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 7.5v9M12.2 6.5v11M9.6 8.4h4.3a1.9 1.9 0 0 1 0 3.7H9.6M9.6 12.1h4.7a1.9 1.9 0 0 1 0 3.7H9.6"/></svg>',
   wallet:'<svg viewBox="0 0 24 24"><path d="M4 7h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12"/><path d="M15 13.5h3.5"/></svg>',
   gem:'<svg viewBox="0 0 24 24"><path d="M4 9L7.5 4h9L20 9l-8 11z"/><path d="M4 9h16M9 4.5L12 9l3-4.5M8 9l4 11 4-11"/></svg>',
-  assetBank:moduleIcon("checking"),
-  assetSavings:moduleIcon("savings"),
-  assetWallet:moduleIcon("cash"),
-  assetChart:moduleIcon("investments"),
-  assetBitcoin:moduleIcon("crypto"),
-  assetProperty:moduleIcon("property"),
-  assetGem:moduleIcon("valuables"),
+  assetBank:assetGlassIcon("checking"),
+  assetSavings:assetGlassIcon("savings"),
+  assetWallet:assetGlassIcon("cash"),
+  assetChart:assetGlassIcon("investments"),
+  assetBitcoin:assetGlassIcon("crypto"),
+  assetProperty:assetGlassIcon("property"),
+  assetGem:assetGlassIcon("valuables"),
 };
 const ic = k => ICONS[k]||"";
 
@@ -5462,7 +5481,7 @@ function renderAssets(){
     const homeLabel=a.name==="ETF & Investments" ? "Investments" : a.name;
     return `
     <div class="asset" data-asset="${i}">
-      <div class="gicon asset-icon home-asset-icon rov-icon rov-icon--regular${a.name==="Krypto"?" home-asset-icon--crypto":""}" style="background:${a.tint}22;color:${a.tint}">${homeAssetIcon(a)}</div>
+      <div class="asset-glass-slot">${homeAssetIcon(a)}</div>
       <div class="mid"><div class="nm">${a.financialAccountId!=null?escapeAccountHtml(homeLabel):homeLabel}</div>${(a.vola&&PRICES_STALE)?staleHint():""}</div>
       <div class="aval">${eur(a.value)}</div>
       <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
@@ -6096,10 +6115,8 @@ function openAssetDetail(i){
   const safeAssetName=a.financialAccountId!=null?escapeAccountHtml(a.name):a.name;
   const isInvestmentGroup=a.name==="Krypto" || a.name==="ETF & Investments";
   const detailTitle=a.name==="ETF & Investments" ? "Investments" : safeAssetName;
-  const bitcoinPosition=a.name==="Krypto" ? (a.positions||[]).find(position=>String(position?.providerAssetId||"")==="1") : null;
-  const cryptoLogo=cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},assetIcon(a));
   let body=`<div class="dhead detail-header${isInvestmentGroup?" investment-hero":""}">
-    ${cryptoLogo||`<div class="gicon rov-icon detail-header-icon" aria-hidden="true">${assetIcon(a)}</div>`}
+    <div class="asset-glass-slot" aria-hidden="true">${assetIcon(a)}</div>
     <div class="detail-header-main"><div class="dt">${detailTitle}</div><div class="dv">${a.sub}${dvExtra}</div></div>
     <div class="dtot">${eur(a.value)}</div>
   </div>`;
@@ -10716,7 +10733,7 @@ const PICONS = {
 const PMENU = [
   {k:"score",    ic:"compass", tint:"#D8B66A", bg:"linear-gradient(145deg,rgba(216,182,106,.26),rgba(216,182,106,.07))", l:"Score",              s:"Deine finanzielle Verfassung", badge:()=>`${DATA.score.value} · ${DATA.score.label}`},
   {k:"reports",  ic:"doc",  tint:"#F4F1EA", tone:"white", bg:"linear-gradient(145deg,rgba(244,241,234,.34),rgba(244,241,234,.13))", l:"Reports",            s:"Monats-Archiv als PDF"},
-  {k:"talk",     ic:"chat", tint:"#35D07F", bg:"linear-gradient(145deg,rgba(53,208,127,.23),rgba(42,171,238,.07))", l:"Mit Rov.E sprechen", s:"Frag, was du willst"},
+  {k:"talk",     ic:"chat", tint:"#35D07F", bg:"linear-gradient(145deg,rgba(53,208,127,.23),rgba(42,171,238,.07))", l:"Ask Rovi", s:"Frag, was du willst"},
   {k:"support",  ic:"mentor", tint:"#D8B66A", bg:"linear-gradient(145deg,rgba(216,182,106,.25),rgba(216,182,106,.07))", l:"Mentoring/Zugang", s:"Rov.E, Finanz-Reset & Begleitung"},
   {k:"settings", ic:"gear", tint:"#F4F1EA", tone:"white", bg:"linear-gradient(145deg,rgba(244,241,234,.34),rgba(244,241,234,.13))", l:"Einstellungen",      s:"Konto, Sicherheit, Daten"},
   {k:"admin", ic:"admin", tint:"#2AABEE", bg:"linear-gradient(145deg,rgba(42,171,238,.28),rgba(42,171,238,.07))", l:"Admin", s:"Kontrollzentrum", admin:true},
@@ -11851,7 +11868,7 @@ function renderAssetOrderSheet(){
       <button class="asset-order-grip" type="button" aria-label="${asset.name} verschieben">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="7" r="1.4"/><circle cx="16" cy="7" r="1.4"/><circle cx="8" cy="12" r="1.4"/><circle cx="16" cy="12" r="1.4"/><circle cx="8" cy="17" r="1.4"/><circle cx="16" cy="17" r="1.4"/></svg>
       </button>
-      <div class="gicon rov-icon rov-icon--regular asset-order-icon">${assetIcon(asset)}</div>
+      <div class="asset-glass-slot asset-order-glass">${assetIcon(asset)}</div>
       <div class="asset-order-name">${asset.name}</div>
       <div class="asset-order-controls">
         <button class="asset-order-move" type="button" data-order-move="up" aria-label="${asset.name} nach oben" ${index===0?"disabled":""}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 14 5-5 5 5"/></svg></button>
