@@ -47,7 +47,8 @@ class FrontendBlackScreenFailsafeTests(unittest.TestCase):
             '} else if(APP_MODE==="profile")', 1
         )[0]
         self.assertIn('if(state==="ready") return true;', startup)
-        self.assertIn('if(state==="login") showStartupFallback(', startup)
+        self.assertIn('if(state==="login"||state==="session_unavailable"||state==="state_error") showInitialAuthFallback(state);', startup)
+        self.assertIn('if(STARTUP_AUTH_UNCERTAIN){\n      showInitialAuthFallback("session_unavailable");', startup)
         self.assertIn(".catch(()=>{ showStartupFallback(); return null; });", startup)
         self.assertNotIn("Promise.race", startup)
         self.assertNotIn("setTimeout(r,4000)", startup)

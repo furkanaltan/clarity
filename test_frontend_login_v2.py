@@ -65,7 +65,8 @@ const ctx=vm.createContext({document,Set,TypeError,Date,Promise,AbortController,
   AUTH_ACTIONS_IN_FLIGHT:new Set(),AUTH_BOOTSTRAP_IN_FLIGHT:false,EMAIL_AUTH_PENDING:{email:'',mode:'login'},
   APP_MODE:'bridge',ROVE_API:null,BRIDGE_LIVE_STATE_READY:false,API_SESSION_FAILURE_HANDLED:false,
   PIN_SCREEN_ACTIVE:false,PIN_SESSION_STATE:'unknown',PIN_LAST_LOCAL_ACTIVITY:0,PIN_LAST_SERVER_TOUCH:0,
-  SERVER_ONBOARDING_REQUIRED:false,OB:{step:0},buzz:()=>{},obRender:()=>{},notePinActivity:()=>{},
+  SERVER_ONBOARDING_REQUIRED:false,STARTUP_AUTH_UNCERTAIN:false,OB:{step:0},buzz:()=>{},obRender:()=>{},notePinActivity:()=>{},
+  sessionStorage:{removeItem:()=>{}},readProfile:()=>null,loadPaydayHistory:()=>{},
   loadBridgeState:async()=>{calls.push({path:'STATE'});elements.get('app').hidden=false;return true;},
   showPinScreen:mode=>{pinScreens.push(mode);elements.get('onboard').hidden=false;elements.get('app').hidden=true;},
   fetch:async(url,options)=>{
@@ -79,7 +80,8 @@ const ctx=vm.createContext({document,Set,TypeError,Date,Promise,AbortController,
 for(const name of ['setAuthSurface','setAuthBusy','beginAuthAction','endAuthAction','setAuthMessage','authRequestError','authRequest','authErrorMessage',
   'prepareAuthForm','authBrand','showAppConnect','showNewAccountRegistration','showPasswordSetup','showPasswordReset','showEmailCodeLogin','showAuthRecovery',
   'requestNewAccountCode','requestEmailLoginCode','passwordLogin','completePasswordSetup','requestPasswordReset','confirmPasswordReset','verifyEmailLoginCode',
-  'fetchPinStatus','bootstrapAuthenticatedApp','continueWithSession','resumePinAfterBackground','showServerOnboarding']){
+  'fetchPinStatus','bootstrapAuthenticatedApp','continueWithSession','resumePinAfterBackground','showServerOnboarding',
+  'restoreEmailSession','resolveAppMode','showInitialAuthFallback']){
   const match=source.match(new RegExp('(?:async )?function '+name+'\\([^\\n]*\\)\\{[\\s\\S]*?\\n\\}'));
   assert.ok(match,name);vm.runInContext(match[0],ctx);
 }
@@ -125,6 +127,30 @@ assert.equal(message().textContent,'');assert.equal(get('authTitle').textContent
 assert.equal(button('send-code'),null);assert.equal(calls.length,0);
 assert.equal(get('loginEmail').attrs.autocomplete,'username');
 assert.equal(message().attrs['aria-live'],'polite');
+""")
+
+    def test_initial_expired_or_unavailable_session_shows_clean_login(self):
+        self.run_flow("""
+routes.set('/v1/auth/me',()=>response(503,{ok:false}));
+assert.equal(await ctx.resolveAppMode(),'bridge');assert.equal(ctx.STARTUP_AUTH_UNCERTAIN,true);
+ctx.showInitialAuthFallback('session_unavailable');
+assert.equal(get('loginPassword')!==null,true);assert.equal(message().textContent,'');assert.equal(get('app').hidden,true);
+""")
+
+    def test_initial_expired_session_shows_clean_login(self):
+        self.run_flow("""
+routes.set('/v1/auth/me',()=>response(401,{ok:false}));
+assert.equal(await ctx.resolveAppMode(),'bridge');assert.equal(ctx.STARTUP_AUTH_UNCERTAIN,false);
+routes.set('/v1/auth/pin/status',()=>response(401,{ok:false}));
+assert.equal(await ctx.bootstrapAuthenticatedApp(),'login');ctx.showInitialAuthFallback('login');
+assert.equal(get('loginPassword')!==null,true);assert.equal(message().textContent,'');assert.equal(get('app').hidden,true);
+""")
+
+    def test_failed_login_attempt_still_shows_actionable_error_after_clean_start(self):
+        self.run_flow("""
+assert.equal(message().textContent,'');fillLogin();
+routes.set('/v1/auth/password/login',()=>response(401,{ok:false,error:'invalid_credentials'}));
+await submit();assert.match(message().textContent,/Prüfe E-Mail-Adresse und Passwort/);
 """)
 
     def test_password_visibility_is_reversible(self):
@@ -197,6 +223,17 @@ assert.deepEqual(calls.map(c=>c.path),['/v1/auth/pin/status','STATE']);assert.eq
 fillLogin();ctx.loadBridgeState=async()=>false;routes.set('/v1/auth/password/login',()=>response(200,{ok:true}));
 await submit();assert.equal(get('app').hidden,true);assert.equal(get('onboard').hidden,false);
 assert.equal(get('loginPassword').value,'Synthetic-password');assert.ok(message().textContent);
+""")
+
+    def test_initial_pin_session_failure_is_quiet_but_state_failure_is_explained(self):
+        self.run_flow("""
+routes.set('/v1/auth/pin/status',()=>response(503,{ok:false}));
+assert.equal(await ctx.bootstrapAuthenticatedApp(),'session_unavailable');
+ctx.showInitialAuthFallback('session_unavailable');assert.equal(message().textContent,'');
+routes.set('/v1/auth/pin/status',()=>response(200,{ok:true,pin_status:'unlocked'}));
+ctx.loadBridgeState=async()=>false;
+assert.equal(await ctx.bootstrapAuthenticatedApp(),'state_error');ctx.showInitialAuthFallback('state_error');
+assert.match(message().textContent,/Daten konnten gerade nicht geladen werden/);
 """)
 
     def test_timeout_unlocks_form_and_explains(self):

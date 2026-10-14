@@ -13941,8 +13941,11 @@ async function resumePinAfterBackground(){
 
 async function bootstrapAuthenticatedApp(){
   const pin=await fetchPinStatus();
+  if(pin.state==="error")return "session_unavailable";
   if(pin.state==="unlocked"){
-    if(!await loadBridgeState())return "error";
+    try{
+      if(!await loadBridgeState())return "state_error";
+    }catch(_){return "state_error";}
     document.getElementById("onboard").hidden=true;
     return "ready";
   }
@@ -14298,6 +14301,15 @@ async function resolveAppMode(){
   return APP_MODE;
 }
 
+function showInitialAuthFallback(state){
+  document.getElementById("app")?.setAttribute("hidden","");
+  showAppConnect();
+  const onboard=document.getElementById("onboard");
+  if(onboard)onboard.hidden=false;
+  if(STARTUP_AUTH_UNCERTAIN||state==="login"||state==="session_unavailable")return;
+  if(state==="state_error")setAuthMessage("Deine Daten konnten gerade nicht geladen werden. Bitte versuche es erneut.",true);
+}
+
 async function requestEmailLoginCode(){
   const emailInput=document.getElementById("loginEmail");
   const email=(emailInput?.value||"").trim().toLowerCase();
@@ -14344,9 +14356,12 @@ async function continueWithSession(){
       showServerOnboarding();
       return;
     }
-    if(state==="login"||state==="error"){
+    if(state==="login"||state==="session_unavailable"||state==="state_error"){
       const saved=AUTH_FORM_STATE==="reset"||AUTH_FORM_STATE==="password-setup";
-      showAuthRecovery((saved?"Dein Passwort wurde gespeichert. ":"")+"Die Anmeldung konnte noch nicht bestätigt werden. Bitte versuche es erneut.");
+      const reason=state==="state_error"
+        ? "Deine Daten konnten gerade nicht geladen werden. Bitte versuche es erneut."
+        : "Die Anmeldung konnte noch nicht bestätigt werden. Bitte versuche es erneut.";
+      showAuthRecovery((saved?"Dein Passwort wurde gespeichert. ":"")+reason);
     }
     return state;
   }catch(_){
@@ -14908,7 +14923,7 @@ function installProfileAutosave(){
   };   // startet die Welcome-Animation erst sichtbar
   if(APP_MODE==="bridge"){
     if(STARTUP_AUTH_UNCERTAIN){
-      showStartupFallback("Rov.E konnte deine Anmeldung gerade nicht prüfen. Bitte versuche es erneut.");
+      showInitialAuthFallback("session_unavailable");
       const animationDurch = new Promise(r=>setTimeout(r,1750));
       animationDurch.finally(removeSplash);
       return;
@@ -14918,8 +14933,7 @@ function installProfileAutosave(){
       // gerendert. Ein zweiter Refresh vor dem ersten stabilen Paint lässt Karten und Tabbar
       // kurz neu messen und verursacht beim ersten PIN-Unlock den sichtbaren Höhensprung.
       if(state==="ready") return true;
-      if(state==="login") showStartupFallback("");
-      if(state==="error") showStartupFallback("Deine Sitzung konnte gerade nicht geprüft werden. Bitte versuche es erneut.");
+      if(state==="login"||state==="session_unavailable"||state==="state_error") showInitialAuthFallback(state);
       return null;
     }).catch(()=>{ showStartupFallback(); return null; });
     const animationDurch = new Promise(r=>setTimeout(r,1750));
