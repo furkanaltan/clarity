@@ -32,12 +32,13 @@ unchanged. The profile/chat label remains `Ask Rovi` without route changes.
 
 ## Preserved distinctions
 
-Rovi's animated face in the home mentor card and chat header remains in its
-existing design; it is character artwork rather than a feature icon. Merchant
-and coin logos, charts, financial data glyphs and small inline action controls
-such as arrows remain distinct. Real warning/error statuses retain their red
-indicator. No financial logic, authentication, report behavior, account data
-or backend code is changed.
+Rovi's SVG face and blink animation remain intact. Its badge in the home mentor
+card and chat header now uses the same round black-glass container as the other
+icon badges, with the face rendered white for contrast. Merchant and coin
+logos, charts, financial data glyphs and small inline action controls such as
+arrows remain distinct. Real warning/error statuses retain their red indicator.
+No financial logic, authentication, report behavior, account data or backend
+code is changed.
 
 ## Material
 
@@ -57,7 +58,8 @@ compositing or new badge animation is introduced.
   contracts; the original tab bar, profile initial and feature badges are visible.
 - All seven home asset badges resolve to local SVG symbols with visible white
   strokes; no missing asset references or horizontal overflow were observed.
-- The animated Rovi face and merchant marks retain their original treatment.
+- The Rovi SVG/eye animation and merchant marks remain intact; the Rovi badges
+  now use round black glass.
 - Screenshots were shown in the local preview during review, but standalone
   screenshot files were not exported. `git diff --check` passes.
 

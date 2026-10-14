@@ -70,6 +70,10 @@ class FrontendDetailIconTests(unittest.TestCase):
         self.assertIn('class="logo rov-icon rov-icon--regular detail-expense-icon"', self.frontend)
         self.assertIn("if(merchantDomain(t?.n)) return transactionLogo(t);", self.frontend)
         self.assertIn("const detailLogo=transactionDetailLogo(item);", self.frontend)
+        self.assertIn("#app #txsheet .detail-expense-icon", self.frontend)
+        self.assertIn("#app #txsheet .detail-expense-icon::before", self.frontend)
+        self.assertIn("#app #txsheet .detail-expense-icon::after", self.frontend)
+        self.assertIn(".logo.merchant{position:relative;overflow:hidden;background:#fff!important", self.frontend)
 
     def test_profile_menu_uses_neutral_icons(self):
         self.assertIn("profile-menu-icon", self.frontend)
@@ -217,8 +221,11 @@ class FrontendDetailIconTests(unittest.TestCase):
                           for name, icon in result}, expected)
 
     def test_feature_icon_glass_preserves_the_animated_rovi_face(self):
-        self.assertNotIn("#app .mentor .face", self.frontend)
-        self.assertNotIn("#app .thead .face", self.frontend)
+        self.assertIn("#app #tab-home .mentor .face,#app #talksheet .thead .face", self.frontend)
+        self.assertIn("#app #tab-home .mentor .face::before,#app #talksheet .thead .face::before", self.frontend)
+        self.assertIn("#app #tab-home .mentor .face::after,#app #talksheet .thead .face::after", self.frontend)
+        self.assertIn("border-radius:50%!important", self.frontend)
+        self.assertIn("#app #tab-home .mentor .face svg,#app #talksheet .thead .face svg{position:relative;z-index:1}", self.frontend)
         self.assertIn(".mentor .face .eye{transform-origin:center;animation:blink 4.6s infinite}", self.frontend)
         self.assertIn(".thead .face .eye{transform-origin:center;animation:blink 4.6s infinite}", self.frontend)
         self.assertIn("#app .prow .pic", self.frontend)
