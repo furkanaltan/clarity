@@ -2816,23 +2816,43 @@ def has_verified_app_account(user_id: int) -> bool:
         return False
 
 
+def _require_app_report_artifacts(user_id: int, report_month: str, web_report: dict, pdf_path: Path) -> None:
+    from rove_web_report_renderer import PUBLIC_REPORT_DIR
+
+    if not isinstance(web_report, dict):
+        raise RuntimeError("report_artifacts_incomplete")
+    token = web_report.get("token")
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", token):
+        raise RuntimeError("report_artifacts_incomplete")
+    web_path = Path(web_report.get("path") or "")
+    pdf_path = Path(pdf_path)
+    if (web_path.resolve() != (PUBLIC_REPORT_DIR / token / "index.html").resolve()
+            or pdf_path.resolve() != (REPORTS_DIR / f"rove_report_{user_id}_{report_month}.pdf").resolve()
+            or not web_path.is_file() or web_path.stat().st_size == 0
+            or not pdf_path.is_file() or pdf_path.stat().st_size == 0):
+        raise RuntimeError("report_artifacts_incomplete")
+    with get_db() as conn:
+        registered = conn.execute(
+            """SELECT 1 FROM report_links
+                WHERE token = ? AND user_id = ? AND report_month = ? AND html_path = ?
+                  AND status = 'active' AND datetime(expires_at) > datetime('now', 'localtime')""",
+            (token, user_id, report_month, str(web_path)),
+        ).fetchone()
+    if not registered:
+        raise RuntimeError("report_artifacts_incomplete")
+
+
 def send_report_to_user(user_id: int, report_month: str, bot=None):
     snapshot = get_or_create_report_snapshot(user_id, report_month)
     report_data = snapshot["data"]
     tracked_days = report_data["meta"]["tracked_days"]
 
-    web_report = None
-    try:
-        import rove_web_report_renderer
-        web_report = rove_web_report_renderer.build_web_report(
-            user_id,
-            report_month,
-            report_data=report_data,
-        )
-    except ReportSkipped:
-        raise
-    except Exception as e:
-        logger.warning("Rov.E Web-Report konnte nicht erzeugt werden (error=%s)", safe_exception_summary(e))
+    import rove_web_report_renderer
+    web_report = rove_web_report_renderer.build_web_report(
+        user_id,
+        report_month,
+        report_data=report_data,
+    )
 
     app_only = has_verified_app_account(user_id)
 
@@ -2852,6 +2872,8 @@ def send_report_to_user(user_id: int, report_month: str, bot=None):
         )
 
     file_path, tracked_days = build_pdf(user_id, report_month, report_data=report_data)
+    if app_only:
+        _require_app_report_artifacts(user_id, report_month, web_report, file_path)
     if not app_only:
         with open(file_path, "rb") as f:
             bot.send_document(

@@ -33,6 +33,7 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 from rove_dates import (
     business_month_key,
     business_today,
@@ -1114,23 +1115,36 @@ def _build_reports(conn: sqlite3.Connection, user_id: int) -> list:
             continue
         web_url = ""
         web_expires_at = ""
+        web_was_created = False
         try:
             link = conn.execute(
-                """SELECT public_url, expires_at
+                """SELECT token, html_path, expires_at, status,
+                          datetime(expires_at) > datetime('now', 'localtime') AS within_ttl
                      FROM report_links
-                    WHERE user_id = ? AND report_month = ? AND status = 'active'
-                      AND datetime(expires_at) > datetime('now', 'localtime')
-                    ORDER BY datetime(created_at) DESC LIMIT 1""",
+                    WHERE user_id = ? AND report_month = ?
+                    ORDER BY (status = 'active') DESC, datetime(created_at) DESC LIMIT 1""",
                 (user_id, month_key),
             ).fetchone()
             if link:
-                web_url = str(link["public_url"] or "").strip()
-                web_expires_at = str(link["expires_at"] or "").strip()
+                web_was_created = True
+                if link["status"] == "active" and link["within_ttl"]:
+                    html_path = Path(str(link["html_path"] or ""))
+                    if not html_path.is_file() or html_path.stat().st_size == 0:
+                        continue
+                    # Use the API origin and its existing narrow session-cookie scope.
+                    api_base = PUBLIC_APP_API_BASE_URL or "https://getrove.de/app-api"
+                    web_url = f"{api_base}/v1/public-reports/{quote(str(link['token']), safe='')}/"
+                    web_expires_at = str(link["expires_at"] or "").strip()
         except sqlite3.OperationalError:
             pass
 
         pdf_name = f"rove_report_{user_id}_{month_key}.pdf"
-        pdf_available = (REPORTS_DIR / pdf_name).is_file() or (REPORTS_ARCHIVE_DIR / f"{pdf_name}.gz").is_file()
+        pdf_available = any(path.is_file() and path.stat().st_size > 0 for path in (
+            REPORTS_DIR / pdf_name, REPORTS_ARCHIVE_DIR / f"{pdf_name}.gz",
+        ))
+        # Expired web links still leave the complete PDF archive available.
+        if not pdf_available or not web_was_created:
+            continue
         snapshot = None
         try:
             snapshot = conn.execute(

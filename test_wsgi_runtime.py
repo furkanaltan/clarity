@@ -381,9 +381,11 @@ def failure():
         self.assertEqual(sorted(item[0] for item in results), [200, 401])
 
     def test_report_html_and_pdf_are_served_through_existing_gates(self):
-        html = self.request("GET", f"/v1/public-reports/{MARKER}/")
+        html = self.request("GET", f"/v1/public-reports/{MARKER}/", user=1)
         self.assertEqual(html[0], 200, html[1])
         self.assertIn(b"Synthetic report", html[1])
+        self.assertEqual(self.request("GET", f"/v1/public-reports/{MARKER}/")[0], 401)
+        self.assertEqual(self.request("GET", f"/v1/public-reports/{MARKER}/", user=2)[0], 410)
         pdf = self.request("GET", "/v1/reports/2026-09/pdf", user=1)
         self.assertEqual(pdf[0], 200, pdf[1])
         self.assertTrue(pdf[1].startswith(b"%PDF-"))

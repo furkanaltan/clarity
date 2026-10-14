@@ -8419,19 +8419,23 @@ def commit_screenshot_import():
 @app.route("/v1/public-reports/<token>/", defaults={"relative_path": ""}, methods=["GET"])
 @app.route("/v1/public-reports/<token>/<path:relative_path>", methods=["GET"])
 def serve_public_report(token: str, relative_path: str):
-    """Gate the existing public report URL before serving its static HTML file."""
+    """Serve an existing report link only to its authenticated owner."""
     if relative_path not in {"", "index.html"}:
         return jsonify({"ok": False, "error": "report_not_available"}), 404
     with db() as conn:
+        user_id = user_from_token(conn, token_from_request())
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         try:
             row = conn.execute(
                 """SELECT rl.html_path
                      FROM report_links rl
                      JOIN users u ON u.user_id = rl.user_id
                     WHERE rl.token = ?
+                      AND rl.user_id = ?
                       AND rl.status = 'active'
                       AND datetime(rl.expires_at) > datetime('now', 'localtime')""",
-                (token,),
+                (token, user_id),
             ).fetchone()
         except sqlite3.OperationalError:
             row = None

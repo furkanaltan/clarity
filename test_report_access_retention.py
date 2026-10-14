@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import rove_account_delete_cleanup as cleanup
 import rove_app_api as api
+from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 
 
 class ReportAccessRetentionTests(unittest.TestCase):
@@ -22,7 +23,8 @@ class ReportAccessRetentionTests(unittest.TestCase):
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(
                 """
-                CREATE TABLE users (user_id INTEGER PRIMARY KEY);
+                CREATE TABLE users (user_id INTEGER PRIMARY KEY, onboarding_step INTEGER DEFAULT 10);
+                CREATE TABLE user_access (user_id INTEGER PRIMARY KEY, status TEXT);
                 CREATE TABLE report_links (
                     token TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -33,7 +35,8 @@ class ReportAccessRetentionTests(unittest.TestCase):
                     created_at TEXT,
                     status TEXT NOT NULL
                 );
-                INSERT INTO users VALUES (1);
+                INSERT INTO users(user_id) VALUES (1), (2);
+                INSERT INTO user_access VALUES (1, 'approved'), (2, 'approved');
                 """
             )
             conn.execute(
@@ -51,12 +54,20 @@ class ReportAccessRetentionTests(unittest.TestCase):
                    VALUES ('revoked', 1, '2026-06', ?, '', ?, '', 'revoked')""",
                 (str(self.report_dir / "index.html"), future),
             )
+        self.auth_patch = patch.object(api, "AUTH_SECRET", "synthetic-report-access-secret")
+        self.auth_patch.start()
+        self.addCleanup(self.auth_patch.stop)
+        for user in (1, 2):
+            ensure_unlocked_test_session(self.db_path, user, f"report-session-{user}")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def client(self):
-        return api.app.test_client()
+    def client(self, user=1):
+        client = api.app.test_client()
+        if user is not None:
+            client.set_cookie(api.SESSION_COOKIE_NAME, f"report-session-{user}")
+        return client
 
     def test_valid_report_is_served_through_server_gate(self):
         with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "PUBLIC_REPORT_DIR", self.root):
@@ -64,6 +75,32 @@ class ReportAccessRetentionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, b"private report")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_anonymous_and_foreign_sessions_cannot_read_owner_report(self):
+        with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "PUBLIC_REPORT_DIR", self.root):
+            for user, expected in ((None, 401), (2, 410)):
+                with self.subTest(user=user):
+                    response = self.client(user).get("/v1/public-reports/token-1/")
+                    self.assertEqual(response.status_code, expected)
+                    self.assertNotIn(b"private report", response.data)
+
+    def test_link_token_is_not_a_session_and_query_cannot_override_owner(self):
+        with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "PUBLIC_REPORT_DIR", self.root):
+            response = self.client(None).get(
+                "/v1/public-reports/token-1/?user_id=1&token=report-session-1",
+                headers={"Authorization": "Bearer report-session-1"},
+            )
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(self.client(2).get("/v1/public-reports/token-1/?user_id=1").status_code, 410)
+
+    def test_locked_and_revoked_sessions_are_rejected(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE app_session_pins SET unlocked_at=NULL")
+        with patch.object(api, "DB_PATH", self.db_path):
+            self.assertEqual(self.client().get("/v1/public-reports/token-1/").status_code, 423)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("UPDATE app_sessions SET revoked_at=CURRENT_TIMESTAMP")
+            self.assertEqual(self.client().get("/v1/public-reports/token-1/").status_code, 401)
 
     def test_expired_and_revoked_reports_are_not_served(self):
         with patch.object(api, "DB_PATH", self.db_path), patch.object(api, "PUBLIC_REPORT_DIR", self.root):
