@@ -697,13 +697,15 @@ class CryptoFrontendTests(unittest.TestCase):
         self.assertIn('const hint=position.trackingHint||{}', self.html)
         self.assertIn('currency:MARKET_TRACKING_FORM.currency', self.html)
 
-    def test_crypto_header_reuses_bitcoin_logo_and_keeps_existing_fallback(self):
-        self.assertIn("function cryptoHeaderLogo(position, fallback)", self.html)
-        self.assertIn('String(position?.providerAssetId||"")==="1"', self.html)
-        self.assertIn('class="crypto-header-logo"', self.html)
-        self.assertIn("cryptoLogo||`<div class=\"gicon rov-icon detail-header-icon\"", self.html)
-        self.assertIn("cryptoHeaderLogo({logoUrl:a.headerLogoUrl||bitcoinPosition?.logoUrl},assetIcon(a))", self.html)
-        self.assertIn("width:42px;height:42px", self.html)
+    def test_crypto_header_logo_helper_and_position_fallback_are_scoped(self):
+        helper = self.html[self.html.index("function cryptoHeaderLogo(position, fallback){") :]
+        helper = helper[: helper.index("function investmentPositionMark(")]
+        self.assertIn('String(position?.logoUrl||"").trim()', helper)
+        self.assertIn("s2\\.coinmarketcap\\.com", helper)
+        self.assertIn('class="crypto-header-logo"', helper)
+        self.assertIn("function cryptoPositionMark(position)", self.html)
+        self.assertIn('class="crypto-position-fallback"', self.html)
+        self.assertIn("${assetIcon(a)}", self.html)
 
 
 if __name__ == "__main__":

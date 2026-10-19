@@ -2854,7 +2854,7 @@ def enforce_session_pin():
         if read_only_gate and not table_exists(conn, "app_session_pins"):
             return pin_locked_response("setup_required")
         user_id, session_id = session
-        if request.path == "/v1/onboarding":
+        if request.path in {"/v1/onboarding", "/v1/onboarding/draft"}:
             user = conn.execute(
                 "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
@@ -5406,6 +5406,201 @@ class OnboardingValidationError(Exception):
         self.status = status
 
 
+ONBOARDING_DRAFT_MAX_BYTES = 32 * 1024
+ONBOARDING_DRAFT_STEPS = frozenset(range(1, 10))
+ONBOARDING_DRAFT_CONTRACT_KEYS = frozenset({
+    "miete", "strom", "internet", "handy", "netflix", "haft", "spotify",
+    "gym", "kfz", "auto", "kredit",
+})
+ONBOARDING_DRAFT_WEALTH_KEYS = frozenset({
+    "giro", "tages", "bar", "etf", "krypto", "immo_wert", "immo_schuld", "immo_rate",
+})
+
+
+def ensure_onboarding_drafts_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_onboarding_drafts (
+               user_id INTEGER PRIMARY KEY,
+               step INTEGER NOT NULL CHECK(step BETWEEN 1 AND 9),
+               draft_json TEXT NOT NULL,
+               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+           )"""
+    )
+
+
+def validate_onboarding_draft(payload: object) -> tuple[int, dict] | None:
+    if not isinstance(payload, dict) or set(payload) != {"step", "draft"}:
+        return None
+    if isinstance(payload["step"], bool) or not isinstance(payload["step"], int):
+        return None
+    step = payload["step"]
+    draft = payload["draft"]
+    if step not in ONBOARDING_DRAFT_STEPS or not isinstance(draft, dict):
+        return None
+    allowed = {
+        "name", "wantsApi", "income", "otherIncome", "otherIncomeLabel", "payday",
+        "contracts", "customFix", "wealth", "etfRate", "cashRate", "etfExecutionDay",
+        "etfSource", "etfMode", "goalName", "goalTar", "goalCur", "autoFinType", "fixExpanded",
+    }
+    if set(draft) != allowed:
+        return None
+
+    def amount(value, maximum, *, nullable=True):
+        if value is None and nullable:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            number = round(float(value), 2)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not 0 <= number <= maximum:
+            return None
+        return number
+
+    def bounded_text(value, maximum):
+        if not isinstance(value, str) or len(value) > maximum:
+            return None
+        return clean_text(value)
+
+    name = bounded_text(draft["name"], 40)
+    other_label = bounded_text(draft["otherIncomeLabel"], 40)
+    goal_name = bounded_text(draft["goalName"], 80)
+    if name is None or other_label is None or goal_name is None:
+        return None
+    if not isinstance(draft["wantsApi"], bool) or not isinstance(draft["fixExpanded"], bool):
+        return None
+
+    normalized = dict(draft)
+    normalized["name"] = name
+    normalized["otherIncomeLabel"] = other_label
+    normalized["goalName"] = goal_name
+    for key, maximum in (
+        ("income", 10_000_000), ("otherIncome", 10_000_000),
+        ("etfRate", 100_000), ("cashRate", 100_000),
+        ("goalTar", 10_000_000), ("goalCur", 10_000_000),
+    ):
+        value = amount(draft[key], maximum)
+        if draft[key] is not None and value is None:
+            return None
+        normalized[key] = value
+    payday = draft["payday"]
+    if payday is not None and (isinstance(payday, bool) or not isinstance(payday, int) or payday not in range(1, 32)):
+        return None
+    normalized["payday"] = payday
+    execution_day = draft["etfExecutionDay"]
+    if isinstance(execution_day, bool) or not isinstance(execution_day, int) or execution_day not in {1, 15, 31}:
+        return None
+    if (
+        not isinstance(draft["etfSource"], str)
+        or draft["etfSource"] not in {"giro", "tagesgeld"}
+        or not isinstance(draft["etfMode"], str)
+        or draft["etfMode"] not in {"auto", "confirm"}
+    ):
+        return None
+    if draft["autoFinType"] is not None and (
+        not isinstance(draft["autoFinType"], str)
+        or draft["autoFinType"] not in {"kredit", "leasing", "gekauft"}
+    ):
+        return None
+
+    contracts = draft["contracts"]
+    wealth = draft["wealth"]
+    custom_fix = draft["customFix"]
+    if not isinstance(contracts, dict) or not set(contracts).issubset(ONBOARDING_DRAFT_CONTRACT_KEYS):
+        return None
+    if not isinstance(wealth, dict) or not set(wealth).issubset(ONBOARDING_DRAFT_WEALTH_KEYS):
+        return None
+    normalized_contracts = {}
+    for key, raw in contracts.items():
+        value = amount(raw, 1_000_000, nullable=False)
+        if value is None:
+            return None
+        normalized_contracts[key] = value
+    normalized_wealth = {}
+    for key, raw in wealth.items():
+        value = amount(raw, 10_000_000, nullable=False)
+        if value is None:
+            return None
+        normalized_wealth[key] = value
+    if not isinstance(custom_fix, list) or len(custom_fix) > 50:
+        return None
+    normalized_custom_fix = []
+    for item in custom_fix:
+        if not isinstance(item, dict) or set(item) != {"n", "a"}:
+            return None
+        label = bounded_text(item["n"], 80)
+        value = amount(item["a"], 1_000_000, nullable=False)
+        if not label or value is None or value <= 0:
+            return None
+        normalized_custom_fix.append({"n": label, "a": value})
+    normalized["contracts"] = normalized_contracts
+    normalized["wealth"] = normalized_wealth
+    normalized["customFix"] = normalized_custom_fix
+    return step, normalized
+
+
+def onboarding_draft_user(conn: sqlite3.Connection) -> int | None:
+    session = session_user_from_cookie(conn)
+    if not session:
+        return None
+    user_id, _session_id = session
+    account = conn.execute(
+        "SELECT source FROM app_accounts WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    user = conn.execute(
+        "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not account or str(account["source"] or "") != "app" or not user:
+        return -1
+    if int(user["onboarding_step"] or 0) >= 10:
+        return -1
+    return user_id
+
+
+@app.route("/v1/onboarding/draft", methods=["GET", "POST"])
+def app_onboarding_draft():
+    if request.method == "POST" and len(request.get_data(cache=True)) > ONBOARDING_DRAFT_MAX_BYTES:
+        return jsonify({"ok": False, "error": "onboarding_draft_too_large"}), 413
+    payload = request.get_json(silent=True) if request.method == "POST" else None
+    validated = validate_onboarding_draft(payload) if request.method == "POST" else None
+    if request.method == "POST" and validated is None:
+        return jsonify({"ok": False, "error": "invalid_onboarding_draft"}), 400
+
+    with db() as conn:
+        if request.method == "POST":
+            begin_write(conn)
+        user_id = onboarding_draft_user(conn)
+        if user_id is None:
+            return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+        if user_id < 0:
+            return jsonify({"ok": False, "error": "onboarding_draft_unavailable"}), 409
+        ensure_onboarding_drafts_table(conn)
+        if request.method == "GET":
+            row = conn.execute(
+                "SELECT step, draft_json FROM app_onboarding_drafts WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if not row:
+                return jsonify({"ok": True, "step": 0, "draft": None})
+            try:
+                draft = json.loads(row["draft_json"])
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "onboarding_draft_unavailable"}), 503
+            return jsonify({"ok": True, "step": int(row["step"]), "draft": draft})
+        step, draft = validated
+        conn.execute(
+            """INSERT INTO app_onboarding_drafts(user_id, step, draft_json, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 step = excluded.step,
+                 draft_json = excluded.draft_json,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (user_id, step, json.dumps(draft, ensure_ascii=False, allow_nan=False)),
+        )
+    return jsonify({"ok": True, "step": step})
+
+
 def optional_profile_amount(value: object, maximum: float = 1_000_000.0) -> float | None:
     try:
         amount = round(float(value or 0), 2)
@@ -5738,6 +5933,8 @@ def complete_app_onboarding():
                 "UPDATE users SET onboarding_step = 10, current_month = ? WHERE user_id = ?",
                 (datetime.now().strftime("%Y-%m"), user_id),
             )
+            ensure_onboarding_drafts_table(conn)
+            conn.execute("DELETE FROM app_onboarding_drafts WHERE user_id = ?", (user_id,))
             conn.commit()
     except OnboardingValidationError as exc:
         return jsonify({"ok": False, "error": exc.error}), exc.status

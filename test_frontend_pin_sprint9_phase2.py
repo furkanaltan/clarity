@@ -82,11 +82,16 @@ class FrontendPinTests(unittest.TestCase):
         self.assertIn('readonly aria-readonly="true" tabindex="-1"', pin_field)
         self.assertIn('.pin-entry .pin-pad-input{pointer-events:none}', self.frontend)
 
-    def test_onboarding_finishes_at_pin_setup_not_home(self):
+    def test_onboarding_completion_checks_pin_state_before_showing_setup(self):
         finish = self.function_body("finishOnboarding")
         marker = 'SERVER_ONBOARDING_REQUIRED=false;'
         tail = finish[finish.index(marker):]
-        self.assertIn('showPinScreen("setup")', tail)
+        self.assertIn("SERVER_ONBOARDING_AWAITING_PIN=true;", tail)
+        self.assertIn("await continueAfterServerOnboarding();", tail)
+        self.assertNotIn('showPinScreen("setup")', finish)
+        continuation = self.function_body("continueAfterServerOnboarding")
+        self.assertIn('if(pin.state==="unlocked")', continuation)
+        self.assertIn("await resumeAfterPin();", continuation)
         self.assertNotIn("location.href=location.pathname", tail)
 
     def test_two_minute_inactivity_relocks_and_active_use_touches_server(self):

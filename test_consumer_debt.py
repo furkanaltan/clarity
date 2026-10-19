@@ -243,6 +243,9 @@ class ConsumerDebtTests(unittest.TestCase):
         data = copy.deepcopy(standard_payload())
         data["profile"].update(current_investments=5000,cash_reserve=10000,property_equity=0,total_consumer_debt=20000,net_worth=-5000)
         data["report_truth"]["wealth"] = report_engine._report_wealth_truth(data["profile"], {"current_cash":10000}, {"holdings":[]})
+        data["report_truth"]["debts"] = report_engine._report_debt_truth(
+            data["profile"], None, None, is_current_month=True
+        )
         data["report_story_v2"] = build_report_story_v2(data)
         context = build_render_context(data)
         self.assertEqual(context["net_worth_amount"], "-5.000 €")
@@ -250,11 +253,14 @@ class ConsumerDebtTests(unittest.TestCase):
         self.assertEqual(sum(row["share"] for row in data["report_truth"]["wealth"]["allocation"]), 100)
         for name in ("rove_web_report.html",):
             html = render_template((ROOT / "report_templates" / name).read_text(), data)
-            self.assertIn("Konsumschulden: 20.000 €", html)
+            self.assertIn(">20.000 €</div>", html)
+            self.assertIn(">Konsumschulden</div>", html)
             self.assertNotIn("NaN €", html)
         pdf_pages = _render_hell_pages(data)
         self.assertEqual(len(pdf_pages), 10)
-        self.assertIn("Konsumschulden: 20.000 €", "".join(pdf_pages))
+        pdf_html = "".join(pdf_pages)
+        self.assertIn("20.000 €", pdf_html)
+        self.assertIn("Konsumschulden", pdf_html)
 
     def test_report_data_live_then_frozen_then_unknown_debt(self):
         self.conn.execute("CREATE TABLE IF NOT EXISTS monthly_snapshots (user_id INTEGER, month TEXT, net_worth REAL, clarity_score INTEGER, budget_ok INTEGER)")

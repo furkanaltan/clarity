@@ -968,6 +968,20 @@ class OnboardingAtomicityTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_contracts WHERE user_id = 1").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT execution_day FROM app_etf_savings_plan WHERE user_id = 1").fetchone()[0], 15)
 
+    def test_successful_onboarding_atomically_removes_saved_draft(self):
+        with closing(self.connect()) as conn:
+            api.ensure_onboarding_drafts_table(conn)
+            conn.execute(
+                "INSERT INTO app_onboarding_drafts(user_id,step,draft_json) VALUES(1,5,'{}')"
+            )
+            conn.commit()
+        response = self.submit(self.payload())
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM app_onboarding_drafts WHERE user_id=1").fetchone()[0], 0
+            )
+
     def test_missing_multi_cash_source_is_rejected_without_partial_state_then_resolves_existing_source(self):
         invalid = self.submit(self.payload(giro=0, tagesgeld=5000, source="giro"))
         self.assertEqual(invalid.status_code, 400)

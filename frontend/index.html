@@ -2278,6 +2278,9 @@
   .scan-fixed input{accent-color:var(--blue);flex:0 0 auto}
   .quick-error{display:none;color:var(--red);font-size:13px;font-weight:700;line-height:1.35;margin:10px 4px 0}
   .quick-error.on{display:block}
+  .quick-retry{display:none;margin:8px 4px 0;padding:0;border:0;background:none;color:var(--blue);font:inherit;font-weight:700;text-decoration:underline;cursor:pointer}
+  .quick-retry.on{display:inline-block}
+  .tx-sync-status{display:inline-block;margin-top:4px;color:var(--orange);font-size:11px;font-weight:700;line-height:1.2}
   .scan-launch{width:100%;margin-top:13px;min-height:46px;display:flex;align-items:center;justify-content:center;gap:9px;
     border:1px solid var(--line2);border-radius:15px;background:var(--card);color:var(--ink);
     font:inherit;font-size:14px;font-weight:750;cursor:pointer}
@@ -3244,6 +3247,7 @@
       <button class="send" id="quickSend" type="submit" aria-label="Verbuchen"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 6l6 6-6 6"/></svg></button>
     </form>
     <div id="quickError" class="quick-error" role="alert"></div>
+    <button type="button" class="quick-retry" id="quickRetry" hidden>Erneut sicher versuchen</button>
     <div class="livecat" id="quickCat"></div>
     <div class="chips" id="quickChips"></div>
     <button type="button" class="scan-launch" id="scanOpen">
@@ -4149,6 +4153,11 @@ function authErrorMessage(response, data, fallback){
 }
 let SERVER_ONBOARDING_REQUIRED = false;
 let SERVER_ONBOARDING_STATUS = {required:false,status:"completed",step:10,completed:true};
+let SERVER_ONBOARDING_AWAITING_PIN=false;
+let ONBOARDING_DRAFT_LOAD_IN_FLIGHT=null;
+let ONBOARDING_DRAFT_SAVE_IN_FLIGHT=false;
+let ONBOARDING_DRAFT_SAVE_ERROR="";
+const ONBOARDING_DRAFT_TIMEOUT_MS=10000;
 // Diese Hashes sind Dev-/Demo-Einstiege, die DATA leeren/verändern — sie erzwingen Mock-Modus,
 // damit der Autosave nie einen Demo-Zustand über ein echtes Profil schreibt.
 const DEMO_HASHES = new Set(["empty","empty-ziele","empty-tx","offline"]);
@@ -4175,6 +4184,9 @@ let PIN_SCREEN_ACTIVE=false;
 let PIN_SESSION_STATE="unknown";
 let PIN_LAST_LOCAL_ACTIVITY=Date.now();
 let PIN_LAST_SERVER_TOUCH=0;
+let BOOKING_SYNC_BUSY=false;
+let BOOKING_STATE_UNCERTAIN=false;
+let PENDING_BOOKING_RETRY=null;
 const PIN_INACTIVITY_MS=2*60*1000;
 function apiReady(){
   return !!(ROVE_API?.baseUrl && ROVE_API.authenticated);
@@ -7115,6 +7127,12 @@ function transactionRowElement(t,isCurrent){
   name.className="nm";
   name.textContent=String(t?.n??"");
   middle.append(name);
+  if(t?.syncStatus==="pending"||t?.syncStatus==="uncertain"){
+    const status=document.createElement("span");
+    status.className="tx-sync-status";
+    status.textContent=t.syncStatus==="uncertain"?"Nicht bestätigt · erneuter Versuch nötig":"Wird gespeichert …";
+    middle.append(status);
+  }
   const amount=document.createElement("div");
   amount.className=`amt ${Number(t?.a)<0?"neg":"pos"}`;
   amount.textContent=`${Number(t?.a)<0?"−":"+"}${eur2(Math.abs(Number(t?.a)||0))}`;
@@ -8733,6 +8751,7 @@ function detectCat(t){
 const sheet=document.getElementById("sheet"), sheetBg=document.getElementById("sheetBg"), quickIn=document.getElementById("quickIn");
 const quickForm=document.getElementById("quickForm");
 const quickError=document.getElementById("quickError");
+const quickRetry=document.getElementById("quickRetry");
 const gsheet=document.getElementById("gsheet");
 let SETTINGS_RETURN_FOCUS=null;
 function activeSettingsDialog(){
@@ -8782,11 +8801,17 @@ window.addEventListener("resize",syncSheetKeyboardCover);
 if(window.visualViewport){ visualViewport.addEventListener("resize",syncSheetKeyboardCover); visualViewport.addEventListener("scroll",syncSheetKeyboardCover); }
 // Tab-Leiste bleibt fix — Sheets liegen darüber, der Dimm-Layer deckt sie zu (kein Hochschieben mehr)
 function liftTabbar(){ tabbar.style.transform=""; tabbar.classList.remove("lift"); }
-function openSheet(){ sheetBg.classList.add("on"); sheet.classList.add("on"); syncSheetInteractivity(); rovePushState("sheet"); requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>{ quickIn.focus(); syncSheetKeyboardCover(); },340); }
-function setQuickError(message){
+function openSheet(){
+  sheetBg.classList.add("on"); sheet.classList.add("on"); syncSheetInteractivity(); rovePushState("sheet");
+  if(PENDING_BOOKING_RETRY)setQuickError("Nicht bestätigt. Wiederhole denselben Speicherversuch, damit keine Doppelbuchung entsteht.",{retry:true});
+  requestAnimationFrame(()=>liftTabbar(sheet)); setTimeout(()=>{ quickIn.focus(); syncSheetKeyboardCover(); },340);
+}
+function setQuickError(message,options={}){
   if(!quickError) return;
   quickError.textContent=message||"";
   quickError.classList.toggle("on",!!message);
+  quickRetry?.classList.toggle("on",!!message&&!!options.retry);
+  if(quickRetry)quickRetry.hidden=!(message&&options.retry);
 }
 // iOS räumt nach dem Schliessen der Tastatur nicht zuverlässig auf. Am Gerät gemessen (Furkan,
 // installierte PWA, 26.07.): nach dem zweiten Eintragen blieb window.innerHeight bei ~810 statt
@@ -8802,7 +8827,7 @@ function dismissKeyboard(){
 }
 function closeSheet(options={}){
   const closingSettings=!!activeSettingsDialog();
-  const shouldRestore=!options.fromHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
+  const shouldRestore=!options.fromHistory&&!options.skipHistory&&typeof roveSyncSheetClose==="function"&&roveSyncSheetClose();
   sheetBg.classList.remove("on"); closeAllSheetsSoft(); document.body.classList.remove("quick-input-keyboard-open");
   sheet.classList.remove("keyboard-open"); sheet.style.removeProperty("--keyboard-cover");
   sheet.style.removeProperty("--sheet-viewport-height"); liftTabbar(); dismissKeyboard(); setQuickError("");
@@ -9089,7 +9114,7 @@ function applyServerCashAccounts(accounts){
 // nach 45 sek löschen"). Eigener Endpunkt, weil eine Einnahme nicht in `expenses` gehört —
 // dort würde sie als Ausgabe in Budget, Bot und Report zählen.
 async function syncIncomeToServer(e, raw){
-  if(!apiReady()) return;
+  if(!apiReady()) return true;
   const requestId=e.requestId||(e.requestId=(globalThis.crypto?.randomUUID?.()||
     `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`));
   try{
@@ -9110,14 +9135,17 @@ async function syncIncomeToServer(e, raw){
       DATA.sts.free_month_remaining=data.available;
       mentorLine(); renderBudgets();
     }
+    return true;
   }catch(err){
     console.warn("Einnahme konnte nicht gespeichert werden:", err);
     if(isDefiniteBookingRejection(err)){
       rollbackFailedBooking(e);
       showToast("Nicht gespeichert — bitte erneut versuchen");
+      return false;
     }else{
       await refreshAppDataFromServer();
       showToast("Verbindung unterbrochen. Rov.E gleicht den Stand ab.");
+      return false;
     }
   }
 }
@@ -9138,6 +9166,11 @@ function rollbackFailedBooking(e){
     renderTx(); renderBudgets(); renderAssets(); mentorLine();
     return;
   }
+  if(e.optimisticBalanceApplied===false){
+    recalcNetWorth();
+    renderTx(); renderBudgets(); renderAssets(); mentorLine();
+    return;
+  }
   if(e.bar){
     const wallet=legacyCashAsset("bargeld");
     if(wallet) wallet.value+=Math.abs(Number(e.a)||0);
@@ -9149,8 +9182,8 @@ function rollbackFailedBooking(e){
   renderTx(); renderBudgets(); renderAssets(); mentorLine();
 }
 async function syncExpenseToServer(e, raw){
-  if(!apiReady()) return;
-  if(e.transfer) return;                       // Abhebungen laufen über syncCashWithdrawal()
+  if(!apiReady()) return true;
+  if(e.transfer) return true;                   // Abhebungen laufen über syncCashWithdrawal()
   if(e.a>=0) return syncIncomeToServer(e, raw);
   const requestId=e.requestId||(e.requestId=(globalThis.crypto?.randomUUID?.()||
     `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`));
@@ -9174,7 +9207,15 @@ async function syncExpenseToServer(e, raw){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok){ const error=new Error(data.error||`HTTP ${res.status}`); error.httpStatus=res.status; throw error; }
     e.sid=data.id;   // Server-ID merken, damit dieselbe Buchung ohne Reload löschbar ist
-    await refreshAppDataFromServer();
+    delete e.syncStatus;
+    delete e.optimisticBalanceApplied;
+    if(PENDING_BOOKING_RETRY?.e===e){
+      PENDING_BOOKING_RETRY=null;
+      BOOKING_STATE_UNCERTAIN=false;
+      setQuickError("");
+    }
+    const refreshed=await refreshAppDataFromServer();
+    if(!refreshed) renderTx();
     tagLatestNetHistoryPoint("expense",e.sid);
     if(data.available!=null){
       DATA.sts.available=data.available;
@@ -9189,18 +9230,44 @@ async function syncExpenseToServer(e, raw){
     // Bewusst KEIN Glocken-Eintrag pro Ausgabe mehr (Furkan 24.07.): dass App und Bot
     // verbunden sind, weiß der Nutzer — jede Buchung als „Mit Bot synchronisiert" zu
     // melden hat die Glocke nur zugemüllt. Sync läuft weiter, nur ohne Aktivitäts-Notiz.
+    return true;
   }catch(err){
     console.warn("App-Sync fehlgeschlagen:", err);
     // Bei einem sicheren 4xx-Fehler wird nur diese eigene optimistische Mutation entfernt.
     // Bei unklarem Ausgang entscheidet der anschliessende Server-State-Refresh.
     if(isDefiniteBookingRejection(err)){
       rollbackFailedBooking(e);
+      PENDING_BOOKING_RETRY=null;
+      BOOKING_STATE_UNCERTAIN=false;
+      setQuickError("");
       showToast("Nicht gespeichert — bitte erneut versuchen");
+      return false;
     }else{
       // Timeout, Reset oder 5xx kann nach einem serverseitigen Commit eintreten.
       // Niemals den alten lokalen Snapshot zurueckschreiben; der Server entscheidet.
-      await refreshAppDataFromServer();
-      showToast("Verbindung unterbrochen. Rov.E gleicht den Stand ab.");
+      const refreshed=await refreshAppDataFromServer();
+      const accepted=refreshed&&DATA.tx.some(day=>(day.items||[]).some(item=>item.requestId===e.requestId));
+      if(accepted){
+        const item=DATA.tx.flatMap(day=>day.items||[]).find(row=>row.requestId===e.requestId);
+        if(item?.sid!=null)e.sid=item.sid;
+        delete e.syncStatus;
+        PENDING_BOOKING_RETRY=null;
+        BOOKING_STATE_UNCERTAIN=false;
+        setQuickError("");
+        return true;
+      }
+      e.syncStatus="uncertain";
+      PENDING_BOOKING_RETRY={e,raw};
+      BOOKING_STATE_UNCERTAIN=true;
+      if(refreshed)e.optimisticBalanceApplied=false;
+      if(refreshed){
+        let today=DATA.tx.find(day=>day.d==="Heute");
+        if(!today){today={d:"Heute",items:[]};DATA.tx.unshift(today);}
+        if(!today.items.some(item=>item.requestId===e.requestId))today.items.unshift(e);
+      }
+      renderTx();
+      setQuickError("Nicht bestätigt. Wiederhole denselben Speicherversuch, damit keine Doppelbuchung entsteht.",{retry:true});
+      return false;
     }
   }
 }
@@ -9334,6 +9401,28 @@ function refreshAppDataFromServer(){
   }
   return appDataRefreshInFlight;
 }
+function reconcilePendingBookingFromCanonical(){
+  const pending=PENDING_BOOKING_RETRY;
+  if(!pending)return;
+  const accepted=DATA.tx.flatMap(day=>day.items||[]).find(item=>item.requestId===pending.e.requestId);
+  if(accepted){
+    if(accepted.sid!=null)pending.e.sid=accepted.sid;
+    delete pending.e.syncStatus;
+    delete pending.e.optimisticBalanceApplied;
+    PENDING_BOOKING_RETRY=null;
+    BOOKING_STATE_UNCERTAIN=false;
+    setQuickError("");
+    if(quickIn.value===pending.raw)quickIn.value="";
+    showToast("Buchung bestätigt.");
+    return;
+  }
+  pending.e.syncStatus="uncertain";
+  pending.e.optimisticBalanceApplied=false;
+  BOOKING_STATE_UNCERTAIN=true;
+  let today=DATA.tx.find(day=>day.d==="Heute");
+  if(!today){today={d:"Heute",items:[]};DATA.tx.unshift(today);}
+  if(!today.items.some(item=>item.requestId===pending.e.requestId))today.items.unshift(pending.e);
+}
 async function fetchCanonicalAppState(){
   const goalRevisionAtFetch=goalStateRevision;
   const bufferRevisionAtFetch=bufferStateRevision;
@@ -9404,6 +9493,7 @@ async function fetchCanonicalAppState(){
         monthExpenses:(data.sts.monthExpenses!=null?data.sts.monthExpenses:DATA.sts.monthExpenses)};
     }
 
+    reconcilePendingBookingFromCanonical();
     BRIDGE_LIVE_STATE_READY=true;
     renderGoals();renderAssets();renderTx();renderBudgets();renderVertraege();renderActivity();renderAnalysisIfOpen();
     recalcNetWorth();mentorLine();applyHomeEmpty();applyProfileIdentity();
@@ -9527,6 +9617,12 @@ function commitEntry(e, raw){
     DATA.tx.splice(heuteIdx>=0 ? heuteIdx+1 : 0, 0, grp);  // "Gestern" & Co. direkt nach "Heute" einsortieren
   }
   grp.items.unshift(e);
+  if(e.a<0&&!e.transfer)e.optimisticBalanceApplied=true;
+  if(APP_MODE==="bridge"&&apiReady()&&e.a<0&&!e.transfer){
+    e.requestId=e.requestId||(globalThis.crypto?.randomUUID?.()||
+      `rove-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    e.syncStatus="pending";
+  }
   const wallet=legacyCashAsset("bargeld");
   if(e.transfer){
     const giro=legacyCashAsset("giro");
@@ -9545,9 +9641,47 @@ function commitEntry(e, raw){
   // Transaktion auch das Bargeld. Eine getrennte /v1/accounts-Runde würde mitten im Speichern
   // refreshAppDataFromServer() auslösen und DATA.tx ersetzen — die gerade getippte Buchung wäre
   // für 45 Sekunden wieder aus der Liste verschwunden.
+  if(e.a<0&&!e.transfer)return syncExpenseToServer(e, raw);
   syncExpenseToServer(e, raw);
+  return true;
 }
-function addEntry(){
+async function retryPendingBooking(){
+  const pending=PENDING_BOOKING_RETRY;
+  if(!pending||BOOKING_SYNC_BUSY)return;
+  BOOKING_SYNC_BUSY=true;
+  quickRetry.disabled=true;
+  quickRetry.textContent="Wird sicher erneut geprüft …";
+  quickIn.readOnly=true;
+  try{
+    const saved=await syncExpenseToServer(pending.e,pending.raw);
+    if(saved){
+      if(quickIn.value===pending.raw)quickIn.value="";
+      updateQuickCat();
+      closeSheetAndNavigate("tx");
+      buzz();
+      showToast(`✓ ${pending.e.n} · −${eur2(Math.abs(pending.e.a))} gespeichert`);
+    }else if(!PENDING_BOOKING_RETRY){
+      quickIn.readOnly=false;
+      setQuickError("Nicht gespeichert. Prüfe die Eingabe und versuche es erneut.");
+    }
+  }finally{
+    BOOKING_SYNC_BUSY=false;
+    quickRetry.disabled=false;
+    quickRetry.textContent="Erneut sicher versuchen";
+    if(!PENDING_BOOKING_RETRY)quickIn.readOnly=false;
+  }
+}
+quickRetry.addEventListener("click",retryPendingBooking);
+async function addEntry(){
+  if(BOOKING_SYNC_BUSY)return;
+  if(PENDING_BOOKING_RETRY||BOOKING_STATE_UNCERTAIN){
+    setQuickError("Diese Buchung ist noch nicht bestätigt. Wiederhole zuerst denselben Speicherversuch.",{retry:!!PENDING_BOOKING_RETRY});
+    return;
+  }
+  if(APP_MODE==="bridge"&&!apiReady()){
+    setQuickError("Keine Verbindung zum Konto. Die Buchung wurde nicht gespeichert. Prüfe die Verbindung und versuche es erneut.");
+    return;
+  }
   const raw=quickIn.value;
   const e=parseEntry(raw);
   if(!e){ quickIn.focus(); quickIn.placeholder="Bitte Betrag angeben, z. B. Kaffee 4,50"; return; }
@@ -9561,11 +9695,29 @@ function addEntry(){
     }
   }
   setQuickError("");
-  commitEntry(e, raw);
+  const needsServerConfirmation=APP_MODE==="bridge"&&apiReady()&&e.a<0&&!e.transfer;
+  if(needsServerConfirmation){
+    BOOKING_SYNC_BUSY=true;
+    quickIn.readOnly=true;
+    const submit=quickForm.querySelector('[type="submit"]');
+    if(submit)submit.disabled=true;
+  }
+  let saved=true;
+  try{ saved=await commitEntry(e, raw); }
+  finally{
+    if(needsServerConfirmation){
+      BOOKING_SYNC_BUSY=false;
+      quickIn.readOnly=!!PENDING_BOOKING_RETRY;
+      const submit=quickForm.querySelector('[type="submit"]');
+      if(submit)submit.disabled=false;
+    }
+  }
+  if(needsServerConfirmation&&!saved){
+    if(!PENDING_BOOKING_RETRY)setQuickError("Nicht gespeichert. Prüfe die Eingabe und versuche es erneut.");
+    return;
+  }
   quickIn.value=""; updateQuickCat();
-  closeSheet(); buzz();
-  go("tx");   // Furkan-Feedback 16.07.: nach "+"-Eingabe direkt zur Buchung leiten (vorher blieb
-              // man auf dem zuvor aktiven Tab stehen und sah die neue Ausgabe nicht sofort)
+  closeSheetAndNavigate("tx"); buzz();
   const isSalary = e.a>0 && /gehalt|lohn/i.test(raw);
   if(isSalary){                       // Delight: Zahltag → Töpfe füllen?
     logActivity({t:`Gehalt eingegangen · ${eur(e.a)}`, i:"trend"});
@@ -13730,6 +13882,13 @@ function go(tab,options={}){
   target.scrollTop=0;
   if(options.history) rovePushState();
 }
+function closeSheetAndNavigate(tab){
+  closeSheet({skipHistory:true});
+  go(tab);
+  if(!ROVE_NAV_RESTORING&&!ROVE_NAV_SUPPRESSED&&!DEMO_HASHES.has(location.hash.slice(1))){
+    history.replaceState({roveNav:true,tab,sheet:null},"",location.href);
+  }
+}
 document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click",()=>go(t.dataset.tab,{history:true})));
 roveEnsureRoot();
 
@@ -14020,7 +14179,7 @@ async function resumeAfterPin(){
   const ok=await loadBridgeState();
   if(ok){
     if(SERVER_ONBOARDING_REQUIRED){
-      showServerOnboarding();
+      await showServerOnboarding();
       return true;
     }
     document.getElementById("app")?.removeAttribute("hidden");
@@ -14146,15 +14305,37 @@ async function bootstrapAuthenticatedApp(){
   return pin.state;
 }
 
-function showServerOnboarding(){
+async function showServerOnboarding(){
+  if(ONBOARDING_DRAFT_LOAD_IN_FLIGHT)return ONBOARDING_DRAFT_LOAD_IN_FLIGHT;
   const onboard=document.getElementById("onboard");
-  if(!onboard)return;
+  if(!onboard)return false;
   setAuthSurface(true);
   onboard.classList.remove("pin-mode","auth-v2");
   document.getElementById("obBody")?.classList.remove("pin-lock-layout","pin-setup-layout","ob-login");
-  OB.step=0;
-  obRender();
   onboard.hidden=false;
+  document.getElementById("obBody").innerHTML='<div class="ob-title">Dein Fortschritt wird geladen …</div>';
+  document.getElementById("obFoot").innerHTML="";
+  ONBOARDING_DRAFT_LOAD_IN_FLIGHT=(async()=>{
+    try{
+      const response=await onboardingDraftRequest("/v1/onboarding/draft",{method:"GET",cache:"no-store"});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{httpStatus:response.status});
+      applyServerOnboardingDraft(data.draft);
+      OB.step=Math.max(0,Math.min(Number(data.step)||0,OB_STEPS.length-1));
+      ONBOARDING_DRAFT_SAVE_ERROR="";
+      obRender();
+      onboard.hidden=false;
+      return true;
+    }catch(error){
+      if([401,423].includes(Number(error?.httpStatus)))return false;
+      const body=document.getElementById("obBody"),foot=document.getElementById("obFoot");
+      body.innerHTML='<div class="ob-title">Fortschritt gerade nicht verfügbar.</div><div class="ob-sub" role="alert">Deine bestätigten Schritte bleiben erhalten. Prüfe die Verbindung und lade sie erneut.</div>';
+      foot.innerHTML='<button class="ob-cta" data-ob="retry-draft">Erneut laden</button>';
+      onboard.hidden=false;
+      return false;
+    }finally{ONBOARDING_DRAFT_LOAD_IN_FLIGHT=null;}
+  })();
+  return ONBOARDING_DRAFT_LOAD_IN_FLIGHT;
 }
 
 window.addEventListener("rove:api-locked",()=>{
@@ -14547,7 +14728,7 @@ async function continueWithSession(){
     const state=await bootstrapAuthenticatedApp();
     if(state==="ready")return;
     if(state==="onboarding"){
-      showServerOnboarding();
+      await showServerOnboarding();
       return;
     }
     if(state==="login"||state==="session_unavailable"||state==="state_error"){
@@ -15108,9 +15289,7 @@ function installProfileAutosave(){
     const ob=document.getElementById("onboard");
     if(ob) ob.classList.add("go");
     if(APP_MODE==="bridge" && SERVER_ONBOARDING_REQUIRED && !PIN_SCREEN_ACTIVE){
-      OB.step=0;
-      obRender();
-      ob.hidden=false;
+      showServerOnboarding();
     }
     const app=document.getElementById("app");
     if(app?.hidden && ob?.hidden) showStartupFallback();
@@ -15160,6 +15339,48 @@ const OB = { step:0, name:"", wantsApi:false, income:null, otherIncome:null, oth
              etfExecutionDay:1, etfSource:"giro", etfMode:"auto",
              goalName:"", goalTar:null, goalCur:null, autoFinType:null, fixExpanded:false };
 const OB_STEPS = ["welcome","name","path","income","fix","wealth","sparrate","etfplan","goal","done"];
+function resetOnboardingDraft(){
+  Object.assign(OB,{step:0,name:"",wantsApi:false,income:null,otherIncome:null,otherIncomeLabel:"",
+    payday:null,contracts:{},customFix:[],wealth:{},etfRate:null,cashRate:null,
+    etfExecutionDay:1,etfSource:"giro",etfMode:"auto",goalName:"",goalTar:null,
+    goalCur:null,autoFinType:null,fixExpanded:false});
+}
+async function onboardingDraftRequest(path,options={}){
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),ONBOARDING_DRAFT_TIMEOUT_MS);
+  try{return await apiFetch(path,{...options,signal:controller.signal});}
+  finally{clearTimeout(timeout);}
+}
+function serializeOnboardingDraft(){
+  return {
+    name:OB.name,wantsApi:OB.wantsApi,income:OB.income,otherIncome:OB.otherIncome,
+    otherIncomeLabel:OB.otherIncomeLabel,payday:OB.payday,contracts:{...OB.contracts},
+    customFix:OB.customFix.map(item=>({n:item.n,a:item.a})),wealth:{...OB.wealth},
+    etfRate:OB.etfRate,cashRate:OB.cashRate,etfExecutionDay:OB.etfExecutionDay,
+    etfSource:OB.etfSource,etfMode:OB.etfMode,goalName:OB.goalName,goalTar:OB.goalTar,
+    goalCur:OB.goalCur,autoFinType:OB.autoFinType,fixExpanded:OB.fixExpanded
+  };
+}
+function applyServerOnboardingDraft(draft){
+  resetOnboardingDraft();
+  if(!draft||typeof draft!=="object"||Array.isArray(draft))return;
+  Object.assign(OB,draft,{
+    contracts:draft.contracts&&typeof draft.contracts==="object"&&!Array.isArray(draft.contracts)?{...draft.contracts}:{},
+    customFix:Array.isArray(draft.customFix)?draft.customFix.map(item=>({n:String(item.n||""),a:Number(item.a)||0})):[],
+    wealth:draft.wealth&&typeof draft.wealth==="object"&&!Array.isArray(draft.wealth)?{...draft.wealth}:{}
+  });
+}
+async function persistServerOnboardingDraft(step){
+  if(APP_MODE!=="bridge"||!SERVER_ONBOARDING_REQUIRED)return true;
+  if(!apiReady())throw new Error("not_authenticated");
+  const response=await onboardingDraftRequest("/v1/onboarding/draft",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({step,draft:serializeOnboardingDraft()})
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{httpStatus:response.status});
+  return true;
+}
 // Übliche weitere Einkommensquellen (Bot-Vorbild: "other_income", frei benennbar — z.B. Miete
 // als EINNAHME, nicht zu verwechseln mit der Miete-AUSGABE im Fixkosten-Picker)
 const OB_INCOME_LABELS = ["Miete", "Nebenjob", "Sonstiges"];
@@ -15451,7 +15672,7 @@ function obRender(){
     body.innerHTML = `
       <div class="ob-title">Alles bereit${OB.name?`, ${OB.name}`:""}.</div>
       <div class="ob-sub">${rows.length
-        ? "Deine Angaben sind gespeichert. Ab jetzt behält Rov.E deinen finanziellen Überblick im Blick."
+        ? "Prüfe deine Angaben. Gespeichert werden sie erst, wenn du auf „Zur App“ tippst."
         : "Du startest mit einem leeren Blatt — trag deine erste Ausgabe ein, sobald du bereit bist."}</div>
       ${rows.length?`<div class="ob-stats">${rows.map(([k,v,c])=>
         `<div class="ob-stat"><span class="k">${k}</span><span class="v ${c}">${v}</span></div>`).join("")}</div>`:""}`;
@@ -15459,6 +15680,14 @@ function obRender(){
     // kurzer Konfetti-Moment (gleiche Physik wie Ziel-Feier), Body braucht position fürs absolute Konfetti
     body.style.position="relative";
     setTimeout(()=>spawnConfetti(body, "#2AABEE"), 250);
+  }
+  if(ONBOARDING_DRAFT_SAVE_ERROR){
+    const error=document.createElement("div");
+    error.id="obSaveError";
+    error.className="ob-sub";
+    error.setAttribute("role","alert");
+    error.textContent=ONBOARDING_DRAFT_SAVE_ERROR;
+    body.append(error);
   }
 }
 
@@ -15530,7 +15759,36 @@ function obBuildGoals(){
     cur:Math.min(OB.goalCur||0, tar), tar}];
 }
 
+async function continueAfterServerOnboarding(){
+  const button=document.querySelector('[data-ob="finish"]');
+  if(button){button.disabled=true;button.textContent="PIN wird geprüft …";}
+  const pin=await fetchPinStatus();
+  if(pin.state==="unlocked"){
+    SERVER_ONBOARDING_AWAITING_PIN=false;
+    try{sessionStorage.setItem("rove-skip-monthly-plan-once","1");}catch(_){ }
+    await resumeAfterPin();
+    return true;
+  }
+  if(pin.state==="locked"||pin.state==="password_setup"){
+    SERVER_ONBOARDING_AWAITING_PIN=false;
+    try{sessionStorage.setItem("rove-skip-monthly-plan-once","1");}catch(_){ }
+    return true;
+  }
+  if(pin.state==="login"){
+    SERVER_ONBOARDING_AWAITING_PIN=false;
+    showAuthRecovery("Deine Angaben wurden gespeichert. Bitte melde dich erneut an, um fortzufahren.");
+    return false;
+  }
+  if(button){button.disabled=false;button.textContent="PIN erneut prüfen";}
+  showToast("Deine Angaben sind gespeichert. Die PIN konnte gerade nicht geprüft werden. Versuch es erneut.");
+  return false;
+}
+
 async function finishOnboarding(){
+  if(APP_MODE==="bridge"&&SERVER_ONBOARDING_AWAITING_PIN){
+    await continueAfterServerOnboarding();
+    return;
+  }
   const assets=obBuildAssets(), goals=obBuildGoals(), vertraege=obBuildVertraege();
   const nw=assets.reduce((s,a)=>s+a.value,0);
   const nwk=Math.round(nw)/1000;   // Kilo-Euro, gleiche Einheit wie Mock-Serie & Bot-Brücke
@@ -15568,9 +15826,8 @@ async function finishOnboarding(){
       const data=await res.json().catch(()=>({}));
       if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
       SERVER_ONBOARDING_REQUIRED=false;
-      // The first home view is a completion confirmation, not a second onboarding prompt.
-      sessionStorage.setItem("rove-skip-monthly-plan-once","1");
-      showPinScreen("setup");
+      SERVER_ONBOARDING_AWAITING_PIN=true;
+      await continueAfterServerOnboarding();
       return;
     }catch(error){
       console.error("Onboarding konnte nicht gespeichert werden:",error);
@@ -15641,9 +15898,32 @@ function obCapture(){
     if(g("obGoalCur"))  OB.goalCur =obNum(g("obGoalCur").value);
   }
 }
-function obAdvance(){
-  if(OB.step >= OB_STEPS.length-1){ finishOnboarding(); return; }
-  OB.step++; obRender();
+async function obAdvance(nextStep=OB.step+1){
+  if(ONBOARDING_DRAFT_SAVE_IN_FLIGHT)return false;
+  if(OB.step >= OB_STEPS.length-1){ await finishOnboarding(); return true; }
+  obCapture();
+  const next=Math.max(OB.step+1,Math.min(Number(nextStep)||OB.step+1,OB_STEPS.length-1));
+  ONBOARDING_DRAFT_SAVE_ERROR="";
+  if(APP_MODE==="bridge"&&SERVER_ONBOARDING_REQUIRED){
+    ONBOARDING_DRAFT_SAVE_IN_FLIGHT=true;
+    const controls=[...document.querySelectorAll("#obFoot button,#obSkip")];
+    controls.forEach(control=>{control.disabled=true;control.setAttribute("aria-busy","true");});
+    try{
+      await persistServerOnboardingDraft(next);
+    }catch(error){
+      if([401,423].includes(Number(error?.httpStatus))||PIN_SCREEN_ACTIVE)return false;
+      ONBOARDING_DRAFT_SAVE_ERROR="Dieser Schritt wurde noch nicht gespeichert. Prüfe die Verbindung und tippe erneut auf „Weiter“.";
+      obRender();
+      return false;
+    }finally{
+      ONBOARDING_DRAFT_SAVE_IN_FLIGHT=false;
+      controls.forEach(control=>{control.disabled=false;control.removeAttribute("aria-busy");});
+    }
+  }
+  OB.step=next;
+  ONBOARDING_DRAFT_SAVE_ERROR="";
+  obRender();
+  return true;
 }
 document.getElementById("onboard").addEventListener("click", e=>{
   const pinKey=e.target.closest("[data-pin-key]");
@@ -15760,11 +16040,12 @@ document.getElementById("onboard").addEventListener("click", e=>{
   const el = e.target.closest("[data-ob]");
   if(!el) return;
   const k = el.dataset.ob; buzz();
-  if(k==="next"){ obCapture(); obAdvance(); }
+  if(k==="retry-draft"){ showServerOnboarding(); }
+  else if(k==="next"){ obAdvance(); }
   else if(k==="finish"){ finishOnboarding(); }
   else if(k==="demo"){ try{ sessionStorage.setItem("rove-demo","1"); }catch(_){} location.reload(); }
   else if(k==="bank"){ OB.wantsApi=true; obRender(); }
-  else if(k==="manual"){ OB.step=OB_STEPS.indexOf("income"); obRender(); }
+  else if(k==="manual"){ obAdvance(OB_STEPS.indexOf("income")); }
 });
 // Beträge in Fixkosten-/Vermögens-Raster: live in OB + Summenzeile aktualisieren
 document.getElementById("onboard").addEventListener("input", e=>{
@@ -15829,7 +16110,11 @@ document.getElementById("obBack").addEventListener("click", ()=>{
 });
 document.getElementById("obSkip").addEventListener("click", ()=>{
   buzz();
-  if(OB_STEPS[OB.step]==="name") OB.name="";
+  if(OB_STEPS[OB.step]==="name"){
+    OB.name="";
+    const input=document.getElementById("obName");
+    if(input)input.value="";
+  }
   obAdvance();
 });
 

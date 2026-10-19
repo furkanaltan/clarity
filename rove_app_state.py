@@ -316,6 +316,9 @@ def _build_tx(conn: sqlite3.Connection, user_id: int, month_key: str | None = No
             # dem Girokonto; bar bezahlte App-Ausgaben werden unten eindeutig markiert.
             "account": "bargeld" if r["id"] in cash_paid_expense_ids else "giro",
         }
+        request_id = str(r["request_id"] or "").strip() if "request_id" in r.keys() else ""
+        if request_id:
+            item["requestId"] = request_id
         if r["account_id"] is not None:
             item["accountId"] = int(r["account_id"])
             item["accountName"] = account_names.get(int(r["account_id"]), "Archiviertes Konto")

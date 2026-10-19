@@ -18,6 +18,7 @@ class WealthAnalysisFinancialTruthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         source = FRONTEND.read_text(encoding="utf-8")
+        cls.asset_glyph = section(source, "function assetGlyph(name){", "function assetGlassIcon(name){")
         cls.class_meta = section(source, "const WEALTH_CLASS_META={", "const analysisEsc=")
         cls.net_worth = section(
             source,
@@ -39,6 +40,7 @@ const analysisArcPath=()=>'';
 const emptyCard=()=>'';
 let wealthSelectedClass='';
 let APP_MODE='bridge';
+{self.asset_glyph}
 const homeValue={{dataset:{{}},textContent:''}};
 const document={{getElementById:id=>id==='networth'?homeValue:null}};
 let DATA={{
