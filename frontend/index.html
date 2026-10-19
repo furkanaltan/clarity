@@ -3663,6 +3663,7 @@ const DATA = {
   buffer:null,
   chartV2:null,
   mentorCandidate:null,
+  mentorEvents:[],
   features:{},
   featureAnnouncements:{unseen_count:0,eligible:[],archive:[]},
   financialAccounts:[],
@@ -4667,7 +4668,7 @@ function mentorLine(){
       setMentorCtaTarget(deepLink);
     }
     el.innerHTML=`<div class="m-free" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.title)}</b></div>`+
-      `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
+      `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"${deepLink==="reports"?' data-mentoract="candidate"':""}><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
     return;
   }
   mentor?.classList.remove("monthly-due");
@@ -4812,6 +4813,7 @@ async function markReportOpened(reportMonth){
       const data=await response.json().catch(()=>({}));
       if(!response.ok||!data.ok) throw new Error(data.error||`HTTP ${response.status}`);
       if(Array.isArray(data.reports)) DATA.reports=data.reports;
+      DATA.mentorEvents=Array.isArray(data.mentor_events)?data.mentor_events:[];
       DATA.mentorCandidate=Object.prototype.hasOwnProperty.call(data,"mentor_candidate")
         ? data.mentor_candidate : null;
       mentorLine();
@@ -4824,9 +4826,21 @@ async function markReportOpened(reportMonth){
   return reportOpenInFlight;
 }
 async function openMentorCandidate(candidate,route){
-  if(!openFeatureDeepLink(route)) return false;
-  if(candidate?.type==="report") await markReportOpened(String(candidate.id||"").replace(/^report:/,""));
-  return true;
+  if(route==="reports" && ["report","report_ready"].includes(candidate?.type)){
+    const month=candidate.type==="report"
+      ? /^report:(20\d{2}-(0[1-9]|1[0-2]))$/.exec(String(candidate.id||""))?.[1]
+      : (DATA.mentorEvents||[]).find(event=>event?.event_id===candidate.id && event.event_type==="report_ready")?.source_id;
+    const index=(DATA.reports||[]).findIndex(report=>report?.month===month);
+    const report=DATA.reports?.[index];
+    if(!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(month||"")) || report?.status!=="ready" || (!report.pdfAvailable&&!report.webUrl)){
+      showToast("Dein Monatsreport ist noch nicht verfügbar.");
+      return false;
+    }
+    openReports();
+    openReportDetail(index);
+    return true;
+  }
+  return openFeatureDeepLink(route);
 }
 mentorLine();
 // Explizite Mentor-CTAs dürfen ein Zielmodul öffnen; die Kartenfläche bleibt immer beim Coach.
@@ -9333,6 +9347,7 @@ async function fetchCanonicalAppState(){
     if(appDataRefreshQueued) return true;
     DATA.chartV2=data.chartV2||null;
     DATA.mentorCandidate=data.mentor_candidate||null;
+    DATA.mentorEvents=Array.isArray(data.mentor_events)?data.mentor_events:[];
     if(Array.isArray(data.tx)){
       DATA.tx=data.tx.length?data.tx:[{d:"Heute",items:[]}];
       TXID=DATA.tx.flatMap(d=>d.items).length+1000;
