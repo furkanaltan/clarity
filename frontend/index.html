@@ -2807,15 +2807,15 @@
   #app #tab-tx .tx .logo:not(.merchant)::before,#app #tab-tx .tx .logo:not(.merchant)::after,
   #app #supportsheet .support-icon::before,#app #supportsheet .support-icon::after{content:""}
 
-  /* Buchungsdetails verwenden dieselbe Glasflaeche wie generische Transaktionsicons;
+  /* Buchungs- und Vertragsdetails verwenden dieselbe Glasflaeche wie generische Transaktionsicons;
      erkannte Haendlerlogos behalten ihre eigene Marke. */
-  #app #txsheet .detail-expense-icon{position:relative;overflow:hidden;border-radius:50%!important;color:#fff!important;
+  #app #txsheet .detail-expense-icon,#app #vdsheet .detail-contract-icon{position:relative;overflow:hidden;border-radius:50%!important;color:#fff!important;
     background:linear-gradient(160deg,#34383a,#0b0c0c)!important;border:1px solid rgba(255,255,255,.38)!important;
     box-shadow:inset 0 1px 1px rgba(255,255,255,.42),inset 0 0 0 1px rgba(255,255,255,.08),
       inset 0 -6px 11px rgba(0,0,0,.55),0 5px 12px rgba(0,0,0,.34)!important}
-  #app #txsheet .detail-expense-icon::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  #app #txsheet .detail-expense-icon::before,#app #vdsheet .detail-contract-icon::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
     background:repeating-linear-gradient(90deg,rgba(255,255,255,.035) 0 1px,rgba(0,0,0,.08) 1px 3px)}
-  #app #txsheet .detail-expense-icon::after{content:"";position:absolute;z-index:0;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
+  #app #txsheet .detail-expense-icon::after,#app #vdsheet .detail-contract-icon::after{content:"";position:absolute;z-index:0;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
     background:linear-gradient(180deg,rgba(255,255,255,.24),transparent);pointer-events:none}
 
   /* Rovis Figur bleibt dieselbe; nur ihr Badge wird in Home und Chat zum runden Schwarzglas. */
