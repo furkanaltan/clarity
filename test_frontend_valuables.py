@@ -33,8 +33,11 @@ HARNESS = r"""
 const assert=require('node:assert/strict');
 const crypto=require('node:crypto');
 const elements=new Map(), requests=[], messages=[], navigation=[], storageWrites=[];
+const documentHandlers={};
 const timers=new Map();
 let timerId=0, buzzes=0, persisted=0, closed=0, pinContinues=0;
+let MULTI_CASH_ENABLED=true, accountAddOpened=0;
+const openedAssetKinds=[];
 const decode=value=>String(value).replace(/&quot;/g,'"').replace(/&#39;/g,"'")
   .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
 function element(id=''){
@@ -62,6 +65,7 @@ function element(id=''){
     }};
 }
 const document={
+  addEventListener(type,handler){documentHandlers[type]=handler;},
   getElementById(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
   querySelector(){return null;},
   querySelectorAll(selector){
@@ -124,9 +128,11 @@ function buzz(){buzzes++;}
 function persistAppState(){persisted++;}
 function closeSheet(){closed++;}
 function logActivity(){}
-function multiCashEnabled(){return true;}
+function multiCashEnabled(){return MULTI_CASH_ENABLED;}
+function openFinancialAccountAdd(){accountAddOpened++;}
+function openAssetKind(kind){openedAssetKinds.push(kind);}
 function ic(){return '<svg></svg>';}
-function emptyCard(){return '<div>Empty</div>';}
+function emptyCard({action,cta}){return `<div data-empty="${action}">${cta}</div>`;}
 function cashAccountMeta(){return null;}
 function staleHint(){return '';}
 function rovePushState(name){navigation.push(name);}
@@ -204,6 +210,14 @@ class FrontendValuablesTests(unittest.TestCase):
             source, 'document.getElementById("onboard").addEventListener("click", e=>{',
             'document.getElementById("onboard").addEventListener("input", e=>{',
         )
+        cls.production += section(
+            source, 'document.getElementById("assets").addEventListener("click",e=>{',
+            'let dIdx=null, svArm=null',
+        )
+        cls.production += section(
+            source, 'document.addEventListener("click",async e=>{',
+            '\n});\n// "Erstell dir selbst ein Budget"',
+        ) + '\n});\n'
 
     def run_js(self, body: str) -> None:
         script = HARNESS + self.production + '\n(async()=>{\n' + body + r"""
@@ -372,11 +386,64 @@ for(const count of [1,4]){
   const html=document.getElementById('dbody').innerHTML;
   assert.ok(html.includes('<div class="dt">Sachwerte</div>'));
   assert.ok(html.includes('<div class="dv">'+asset.sub+'</div>'));
+  assert.ok(html.includes('Sachwerte werden nicht ins Gesamtvermögen eingerechnet.'));
   assert.ok(!html.includes('im Konto gespeichert'));
 }
 delete DATA.valuables;DATA.assets=legacySnapshot().assets;renderAssets();
 assert.equal(DATA.assets.find(isValuableAsset).sub,'2 Werte · auf diesem Gerät');
 assert.equal(requests.length,0);
+""")
+
+    def test_server_valuables_render_after_load_and_reload_without_multi_cash(self):
+        self.run_js(r"""
+MULTI_CASH_ENABLED=false;
+const serverState={ok:true,user_id:41,features:{multi_cash_accounts_v1:false},
+  assets:[{name:'Girokonto',value:12500}],valuables:[first,second],netWorth:12500};
+const firstLoad=fetchCanonicalAppState();respond(0,serverState);assert.equal(await firstLoad,true);
+let html=document.getElementById('assets').innerHTML;
+assert.equal(DATA.assets.filter(isValuableAsset).length,1);
+assert.ok(html.includes('Sachwerte'));assert.ok(html.includes('375 EUR'));
+assert.ok(html.includes('data-add-valuables'));assert.ok(!html.includes('data-add-financial-account'));
+assert.equal(DATA.netWorth,12500);
+assert.ok(document.getElementById('homeSachwerteSummary').textContent.includes('nicht im Vermögensverlauf'));
+openAssetDetail(valuableAssetIndex());
+assert.ok(document.getElementById('dbody').innerHTML.includes('Sachwerte werden nicht ins Gesamtvermögen eingerechnet.'));
+
+DATA.assets=[];DATA.valuables=[];
+const reload=fetchCanonicalAppState();respond(1,serverState);assert.equal(await reload,true);
+html=document.getElementById('assets').innerHTML;
+assert.equal(DATA.assets.filter(isValuableAsset).length,1);
+assert.ok(html.includes('Sachwerte'));assert.ok(html.includes('375 EUR'));
+assert.equal(DATA.netWorth,12500);
+assert.equal(requests.length,2);
+""")
+
+    def test_valuables_add_action_is_available_without_enabling_account_pilot(self):
+        self.run_js(r"""
+MULTI_CASH_ENABLED=false;
+DATA.assets=[{name:'Girokonto',value:12500}];DATA.valuables=[];renderAssets();
+let html=document.getElementById('assets').innerHTML;
+assert.ok(html.includes('data-add-valuables'));assert.ok(html.includes('Sachwert hinzufügen'));
+assert.ok(!html.includes('data-add-financial-account'));
+click('assets','[data-add-valuables]');
+assert.deepEqual(openedAssetKinds,['valuables']);assert.equal(accountAddOpened,0);
+
+MULTI_CASH_ENABLED=true;renderAssets();html=document.getElementById('assets').innerHTML;
+assert.ok(html.includes('data-add-financial-account'));assert.ok(!html.includes('data-add-valuables'));
+click('assets','[data-add-financial-account]');
+assert.equal(accountAddOpened,1);assert.deepEqual(openedAssetKinds,['valuables']);
+assert.equal(requests.length,0);
+""")
+
+    def test_empty_state_valuables_action_opens_the_valuables_form(self):
+        self.run_js(r"""
+APP_MODE='demo';MULTI_CASH_ENABLED=false;DATA.assets=[];renderAssets();
+const html=document.getElementById('assets').innerHTML;
+assert.ok(html.includes('data-empty="valuables"'));
+const empty={dataset:{empty:'valuables'}};
+await documentHandlers.click({target:{closest:selector=>selector==='[data-empty]'?empty:null}});
+assert.deepEqual(openedAssetKinds,['valuables']);
+assert.equal(accountAddOpened,0);assert.equal(requests.length,0);
 """)
 
     def test_onboarding_rejects_invalid_values_and_more_than_fifty_items(self):

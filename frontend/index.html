@@ -5666,11 +5666,13 @@ function renderAssets(){
   if(!DATA.assets.length){
     document.getElementById("assetCount").textContent = "";
     box.classList.add("bare");
+    const addAction=multiCashEnabled()?"financial-asset":"valuables";
+    const addLabel=multiCashEnabled()?"Konto oder Wert hinzufügen":"Sachwert hinzufügen";
     box.innerHTML = emptyCard({
       icon:"bank", title:"Noch keine Werte hinterlegt",
       sub:"Füge dein erstes Konto, Depot oder einen Vermögenswert hinzu. Dann wird dein Überblick hier sichtbar.",
-      cta:multiCashEnabled()?"Konto oder Wert hinzufügen":"Werte selbst eintragen",
-      action:multiCashEnabled()?"financial-asset":"asset"})+legacyValuablesHtml();
+      cta:addLabel,
+      action:addAction})+legacyValuablesHtml();
     return;
   }
   box.classList.remove("bare");
@@ -5698,7 +5700,8 @@ function renderAssets(){
       <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
     </div>`;
   }).join("") + (multiCashEnabled()?`<button class="account-add" type="button" data-add-financial-account>
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Konto oder Wert hinzufügen</button>`:missingAssetRow())+legacyValuablesHtml();
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Konto oder Wert hinzufügen</button>`:`<button class="account-add" type="button" data-add-valuables>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Sachwert hinzufügen</button>`)+legacyValuablesHtml();
 }
 function legacyValuablePositions(){
   if(APP_MODE!=="bridge"||BRIDGE_USER_ID==null||!Array.isArray(DATA.valuables)) return [];
@@ -5855,6 +5858,7 @@ renderAssets();
 document.getElementById("assets").addEventListener("click",e=>{
   if(e.target.closest("[data-import-valuables]")){ importLegacyValuables(); return; }
   if(e.target.closest("[data-add-financial-account]")){ openFinancialAccountAdd(); buzz(); return; }
+  if(e.target.closest("[data-add-valuables]")){ openAssetKind("valuables"); buzz(); return; }
   const add=e.target.closest("[data-addasset]");
   if(add){
     const meta=ASSET_NACHTRAG_META.find(c=>c.n===add.dataset.addasset);
@@ -6410,6 +6414,7 @@ function openAssetDetail(i){
     <div class="detail-header-main"><div class="dt">${detailTitle}</div><div class="dv">${a.sub}${dvExtra}</div></div>
     <div class="dtot">${eur(a.value)}</div>
   </div>`;
+  if(isValuableAsset(a)) body+=`<div class="asset-note">Sachwerte werden nicht ins Gesamtvermögen eingerechnet.</div>`;
   const cashMeta=cashAccountMeta(a);
   if(cashMeta){
     const orderRank=new Map((DATA.assetOrder||[]).map((key,index)=>[key,index]));
@@ -13755,6 +13760,7 @@ document.addEventListener("click",async e=>{
   if(a==="add") openSheet();
   else if(a==="goal") openNewGoal();
   else if(a==="financial-asset") openFinancialAccountAdd();
+  else if(a==="valuables") openAssetKind("valuables");
   else if(a==="asset") showToast("Bankverbindungen sind in der aktuellen Beta noch nicht aktiv");
   else if(a==="asktalk") openTalk();
   else if(a==="budgetsuggest"){
