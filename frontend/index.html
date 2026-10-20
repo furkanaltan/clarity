@@ -242,6 +242,17 @@
   .ob-field input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:15px;
     padding:16px;color:var(--ink);font-size:17px;outline:none}
   .ob-field input:focus{border-color:var(--blue)}
+  .ob-valuables{padding:8px 14px;border:1px solid var(--line);border-radius:16px;background:var(--card)}
+  .ob-valuables[open]{padding-bottom:16px}
+  .ob-valuables>summary{display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer;
+    list-style:none;font-size:15px;font-weight:600}
+  .ob-valuables>summary::-webkit-details-marker{display:none}
+  .ob-valuables>summary::after{content:"";width:7px;height:7px;margin-left:auto;margin-right:3px;
+    border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg)}
+  .ob-valuables[open]>summary::after{transform:rotate(225deg)}
+  .ob-valuables>summary:focus-visible{outline:2px solid var(--blue);outline-offset:4px;border-radius:8px}
+  .ob-valuables .ob-valuables-help{margin:12px 0 16px;font-size:13px;line-height:1.5;text-align:left}
+  .ob-valuables>[role="alert"]:empty{display:none}
   .ob-paths{display:flex;flex-direction:column;gap:12px;margin-top:24px}
   .ob-path{display:flex;align-items:center;gap:14px;text-align:left;background:var(--card);
     border:1px solid var(--line);border-radius:17px;padding:16px;cursor:pointer;color:var(--ink);transition:.15s}
@@ -5673,7 +5684,7 @@ function renderAssets(){
     const count=a.positions.length ? `${a.positions.length} Wert${a.positions.length===1?"":"e"}` : "Noch nichts eingetragen";
     // Storage ownership is separate from inclusion in the canonical wealth history.
     a.sub=(APP_MODE==="bridge" && a.name==="Sachwerte")
-      ? `${count} · ${a.source==="server-valuables"?"im Konto gespeichert":"auf diesem Gerät"}` : count;
+      ? `${count}${a.source==="server-valuables"?"":" · auf diesem Gerät"}` : count;
   });
   box.innerHTML = DATA.assets.map((a,i)=>{
     // Nur die Home-Bezeichnung wird gekuerzt; die kanonische Asset-Bezeichnung bleibt fuer
@@ -5765,7 +5776,7 @@ async function importLegacyValuables(){
       localStorage.setItem(`rove:${owner}:${BRIDGE_LOCAL_KEY}`,JSON.stringify(snapshot));
     }
   }catch(_){ showToast("Übernommen. Der lokale Hinweis konnte noch nicht aktualisiert werden."); }
-  renderAssets();showToast("Sachwerte im Konto gespeichert.");
+  renderAssets();showToast("Sachwerte übernommen.");
 }
 // Vermoegensarten sind keine Haendler. Sie behalten deshalb eine eigene, ruhige
 // Rov.E-Iconsprache statt zufaellige Marken- oder Emoji-Grafiken zu verwenden.
@@ -6825,7 +6836,7 @@ async function addAssetPosition(){
     if(!await requestValuables(edited?`/v1/valuables/${item.id}`:"/v1/valuables",edited?"PATCH":"POST",item)) return;
     pendingValuableCreate=null;svEditIndex=null;
     dIdx=valuableAssetIndex();if(dIdx>=0)openAssetDetail(dIdx);
-    showToast(edited?"Sachwert aktualisiert.":"Sachwert im Konto gespeichert.");buzz();return;
+    showToast(edited?"Sachwert aktualisiert.":"Sachwert gespeichert.");buzz();return;
   }
   if(APP_MODE==="bridge" && (a.name==="Krypto" || a.name==="ETF & Investments")){
     const assetType=a.name==="Krypto" ? "crypto" : "etf";
@@ -15822,8 +15833,8 @@ function obRender(){
       </div>
       <div class="ob-count">Vermögen bisher: <b id="obWealthSum">${eur2(obWealthSum())}</b></div>
       <details class="ob-field ob-valuables"${OB.valuables.length?' open':''}>
-        <summary>Sachwerte (optional)</summary>
-        <div class="ob-sub">Zum Beispiel Auto, Schmuck oder andere Wertgegenstände. Erfasse nur deinen aktuellen Schätzwert. Kredit, Leasing und laufende Kosten gehören nicht hierher. Sachwerte werden separat geführt und verändern den Vermögensverlauf nicht.</div>
+        <summary><span class="rv-glass rv-glass--30" aria-hidden="true">${assetGlyph("valuables")}</span><span>Sachwerte (optional)</span></summary>
+        <div class="ob-sub ob-valuables-help">Zum Beispiel Auto, Schmuck oder Wertgegenstände. Nur geschätzte Werte eintragen.</div>
         ${OB.valuables.map(p=>`<div class="drow valuable-row"><span class="k">${escapeAccountHtml(p.n)}</span><span class="v">${eur2(p.v)} <button type="button" class="ob-chip" data-ob-valuable-remove="${p.id}" aria-label="${escapeAccountHtml(p.n)} entfernen">Entfernen</button></span></div>`).join("")}
         <label class="auth-label" for="obValuableName">Bezeichnung</label>
         <input id="obValuableName" type="text" maxlength="80" autocomplete="off" placeholder="z. B. Auto oder Schmuck">

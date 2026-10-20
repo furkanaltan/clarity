@@ -344,6 +344,41 @@ click('onboard','[data-ob-valuable-remove]',{dataset:{obValuableRemove:id}});
 assert.deepEqual(OB.valuables,[]);assert.equal(requests.length,0);
 """)
 
+    def test_onboarding_compact_section_keeps_existing_resume_and_inputs(self):
+        self.run_js(r"""
+OB.step=OB_STEPS.indexOf('wealth');OB.valuables=[];obRender();
+let html=document.getElementById('obBody').innerHTML;
+assert.ok(html.includes('<details class="ob-field ob-valuables">'));
+assert.ok(html.includes('Sachwerte (optional)'));
+assert.ok(html.includes('href="#rove-module-asset-diamond"'));
+assert.ok(html.includes('Zum Beispiel Auto, Schmuck oder Wertgegenstände. Nur geschätzte Werte eintragen.'));
+assert.ok(!html.includes('Sachwerte werden separat geführt'));
+OB.valuables=[first];obRender();html=document.getElementById('obBody').innerHTML;
+assert.ok(html.includes('<details class="ob-field ob-valuables" open>'));
+for(const id of ['obValuableName','obValuableValue','obValuableAdd','obValuableError']){
+  assert.ok(html.includes('id="'+id+'"'));
+}
+assert.deepEqual(OB.valuables,[first]);assert.equal(requests.length,0);
+""")
+
+    def test_server_valuable_subline_is_only_the_real_position_count(self):
+        self.run_js(r"""
+for(const count of [1,4]){
+  const positions=Array.from({length:count},(_,i)=>({id:String(i+1).repeat(32),n:'Wert '+i,v:100}));
+  applyServerValuables(positions);renderAssets();
+  const asset=DATA.assets.find(isValuableAsset);
+  assert.equal(asset.sub,count===1?'1 Wert':'4 Werte');
+  openAssetDetail(valuableAssetIndex());
+  const html=document.getElementById('dbody').innerHTML;
+  assert.ok(html.includes('<div class="dt">Sachwerte</div>'));
+  assert.ok(html.includes('<div class="dv">'+asset.sub+'</div>'));
+  assert.ok(!html.includes('im Konto gespeichert'));
+}
+delete DATA.valuables;DATA.assets=legacySnapshot().assets;renderAssets();
+assert.equal(DATA.assets.find(isValuableAsset).sub,'2 Werte · auf diesem Gerät');
+assert.equal(requests.length,0);
+""")
+
     def test_onboarding_rejects_invalid_values_and_more_than_fifty_items(self):
         self.run_js(r"""
 OB.step=5;
@@ -483,7 +518,7 @@ assert.deepEqual(DATA.valuables,[canonical]);assert.equal(pendingValuableCreate,
 assert.equal(DATA.assets.find(isValuableAsset).value,1200);
 assert.equal(DATA.netWorth,12500);assert.equal(valuableBusy,false);
 assert.ok(mutationButtons().every(button=>!button.disabled));
-assert.ok(messages.some(message=>message.includes('im Konto gespeichert')));assert.equal(buzzes,1);
+assert.ok(messages.includes('Sachwert gespeichert.'));assert.equal(buzzes,1);
 """)
 
     def test_every_valuable_mutation_sends_the_captured_owner_header(self):
@@ -521,7 +556,7 @@ assert.equal(document.getElementById('svName').value,'Neue Uhr');
 assert.equal(document.getElementById('svAmt').value,'1.234,56');
 assert.deepEqual(pendingValuableCreate,{userId:41,item:sent});
 assert.equal(persisted,0);assert.equal(buzzes,0);
-assert.ok(messages.every(message=>!message.includes('im Konto gespeichert')));
+assert.ok(!messages.includes('Sachwert gespeichert.'));
 assert.ok(mutationButtons().every(button=>!button.disabled));
 const retry=addAssetPosition();assert.equal(requests.length,2);
 assert.deepEqual(JSON.parse(requests[1].options.body),sent);
@@ -656,7 +691,7 @@ assert.deepEqual(pendingValuableCreate,{userId:41,item:sent});
 assert.equal(document.getElementById('svName').value,'Neue Uhr');
 assert.equal(document.getElementById('svAmt').value,'1.234,56');
 assert.equal(buzzes,0);assert.equal(valuableBusy,false);assert.equal(storageWrites.length,0);
-assert.ok(messages.every(message=>!message.includes('im Konto gespeichert')));
+assert.ok(!messages.includes('Sachwert gespeichert.'));
 const retry=addAssetPosition();assert.deepEqual(JSON.parse(requests[1].options.body),sent);
 confirmed(1,[first,sent],41);await retry;
 assert.deepEqual(DATA.valuables,[first,sent]);assert.ok(DATA.assets.includes(cash));
@@ -810,7 +845,7 @@ assert.equal(localStorage.getItem(BRIDGE_LOCAL_KEY),raw);
 assert.equal(localStorage.getItem(scopedKey(41)),scopedBefore);
 assert.equal(storageWrites.length,writesBefore);assert.equal(readBridgeLocal().valuablesMigrated,false);
 assert.equal(legacyValuablePositions().length,2);assert.equal(valuableBusy,false);
-assert.ok(messages.every(message=>!message.includes('im Konto gespeichert')));
+assert.ok(!messages.includes('Sachwerte übernommen.'));
 """)
 
     def test_scoped_snapshot_precedence_and_owner_checks_fail_closed(self):
