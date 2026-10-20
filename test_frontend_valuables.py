@@ -118,7 +118,7 @@ let DATA={assets:[{name:'Girokonto',value:12500}],valuables:[],vertraege:[],goal
 const PROFILE_META={netHistory:[],netHistorySchemaVersion:2};
 const PAIR_API_BASE_URL='https://invalid.test';
 let ROVE_API={}, ready=true;
-let dIdx=0,svEditIndex=null,svArm=null,investFormOpen=false,investFormEditIndex=null,investNewAssetType='stock';
+let dIdx=0,svEditIndex=null,svArm=null,svFormOpen=false,investFormOpen=false,investFormEditIndex=null,investNewAssetType='stock';
 let PRICES_STALE=false;
 const STALE_LBL='synthetic', ASSET_NACHTRAG=new Set(['Krypto','ETF & Investments']);
 const sheetBg=element(), ICONS={};
@@ -174,7 +174,7 @@ function namedCashAccount(){
 function openValuableForm(positions=[],editIndex=null){
   applyServerValuables(positions);
   if(!positions.length)DATA.assets.push({name:'Sachwerte',manual:true,positions:[],value:0,sub:''});
-  dIdx=valuableAssetIndex();svEditIndex=editIndex;
+  dIdx=valuableAssetIndex();svEditIndex=editIndex;svFormOpen=true;
   openAssetDetail(dIdx);
 }
 function setInputs(name='Neue Uhr',value='1.234,56'){
@@ -440,21 +440,72 @@ assert.equal(accountAddOpened,1);assert.deepEqual(openedAssetKinds,['valuables']
 assert.equal(requests.length,0);
 """)
 
-    def test_valuable_sheet_has_two_labelled_fields_and_a_separate_save_button(self):
+    def test_valuable_form_reuses_investment_plus_pencil_and_save_controls(self):
         self.run_js(r"""
 openValuableForm([first]);
 let html=document.getElementById('dbody').innerHTML;
 assert.equal([...html.matchAll(/<input\b/g)].length,2);
 assert.match(html,/<label[^>]*for="svName">Bezeichnung<\/label>/);
 assert.match(html,/<label[^>]*for="svAmt">Geschätzter Wert<\/label>/);
-assert.match(html,/<input id="svAmt"[^>]*>\s*<\/div>\s*<button type="button" class="vd-btn" id="svSend"[^>]*>Wert hinzufügen<\/button>/);
-assert.ok(!html.includes('class="send"'));
-assert.ok(html.indexOf('class="detail-rows"')<html.indexOf('class="detail-form valuables-form"'));
+assert.match(html,/<button type="button" class="position-add" id="svFormToggle"[^>]*aria-expanded="true"/);
+assert.match(html,/<button type="button" class="crypto-position-edit" data-svedit="0"[^>]*aria-label="Uhr bearbeiten"><svg[^>]*><path d="m4.5 19.5/);
+assert.match(html,/<input id="svAmt"[^>]*>\s*<button type="button" class="send" id="svSend"[^>]*aria-label="Sachwert speichern"/);
+assert.ok(html.includes('<path d="M5 13l4 4L19 6"/>'));
+assert.ok(!html.includes('class="asset-position-edit"'));
+assert.ok(!html.includes('class="vd-btn"'));
+assert.ok(html.indexOf('class="detail-rows"')<html.indexOf('id="svForm"'));
+assert.ok(!html.includes('id="svDelete"'));assert.ok(!html.includes('id="svGroupDelete"'));
 openValuableForm([first],0);html=document.getElementById('dbody').innerHTML;
 assert.equal([...html.matchAll(/<input\b/g)].length,2);
-assert.match(html,/<button type="button" class="vd-btn" id="svSend"[^>]*>Änderungen speichern<\/button>/);
+assert.match(html,/<button type="button" class="send" id="svSend"[^>]*aria-label="Sachwert speichern"/);
 assert.equal(document.getElementById('svSend').dataset.valuableId,first.id);
 assert.ok(html.includes('id="svDelete"'));
+assert.ok(html.includes('id="svGroupDelete"'));
+""")
+
+    def test_plus_and_pencil_open_and_close_the_existing_form_without_mutations(self):
+        self.run_js(r"""
+openValuableForm([first,second]);svFormOpen=false;openAssetDetail(dIdx);
+let html=document.getElementById('dbody').innerHTML;
+assert.match(html,/id="svFormToggle"[^>]*aria-expanded="false"/);
+assert.match(html,/id="svForm"[^>]* inert/);
+const before=JSON.stringify(DATA);
+click('dbody','#svFormToggle');
+assert.equal(svFormOpen,true);assert.equal(document.getElementById('svName').focused,true);
+assert.match(document.getElementById('dbody').innerHTML,/id="svFormToggle"[^>]*aria-expanded="true"/);
+click('dbody','#svFormToggle');assert.equal(svFormOpen,false);
+const pencil={dataset:{svedit:'0',valuableOwner:'41',valuableId:first.id}};
+applyServerValuables([second,first]);
+click('dbody','[data-svedit]',pencil);
+assert.equal(svEditIndex,1);assert.equal(svFormOpen,true);
+assert.equal(document.getElementById('svName').value,'Uhr');
+assert.equal(document.getElementById('svSend').dataset.valuableId,first.id);
+assert.equal(document.getElementById('svAmt').focused,true);
+click('dbody','#svFormToggle');
+assert.equal(svEditIndex,null);assert.equal(svFormOpen,false);
+assert.equal(document.getElementById('svName').value,'');
+assert.equal(requests.length,0);assert.equal(DATA.netWorth,JSON.parse(before).netWorth);
+dIdx=assetIndexByName('Girokonto');openAssetDetail(valuableAssetIndex(),true);
+assert.equal(svFormOpen,true);assert.equal(svEditIndex,null);
+assert.match(document.getElementById('dbody').innerHTML,/id="svFormToggle"[^>]*aria-expanded="true"/);
+""")
+
+    def test_form_navigation_cannot_interrupt_a_pending_save_or_switch_owner(self):
+        self.run_js(r"""
+openValuableForm([first]);setInputs();
+const toggle=document.getElementById('svFormToggle');
+const pencil={dataset:{svedit:'0',valuableOwner:'41',valuableId:first.id}};
+const task=addAssetPosition();
+click('dbody','#svFormToggle',toggle);click('dbody','[data-svedit]',pencil);
+assert.equal(svFormOpen,true);assert.equal(svEditIndex,null);
+assert.equal(document.getElementById('svName').value,'Neue Uhr');
+requests[0].reject(new Error('synthetic offline'));await task;
+assert.equal(document.getElementById('svName').value,'Neue Uhr');
+BRIDGE_USER_ID=42;
+const before=document.getElementById('dbody').innerHTML;
+click('dbody','#svFormToggle',toggle);click('dbody','[data-svedit]',pencil);
+assert.equal(document.getElementById('dbody').innerHTML,before);
+assert.equal(requests.length,1);assert.equal(svEditIndex,null);
 """)
 
     def test_empty_state_valuables_action_opens_the_valuables_form(self):
@@ -833,7 +884,7 @@ assert.deepEqual(DATA.valuables,[second]);assert.equal(DATA.netWorth,12500);
 
     def test_group_delete_uses_rendered_owner_after_asset_index_changes(self):
         self.run_js(r"""
-openValuableForm([first,second]);const button=document.getElementById('svGroupDelete');
+openValuableForm([first,second],0);const button=document.getElementById('svGroupDelete');
 const cash=namedCashAccount(), cashBefore=JSON.stringify(cash);DATA.assets.push(cash);
 assert.equal(button.dataset.valuableOwner,'41');
 dIdx=assetIndexByName('Girokonto');const before=JSON.stringify(DATA);

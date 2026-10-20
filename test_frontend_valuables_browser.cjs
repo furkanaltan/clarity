@@ -96,8 +96,52 @@ async function open(page) {
   await page.locator('[data-add-valuables]').click();
   await page.getByLabel('Bezeichnung', { exact: true }).waitFor();
   assert.equal(await page.locator('#dbody input').count(), 2);
-  assert.equal(await page.locator('#dbody .field button').count(), 0);
+  assert.equal(await page.locator('#dbody .field button.send').count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Sachwert speichern', exact: true }).count(), 1);
   assert.equal(await page.locator('#dbody').getByText(note, { exact: true }).count(), 1);
+}
+
+async function checkControls(page) {
+  const controls = await page.evaluate(() => {
+    const pencil = document.querySelector('#dbody [data-svedit]');
+    const plus = document.querySelector('#svFormToggle .position-plus');
+    const save = document.getElementById('svSend');
+    return {
+      pencil: [getComputedStyle(pencil).width, getComputedStyle(pencil).height],
+      glyph: [getComputedStyle(pencil.querySelector('svg')).width, getComputedStyle(pencil.querySelector('svg')).height],
+      plus: [getComputedStyle(plus).width, getComputedStyle(plus).height],
+      saveClass: save.className,
+      pencilPath: pencil.querySelector('path').getAttribute('d'),
+    };
+  });
+  assert.deepEqual(controls.pencil, ['42px', '42px']);
+  assert.deepEqual(controls.glyph, ['20px', '20px']);
+  assert.deepEqual(controls.plus, ['23px', '23px']);
+  assert.equal(controls.saveClass, 'send');
+  assert.equal(controls.pencilPath, 'm4.5 19.5 4.1-1 9.1-9.1a2.1 2.1 0 0 0-3-3l-9.1 9.1-1.1 4zM13.4 7.7l3 3');
+  return controls;
+}
+
+async function compareActualInvestmentControls(page, valuables) {
+  // Render the existing investment sheets with display-only synthetic positions.
+  // Do not save, change feature flags, or substitute reference markup.
+  const reference = await page.evaluate(() => {
+    DATA.assets.push({ name: 'ETF & Investments', value: 1000,
+      positions: [{ n: 'Synthetischer ETF', v: 1000, assetType: 'etf', editable: true }] });
+    openAssetDetail(DATA.assets.length - 1);
+    const plus = document.querySelector('#investFormToggle .position-plus');
+    const result = { plus: [getComputedStyle(plus).width, getComputedStyle(plus).height],
+      saveClass: document.getElementById('investSave').className };
+    DATA.assets.push({ name: 'Krypto', value: 100,
+      positions: [{ n: 'Synthetische Position', v: 100, legacy: true }] });
+    openAssetDetail(DATA.assets.length - 1);
+    const pencil = document.querySelector('#dbody .crypto-position-edit');
+    result.pencil = [getComputedStyle(pencil).width, getComputedStyle(pencil).height];
+    result.glyph = [getComputedStyle(pencil.querySelector('svg')).width, getComputedStyle(pencil.querySelector('svg')).height];
+    result.pencilPath = pencil.querySelector('path').getAttribute('d');
+    return result;
+  });
+  assert.deepEqual(valuables, reference, 'Sachwerte must reuse the actual investment controls');
 }
 
 async function fill(page, name, value) {
@@ -110,7 +154,7 @@ async function assertLayout(page) {
     width: innerWidth, pageWidth: document.documentElement.scrollWidth,
     sheetWidth: document.getElementById('dsheet').clientWidth,
     contentWidth: document.getElementById('dsheet').scrollWidth,
-    fields: [...document.querySelectorAll('#dbody input, #svSend, #dbody .valuable-row')].map(el => {
+    fields: [...document.querySelectorAll('#dbody input, #svSend, #dbody .valuable-row, #dbody .valuable-row>.v, #dbody .dtot')].map(el => {
       const box = el.getBoundingClientRect();
       return { left: box.left, right: box.right };
     }),
@@ -141,6 +185,15 @@ async function flow(browser, label, viewport, standalone = false) {
     await page.screenshot({ path: path.join(output, label + '-overview.png') });
     await open(page);
     assert.equal(await page.locator('#dbody .valuable-row').count(), 4);
+    const controls = await checkControls(page);
+    await page.locator('#svFormToggle').click();
+    await page.locator('#svForm[inert]').waitFor({ state: 'attached' });
+    assert.equal(await page.locator('#svFormToggle').getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('#svDelete, #svGroupDelete').count(), 0);
+    await page.locator('#svFormToggle').focus();
+    await page.keyboard.press('Enter');
+    await page.locator('#svForm:not([inert])').waitFor({ state: 'attached' });
+    assert.equal(await page.getByLabel('Bezeichnung', { exact: true }).evaluate(el => el === document.activeElement), true);
     await fill(page, 'Koffer', '175,50');
     await page.locator('#svSend').dblclick();
     await page.waitForFunction(() => document.getElementById('toast').textContent === 'Sachwert hinzugefügt');
@@ -154,6 +207,12 @@ async function flow(browser, label, viewport, standalone = false) {
     assert.ok(box.y >= 0 && box.y + box.height <= viewport.height, 'Saved row must be immediately in view');
     await assertLayout(page);
     await page.screenshot({ path: path.join(output, label + '-saved.png') });
+    await page.locator('#svFormToggle').click();
+    await page.locator('#svForm[inert]').waitFor({ state: 'attached' });
+    await page.locator('#svFormToggle').scrollIntoViewIfNeeded();
+    await assertLayout(page);
+    await page.screenshot({ path: path.join(output, label + '-list.png') });
+    await page.locator('#svFormToggle').click();
     await page.locator('#svSend').scrollIntoViewIfNeeded();
     await assertLayout(page);
     await page.screenshot({ path: path.join(output, label + '-form.png') });
@@ -171,15 +230,18 @@ async function flow(browser, label, viewport, standalone = false) {
     assert.equal(writes.at(-1).item.id, failed.id);
     assert.equal(stored.get(1).filter(item => item.n === 'Fehlerprobe').length, 1);
 
-    await added.click();
+    await added.getByRole('button', { name: 'Koffer bearbeiten', exact: true }).click();
     await fill(page, 'Reisekoffer', '180,75');
-    await page.getByRole('button', { name: 'Änderungen speichern', exact: true }).click();
+    await page.getByRole('button', { name: 'Sachwert speichern', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('toast').textContent === 'Sachwert aktualisiert.');
     await page.reload();
     await loaded(page); await open(page);
     const edited = page.locator('#dbody .valuable-row').filter({ hasText: 'Reisekoffer' });
     assert.match(await edited.innerText(), /180,75\s€/);
-    await edited.click();
+    await edited.getByRole('button', { name: 'Reisekoffer bearbeiten', exact: true }).click();
+    await page.locator('#svSend').scrollIntoViewIfNeeded();
+    await assertLayout(page);
+    await page.screenshot({ path: path.join(output, label + '-edit.png') });
     await page.locator('#svDelete').click();
     assert.equal(await edited.count(), 1);
     await page.locator('#svDelete').click();
@@ -202,6 +264,7 @@ async function flow(browser, label, viewport, standalone = false) {
     await loaded(page); await open(page);
     assert.equal(await page.locator('#dbody .valuable-row').count(), 5);
     assert.equal(await page.locator('#dbody').getByText('Zweites Konto', { exact: true }).count(), 0);
+    await compareActualInvestmentControls(page, controls);
     assert.deepEqual(errors, []);
     console.log(label.toUpperCase() + '_SAVE_EDIT_DELETE_RELOAD_ACCOUNT_SWITCH=PASS');
   } finally {
