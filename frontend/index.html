@@ -1603,6 +1603,12 @@
   .detail-form .field+.field{margin-top:9px}
   .detail-form .vd-btn{margin-top:9px}
   .detail-form .investment-delete{margin-top:13px}
+  .detail-header.valuables-header{margin-bottom:8px}
+  .valuables-header+.asset-note{margin:0 2px 18px;font-size:12px;line-height:1.45}
+  .valuables-section.investment-overview .detail-rows{border:1px solid var(--line);border-radius:17px;background:var(--card);padding:2px 14px}
+  .position-form.valuables-form{padding-top:0;border-top:0}
+  .position-form.valuables-form.on{padding-top:8px}
+  .valuables-form .field+.valuables-field-label{margin-top:14px}
   .account-role-list.detail-settings{margin-top:10px;border-radius:14px;padding:2px 14px}
 
   /* Quick-Add (+) — flach & exakt zentriert in der 5er-Leiste */
@@ -6471,7 +6477,7 @@ function openAssetDetail(i, addValuable=false){
     const formOpen=svFormOpen||!!editPosition;
     const valuableOwner=APP_MODE==="bridge"&&isValuableAsset(a)?` data-valuable-owner="${BRIDGE_USER_ID}"`:"";
     body += `<div class="detail-section${valuable?" valuables-section investment-overview":""}">
-      <div class="detail-section-label">${valuable?"Deine Sachwerte":"Positionen"}</div>
+      ${valuable?"":'<div class="detail-section-label">Positionen</div>'}
       <div class="detail-rows">` + (a.positions.length
       ? a.positions.map((p,idx)=>valuable?`
         <div class="drow valuable-row"${valuableOwner}${valuableOwner?` data-valuable-id="${p.id}"`:""}>
