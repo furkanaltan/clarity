@@ -183,7 +183,24 @@ const before=JSON.stringify(DATA.budgets);
 """.replace("OFFSET", str(offset)).replace("BUDGETS", json.dumps(budgets))
         return self.run_js(body, setup + function("renderBudgets"))
 
-    def test_suggested_budget_label_is_once_and_does_not_label_manual_rows(self):
+    def test_suggested_budget_label_is_once_in_total_summary(self):
+        self.budget_script([
+            {"cat": "Shopping", "limit": 100, "auto": True},
+            {"cat": "Lebensmittel", "limit": 300, "auto": True},
+            {"cat": "Restaurant", "limit": 100, "auto": True},
+        ], """
+renderBudgets();
+const html=document.getElementById('budget-list').innerHTML;
+assert.equal((html.match(/Vorgeschlagen von Rov.E/g)||[]).length,1);
+assert.ok(html.indexOf('budget-truth-summary')<html.indexOf('budget-origin'));
+assert.ok(html.indexOf('budget-origin')<html.indexOf('data-bgt="0"'));
+assert.ok(!html.includes('Budgetvorschläge von Rov.E'));
+assert.ok(!html.includes('bt-auto'));
+for(const index of [0,1,2])assert.ok(html.includes('data-bgt="'+index+'"'));
+assert.equal(JSON.stringify(DATA.budgets),before);
+""")
+
+    def test_mixed_budgets_do_not_attribute_manual_values_to_rove(self):
         self.budget_script([
             {"cat": "Shopping", "limit": 100, "auto": True},
             {"cat": "Lebensmittel", "limit": 300, "auto": False},
@@ -191,11 +208,35 @@ const before=JSON.stringify(DATA.budgets);
         ], """
 renderBudgets();
 const html=document.getElementById('budget-list').innerHTML;
-assert.equal((html.match(/Budgetvorschläge von Rov.E/g)||[]).length,1);
-assert.ok(!html.includes('Vorschlag von Rov.E'));
-assert.ok(html.indexOf('data-bgt="1"')<html.indexOf('Budgetvorschläge von Rov.E'));
+assert.ok(!html.includes('Vorgeschlagen von Rov.E'));
+assert.ok(!html.includes('Budgetvorschläge von Rov.E'));
+assert.ok(html.indexOf('data-bgt="1"')<html.indexOf('data-bgt="0"'));
 for(const index of [0,1,2])assert.ok(html.includes('data-bgt="'+index+'"'));
 assert.equal(JSON.stringify(DATA.budgets),before);
+""")
+
+    def test_manual_and_unknown_origin_budgets_have_no_attribution(self):
+        for origin in ({}, {"auto": False}, {"source": "bot"}, {"auto": "true"}):
+            self.budget_script([{"cat": "Lebensmittel", "limit": 300, **origin}], """
+renderBudgets();
+assert.ok(!document.getElementById('budget-list').innerHTML.includes('Vorgeschlagen von Rov.E'));
+assert.equal(JSON.stringify(DATA.budgets),before);
+""")
+
+    def test_manual_edit_removes_total_attribution_without_changing_values(self):
+        self.budget_script([{"cat": "Lebensmittel", "limit": 300, "auto": True}], """
+DATA.sts={financial_month_budget:900,variableMonthExpenses:125,free_month_remaining:775};
+renderBudgets();
+let html=document.getElementById('budget-list').innerHTML;
+assert.ok(html.includes('Vorgeschlagen von Rov.E'));
+delete DATA.budgets[0].auto;
+renderBudgets();
+html=document.getElementById('budget-list').innerHTML;
+assert.ok(!html.includes('Vorgeschlagen von Rov.E'));
+assert.ok(html.includes('900 €'));
+assert.ok(html.includes('ausgegeben 125 €'));
+assert.ok(html.includes('Noch 775 € im Budget'));
+assert.equal(DATA.budgets[0].limit,300);
 """)
 
     def test_manual_budgets_and_archived_months_have_no_suggestion_heading(self):
@@ -203,8 +244,16 @@ assert.equal(JSON.stringify(DATA.budgets),before);
             self.budget_script([{"cat": "Lebensmittel", "limit": 300}], """
 renderBudgets();
 assert.ok(!document.getElementById('budget-list').innerHTML.includes('Budgetvorschläge'));
+assert.ok(!document.getElementById('budget-list').innerHTML.includes('Vorgeschlagen von Rov.E'));
 assert.equal(JSON.stringify(DATA.budgets),before);
 """, offset)
+
+    def test_archived_suggestions_do_not_receive_current_total_attribution(self):
+        self.budget_script([{"cat": "Lebensmittel", "limit": 300, "auto": True}], """
+renderBudgets();
+assert.ok(!document.getElementById('budget-list').innerHTML.includes('Vorgeschlagen von Rov.E'));
+assert.equal(JSON.stringify(DATA.budgets),before);
+""", -1)
 
 
 if __name__ == "__main__":
