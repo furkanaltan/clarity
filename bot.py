@@ -19,7 +19,10 @@ from dotenv import load_dotenv
 from rove_score import calculate_score as calculate_live_score
 from rove_app_state import write_legacy_monthly_snapshot
 from rove_expense_domain import begin_expense_write, create_expense_for_user
-from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, is_feature_enabled
+from rove_financial_accounts import (
+    FEATURE_MULTI_CASH_ACCOUNTS_V1, CashReconciliationRequired,
+    adjust_financial_account_balance, is_feature_enabled,
+)
 from rove_log_safety import safe_exception_summary
 
 # ====================== KONFIGURATION ======================
@@ -808,6 +811,8 @@ def update_user_field(user_id: int, field: str, value) -> bool:
         logger.error(f"Unerlaubtes Feld '{field}' – abgebrochen.")
         return False
     with get_db() as conn:
+        if field == "current_cash" and is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+            raise CashReconciliationRequired()
         conn.execute(f"UPDATE users SET {field} = ? WHERE user_id = ?", (value, user_id))
         conn.commit()
     return True
@@ -4405,6 +4410,7 @@ def handle_portfolio_total_amount_reply(user_id: int, action: dict, text_lower: 
 
 def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
     with get_db() as conn:
+        begin_expense_write(conn)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT id, amount, merchant, category FROM expenses "
@@ -4427,8 +4433,10 @@ def update_expense_amount(user_id: int, expense_id: int, new_amount: float):
 def _app_payment_movement(conn, user_id: int, expense_id: int):
     """Findet die Kontowirkung einer App-Ausgabe, falls die neue App-Tabelle schon existiert."""
     try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(app_cash_movements)")}
+        source = "source_account_id" if "source_account_id" in columns else "NULL AS source_account_id"
         return conn.execute(
-            """SELECT id, kind, amount FROM app_cash_movements
+            f"""SELECT id, kind, amount, {source} FROM app_cash_movements
                  WHERE user_id = ? AND expense_id = ?
                    AND kind IN ('payment', 'card')
                  ORDER BY id DESC LIMIT 1""",
@@ -4439,6 +4447,8 @@ def _app_payment_movement(conn, user_id: int, expense_id: int):
 
 
 def _set_app_account_amount(conn, user_id: int, account_key: str, amount: float) -> None:
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        raise CashReconciliationRequired()
     conn.execute(
         """INSERT INTO app_account_balances (user_id, account_key, amount, updated_at)
            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -4458,9 +4468,20 @@ def _set_app_account_amount(conn, user_id: int, account_key: str, amount: float)
 
 def reverse_app_paid_expense(conn, user_id: int, expense_id: int) -> float:
     """Gibt bei einer App-Ausgabe den wirklich abgezogenen Betrag auf ihr Ursprungskonto zurück."""
+    if not conn.in_transaction:
+        begin_expense_write(conn)
     movement = _app_payment_movement(conn, user_id, expense_id)
     if not movement:
         return 0.0
+
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        account_id = int(movement["source_account_id"] or 0)
+        if not account_id:
+            raise CashReconciliationRequired()
+        refund = round(max(0.0, float(movement["amount"] or 0)), 2)
+        adjust_financial_account_balance(conn, user_id, account_id, refund)
+        conn.execute("DELETE FROM app_cash_movements WHERE user_id=? AND expense_id=?", (user_id, expense_id))
+        return refund
 
     account_key = "bargeld" if movement["kind"] == "payment" else "giro"
     row = conn.execute(
@@ -4484,6 +4505,17 @@ def sync_app_paid_expense_amount(
     """Hält das Portemonnaie korrekt, wenn /editlast eine bar bezahlte App-Ausgabe ändert."""
     movement = _app_payment_movement(conn, user_id, expense_id)
     if not movement:
+        return
+
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        account_id = int(movement["source_account_id"] or 0)
+        if not account_id:
+            raise CashReconciliationRequired()
+        new_applied = round(abs(float(new_amount)), 2)
+        adjust_financial_account_balance(conn, user_id, account_id,
+            round(float(movement["amount"] or 0) - new_applied, 2))
+        conn.execute("UPDATE app_cash_movements SET amount=? WHERE id=? AND user_id=?",
+                     (new_applied, movement["id"], user_id))
         return
 
     account_key = "bargeld" if movement["kind"] == "payment" else "giro"
@@ -5302,6 +5334,10 @@ def handle_commands(message):
         bot.send_message(uid, text, parse_mode="Markdown")
 
     elif cmd == '/investiert':
+        with get_db() as conn:
+            if is_feature_enabled(conn, uid, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+                bot.send_message(uid, "Bestätige deine Sparleistung bitte im Monatscheck in der Rov.E App.")
+                return
         etf_savings = u.get("etf_savings") or 0
         cash_savings = u.get("cash_savings") or 0
         if etf_savings + cash_savings <= 0:

@@ -156,7 +156,10 @@ from rove_feature_announcements import (
     mark_feature_announcement,
 )
 from rove_financial_accounts import (
+    CashReconciliationRequired,
+    FinancialAccountRequestConflict,
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    assert_cash_consistent,
     archive_financial_account,
     adjust_financial_account_balance,
     apply_financial_account_deltas,
@@ -167,6 +170,8 @@ from rove_financial_accounts import (
     get_legacy_financial_account,
     is_feature_enabled,
     list_financial_accounts,
+    legacy_balances_from_financial_accounts,
+    read_legacy_cash_accounts,
     rename_financial_account,
     require_account_role,
     require_financial_account,
@@ -370,6 +375,11 @@ DATA_EXPORT_TABLES = (
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_BYTES + 512 * 1024
 logger = logging.getLogger("rove-app-api")
+
+
+@app.errorhandler(CashReconciliationRequired)
+def cash_reconciliation_error(_exc):
+    return jsonify({"ok": False, "error": "cash_reconciliation_required"}), 409
 
 
 def invalidate_behavior_snapshot_safely(
@@ -3581,33 +3591,19 @@ def sync_app_contract_details(conn: sqlite3.Connection, user_id: int) -> None:
 
 
 def app_cash_accounts(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
-    """Laedt die drei Cash-Konten und migriert alte Bot-Cashwerte beim ersten App-Write."""
+    """Use the same recorded source for state and writes; conflicts need review."""
     ensure_app_account_balances_table(conn)
-    rows = conn.execute(
-        """SELECT account_key, amount FROM app_account_balances WHERE user_id = ?""",
-        (user_id,),
-    ).fetchall()
-    balances = {key: 0.0 for key in ACCOUNT_KEYS}
-    if rows:
-        for row in rows:
-            if row["account_key"] in balances:
-                value = float(row["amount"] or 0)
-                # Giro darf einen Dispo/negativen Stand abbilden. Tagesgeld und Bargeld
-                # bleiben echte Guthabenkonten und koennen nicht unter null fallen.
-                balances[row["account_key"]] = round(
-                    value if row["account_key"] == "giro" else max(0.0, value), 2
-                )
-        return balances
-
-    # Alte Bot-Profile kannten nur eine Cash-Gesamtsumme. Sie startet sicher im Girokonto;
-    # der Nutzer verschiebt danach Tagesgeld oder Bargeld, ohne Vermögen zu erfinden.
+    assert_cash_consistent(conn, user_id)
+    if multi_cash_accounts_enabled(conn, user_id):
+        return legacy_balances_from_financial_accounts(conn, user_id)
     user = conn.execute("SELECT current_cash FROM users WHERE user_id = ?", (user_id,)).fetchone()
-    legacy_cash = user["current_cash"] if user else None
-    balances["giro"] = round(float(legacy_cash), 2) if legacy_cash is not None else 0.0
-    return balances
+    balances, _ = read_legacy_cash_accounts(conn, user_id, user["current_cash"] if user else None)
+    return {key: float(value or 0) for key, value in balances.items()}
 
 
 def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dict[str, float]) -> None:
+    if multi_cash_accounts_enabled(conn, user_id):
+        raise CashReconciliationRequired()
     for key in ACCOUNT_KEYS:
         value = float(balances.get(key, 0.0))
         if key != "giro":
@@ -3627,7 +3623,7 @@ def save_app_cash_accounts(conn: sqlite3.Connection, user_id: int, balances: dic
 
 
 def multi_cash_accounts_enabled(conn: sqlite3.Connection, user_id: int) -> bool:
-    """Read the Sprint-2 pilot flag without changing flag-off money paths."""
+    """Select the completed user model, retaining the old flag for compatibility."""
     return is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
 
 
@@ -3640,7 +3636,7 @@ def require_multi_cash_pilot(conn: sqlite3.Connection, user_id: int):
 
 def financial_account_error(exc: Exception):
     code = str(exc)
-    status = 404 if code == "financial_account_not_found" else 400
+    status = 409 if isinstance(exc, FinancialAccountRequestConflict) else (404 if code == "financial_account_not_found" else 400)
     return jsonify({"ok": False, "error": code}), status
 
 
@@ -5835,7 +5831,7 @@ def complete_app_onboarding():
                 "SELECT source FROM app_accounts WHERE user_id = ?", (user_id,)
             ).fetchone()
             user = conn.execute(
-                "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
+                "SELECT onboarding_step, current_cash FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
             if not account or str(account["source"] or "") != "app":
                 raise OnboardingValidationError("app_registration_required", 403)
@@ -5854,7 +5850,15 @@ def complete_app_onboarding():
             if user and int(user["onboarding_step"] or 0) >= 10:
                 raise OnboardingValidationError("onboarding_already_completed", 409)
 
-            multi_cash_enabled = multi_cash_accounts_enabled(conn, user_id)
+            has_legacy_cash = bool(conn.execute(
+                "SELECT 1 FROM app_account_balances WHERE user_id=? LIMIT 1", (user_id,)
+            ).fetchone()) if table_exists(conn, "app_account_balances") else False
+            has_financial_cash = bool(list_financial_accounts(conn, user_id, include_archived=True))
+            has_cash_history = any(table_exists(conn, table) and conn.execute(
+                f'SELECT 1 FROM "{table}" WHERE user_id=? LIMIT 1', (user_id,)
+            ).fetchone() for table in ("expenses", "app_cash_movements"))
+            fresh_cash = not (has_legacy_cash or has_financial_cash or has_cash_history) and not float(user["current_cash"] or 0)
+            multi_cash_enabled = multi_cash_accounts_enabled(conn, user_id) or fresh_cash
             if etf_plan and multi_cash_enabled:
                 accounts = list_financial_accounts(conn, user_id, include_archived=True)
                 source_exists = any(
@@ -7078,6 +7082,9 @@ def consumer_debts_endpoint(debt_id=None):
 def create_financial_account_endpoint():
     payload = request.get_json(silent=True) or {}
     token = token_from_request()
+    request_id = payload.get("request_id") or payload.get("requestId") or payload.get("idempotency_key")
+    if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+        return jsonify({"ok": False, "error": "financial_account_request_id_required"}), 400
     try:
         balance = round(float(payload.get("balance") or 0), 2)
     except (TypeError, ValueError):
@@ -7089,16 +7096,19 @@ def create_financial_account_endpoint():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         if error := require_multi_cash_pilot(conn, user_id):
             return error
+        if request.headers.get("X-Rove-User-ID") not in (None, str(user_id)):
+            return jsonify({"ok": False, "error": "account_changed"}), 409
         try:
             account_id, _balances = create_financial_account(
                 conn, user_id, clean_text(payload.get("type")).lower(),
                 clean_text(payload.get("name")), balance,
+                request_id=request_id,
             )
         except (ValueError, LookupError) as exc:
             return financial_account_error(exc)
         live_data = build_live_app_data(conn, user_id)
         conn.commit()
-    return jsonify({"ok": True, "accountId": account_id, **live_data})
+    return jsonify({"ok": True, "user_id": user_id, "accountId": account_id, **live_data})
 
 
 @app.route("/v1/financial-accounts/<int:account_id>", methods=["PATCH"])

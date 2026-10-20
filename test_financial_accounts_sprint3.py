@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+import uuid
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -54,6 +55,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
     def create(self, account_type="checking", name="Testkonto", balance=0, token="pilot-token"):
         response = self.request("POST", "/v1/financial-accounts", token=token, json={
             "type": account_type, "name": name, "balance": balance,
+            "request_id": uuid.uuid4().hex,
         })
         self.assertEqual(response.status_code, 200, response.get_json())
         return int(response.get_json()["accountId"])
@@ -93,7 +95,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
             ).fetchone()[0]), 7000.0)
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM app_account_balances WHERE user_id=1"
-            ).fetchone()[0], 0)
+            ).fetchone()[0], 3)
 
             conn.execute("BEGIN")
             again = ensure_initial_financial_accounts(conn, 1, {
@@ -104,15 +106,16 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM app_financial_accounts WHERE user_id=1"
             ).fetchone()[0], 2)
 
-    def test_multi_cash_onboarding_does_not_create_empty_accounts(self):
+    def test_multi_cash_onboarding_keeps_zero_checking_for_payment_roles(self):
         with closing(self.connect()) as conn:
             conn.execute("DELETE FROM app_account_balances WHERE user_id=1")
             conn.execute("DELETE FROM app_financial_accounts WHERE user_id=1")
             conn.execute("UPDATE users SET current_cash=0 WHERE user_id=1")
-            self.assertEqual(ensure_initial_financial_accounts(conn, 1, {}), [])
+            accounts = ensure_initial_financial_accounts(conn, 1, {})
+            self.assertEqual([(row["account_type"], row["balance"]) for row in accounts], [("checking", 0)])
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM app_financial_accounts WHERE user_id=1"
-            ).fetchone()[0], 0)
+            ).fetchone()[0], 1)
 
     def test_create_all_types_duplicate_names_and_balances(self):
         self.create("checking", "C24", -50)
@@ -129,6 +132,7 @@ class Sprint3FinancialAccountTests(unittest.TestCase):
         for account_type in ("savings", "wallet"):
             response = self.request("POST", "/v1/financial-accounts", json={
                 "type": account_type, "name": "Nicht erlaubt", "balance": -1,
+                "request_id": uuid.uuid4().hex,
             })
             self.assertEqual(response.status_code, 400)
 
@@ -1019,7 +1023,8 @@ class OnboardingAtomicityTests(unittest.TestCase):
             source = get_legacy_financial_account(conn, 1, "tagesgeld")
             self.assertEqual(plan["source_account"], "tagesgeld")
             self.assertEqual(int(plan["source_account_id"]), int(source["id"]))
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_financial_accounts WHERE user_id = 1").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_financial_accounts WHERE user_id = 1").fetchone()[0], 2)
+            self.assertEqual(get_legacy_financial_account(conn, 1, "giro")["balance"], 0)
 
     def test_available_multi_cash_source_completes_normally(self):
         with_source = self.submit(self.payload(giro=2000, tagesgeld=5000, source="giro"))

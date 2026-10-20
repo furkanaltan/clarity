@@ -1,13 +1,16 @@
-"""Additives Cash-account foundation for Rov.E multi-account migration.
+"""Account-owned cash model with atomic compatibility mirrors and transitions.
 
-This module deliberately does not run schema setup at import time. Sprint 1 is
-activated only by the explicit migration command; existing API money paths keep
-using ``app_account_balances`` and ``users.current_cash`` unchanged.
+Schema setup never runs on import. Fresh onboarding or an explicitly reviewed
+single-user transition selects the canonical model; existing conflicts are not
+resolved by ordinary reads or writes.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import hashlib
+import json
+import math
 from collections.abc import Mapping
 
 
@@ -20,6 +23,60 @@ LEGACY_ACCOUNT_META = {
     "bargeld": ("wallet", "Bargeld"),
 }
 TYPE_TO_LEGACY_KEY = {account_type: key for key, (account_type, _name) in LEGACY_ACCOUNT_META.items()}
+
+
+class CashReconciliationRequired(RuntimeError):
+    def __init__(self):
+        super().__init__("cash_reconciliation_required")
+
+
+class FinancialAccountRequestConflict(ValueError):
+    pass
+
+
+def cash_amount(value: object) -> float:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        raise CashReconciliationRequired() from None
+    if not math.isfinite(amount):
+        raise CashReconciliationRequired()
+    return round(amount, 2)
+
+
+def read_legacy_cash_accounts(conn, user_id, current_cash):
+    """Read the recorded split without inventing a balancing Giro adjustment."""
+    rows = conn.execute(
+        "SELECT account_key, amount FROM app_account_balances WHERE user_id=?", (user_id,)
+    ).fetchall() if table_exists(conn, "app_account_balances") else []
+    if not rows:
+        return {"giro": None if current_cash is None else cash_amount(current_cash),
+                "tagesgeld": 0.0, "bargeld": 0.0}, False
+    balances = {key: 0.0 for key in LEGACY_ACCOUNT_META}
+    for row in rows:
+        key = str(row["account_key"])
+        value = cash_amount(row["amount"])
+        if key not in balances or (key != "giro" and value < 0):
+            raise CashReconciliationRequired()
+        balances[key] = value
+    if current_cash is not None and abs(sum(balances.values()) - cash_amount(current_cash)) >= 0.005:
+        raise CashReconciliationRequired()
+    return balances, True
+
+
+def assert_cash_consistent(conn: sqlite3.Connection, user_id: int) -> None:
+    """Refuse a conflicting source before any balance can be overwritten."""
+    user = conn.execute("SELECT current_cash FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not user:
+        raise LookupError("user_not_found")
+    legacy, has_split = read_legacy_cash_accounts(conn, user_id, user["current_cash"])
+    if not is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        return
+    totals = legacy_balances_from_financial_accounts(conn, user_id)
+    if user["current_cash"] is None or abs(sum(totals.values()) - cash_amount(user["current_cash"])) >= 0.005:
+        raise CashReconciliationRequired()
+    if has_split and any(abs(totals[key] - legacy[key]) >= 0.005 for key in totals):
+        raise CashReconciliationRequired()
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -136,6 +193,27 @@ def ensure_financial_accounts_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_financial_account_migrations (
+            user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+            source TEXT NOT NULL CHECK(source IN ('onboarding','reconciled')),
+            plan_hash TEXT,
+            before_checksum TEXT,
+            after_checksum TEXT,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_financial_account_requests (
+            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            request_id TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            account_id INTEGER NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(user_id,request_id),
+            FOREIGN KEY(user_id,account_id) REFERENCES app_financial_accounts(user_id,id)
+        )"""
+    )
     required = {
         "app_financial_accounts": {
             "id", "user_id", "account_type", "name", "currency", "balance",
@@ -152,6 +230,10 @@ def ensure_financial_accounts_schema(conn: sqlite3.Connection) -> None:
 
 
 def is_feature_enabled(conn: sqlite3.Connection, user_id: int, feature_key: str) -> bool:
+    # A completed per-user transition selects the data model, not a pilot permission.
+    if feature_key == FEATURE_MULTI_CASH_ACCOUNTS_V1 and table_exists(conn, "app_financial_account_migrations"):
+        if conn.execute("SELECT 1 FROM app_financial_account_migrations WHERE user_id=?", (user_id,)).fetchone():
+            return True
     if not table_exists(conn, "app_user_features"):
         return False
     row = conn.execute(
@@ -166,6 +248,9 @@ def set_feature_enabled(
     conn: sqlite3.Connection, user_id: int, feature_key: str, enabled: bool
 ) -> None:
     """Persist a feature flag only for an existing user."""
+    if feature_key == FEATURE_MULTI_CASH_ACCOUNTS_V1 and not enabled and table_exists(conn, "app_financial_account_migrations"):
+        if conn.execute("SELECT 1 FROM app_financial_account_migrations WHERE user_id=?", (user_id,)).fetchone():
+            raise ValueError("canonical_cash_model_cannot_be_disabled")
     if not conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone():
         raise LookupError("user_not_found")
     conn.execute(
@@ -197,7 +282,7 @@ def list_financial_accounts(
 def ensure_initial_financial_accounts(
     conn: sqlite3.Connection, user_id: int, balances: Mapping[str, float]
 ) -> list[sqlite3.Row]:
-    """Create the canonical onboarding cash accounts once, without legacy rows."""
+    """Initialize a fresh cash model and its compatibility mirrors atomically."""
     if not conn.in_transaction:
         raise RuntimeError("financial_account_write_requires_transaction")
     ensure_financial_accounts_schema(conn)
@@ -205,18 +290,27 @@ def ensure_initial_financial_accounts(
         "SELECT 1 FROM app_financial_accounts WHERE user_id = ? LIMIT 1", (user_id,)
     ).fetchone()
     if existing:
-        active = list_financial_accounts(conn, user_id)
-        if active:
-            conn.execute(
-                "UPDATE users SET current_cash = ? WHERE user_id = ?",
-                (round(sum(float(row["balance"] or 0) for row in active), 2), user_id),
-            )
-        return active
+        assert_cash_consistent(conn, user_id)
+        return list_financial_accounts(conn, user_id)
+
+    if table_exists(conn, "app_account_balances") and conn.execute(
+        "SELECT 1 FROM app_account_balances WHERE user_id=?", (user_id,)
+    ).fetchone():
+        raise CashReconciliationRequired()
+    user = conn.execute("SELECT current_cash FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not user:
+        raise LookupError("user_not_found")
+    if cash_amount(user["current_cash"]) != 0 or any(
+        table_exists(conn, table) and conn.execute(
+            f'SELECT 1 FROM "{table}" WHERE user_id=? LIMIT 1', (user_id,)
+        ).fetchone() for table in ("expenses", "app_cash_movements")
+    ):
+        raise CashReconciliationRequired()
 
     initial: list[tuple[str, str, str, float]] = []
     for legacy_key, (account_type, name) in LEGACY_ACCOUNT_META.items():
-        value = round(float(balances.get(legacy_key, 0) or 0), 2)
-        if abs(value) < 0.005:
+        value = cash_amount(balances.get(legacy_key, 0))
+        if abs(value) < 0.005 and legacy_key != "giro":
             continue
         if account_type in {"savings", "wallet"} and value < -0.0049:
             raise ValueError("financial_account_balance_insufficient")
@@ -229,10 +323,13 @@ def ensure_initial_financial_accounts(
                    VALUES (?, ?, ?, 'EUR', ?, ?, 'manual', 'active')""",
             (user_id, account_type, name, value, legacy_key),
         )
-    conn.execute(
-        "UPDATE users SET current_cash = ? WHERE user_id = ?",
-        (round(sum(item[3] for item in initial), 2), user_id),
-    )
+    giro = get_legacy_financial_account(conn, user_id, "giro")
+    for role in ACCOUNT_ROLES:
+        set_account_role(conn, user_id, role, int(giro["id"]))
+    mirror_financial_accounts_to_legacy(conn, user_id)
+    conn.execute("INSERT INTO app_financial_account_migrations(user_id,source) VALUES(?,'onboarding')", (user_id,))
+    set_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1, True)
+    assert_cash_consistent(conn, user_id)
     return list_financial_accounts(conn, user_id)
 
 
@@ -318,29 +415,54 @@ def create_financial_account(
     account_type: str,
     name: str,
     balance: float,
+    *,
+    request_id: str,
 ) -> tuple[int, dict[str, float]]:
     """Create one manual EUR account and mirror the compatibility aggregates."""
     if not conn.in_transaction:
         raise RuntimeError("financial_account_write_requires_transaction")
     clean_type = str(account_type or "").strip().lower()
     clean_name = " ".join(str(name or "").split())
-    value = round(float(balance), 2)
+    value = float(balance)
     if clean_type not in ACCOUNT_TYPES:
         raise ValueError("invalid_financial_account_type")
     if not clean_name or len(clean_name) > 60:
         raise ValueError("invalid_financial_account_name")
-    if abs(value) > 10_000_000:
+    if not math.isfinite(value) or abs(value) > 10_000_000:
         raise ValueError("invalid_financial_account_balance")
+    value = round(value, 2)
     if clean_type in {"savings", "wallet"} and value < -0.0049:
         raise ValueError("financial_account_balance_insufficient")
+    if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+        raise ValueError("financial_account_request_id_required")
+    request_id = request_id.strip()
+    ensure_financial_accounts_schema(conn)
+    payload_hash = hashlib.sha256(json.dumps([clean_type, clean_name, value], ensure_ascii=True).encode()).hexdigest()
+    receipt = conn.execute(
+        "SELECT payload_hash,account_id FROM app_financial_account_requests WHERE user_id=? AND request_id=?",
+        (user_id, request_id),
+    ).fetchone()
+    if receipt:
+        if receipt["payload_hash"] != payload_hash:
+            raise FinancialAccountRequestConflict("financial_account_request_conflict")
+        return int(receipt["account_id"]), legacy_balances_from_financial_accounts(conn, user_id)
+    assert_cash_consistent(conn, user_id)
+    legacy_key = TYPE_TO_LEGACY_KEY[clean_type]
+    if get_legacy_financial_account(conn, user_id, legacy_key):
+        legacy_key = None
     cur = conn.execute(
         """INSERT INTO app_financial_accounts
                (user_id, account_type, name, currency, balance, legacy_key, source, status)
-           VALUES (?, ?, ?, 'EUR', ?, NULL, 'manual', 'active')""",
-        (user_id, clean_type, clean_name, 0.0 if abs(value) < 0.005 else value),
+           VALUES (?, ?, ?, 'EUR', ?, ?, 'manual', 'active')""",
+        (user_id, clean_type, clean_name, 0.0 if abs(value) < 0.005 else value, legacy_key),
     )
+    account_id = int(cur.lastrowid)
     balances = mirror_financial_accounts_to_legacy(conn, user_id)
-    return int(cur.lastrowid), balances
+    conn.execute(
+        "INSERT INTO app_financial_account_requests(user_id,request_id,payload_hash,account_id) VALUES(?,?,?,?)",
+        (user_id, request_id, payload_hash, account_id),
+    )
+    return account_id, balances
 
 
 def rename_financial_account(
@@ -382,7 +504,7 @@ def archive_financial_account(
 def financial_accounts_total(conn: sqlite3.Connection, user_id: int) -> float:
     row = conn.execute(
         """SELECT COALESCE(SUM(balance), 0.0)
-             FROM app_financial_accounts WHERE user_id = ?""",
+             FROM app_financial_accounts WHERE user_id = ? AND status='active'""",
         (user_id,),
     ).fetchone()
     return round(float(row[0] or 0.0), 2)
@@ -393,18 +515,17 @@ def legacy_balances_from_financial_accounts(
 ) -> dict[str, float]:
     """Aggregate account types back to the three still-active legacy keys."""
     balances = {key: 0.0 for key in LEGACY_ACCOUNT_META}
-    rows = conn.execute(
-        """SELECT account_type, COALESCE(SUM(balance), 0.0) AS amount
-             FROM app_financial_accounts
-            WHERE user_id = ?
-            GROUP BY account_type""",
-        (user_id,),
-    ).fetchall()
+    rows = list_financial_accounts(conn, user_id, include_archived=True)
     for row in rows:
         key = TYPE_TO_LEGACY_KEY.get(str(row["account_type"]))
-        if not key:
-            raise ValueError("unsupported_cash_account_type")
-        balances[key] = round(float(row["amount"] or 0.0), 2)
+        value = cash_amount(row["balance"])
+        if not key or row["currency"] != "EUR" or row["status"] not in {"active", "archived"} or (key != "giro" and value < 0):
+            raise CashReconciliationRequired()
+        if row["status"] == "archived":
+            if value != 0:
+                raise CashReconciliationRequired()
+            continue
+        balances[key] = round(balances[key] + value, 2)
     return balances
 
 
@@ -441,11 +562,16 @@ def update_financial_account_balance(
     """User-bound dual-write primitive for a later feature-flagged endpoint."""
     if not conn.in_transaction:
         raise RuntimeError("financial_account_write_requires_transaction")
+    assert_cash_consistent(conn, user_id)
+    value = cash_amount(balance)
+    account = require_financial_account(conn, user_id, account_id)
+    if account["account_type"] in {"savings", "wallet"} and value < 0:
+        raise ValueError("financial_account_balance_insufficient")
     cur = conn.execute(
         """UPDATE app_financial_accounts
               SET balance = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND user_id = ? AND status = 'active'""",
-        (round(float(balance), 2), account_id, user_id),
+        (value, account_id, user_id),
     )
     if cur.rowcount != 1:
         raise LookupError("financial_account_not_found")
@@ -484,6 +610,7 @@ def apply_financial_account_deltas(
     """Validate all deltas first, then update and mirror exactly once."""
     if not conn.in_transaction:
         raise RuntimeError("financial_account_write_requires_transaction")
+    assert_cash_consistent(conn, user_id)
     required = require_funds_for or set()
     updates: dict[int, float] = {}
     for raw_account_id, raw_delta in deltas.items():
@@ -518,6 +645,7 @@ def transfer_financial_account_balance(
     """Move cash between two accounts and mirror only after both updates."""
     if not conn.in_transaction:
         raise RuntimeError("financial_account_write_requires_transaction")
+    assert_cash_consistent(conn, user_id)
     source = require_financial_account(conn, user_id, source_account_id)
     target = require_financial_account(conn, user_id, target_account_id)
     if int(source["id"]) == int(target["id"]):
@@ -574,6 +702,8 @@ def roles_summary(conn: sqlite3.Connection, user_id: int) -> Mapping[str, int]:
 def delete_financial_account_data(conn: sqlite3.Connection, user_id: int) -> None:
     """Delete Sprint-1 data in FK-safe order for exactly one user."""
     for table in (
+        "app_financial_account_requests",
+        "app_financial_account_migrations",
         "app_financial_account_roles",
         "app_financial_accounts",
         "app_user_features",

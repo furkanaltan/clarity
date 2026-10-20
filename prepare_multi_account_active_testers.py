@@ -1,9 +1,8 @@
-"""Prepare and enable Rov.E multi-account mode for active beta testers.
+"""Read-only legacy pilot review. Use reviewed per-user plans for transitions.
 
 This script is intentionally conservative:
 - dry-run is the default
-- production apply creates one SQLite backup before each changed user
-- each user is prepared and enabled inside one BEGIN IMMEDIATE transaction
+- the old bulk apply entry point is retired
 - no real money values are printed
 - inactive/revoked users are never changed
 """
@@ -341,14 +340,20 @@ def sqlite_checks(conn: sqlite3.Connection) -> dict:
 
 
 def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> dict:
+    if apply:
+        raise RuntimeError("reviewed_user_transition_required")
     if not db_path.is_file():
         raise FileNotFoundError(db_path)
-    with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
+    target = db_path.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(target, uri=True, timeout=30.0)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        ensure_financial_accounts_schema(conn)
-        ensure_financial_account_reference_schema(conn)
-        conn.commit()
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        required = {"app_financial_accounts", "app_financial_account_roles", "app_user_features"}
+        if not all(table_exists(conn, table) for table in required):
+            return {"mode": "dry-run", "recommendation": {"status": "NO_GO",
+                "blockers": ["schema_preparation_requires_reviewed_transition"]}}
 
         active_ids = active_app_tester_ids(conn)
         enabled_ids = enabled_multi_account_ids(conn)
@@ -367,7 +372,7 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
                 ready_candidates.append(user_id)
         selected = (raw_candidates if users else ready_candidates)[:limit]
         result = {
-            "mode": "apply" if apply else "dry-run",
+            "mode": "dry-run",
             "database": str(db_path.resolve()),
             "active_testers": len(active_ids),
             "enabled_before": len([user_id for user_id in active_ids if user_id in set(enabled_ids)]),
@@ -378,21 +383,14 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
             "users": [],
         }
 
-        if not apply:
-            for user_id in selected:
-                errors = validate_preconditions(conn, user_id)
-                result["users"].append({
-                    "user_id": user_id,
-                    "status": "ready" if not errors else "blocked",
-                    "reason": ";".join(errors),
-                    "current_state": inspect_user(conn, user_id) if not errors else {},
-                })
-        else:
-            for user_id in selected:
-                changed = prepare_and_enable_user(conn, db_path, user_id)
-                result["users"].append(changed)
-                if changed["status"] != "enabled":
-                    break
+        for user_id in selected:
+            errors = validate_preconditions(conn, user_id)
+            result["users"].append({
+                "user_id": user_id,
+                "status": "ready" if not errors else "blocked",
+                "reason": ";".join(errors),
+                "current_state": inspect_user(conn, user_id) if not errors else {},
+            })
 
         enabled_after = enabled_multi_account_ids(conn)
         result["enabled_after"] = len([user_id for user_id in active_ids if user_id in set(enabled_after)])
@@ -405,9 +403,7 @@ def run(db_path: Path, *, apply: bool, limit: int, users: list[int] | None) -> d
         if result["sqlite"]["integrity_check"] != "ok" or result["sqlite"]["foreign_key_errors"]:
             blockers.append({"status": "blocked", "reason": "sqlite_integrity_problem"})
         result["recommendation"] = {
-            "status": "GO_ACTIVE_TESTERS" if apply and not blockers and result["enabled_after"] == len(active_ids) else (
-                "READY_TO_APPLY" if not apply and not blockers else "NO_GO"
-            ),
+            "status": "READY_FOR_REVIEW" if not blockers else "NO_GO",
             "blockers": [row.get("reason", "unknown") for row in blockers],
             "global_rollout": "not_enabled",
         }
@@ -429,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     result = run(args.db.resolve(), apply=bool(args.apply), limit=args.limit, users=args.users)
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if result["recommendation"]["status"] in {"READY_TO_APPLY", "GO_ACTIVE_TESTERS"} else 2
+    return 0 if result["recommendation"]["status"] == "READY_FOR_REVIEW" else 2
 
 
 if __name__ == "__main__":

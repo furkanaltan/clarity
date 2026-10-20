@@ -5950,6 +5950,7 @@ const ASSET_ADD_OPTIONS=[
   {kind:"valuables",label:"Sachwert",icon:"assetGem"},
 ];
 let NEW_FINANCIAL_ACCOUNT_TYPE=null, FINANCIAL_ACCOUNT_BUSY=false, PENDING_TRANSFER_REQUEST=null;
+const PENDING_ACCOUNT_CREATES=new Map();
 function escapeAccountHtml(value){ return String(value??"").replace(/[&<>'"]/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char])); }
 function renderFinancialAccountAdd(){
   const body=document.getElementById("accountaddbody");
@@ -6005,11 +6006,26 @@ function openAssetKind(kind){
 }
 async function financialAccountRequest(path,method,payload){
   if(FINANCIAL_ACCOUNT_BUSY||!apiReady()) return false;
+  const owner=BRIDGE_USER_ID;
+  const create=path==="/v1/financial-accounts"&&method==="POST";
+  if(create){
+    const fingerprint=JSON.stringify([payload.type,payload.name,payload.balance]);
+    const pending=PENDING_ACCOUNT_CREATES.get(owner);
+    if(pending&&pending.fingerprint!==fingerprint){
+      showToast("Bestätige zuerst den vorherigen Speicherversuch mit denselben Angaben.");return false;
+    }
+    if(!pending)PENDING_ACCOUNT_CREATES.set(owner,{fingerprint,id:globalThis.crypto?.randomUUID?.()||`account-${Date.now()}-${Math.random().toString(36).slice(2)}`});
+    payload={...payload,request_id:PENDING_ACCOUNT_CREATES.get(owner).id};
+  }
   FINANCIAL_ACCOUNT_BUSY=true;
   try{
-    const res=await apiFetch(path,{method,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})});
+    const res=await apiFetch(path,{method,headers:{"Content-Type":"application/json",...(create?{"X-Rove-User-ID":String(owner)}:{})},body:JSON.stringify(payload||{})});
     const data=await res.json().catch(()=>({}));
+    if(create&&res.status===400)PENDING_ACCOUNT_CREATES.delete(owner);
     if(!res.ok||!data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(create&&Number(data.user_id)!==Number(owner))throw new Error("account_changed");
+    if(create)PENDING_ACCOUNT_CREATES.delete(owner);
+    if(BRIDGE_USER_ID!==owner)return false;
     // Ein gleichzeitig laufender 45-Sekunden-Refresh kann noch den Stand vor der Mutation
     // enthalten. Erst auslaufen lassen und danach genau einmal den frischen Serverstand holen.
     for(let attempt=0;appDataRefreshInFlight&&attempt<30;attempt++){

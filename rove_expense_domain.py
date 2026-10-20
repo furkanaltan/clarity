@@ -11,12 +11,15 @@ from rove_app_state import (
 )
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    CashReconciliationRequired,
+    assert_cash_consistent,
     adjust_financial_account_balance,
     ensure_financial_account_reference_schema,
     get_legacy_financial_account,
     is_feature_enabled,
     require_account_role,
     require_financial_account,
+    read_legacy_cash_accounts,
 )
 from rove_score import award_tracking_points
 from rove_behavior_snapshot import invalidate_behavior_snapshot
@@ -97,25 +100,15 @@ def ensure_expense_request_id_schema(conn: sqlite3.Connection) -> None:
 
 def _legacy_balances(conn: sqlite3.Connection, user_id: int) -> dict[str, float]:
     ensure_app_account_balances_table(conn)
-    balances = {key: 0.0 for key in ACCOUNT_META}
-    rows = conn.execute(
-        "SELECT account_key, amount FROM app_account_balances WHERE user_id = ?",
-        (user_id,),
-    ).fetchall()
-    if rows:
-        for row in rows:
-            key = str(row["account_key"])
-            if key in balances:
-                value = float(row["amount"] or 0)
-                balances[key] = round(value if key == "giro" else max(0.0, value), 2)
-        return balances
     user = conn.execute("SELECT current_cash FROM users WHERE user_id = ?", (user_id,)).fetchone()
     current_cash = user["current_cash"] if user else None
-    balances["giro"] = round(float(current_cash), 2) if current_cash is not None else 0.0
-    return balances
+    balances, _ = read_legacy_cash_accounts(conn, user_id, current_cash)
+    return {key: float(value or 0) for key, value in balances.items()}
 
 
 def _save_legacy_balances(conn: sqlite3.Connection, user_id: int, balances: dict[str, float]) -> None:
+    if is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1):
+        raise CashReconciliationRequired()
     for key in ACCOUNT_META:
         value = float(balances.get(key, 0.0))
         if key != "giro":
@@ -174,6 +167,7 @@ def create_expense_for_user(
             }
 
     ensure_app_cash_movements_table(conn)
+    assert_cash_consistent(conn, user_id)
     pilot = is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
     account_id = None
     if pilot:

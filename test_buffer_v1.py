@@ -107,6 +107,8 @@ class BufferApiTests(unittest.TestCase):
             ensure_buffer_target_column(conn)
             api.ensure_auth_tables(conn)
             conn.execute("UPDATE users SET current_cash=4600, fixed_costs=2000 WHERE user_id=1")
+            # Ordinary API tests start from a coherent legacy split, not hidden drift.
+            conn.execute("UPDATE app_account_balances SET amount=4350 WHERE user_id=1 AND account_key='giro'")
             set_feature_enabled(conn, 1, FEATURE_MULTI_CASH_ACCOUNTS_V1, False)
             for uid in (1, 2):
                 account = conn.execute(
@@ -210,6 +212,7 @@ class BufferApiTests(unittest.TestCase):
 
     def test_legacy_missing_and_zero_cash_follow_score_source(self):
         with closing(self.connect()) as conn:
+            conn.execute("UPDATE app_account_balances SET amount=1000 WHERE user_id=1 AND account_key='giro'")
             for value, expected in ((None, 1250), (0, 0), (4600, 4600)):
                 conn.execute("UPDATE users SET current_cash=? WHERE user_id=1", (value,))
                 profile = conn.execute("SELECT * FROM users WHERE user_id=1").fetchone()

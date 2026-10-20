@@ -65,9 +65,11 @@ from rove_investment_contributions import (
 from rove_valuables import ensure_valuables_schema, list_valuables
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    assert_cash_consistent,
     is_feature_enabled,
     list_financial_accounts,
     roles_summary,
+    read_legacy_cash_accounts,
 )
 
 logger = logging.getLogger(__name__)
@@ -2306,42 +2308,7 @@ def get_app_cash_accounts(
     Alte Telegram-Profile kennen nur `current_cash`. Bis der Nutzer die Aufteilung einmal
     vorgenommen hat, wird dieser Wert deshalb vollstaendig dem Girokonto zugeordnet.
     """
-    try:
-        rows = conn.execute(
-            """SELECT account_key, amount FROM app_account_balances
-                 WHERE user_id = ?""",
-            (user_id,),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        rows = []
-
-    if not rows:
-        return {
-            "giro": round(bot_cash, 2) if bot_cash is not None else None,
-            "tagesgeld": 0.0,
-            "bargeld": 0.0,
-        }, False
-
-    balances = {key: 0.0 for key in ACCOUNT_META}
-    for row in rows:
-        key = row["account_key"]
-        if key in balances:
-            value = float(row["amount"] or 0)
-            # Das Girokonto darf ueberzogen sein — genau wie beim Schreiben in
-            # rove_app_api.app_cash_accounts(). Bis 26.07. stand hier ein max(0.0, …) ueber
-            # ALLE Konten: die Datenbank hielt -500 EUR, /v1/state lieferte 0 EUR. Die App
-            # zeigte direkt nach der Buchung -500 (aus der POST-Antwort) und 45 Sekunden
-            # spaeter 0 — die Ueberziehung war unsichtbar und das Gesamtvermoegen zu hoch.
-            # Tagesgeld und Bargeld bleiben echte Guthabenkonten.
-            balances[key] = round(value if key == "giro" else max(0.0, value), 2)
-
-    # Der Bot kann zwischen zwei App-Aufrufen neue Cash-Sparraten bestaetigen. Dieser neue
-    # Betrag gehoert zunaechst ins Girokonto, damit Gesamtvermögen und Bot niemals driften.
-    if bot_cash is not None:
-        delta = round(float(bot_cash) - sum(balances.values()), 2)
-        if abs(delta) >= 0.01:
-            balances["giro"] = round(balances["giro"] + delta, 2)
-    return balances, True
+    return read_legacy_cash_accounts(conn, user_id, bot_cash)
 
 
 def write_legacy_monthly_snapshot(
@@ -2729,6 +2696,7 @@ def build_live_app_data(
     bot_cash = None if raw_bot_cash is None else float(raw_bot_cash)
     multi_cash = is_feature_enabled(conn, user_id, FEATURE_MULTI_CASH_ACCOUNTS_V1)
     if multi_cash:
+        assert_cash_consistent(conn, user_id)
         # The active Financial Accounts are the visible cash truth for opted-in users.
         # Keep the legacy aggregate untouched; it remains a compatibility value only.
         active_accounts = list_financial_accounts(conn, user_id)
