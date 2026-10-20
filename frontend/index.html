@@ -768,6 +768,7 @@
      bleibt, das ist der Klick-Anker, keine Größen-Abweichung. */
   .mentor .say .m-nudge{display:block;font-size:12.5px;line-height:1.4;color:var(--muted);font-weight:400;margin-top:3px}
   .mentor .say .m-nudge b{color:var(--blue);font-weight:700}
+  .mentor .say .mentor-budget-cta{appearance:none;background:none;border:0;padding:0;text-align:left;font:inherit;cursor:pointer}
   .mentor .mentor-talk{margin-left:auto;color:var(--blue);font-size:18px;line-height:1;opacity:.78;flex-shrink:0;appearance:none;background:transparent;border:0;padding:0;font:inherit;cursor:pointer}
   .brand-logo{height:26px;width:auto;display:block;opacity:.96}
   .greet{font-size:20px;font-weight:800;letter-spacing:-.4px}
@@ -2727,6 +2728,16 @@
   .rv-glass--60{--rv-glass-size:60px}
   .rv-glass--96{--rv-glass-size:96px}
   .rv-glass--30::before,.rv-glass--plain::before,.rv-glass-list .rv-glass::before{display:none}
+  #onboard:not(.auth-v2) .ob-path .ic,#onboard:not(.auth-v2) .ob-item .iic{
+    position:relative;overflow:hidden;border-radius:50%;color:#fff!important;
+    background:linear-gradient(160deg,#34383a,#0b0c0c)!important;
+    border:1px solid rgba(255,255,255,.38);
+    box-shadow:inset 0 1px 1px rgba(255,255,255,.42),inset 0 -5px 9px rgba(0,0,0,.55),0 4px 9px rgba(0,0,0,.25)}
+  #onboard:not(.auth-v2) .ob-path .ic::after,#onboard:not(.auth-v2) .ob-item .iic::after{
+    content:"";position:absolute;left:12%;top:5%;width:76%;height:44%;border-radius:50%;
+    background:linear-gradient(180deg,rgba(255,255,255,.24),transparent);pointer-events:none}
+  #onboard:not(.auth-v2) .ob-path .ic svg,#onboard:not(.auth-v2) .ob-item .iic svg{
+    position:relative;z-index:1;stroke:currentColor;filter:none}
   .asset-glass-slot{display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex:0 0 44px}
   .asset-glass-slot > svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
   .asset-order-glass .rv-glass::before{display:none}
@@ -3909,6 +3920,8 @@ const ICONS = {
   cross:'<svg viewBox="0 0 24 24"><path d="M10 4h4v6h6v4h-6v6h-4v-6H4v-4h6z"/></svg>',
   doc:'<svg viewBox="0 0 24 24"><path d="M7 3.5h7l3 3V20a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 6 20V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M14 3.5V7h3.5M8.8 11h6.4M8.8 14.5h6.4M8.8 18h4.2"/></svg>',
   car:'<svg viewBox="0 0 24 24"><path d="M5.5 16.5h13M6.8 9h10.4l1.8 4.5H5z"/><path d="M5 13.5v5h2.5v-2h9v2H19v-5"/><circle cx="8" cy="16" r="1.1"/><circle cx="16" cy="16" r="1.1"/></svg>',
+  phone:'<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 6h4M11 18h2"/></svg>',
+  wifi:'<svg viewBox="0 0 24 24"><path d="M3 8a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0M9 16a5 5 0 0 1 6 0M12 20h.01"/></svg>',
   euro:'<svg viewBox="0 0 24 24"><path d="M17.5 6.5A7 7 0 0 0 6.8 12a7 7 0 0 0 10.7 5.5"/><path d="M4 10.4h9M4 13.6h9"/></svg>',
   bank:'<svg viewBox="0 0 24 24"><path d="M4 10 12 4l8 6M5 10v8M9 10v8M15 10v8M19 10v8M3.5 21h17"/></svg>',
   key:'<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><path d="m11 11 9 9m-3-3 2-2m-5-1 2-2"/></svg>',
@@ -4661,6 +4674,24 @@ function setMentorCtaTarget(target){
   mentor.dataset.mentorTarget=safeTarget;
   mentor.querySelector("[data-mentor-cta]")?.setAttribute("data-mentor-target",safeTarget);
 }
+function shouldWelcomeFirstBudget(){
+  const days=DATA.score?.platform_days;
+  if(APP_MODE==="bridge" && (typeof days!=="number" || !Number.isFinite(days) || days<0 || days>1)) return false;
+  if(!mentorDataReady()) return false;
+  if((DATA.budgets||[]).length || Object.values(DATA.budgetHistory||{}).some(rows=>rows?.length)) return false;
+  if(Object.values(DATA.txHistory||{}).some(days=>days?.some(day=>day.items?.length))) return false;
+  if((DATA.reports||[]).some(report=>report.status==="ready")) return false;
+  const candidate=DATA.mentorCandidate;
+  if(Number(candidate?.priority)>=95 || ["budget_overrun","consumer_debt","consumer_debt_new","security"].includes(candidate?.type)) return false;
+  if(DATA.featureAnnouncements?.coach?.priority==="security" || freeBudget()<0) return false;
+  // platform_days counts days since the first booking, not the account's age.
+  if(APP_MODE==="bridge") return true;
+  return APP_MODE==="profile" && PROFILE_META.onboarded && !trackedOuts().length;
+}
+function openWelcomeBudget(){
+  closeSheetAndNavigate("tx");
+  document.querySelector('#txPills [data-f="budget"]')?.click();
+}
 function mentorLine(){
   const el=document.getElementById("mentorSay");
   const mentor=document.querySelector(".mentor");
@@ -4672,6 +4703,14 @@ function mentorLine(){
     delete mentor.dataset.mentorDeepLink;
   }
   const serverCandidate=APP_MODE==="bridge" && DATA.mentorCandidate;
+  if(shouldWelcomeFirstBudget()){
+    mentor?.classList.remove("monthly-due");
+    setMentorCtaTarget("budget-setup");
+    el.innerHTML='<div class="m-free"><b>Willkommen bei Rov.E!</b></div>'+
+      '<div class="m-note">Dein Finanzüberblick beginnt hier. Richte jetzt dein erstes Budget ein und behalte deine Ausgaben im Blick.</div>'+
+      '<button type="button" class="m-nudge mentor-budget-cta" data-mentoract="budget-setup"><b>Budget einrichten</b></button>';
+    return;
+  }
   if(serverCandidate){
     mentor?.classList.remove("monthly-due");
     const deepLink=String(serverCandidate.deep_link||"");
@@ -4865,6 +4904,7 @@ document.querySelector(".mentor").addEventListener("click",e=>{
     const deepLink=mentor?.dataset.mentorDeepLink||"";
     buzz();
     if(deepLink && target!=="coach") openMentorCandidate(DATA.mentorCandidate,deepLink);
+    else if(target==="budget-setup") openWelcomeBudget();
     else if(target==="score") openScore();
     else if(target==="report"||target==="reports") openReports();
     else openTalk();
@@ -4881,6 +4921,7 @@ document.querySelector(".mentor").addEventListener("click",e=>{
   e.stopImmediatePropagation();
   const a=r.dataset.mentoract; buzz();
   if(a==="add") openSheet();
+  else if(a==="budget-setup") openWelcomeBudget();
   else if(a==="talk") openTalk();
   else if(a==="budget") openTalk();
   else if(a==="monthly") openMonthlyPlan();
@@ -8527,7 +8568,7 @@ function renderBudgets(){
       <span style="font-size:13px;color:var(--muted)">Budget <b style="color:var(--ink)">${eur(summaryBudget)}</b> · ausgegeben ${eur(actualSpent)}</span>
       <span style="font-size:13px;font-weight:700;color:${canonicalBudget<0?'var(--gold)':remaining<0?'var(--red)':'var(--green)'}">${rightSummary}</span>
     </div>`;
-  box.innerHTML = summary+`<div class="card">`+DATA.budgets.map((b,i)=>{
+  const renderBudget=(b,i)=>{
     const sp=catSpent(b.cat), p=Math.round(sp/b.limit*100), over=sp>b.limit, near=p>=75 && !over;
     const col = over? "var(--red)" : near? "var(--gold)" : "var(--green)";
     const avg=threeMonthAvg(b.cat);
@@ -8538,11 +8579,16 @@ function renderBudgets(){
       else cmp=`<div class="bcmp"><span style="color:${diff>0?'var(--red)':'var(--green)'};font-weight:700">${diff>0?'↑':'↓'} ${Math.abs(diff)} %</span> ${diff>0?'mehr':'weniger'} als im 3-Monats-Schnitt (⌀ ${eur(avg)}).</div>`;
     }
     return `<div class="bgt" data-bgt="${i}">
-      <div class="bh"><span class="bn">${b.cat}${b.auto?' <span class="bt-auto">Vorschlag von Rov.E</span>':''}</span><span class="bv"><b>${eur(sp)}</b> / ${eur(b.limit)}</span></div>
+      <div class="bh"><span class="bn">${b.cat}</span><span class="bv"><b>${eur(sp)}</b> / ${eur(b.limit)}</span></div>
       <div class="bl"><span style="width:${Math.min(100,p)}%;background:${col}"></span></div>
       ${cmp}
     </div>`;
-  }).join("")+`</div>`;
+  };
+  const manual=DATA.budgets.map((b,i)=>({b,i})).filter(({b})=>!b.auto);
+  const suggested=DATA.budgets.map((b,i)=>({b,i})).filter(({b})=>b.auto);
+  box.innerHTML=summary+
+    (manual.length?`<div class="card">${manual.map(({b,i})=>renderBudget(b,i)).join("")}</div>`:"")+
+    (suggested.length?`<div class="budget-hint">Budgetvorschläge von Rov.E</div><div class="card">${suggested.map(({b,i})=>renderBudget(b,i)).join("")}</div>`:"");
 }
 renderBudgets();
 document.getElementById("budget-list").addEventListener("click",e=>{
@@ -15426,7 +15472,8 @@ const OB_CONTRACTS = [
   {k:"spotify", n:"Spotify",           cat:"Abos",            icon:"music",  tint:"#1DB954", cancel:true},
   {k:"gym",     n:"Fitnessstudio",     cat:"Abos",            icon:"gym",    tint:"#E8622C", cancel:true},
   {k:"kfz",     n:"KFZ-Versicherung",  cat:"Versicherungen",  icon:"shield", tint:"#F4F1EA", cancel:true},
-  {k:"auto",    n:"Auto",              cat:"Mobilität",      icon:"euro",   tint:"#D07D00", cancel:false},
+  {k:"auto",    n:"Auto",              cat:"Mobilität",      icon:"euro",   tint:"#D07D00", cancel:false, legacy:true},
+  {k:"vehicle_costs", n:"Laufende Fahrzeugkosten", cat:"Mobilität", icon:"car", tint:"#D07D00", cancel:false},
   {k:"kredit",  n:"Kredit",            cat:"Kredite",         icon:"bank",   tint:"#646B00", cancel:false},
 ];
 // deutsches Zahlenformat tolerant parsen ("1.200,50" / "1200.5" / "850")
@@ -15513,7 +15560,7 @@ function obRender(){
           <span class="ob-badge inactive">Noch nicht aktiv</span>
         </button>
         <button class="ob-path" data-ob="manual">
-          <span class="ic">${ic("euro")}</span>
+          <span class="ic">${ic("doc")}</span>
           <span><span class="pt">Selbst eintragen</span><br><span class="ps">In 3 Minuten eingerichtet — Schritt für Schritt</span></span>
         </button>
       </div>
@@ -15543,26 +15590,21 @@ function obRender(){
     foot.innerHTML = `<button class="ob-cta" data-ob="next">Weiter</button>`;
   }
   else if(key==="fix"){
-    // Auto ist mehrdeutig — Kredit/Leasing/gekauft (bar bezahlt) sind finanziell komplett
-    // unterschiedliche Fälle (Furkan-Feedback 17.07.: "Auto (Rate/Leasing)" bevorzugt schon im
-    // Namen eine Annahme, die nicht für jeden stimmt). Statt zu raten, fragt Rov.E direkt nach,
-    // sobald ein Betrag eingetragen ist — dieselbe Einordnung, die vorher nur nachträglich im
-    // Vertrags-Detail möglich war (siehe LOAN_NAME_RE/isLoan), jetzt schon beim Ersteintragen.
+    // Keep saved Auto drafts and their financing metadata separate from new running costs.
     const fixTile=c=>{
       const val=OB.contracts[c.k];
-      const autoChips = (c.k==="auto" && val) ? `<div class="ob-subgrid">${
-        [["kredit","Kredit"],["leasing","Leasing"],["gekauft","Gekauft/bar bezahlt"]].map(([k,l])=>
-          `<span class="chip-q${k==="gekauft"?' wide':''}${OB.autoFinType===k?' sel':''}" data-autotype="${k}">${l}</span>`).join("")
-      }</div>` : "";
+      const icon={internet:"wifi",handy:"phone",auto:"car"}[c.k]||c.icon;
+      const legacyType={kredit:"Kredit",leasing:"Leasing",gekauft:"Gekauft/bar bezahlt"}[OB.autoFinType];
+      const savedAuto=c.legacy?`<div class="ob-sub">Gespeicherte Angabe${legacyType?`: ${legacyType}`:""}. Bleibt erhalten.</div>`:"";
       return `<div class="ob-item ${val?'on':''}" data-fix="${c.k}">
-        <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${ic(c.icon)}</span>
+        <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${ic(icon)}</span>
         <span class="inm">${c.n}</span></div>
         <input type="text" inputmode="decimal" placeholder="€/Monat" data-fixin="${c.k}"
           value="${val??""}" ${val?'':'tabindex="-1"'}>
-        ${autoChips}
+        ${savedAuto}
       </div>`;
     };
-    const stdList=OB_CONTRACTS.filter(c=>c.std), restList=OB_CONTRACTS.filter(c=>!c.std);
+    const stdList=OB_CONTRACTS.filter(c=>c.std), restList=OB_CONTRACTS.filter(c=>!c.std&&(!c.legacy||OB.contracts[c.k]));
     // Kommt der Nutzer über "Zurück" auf diesen Schritt und hat schon einen der ausklappbaren
     // Posten ausgefüllt, muss der Bereich automatisch offen sein — sonst sieht er seine eigenen
     // Daten nicht mehr (stiller Datenverlust-Eindruck, obwohl der Wert noch da ist).
@@ -15575,6 +15617,7 @@ function obRender(){
         ? `<div class="ob-grid" style="margin-top:10px">${restList.map(fixTile).join("")}</div>`
         : `<button type="button" class="ob-chip" id="obFixMore" style="margin-top:10px">+ Mehr anzeigen</button>`}
       ${obRenderCustomFix()}
+      <div class="ob-sub">Kredit- und Leasingraten trägst du separat unter „Kredit“ oder „Sonstiges“ ein. Den Fahrzeugwert erfasst du unter „Sachwerte“.</div>
       <div class="ob-count">Fixkosten bisher: <b id="obFixSum">${eur2(obFixSum())}</b> / Monat</div>`;
     foot.innerHTML = `<button class="ob-cta" data-ob="next">Weiter</button>`;
   }
@@ -15585,13 +15628,13 @@ function obRender(){
       <div class="ob-sub">Dein Startvermögen — grob reicht völlig, du kannst alles später anpassen.</div>
       <div class="ob-grid">${OB_WEALTH.map(c=>`
         <div class="ob-item ${w[c.k]?'on':''}" data-wf="${c.k}"${c.k==="bar"?' style="grid-column:1/-1"':''}>
-          <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${ic(c.icon)}</span>
+          <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${assetGlyph({giro:"checking",tages:"savings",bar:"cash",etf:"investments",krypto:"crypto"}[c.k])}</span>
           <span class="inm">${c.n}</span></div>
           <input type="text" inputmode="decimal" placeholder="Betrag in €" data-win="${c.k}"
             value="${w[c.k]??""}" ${w[c.k]?'':'tabindex="-1"'}>
         </div>`).join("")}
         <div class="ob-item ${w.immo_wert?'on':''}" data-wf="immo" style="grid-column:1/-1">
-          <div class="ihead"><span class="iic" style="background:#D8B66A22;color:#D8B66A">${ic("house")}</span>
+          <div class="ihead"><span class="iic" style="background:#D8B66A22;color:#D8B66A">${assetGlyph("property")}</span>
           <span class="inm">Immobilie</span></div>
           <input type="text" inputmode="decimal" placeholder="Marktwert in €" data-win="immo_wert"
             value="${w.immo_wert??""}" ${w.immo_wert?'':'tabindex="-1"'}>
@@ -15599,7 +15642,7 @@ function obRender(){
             value="${w.immo_schuld??""}" ${w.immo_wert?'':'tabindex="-1"'}>
           <input type="text" inputmode="decimal" placeholder="Monatliche Hypothekenrate in € (optional)" data-win="immo_rate"
             value="${w.immo_rate??""}" ${w.immo_wert?'':'tabindex="-1"'}>
-          <div class="ob-sub">Die Hypothekenrate wird hier separat gespeichert. „Kredit“ oben nutzt du nur für einen anderen Kredit.</div>
+          <div class="ob-sub">Deine Immobilienrate erfasst du separat. Hier nur weitere Kredite eintragen.</div>
         </div>
       </div>
       <div class="ob-count">Vermögen bisher: <b id="obWealthSum">${eur2(obWealthSum())}</b></div>`;
@@ -15617,7 +15660,7 @@ function obRender(){
       <div class="ob-grid">${items.map(c=>{
         const val=OB[c.k];
         return `<div class="ob-item ${val?'on':''}" data-sf="${c.k}">
-          <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${ic(c.icon)}</span>
+          <div class="ihead"><span class="iic" style="background:${c.tint}22;color:${c.tint}">${assetGlyph(c.k==="etfRate"?"investments":"savings")}</span>
           <span class="inm">${c.n}</span></div>
           <input type="text" inputmode="decimal" placeholder="€/Monat" data-sfin="${c.k}"
             value="${val??""}" ${val?'':'tabindex="-1"'}>

@@ -118,6 +118,32 @@ class OnboardingDraftApiTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertFalse(api.table_exists(conn, "app_onboarding_drafts"))
 
+    def test_running_vehicle_costs_resume_without_financing_or_asset_data(self):
+        draft = self.draft(contracts={"vehicle_costs": 150, "kredit": 300}, wealth={})
+        with self.client(1) as client:
+            saved = client.post("/v1/onboarding/draft", json={"step": 4, "draft": draft})
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            resumed = client.get("/v1/onboarding/draft").get_json()["draft"]
+        self.assertEqual(resumed["contracts"], draft["contracts"])
+        self.assertIsNone(resumed["autoFinType"])
+        self.assertEqual(resumed["wealth"], {})
+        self.assertIsNone(self.client(2).get("/v1/onboarding/draft").get_json()["draft"])
+
+    def test_existing_auto_drafts_keep_their_exact_financing_choice(self):
+        for financing in (None, "kredit", "leasing", "gekauft"):
+            with self.subTest(financing=financing), self.client(1) as client:
+                draft = self.draft(contracts={"auto": 250}, autoFinType=financing)
+                saved = client.post("/v1/onboarding/draft", json={"step": 4, "draft": draft})
+                self.assertEqual(saved.status_code, 200, saved.get_json())
+                self.assertEqual(client.get("/v1/onboarding/draft").get_json()["draft"], draft)
+
+    def test_vehicle_cost_extension_does_not_accept_arbitrary_asset_keys(self):
+        with self.client(1) as client:
+            response = client.post("/v1/onboarding/draft", json={
+                "step": 4, "draft": self.draft(contracts={"vehicle_value": 20_000}),
+            })
+        self.assertEqual(response.status_code, 400)
+
     def test_invalid_and_oversized_drafts_are_rejected_without_saving(self):
         with self.client(1) as client:
             invalid = client.post("/v1/onboarding/draft", json={"step": 10, "draft": self.draft()})

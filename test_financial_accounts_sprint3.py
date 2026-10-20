@@ -982,6 +982,28 @@ class OnboardingAtomicityTests(unittest.TestCase):
                 conn.execute("SELECT COUNT(*) FROM app_onboarding_drafts WHERE user_id=1").fetchone()[0], 0
             )
 
+    def test_vehicle_running_costs_and_separate_rates_only_become_fixed_costs(self):
+        payload = self.payload()
+        payload["contracts"].extend([
+            {"name": "Laufende Fahrzeugkosten", "category": "Mobilität", "amount": 150},
+            {"name": "Konsumkredit", "category": "Kredite", "amount": 300},
+            {"name": "Leasingrate", "category": "Sonstiges", "amount": 200},
+        ])
+        response = self.submit(payload)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        with closing(self.connect()) as conn:
+            rows = conn.execute(
+                "SELECT name,amount FROM app_contracts WHERE user_id=1"
+            ).fetchall()
+            self.assertEqual(dict(rows), {
+                "Miete": 900, "Laufende Fahrzeugkosten": 150,
+                "Konsumkredit": 300, "Leasingrate": 200,
+            })
+            self.assertEqual(conn.execute("SELECT fixed_costs FROM users WHERE user_id=1").fetchone()[0], 1550)
+            self.assertEqual(conn.execute("SELECT SUM(balance) FROM app_financial_accounts WHERE user_id=1").fetchone()[0], 7000)
+            self.assertEqual(conn.execute("SELECT current_investments FROM users WHERE user_id=1").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM portfolio_holdings WHERE user_id=1").fetchone()[0], 0)
+
     def test_missing_multi_cash_source_is_rejected_without_partial_state_then_resolves_existing_source(self):
         invalid = self.submit(self.payload(giro=0, tagesgeld=5000, source="giro"))
         self.assertEqual(invalid.status_code, 400)

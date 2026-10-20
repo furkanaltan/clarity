@@ -5410,7 +5410,7 @@ ONBOARDING_DRAFT_MAX_BYTES = 32 * 1024
 ONBOARDING_DRAFT_STEPS = frozenset(range(1, 10))
 ONBOARDING_DRAFT_CONTRACT_KEYS = frozenset({
     "miete", "strom", "internet", "handy", "netflix", "haft", "spotify",
-    "gym", "kfz", "auto", "kredit",
+    "gym", "kfz", "auto", "vehicle_costs", "kredit",
 })
 ONBOARDING_DRAFT_WEALTH_KEYS = frozenset({
     "giro", "tages", "bar", "etf", "krypto", "immo_wert", "immo_schuld", "immo_rate",

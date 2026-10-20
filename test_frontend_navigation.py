@@ -670,7 +670,7 @@ for (const [range, initial, updated, intraday] of [
             "// Der eingegebene Kontostand", 1
         )[0]
         self.assertIn('data-win="immo_rate"', self.frontend)
-        self.assertIn("Die Hypothekenrate wird hier separat gespeichert", self.frontend)
+        self.assertIn("Deine Immobilienrate erfasst du separat. Hier nur weitere Kredite eintragen.", self.frontend)
         self.assertIn('rate:w.immo_rate||0', assets)
         self.assertIn("property_monthly_rate:OB.wealth.immo_rate||0", finish)
         self.assertNotIn("rate:OB.contracts.kredit||0", finish)
