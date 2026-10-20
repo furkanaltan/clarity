@@ -32,9 +32,6 @@ class CanonicalAssetRestoreTests(unittest.TestCase):
         cls.net_worth = section(
             cls.html, "function setCanonicalNetWorth(value){", "// Girokonto/Tagesgeld/Bargeld direkt"
         )
-        cls.summary = section(
-            cls.html, "function renderHomeSachwerteSummary(){", "// Wer ETF/Krypto beim Onboarding"
-        )
         cls.home_state = section(
             cls.html, "function homeHasFinancialData(){", "function applyHomeEmpty()"
         )
@@ -138,33 +135,11 @@ console.log(JSON.stringify({{bridge,unavailable,profile:DATA.netWorth}}));
         self.assertIsNone(result["unavailable"])
         self.assertEqual(result["profile"], 29000)
 
-    def test_sachwerte_summary_is_separate_and_hidden_when_empty(self):
-        script = f"""
-const assert=require('node:assert/strict');
-let APP_MODE='bridge';
-let BRIDGE_LIVE_STATE_READY=true;
-const line={{hidden:true,textContent:''}};
-const document={{getElementById:id=>id==='homeSachwerteSummary'?line:null}};
-const DATA={{assets:[
-  {{name:'Sachwerte',value:2000,source:'app'}},
-  {{name:'ETF Depot',value:500,source:'app'}},
-  {{name:'Unbekannter Altwert',value:800,source:'app'}}
-]}};
-function classifyBridgeAsset(asset){{return asset?.name==='Sachwerte'?'local-valuables':'unknown';}}
-function eur2(value){{return `${{Number(value).toLocaleString('de-DE')}} €`;}}
-{self.summary}
-renderHomeSachwerteSummary();
-const visible={{hidden:line.hidden,text:line.textContent}};
-DATA.assets[0].value=0;renderHomeSachwerteSummary();
-const empty={{hidden:line.hidden,text:line.textContent}};
-console.log(JSON.stringify({{visible,empty}}));
-"""
-        result = self.run_node(script)
-        self.assertEqual(
-            result["visible"],
-            {"hidden": False, "text": "Sachwerte separat: 2.000 € · nicht im Vermögensverlauf"},
-        )
-        self.assertEqual(result["empty"], {"hidden": True, "text": ""})
+    def test_sachwerte_scope_note_is_only_in_the_detail_sheet(self):
+        self.assertNotIn('id="homeSachwerteSummary"', self.html)
+        self.assertNotIn("renderHomeSachwerteSummary", self.html)
+        self.assertNotIn("Sachwerte separat:", self.html)
+        self.assertEqual(self.html.count("Sachwerte werden nicht ins Gesamtvermögen eingerechnet."), 1)
 
     def test_local_sachwerte_alone_do_not_activate_the_canonical_home_chart(self):
         script = f"""
@@ -183,7 +158,6 @@ console.log(JSON.stringify({{localOnly,canonical}}));
     def test_server_net_worth_is_read_from_both_api_state_paths(self):
         self.assertIn("setCanonicalNetWorth(data.netWorth)", self.html)
         self.assertIn("setCanonicalNetWorth(b.netWorth)", self.html)
-        self.assertIn("renderHomeSachwerteSummary();", section(self.html, "function renderAssets(){", "function missingAssetRow()"))
 
     def test_inline_javascript_syntax(self):
         for attrs, source in re.findall(r"<script([^>]*)>(.*?)</script>", self.html, re.S):

@@ -884,7 +884,6 @@
   #tab-home .home-value-block{margin-top:2px;margin-bottom:0}
   #tab-home .home-value-block .val{font-size:35px;font-weight:720;letter-spacing:-1.55px;line-height:1.05;font-variant-numeric:tabular-nums;text-shadow:none}
   #tab-home .home-value-block .chip{margin-top:13px;font-size:13px;font-weight:600}
-  #tab-home .home-sachwerte-summary{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums}
   #tab-home .chart-wrap{margin-top:29px;margin-bottom:0}
   #tab-home .ranges{margin-top:15px}
   #tab-home .range{min-height:40px;font-size:12.5px}
@@ -1460,6 +1459,13 @@
   .valuable-row{gap:12px}
   .valuable-row>.k{min-width:0;overflow-wrap:anywhere}
   .valuable-row>.v{flex-shrink:0;max-width:65%}
+  .valuables-section .valuable-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px}
+  .valuables-section .valuable-row>.k{color:var(--ink);font-weight:600;line-height:1.4}
+  .valuables-section .valuable-row>.v{display:flex;flex-direction:column;align-items:flex-end;gap:4px;max-width:none;white-space:nowrap}
+  .valuables-section .asset-position-edit{margin-left:0;font-weight:600}
+  .detail-form.valuables-form{margin-top:22px;padding-top:18px}
+  .valuables-form .field{margin-bottom:13px;padding-right:16px}
+  .valuables-field-label{display:block;margin:0 0 7px 2px;color:var(--muted);font-size:12px;font-weight:650}
   .ob-valuables .valuable-row>.v{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
   .valuables-header{flex-wrap:wrap}
   .valuables-header .dtot{max-width:100%;overflow-wrap:anywhere}
@@ -3113,7 +3119,6 @@
         <span id="change">—</span>
       </button>
     </div>
-    <div class="home-sachwerte-summary" id="homeSachwerteSummary" hidden></div>
 
     <div class="chart-wrap">
       <div class="chart-viewport" id="chartViewport">
@@ -5660,7 +5665,6 @@ function applyAssetOrder(){
 }
 function renderAssets(){
   ensureAssetPlaceholders();
-  renderHomeSachwerteSummary();
   applyAssetOrder();
   const box=document.getElementById("assets");
   if(!DATA.assets.length){
@@ -5800,19 +5804,6 @@ function assetIcon(asset){
 // Home, detail and account management share the same module geometry.
 function homeAssetIcon(asset){
   return assetIcon(asset);
-}
-function renderHomeSachwerteSummary(){
-  const line=document.getElementById("homeSachwerteSummary");
-  if(!line) return;
-  if(APP_MODE!=="bridge" || !BRIDGE_LIVE_STATE_READY){ line.hidden=true; line.textContent=""; return; }
-  const total=(DATA.assets||[]).reduce((sum,asset)=>{
-    if(!["local-valuables","server-valuables"].includes(classifyBridgeAsset(asset))) return sum;
-    const value=Number(asset.value);
-    return sum+(Number.isFinite(value)&&value>0?value:0);
-  },0);
-  if(total<=0){ line.hidden=true; line.textContent=""; return; }
-  line.textContent=`Sachwerte separat: ${eur2(total)} · nicht im Vermögensverlauf`;
-  line.hidden=false;
 }
 // Wer ETF/Krypto beim Onboarding übersprungen hat (Wert leer gelassen), bekam danach nie eine Kachel
 // dafür — obBuildAssets() legt nur an, was dort einen Wert hatte. Ohne Kachel gab es keinen Weg, das
@@ -6412,7 +6403,7 @@ function openAssetDetail(i){
   let body=`<div class="dhead detail-header${isInvestmentGroup?" investment-hero":""}${isValuableAsset(a)?" valuables-header":""}">
     <div class="asset-glass-slot" aria-hidden="true">${assetIcon(a)}</div>
     <div class="detail-header-main"><div class="dt">${detailTitle}</div><div class="dv">${a.sub}${dvExtra}</div></div>
-    <div class="dtot">${eur(a.value)}</div>
+    <div class="dtot">${isValuableAsset(a)?eur2(a.value):eur(a.value)}</div>
   </div>`;
   if(isValuableAsset(a)) body+=`<div class="asset-note">Sachwerte werden nicht ins Gesamtvermögen eingerechnet.</div>`;
   const cashMeta=cashAccountMeta(a);
@@ -6478,26 +6469,30 @@ function openAssetDetail(i){
     // Sachwerte + (seit Runde 19) Krypto/ETF im eigenen Profil: keine Kurse, keine %-Änderung — der
     // Kunde trägt Name+Wert selbst ein, tippt eine Zeile an, um sie zu löschen (Doppel-Tap, Runde 36).
     const ph = {"Krypto":"Bitcoin", "ETF & Investments":"S&P 500 ETF"}[a.name] || "Auto oder Schmuck";
+    const valuable=isValuableAsset(a);
     const editPosition=Number.isInteger(svEditIndex) ? a.positions[svEditIndex] : null;
     const valuableOwner=APP_MODE==="bridge"&&isValuableAsset(a)?` data-valuable-owner="${BRIDGE_USER_ID}"`:"";
-    body += `<div class="detail-section">
-      <div class="detail-section-label">Positionen</div>
+    body += `<div class="detail-section${valuable?" valuables-section":""}">
+      <div class="detail-section-label">${valuable?"Deine Sachwerte":"Positionen"}</div>
       <div class="detail-rows">` + (a.positions.length
       ? a.positions.map((p,idx)=>`
         <button type="button" class="drow asset-position-row${isValuableAsset(a)?" valuable-row":""}" data-svedit="${idx}"${valuableOwner}${valuableOwner?` data-valuable-id="${p.id}"`:""} aria-label="${escapeAccountHtml(p.n)} bearbeiten">
           <span class="k">${escapeAccountHtml(p.n)}</span>
-          <span class="v">${eur(p.v)} <span class="asset-position-edit">Bearbeiten</span></span>
+          <span class="v">${valuable?eur2(p.v):eur(p.v)} <span class="asset-position-edit">Bearbeiten</span></span>
         </button>`).join("")
       : `<div class="hint">Füge deine erste Position hinzu, z. B. „${ph}" · 5.000 €.</div>`)
       + `</div>
-      <div class="detail-form">
+      <div class="detail-form${valuable?" valuables-form":""}">
+      ${valuable?'<label class="valuables-field-label" for="svName">Bezeichnung</label>':""}
       <div class="field">
-        <input id="svName" type="text" maxlength="80" enterkeyhint="next" autocomplete="off" placeholder="Name, z. B. ${ph}" value="${escapeAccountHtml(editPosition?.n||"")}">
+        <input id="svName" type="text" maxlength="80" enterkeyhint="next" autocomplete="off" placeholder="${valuable?"z. B.":"Name, z. B."} ${ph}" value="${escapeAccountHtml(editPosition?.n||"")}">
       </div>
+      ${valuable?'<label class="valuables-field-label" for="svAmt">Geschätzter Wert</label>':""}
       <div class="field">
-        <input id="svAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Geschätzter Wert, z. B. 5.000" value="${editPosition?.v??""}">
-        <button class="send" id="svSend"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition?.id||""}"`:""} aria-label="${editPosition?"Position speichern":"Position hinzufügen"}"><svg viewBox="0 0 24 24"><path d="${editPosition?"M5 13l4 4L19 6":"M12 5v14M5 12h14"}"/></svg></button>
+        <input id="svAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="${valuable?"z. B. 5.000":"Geschätzter Wert, z. B. 5.000"}" value="${editPosition?.v??""}">
+        ${valuable?"":`<button class="send" id="svSend"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition?.id||""}"`:""} aria-label="${editPosition?"Position speichern":"Position hinzufügen"}"><svg viewBox="0 0 24 24"><path d="${editPosition?"M5 13l4 4L19 6":"M12 5v14M5 12h14"}"/></svg></button>`}
       </div>
+      ${valuable?`<button type="button" class="vd-btn" id="svSend"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition?.id||""}"`:""}>${editPosition?"Änderungen speichern":"Wert hinzufügen"}</button>`:""}
       ${editPosition?`<button type="button" class="investment-delete" id="svDelete"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition.id}"`:""}>${escapeAccountHtml(editPosition.n)} löschen</button>`:""}
       </div>
       <div class="detail-danger"><button type="button" class="investment-delete" id="svGroupDelete"${valuableOwner}>${a.name} entfernen</button></div>
@@ -6841,7 +6836,11 @@ async function addAssetPosition(){
     if(!await requestValuables(edited?`/v1/valuables/${item.id}`:"/v1/valuables",edited?"PATCH":"POST",item)) return;
     pendingValuableCreate=null;svEditIndex=null;
     dIdx=valuableAssetIndex();if(dIdx>=0)openAssetDetail(dIdx);
-    showToast(edited?"Sachwert aktualisiert.":"Sachwert gespeichert.");buzz();return;
+    const savedOwner=BRIDGE_USER_ID;
+    requestAnimationFrame(()=>{
+      if(BRIDGE_USER_ID===savedOwner)document.querySelector(`#dbody .valuable-row[data-valuable-id="${item.id}"]`)?.scrollIntoView({block:"nearest"});
+    });
+    showToast(edited?"Sachwert aktualisiert.":"Sachwert hinzugefügt");buzz();return;
   }
   if(APP_MODE==="bridge" && (a.name==="Krypto" || a.name==="ETF & Investments")){
     const assetType=a.name==="Krypto" ? "crypto" : "etf";
@@ -6859,7 +6858,7 @@ async function addAssetPosition(){
   recalcNetWorth();
   persistAppState();
   renderAssets(); openAssetDetail(dIdx); buzz();
-  showToast(`${name} ${updated?"aktualisiert":"hinzugefügt"}`);
+  showToast(isValuableAsset(a)?(updated?"Sachwert aktualisiert.":"Sachwert hinzugefügt"):`${name} ${updated?"aktualisiert":"hinzugefügt"}`);
   logActivity({t:`${a.name}: ${name} ${updated?"aktualisiert":"erfasst"} (${eur(amt)})`, i:"doc"});
 }
 document.getElementById("dbody").addEventListener("click",e=>{

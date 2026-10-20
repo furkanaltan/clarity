@@ -34,6 +34,7 @@ const assert=require('node:assert/strict');
 const crypto=require('node:crypto');
 const elements=new Map(), requests=[], messages=[], navigation=[], storageWrites=[];
 const documentHandlers={};
+const scrolledValuables=[];
 const timers=new Map();
 let timerId=0, buzzes=0, persisted=0, closed=0, pinContinues=0;
 let MULTI_CASH_ENABLED=true, accountAddOpened=0;
@@ -67,7 +68,10 @@ function element(id=''){
 const document={
   addEventListener(type,handler){documentHandlers[type]=handler;},
   getElementById(id){if(!elements.has(id))elements.set(id,element(id));return elements.get(id);},
-  querySelector(){return null;},
+  querySelector(selector){
+    return selector.startsWith('#dbody .valuable-row')
+      ? {scrollIntoView:options=>scrolledValuables.push({selector,options})} : null;
+  },
   querySelectorAll(selector){
     if(selector.includes('#svSend'))return mutationButtons();
     return [];
@@ -196,7 +200,7 @@ class FrontendValuablesTests(unittest.TestCase):
             'renderAssets', 'ensureAssetPlaceholders', 'missingAssetRow', 'legacyValuablePositions',
             'legacyValuablesHtml', 'applyServerValuables', 'requestValuables', 'importLegacyValuables',
             'escapeAccountHtml', 'moduleIcon', 'assetGlyph', 'assetIcon', 'homeAssetIcon',
-            'renderHomeSachwerteSummary', 'assetIndexByName', 'parseGermanAmount', 'openAssetDetail',
+            'assetIndexByName', 'parseGermanAmount', 'openAssetDetail',
             'addAssetPosition', 'setCanonicalNetWorth', 'recalcNetWorth', 'fetchCanonicalAppState',
             'finishOnboarding', 'showServerOnboarding',
         ):
@@ -405,7 +409,6 @@ assert.equal(DATA.assets.filter(isValuableAsset).length,1);
 assert.ok(html.includes('Sachwerte'));assert.ok(html.includes('375 EUR'));
 assert.ok(html.includes('data-add-valuables'));assert.ok(!html.includes('data-add-financial-account'));
 assert.equal(DATA.netWorth,12500);
-assert.ok(document.getElementById('homeSachwerteSummary').textContent.includes('nicht im Vermögensverlauf'));
 openAssetDetail(valuableAssetIndex());
 assert.ok(document.getElementById('dbody').innerHTML.includes('Sachwerte werden nicht ins Gesamtvermögen eingerechnet.'));
 
@@ -433,6 +436,23 @@ assert.ok(html.includes('data-add-financial-account'));assert.ok(!html.includes(
 click('assets','[data-add-financial-account]');
 assert.equal(accountAddOpened,1);assert.deepEqual(openedAssetKinds,['valuables']);
 assert.equal(requests.length,0);
+""")
+
+    def test_valuable_sheet_has_two_labelled_fields_and_a_separate_save_button(self):
+        self.run_js(r"""
+openValuableForm([first]);
+let html=document.getElementById('dbody').innerHTML;
+assert.equal([...html.matchAll(/<input\b/g)].length,2);
+assert.match(html,/<label[^>]*for="svName">Bezeichnung<\/label>/);
+assert.match(html,/<label[^>]*for="svAmt">Geschätzter Wert<\/label>/);
+assert.match(html,/<input id="svAmt"[^>]*>\s*<\/div>\s*<button type="button" class="vd-btn" id="svSend"[^>]*>Wert hinzufügen<\/button>/);
+assert.ok(!html.includes('class="send"'));
+assert.ok(html.indexOf('class="detail-rows"')<html.indexOf('class="detail-form valuables-form"'));
+openValuableForm([first],0);html=document.getElementById('dbody').innerHTML;
+assert.equal([...html.matchAll(/<input\b/g)].length,2);
+assert.match(html,/<button type="button" class="vd-btn" id="svSend"[^>]*>Änderungen speichern<\/button>/);
+assert.equal(document.getElementById('svSend').dataset.valuableId,first.id);
+assert.ok(html.includes('id="svDelete"'));
 """)
 
     def test_empty_state_valuables_action_opens_the_valuables_form(self):
@@ -585,7 +605,13 @@ assert.deepEqual(DATA.valuables,[canonical]);assert.equal(pendingValuableCreate,
 assert.equal(DATA.assets.find(isValuableAsset).value,1200);
 assert.equal(DATA.netWorth,12500);assert.equal(valuableBusy,false);
 assert.ok(mutationButtons().every(button=>!button.disabled));
-assert.ok(messages.includes('Sachwert gespeichert.'));assert.equal(buzzes,1);
+assert.deepEqual(messages,['Sachwert hinzugefügt']);assert.equal(buzzes,1);
+assert.equal(document.getElementById('svName').value,'');
+assert.equal(document.getElementById('svAmt').value,'');
+assert.ok(document.getElementById('dbody').innerHTML.includes('Neue Uhr'));
+assert.ok(document.getElementById('dbody').innerHTML.includes('data-valuable-id="'+body.id+'"'));
+assert.deepEqual(scrolledValuables,[{selector:'#dbody .valuable-row[data-valuable-id="'+body.id+'"]',options:{block:'nearest'}}]);
+assert.equal(closed,0);
 """)
 
     def test_every_valuable_mutation_sends_the_captured_owner_header(self):
@@ -623,7 +649,7 @@ assert.equal(document.getElementById('svName').value,'Neue Uhr');
 assert.equal(document.getElementById('svAmt').value,'1.234,56');
 assert.deepEqual(pendingValuableCreate,{userId:41,item:sent});
 assert.equal(persisted,0);assert.equal(buzzes,0);
-assert.ok(!messages.includes('Sachwert gespeichert.'));
+assert.ok(!messages.includes('Sachwert hinzugefügt'));assert.deepEqual(scrolledValuables,[]);
 assert.ok(mutationButtons().every(button=>!button.disabled));
 const retry=addAssetPosition();assert.equal(requests.length,2);
 assert.deepEqual(JSON.parse(requests[1].options.body),sent);
@@ -684,6 +710,8 @@ assert.equal(messages.length,0);assert.equal(buzzes,0);
 const body=JSON.parse(requests[0].options.body);confirmed(0,[body]);await settle();
 assert.deepEqual(DATA.valuables,[body]);assert.equal(buzzes,1);
 assert.equal(pendingValuableCreate,null);
+assert.deepEqual(messages,['Sachwert hinzugefügt']);
+assert.equal(document.getElementById('svName').value,'');assert.equal(document.getElementById('svAmt').value,'');
 """)
 
     def test_unavailable_api_or_missing_server_marker_never_mutates(self):
@@ -725,6 +753,8 @@ confirmed(0,[second,body]);await task;
 assert.deepEqual(DATA.valuables,[second,body]);assert.equal(DATA.netWorth,12500);
 assert.equal(JSON.stringify(cash),cashBefore);assert.ok(DATA.assets.includes(cash));
 assert.equal(dIdx,valuableAssetIndex());assert.notEqual(DATA.assets[dIdx],cash);
+assert.deepEqual(messages,['Sachwert aktualisiert.']);
+assert.equal(document.getElementById('svName').value,'');assert.equal(document.getElementById('svAmt').value,'');
 """)
 
     def test_foreign_form_and_cross_owner_response_cannot_change_new_owner_state(self):
@@ -758,7 +788,7 @@ assert.deepEqual(pendingValuableCreate,{userId:41,item:sent});
 assert.equal(document.getElementById('svName').value,'Neue Uhr');
 assert.equal(document.getElementById('svAmt').value,'1.234,56');
 assert.equal(buzzes,0);assert.equal(valuableBusy,false);assert.equal(storageWrites.length,0);
-assert.ok(!messages.includes('Sachwert gespeichert.'));
+assert.ok(!messages.includes('Sachwert hinzugefügt'));assert.deepEqual(scrolledValuables,[]);
 const retry=addAssetPosition();assert.deepEqual(JSON.parse(requests[1].options.body),sent);
 confirmed(1,[first,sent],41);await retry;
 assert.deepEqual(DATA.valuables,[first,sent]);assert.ok(DATA.assets.includes(cash));
@@ -1045,6 +1075,7 @@ assert.equal(document.getElementById('svName').value,name);assert.equal(requests
         self.run_js(r"""
 APP_MODE='profile';openValuableForm();setInputs('Local Uhr','500');
 await addAssetPosition();assert.equal(requests.length,0);assert.equal(persisted,1);
+assert.deepEqual(messages,['Sachwert hinzugefügt']);
 assert.equal(DATA.assets.find(isValuableAsset).value,500);assert.equal(DATA.netWorth,13000);
 APP_MODE='bridge';setCanonicalNetWorth(12500);
 applyServerValuables([{...first,v:9000000}]);recalcNetWorth();
