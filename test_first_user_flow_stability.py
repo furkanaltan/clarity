@@ -17,13 +17,15 @@ class FirstUserFlowStabilityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         source = FRONTEND.read_text(encoding="utf-8")
-        cls.finish_onboarding = section(
+        cls.finish_onboarding = section(source, "let ONBOARDING_FINISH_IN_FLIGHT=", "function resetOnboardingDraft()")
+        cls.finish_onboarding += section(
             source, "async function continueAfterServerOnboarding()", "// liest getippte Werte des aktuellen Screens"
         )
         cls.onboarding_advance = section(
             source, "async function obAdvance(", 'document.getElementById("onboard").addEventListener("click"'
         )
-        cls.onboarding_draft_state = section(
+        cls.onboarding_draft_state = section(source, "function newValuableId(){", "function mergeServerAssets(")
+        cls.onboarding_draft_state += section(
             source, "function resetOnboardingDraft(){", "// Übliche weitere Einkommensquellen"
         )
         cls.onboarding_draft_request = section(
@@ -62,6 +64,7 @@ const sessionStorage={setItem:()=>{}};
 let APP_MODE='bridge';
 let SERVER_ONBOARDING_REQUIRED=true;
 let SERVER_ONBOARDING_AWAITING_PIN=false;
+let BRIDGE_USER_ID=41;
 let pinSetupScreens=0;
 let pinChecks=0;
 let resumes=0;
@@ -75,7 +78,7 @@ function obFixSum(){return 0}
 function showPinScreen(mode){if(mode==='setup')pinSetupScreens++;}
 function showAuthRecovery(){}
 function showToast(){}
-async function apiFetch(path,options){calls.push({path,options});return {ok:true,json:async()=>({ok:true})};}
+async function apiFetch(path,options){calls.push({path,options});return {ok:true,json:async()=>({ok:true,user_id:41})};}
 async function fetchPinStatus(){pinChecks++;return {state:'unlocked'};}
 async function resumeAfterPin(){resumes++;return true;}
 """ + self.finish_onboarding + """
@@ -128,11 +131,12 @@ const ONBOARDING_DRAFT_TIMEOUT_MS=10000;
 const OB={step:0,name:'',wantsApi:false,income:null,otherIncome:null,otherIncomeLabel:'',payday:null,contracts:{},customFix:[],wealth:{},etfRate:null,cashRate:null,etfExecutionDay:1,etfSource:'giro',etfMode:'auto',goalName:'',goalTar:null,goalCur:null,autoFinType:null,fixExpanded:false};
 const OB_STEPS=['welcome','name','path','income','fix','wealth','sparrate','etfplan','goal','done'];
 let ONBOARDING_DRAFT_LOAD_IN_FLIGHT=null,ONBOARDING_DRAFT_SAVE_ERROR='',rendered=false,authSurface=false;
+let BRIDGE_USER_ID=null;
 const body={classList:{remove(){}},innerHTML:''},foot={innerHTML:''},onboard={classList:{remove(){}},hidden:true};
 const document={getElementById:id=>({obBody:body,obFoot:foot,onboard}[id]||null)};
 function setAuthSurface(value){authSurface=value}
 function obRender(){rendered=true}
-async function apiFetch(path,options){assert.equal(path,'/v1/onboarding/draft');assert.equal(options.method,'GET');return {ok:true,json:async()=>({ok:true,step:5,draft:{name:'Synthetic',wantsApi:false,income:4200,otherIncome:null,otherIncomeLabel:'',payday:15,contracts:{miete:1100},customFix:[],wealth:{giro:5000},etfRate:300,cashRate:100,etfExecutionDay:1,etfSource:'giro',etfMode:'auto',goalName:'Reise',goalTar:2500,goalCur:500,autoFinType:null,fixExpanded:false}})}}
+async function apiFetch(path,options){assert.equal(path,'/v1/onboarding/draft');assert.equal(options.method,'GET');return {ok:true,json:async()=>({ok:true,user_id:41,step:5,draft:{name:'Synthetic',wantsApi:false,income:4200,otherIncome:null,otherIncomeLabel:'',payday:15,contracts:{miete:1100},customFix:[],wealth:{giro:5000},etfRate:300,cashRate:100,etfExecutionDay:1,etfSource:'giro',etfMode:'auto',goalName:'Reise',goalTar:2500,goalCur:500,autoFinType:null,fixExpanded:false}})}}
 """ + self.onboarding_draft_state + self.onboarding_draft_request + self.load_onboarding_draft + """
 (async()=>{
   const ok=await showServerOnboarding();

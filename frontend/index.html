@@ -1446,6 +1446,12 @@
   .drow:last-child{border-bottom:none}
   .drow .k{color:var(--muted)}
   .drow .v{font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+  .valuable-row{gap:12px}
+  .valuable-row>.k{min-width:0;overflow-wrap:anywhere}
+  .valuable-row>.v{flex-shrink:0;max-width:65%}
+  .ob-valuables .valuable-row>.v{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+  .valuables-header{flex-wrap:wrap}
+  .valuables-header .dtot{max-width:100%;overflow-wrap:anywhere}
   .asset-position-row{width:100%;border-width:0 0 1px;border-style:solid;border-color:var(--line);background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
   .asset-position-row:last-child{border-bottom:0}
   .asset-position-row:active{opacity:.72;transform:scale(.99)}
@@ -3954,7 +3960,7 @@ function emptyCard({icon, title, sub, cta, action}){
 
 // ===================== PROFIL-PERSISTENZ (Onboarding-Fundament) =====================
 // Drei Datenquellen, EINE Struktur: authentifizierte Web-App > eigenes Profil > Demo.
-// Finanzielle Serverwerte bleiben kanonisch; Sachwerte sind der einzige lokale Vermögenszusatz.
+// Serverwerte bleiben kanonisch; lokale Alt-Sachwerte warten auf die bestaetigte Uebernahme.
 const PROFILE_KEY = "rove-profile";
 // Serverwerte bleiben Financial Truth. Legacy-Asset-Einträge bleiben im lokalen Snapshot,
 // werden aber nur fuer die explizit lokale Kategorie Sachwerte in den aktiven Zustand geladen.
@@ -3984,6 +3990,10 @@ async function clearRoveBrowserData(userId=null){
     for(let i=localStorage.length-1;i>=0;i--){
       const key=localStorage.key(i);
       if(key && (exact.has(key) || userPrefixes.some(prefix=>key.startsWith(prefix)))){
+        if(key===BRIDGE_LOCAL_KEY){
+          try{if(String(JSON.parse(localStorage.getItem(key)||"null")?.userId)!==uid)continue;}
+          catch(_){continue;}
+        }
         try{ localStorage.removeItem(key); }catch(_){ }
       }
     }
@@ -4018,6 +4028,7 @@ const BRIDGE_LEGACY_ASSET_ALIASES = new Set(["ETF Depot"]);
 function classifyBridgeAsset(asset){
   if(!asset || typeof asset!=="object") return "unknown";
   const name=String(asset.name||"").trim();
+  if(asset.source==="server-valuables" && name==="Sachwerte") return "server-valuables";
   if(asset.source==="financial-account" || BRIDGE_SERVER_ASSET_NAMES.has(name) || asset.real) return "server";
   if(BRIDGE_LEGACY_ASSET_ALIASES.has(name)) return "legacy-duplicate";
   if(BRIDGE_LOCAL_ASSET_NAMES.has(name)) return "local-valuables";
@@ -4025,9 +4036,11 @@ function classifyBridgeAsset(asset){
 }
 function readBridgeLocal(){
   try{
-    const raw=localStorage.getItem(BRIDGE_LOCAL_KEY);
+    if(BRIDGE_USER_ID==null) return null;
+    const raw=localStorage.getItem(`rove:${BRIDGE_USER_ID}:${BRIDGE_LOCAL_KEY}`)
+      ||localStorage.getItem(BRIDGE_LOCAL_KEY);
     const data=raw?JSON.parse(raw):null;
-    return data&&data.userId!=null?data:null;
+    return data&&String(data.userId)===String(BRIDGE_USER_ID)?data:null;
   }catch(e){ return null; }
 }
 function normalizedContractId(value){
@@ -4047,11 +4060,12 @@ function propertyContractField(item){
 function saveBridgeLocal(){
   if(APP_MODE!=="bridge" || BRIDGE_USER_ID==null) return;
   try{
-    const previousAssets=readBridgeLocal()?.assets;
+    const previous=readBridgeLocal();
+    const previousAssets=previous?.assets;
     // Keep legacy and unknown entries in storage for a future explicit migration, but never
-    // restore them into live financial state. Sachwerte alone are refreshed from current state.
+    // restore them into canonical financial state. Preserve pending legacy valuables for consent.
     const preservedLegacyAssets=Array.isArray(previousAssets)
-      ? previousAssets.filter(asset=>classifyBridgeAsset(asset)!=="local-valuables") : [];
+      ? previousAssets.filter(asset=>Array.isArray(DATA.valuables)||classifyBridgeAsset(asset)!=="local-valuables") : [];
     const localAssets=(DATA.assets||[]).filter(asset=>classifyBridgeAsset(asset)==="local-valuables");
     const localContracts=(DATA.vertraege||[]).map(group=>({
       cat:group.cat,
@@ -4061,8 +4075,9 @@ function saveBridgeLocal(){
     // Zentral gespeicherte App-Ziele werden beim Aktualisieren vom Server geladen.
     // Nur alte lokale Ziele bleiben als Abwaertskompatibilitaet in diesem Snapshot.
     const localGoals=(DATA.goals||[]).filter(goal=>goal.source!=="bot" && goal.source!=="app");
-    localStorage.setItem(BRIDGE_LOCAL_KEY,JSON.stringify({
+    localStorage.setItem(`rove:${BRIDGE_USER_ID}:${BRIDGE_LOCAL_KEY}`,JSON.stringify({
       userId:BRIDGE_USER_ID,
+      valuablesMigrated:previous?.valuablesMigrated===true,
       assets:[...preservedLegacyAssets,...localAssets],
       vertraege:localContracts,
       goals:localGoals,
@@ -4077,6 +4092,7 @@ function saveBridgeLocal(){
 function restoreBridgeLocal(snapshot,userId){
   if(!snapshot || String(snapshot.userId)!==String(userId)) return;
   (snapshot.assets||[]).forEach(asset=>{
+    if(Array.isArray(DATA.valuables)) return;
     if(classifyBridgeAsset(asset)!=="local-valuables") return;
     if(DATA.assets.some(current=>current.name===asset.name)) return;
     DATA.assets.push(asset);
@@ -5603,12 +5619,19 @@ const ASSET_ORDER_KEY_BY_NAME={
 };
 const LEGACY_CASH_ASSET_KEYS=new Set(["cash:giro","cash:tagesgeld","cash:bargeld"]);
 const assetOrderKey=asset=>asset?.assetKey||ASSET_ORDER_KEY_BY_NAME[asset?.name]||"";
-function mergeServerAssets(serverAssets,currentAssets,multiCash){
+let valuableStateRevision=0, valuableBusy=false, pendingValuableCreate=null;
+function newValuableId(){ return Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,"0")).join(""); }
+function isValuableAsset(asset){
+  return asset?.assetKey==="asset:valuables"||["local-valuables","server-valuables"].includes(classifyBridgeAsset(asset));
+}
+function valuableAssetIndex(){ return DATA.assets.findIndex(isValuableAsset); }
+function mergeServerAssets(serverAssets,currentAssets,multiCash,serverValuablesKnown=false){
   const server=Array.isArray(serverAssets)?serverAssets:[];
   const current=Array.isArray(currentAssets)?currentAssets:[];
   const serverKeys=new Set(server.map(asset=>assetOrderKey(asset)));
   const serverNames=new Set(server.map(asset=>String(asset.name||"")));
   const localOnly=current.filter(asset=>classifyBridgeAsset(asset)==="local-valuables"
+    && !serverValuablesKnown
     && !serverNames.has(String(asset.name||""))
     && !serverKeys.has(assetOrderKey(asset)));
   if(multiCash) return [...server,...localOnly];
@@ -5636,7 +5659,7 @@ function renderAssets(){
       icon:"bank", title:"Noch keine Werte hinterlegt",
       sub:"Füge dein erstes Konto, Depot oder einen Vermögenswert hinzu. Dann wird dein Überblick hier sichtbar.",
       cta:multiCashEnabled()?"Konto oder Wert hinzufügen":"Werte selbst eintragen",
-      action:multiCashEnabled()?"financial-asset":"asset"});
+      action:multiCashEnabled()?"financial-asset":"asset"})+legacyValuablesHtml();
     return;
   }
   box.classList.remove("bare");
@@ -5648,9 +5671,9 @@ function renderAssets(){
   DATA.assets.forEach(a=>{
     if(!a.manual) return;
     const count=a.positions.length ? `${a.positions.length} Wert${a.positions.length===1?"":"e"}` : "Noch nichts eingetragen";
-    // Sachwerte sind bis zur zentralen Vermögenshistorie bewusst nur gerätelokal.
-    // Das verhindert, dass sie im Report wie ein bereits zentral geführter Wert wirken.
-    a.sub=(APP_MODE==="bridge" && a.name==="Sachwerte") ? `${count} · auf diesem Gerät` : count;
+    // Storage ownership is separate from inclusion in the canonical wealth history.
+    a.sub=(APP_MODE==="bridge" && a.name==="Sachwerte")
+      ? `${count} · ${a.source==="server-valuables"?"im Konto gespeichert":"auf diesem Gerät"}` : count;
   });
   box.innerHTML = DATA.assets.map((a,i)=>{
     // Nur die Home-Bezeichnung wird gekuerzt; die kanonische Asset-Bezeichnung bleibt fuer
@@ -5664,7 +5687,85 @@ function renderAssets(){
       <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
     </div>`;
   }).join("") + (multiCashEnabled()?`<button class="account-add" type="button" data-add-financial-account>
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Konto oder Wert hinzufügen</button>`:missingAssetRow());
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Konto oder Wert hinzufügen</button>`:missingAssetRow())+legacyValuablesHtml();
+}
+function legacyValuablePositions(){
+  if(APP_MODE!=="bridge"||BRIDGE_USER_ID==null||!Array.isArray(DATA.valuables)) return [];
+  const snapshot=readBridgeLocal();
+  if(!snapshot||snapshot.valuablesMigrated) return [];
+  return (snapshot.assets||[]).filter(asset=>classifyBridgeAsset(asset)==="local-valuables")
+    .flatMap(asset=>Array.isArray(asset.positions)?asset.positions:[]).map(p=>({n:p.n,v:p.v}));
+}
+function legacyValuablesHtml(){
+  const positions=legacyValuablePositions();
+  if(!positions.length) return "";
+  return `<details class="card" style="margin-top:12px;padding:16px">
+    <summary>Lokale Sachwerte übernehmen (${positions.length})</summary>
+    <p class="hint">Diese Einträge stammen aus deinem bisherigen Stand auf diesem Gerät. Prüfe sie vor der Übernahme in dein angemeldetes Rov.E-Konto. Sie werden nicht automatisch übertragen.</p>
+    <div class="detail-rows">${positions.map(p=>`<div class="drow valuable-row"><span class="k">${escapeAccountHtml(p.n)}</span><span class="v">${eur(p.v)}</span></div>`).join("")}</div>
+    <button type="button" class="vd-btn" data-import-valuables>Diese Sachwerte in mein Konto übernehmen</button>
+    <p class="hint">Bereits identisch übernommene Einträge werden nicht erneut angelegt.</p>
+  </details>`;
+}
+function applyServerValuables(positions,revision=valuableStateRevision){
+  if(!Array.isArray(positions)||revision!==valuableStateRevision) return false;
+  DATA.valuables=positions.map(p=>({...p}));
+  DATA.assets=DATA.assets.filter(a=>!isValuableAsset(a));
+  if(positions.length) DATA.assets.push({assetKey:"asset:valuables",name:"Sachwerte",icon:"gem",tint:"#F4F1EA",
+    source:"server-valuables",manual:true,positions:DATA.valuables,value:positions.reduce((sum,p)=>sum+p.v,0)});
+  if(pendingValuableCreate?.userId===BRIDGE_USER_ID&&positions.some(p=>p.id===pendingValuableCreate.item.id)) pendingValuableCreate=null;
+  return true;
+}
+async function requestValuables(path,method,payload){
+  if(valuableBusy) return false;
+  if(!apiReady()||!Array.isArray(DATA.valuables)){
+    showToast("Sachwerte sind gerade nicht verfügbar. Bitte lade deinen Kontostand erneut.");return false;
+  }
+  const owner=BRIDGE_USER_ID;
+  valuableBusy=true;
+  valuableStateRevision++;
+  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),15000);
+  document.querySelectorAll('#svSend,#svDelete,#svGroupDelete,[data-import-valuables]').forEach(button=>button.disabled=true);
+  try{
+    const response=await apiFetch(path,{method,signal:controller.signal,
+      headers:{"Content-Type":"application/json","X-Rove-User-ID":String(owner)},...(payload?{body:JSON.stringify(payload)}:{})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.ok||!Array.isArray(data.valuables)){
+      if(BRIDGE_USER_ID===owner&&response.status>=400&&response.status<500)pendingValuableCreate=null;
+      throw Object.assign(new Error("valuable_write_unconfirmed"),{
+      userMessage:data.error==="account_changed"?"Dein angemeldetes Konto hat sich geändert. Öffne Rov.E bitte erneut."
+        :data.error==="valuable_limit_reached"?"Du kannst höchstens 500 Sachwerte im Konto speichern. Deine bisherigen Einträge bleiben erhalten."
+        :response.status===400?"Bitte prüfe Bezeichnung und Schätzwert. Es wurde nichts übernommen."
+        :response.status===409?"Dieser Speicherversuch wurde bereits anders verarbeitet. Lade deinen Stand erneut."
+        :""
+      });
+    }
+    if(BRIDGE_USER_ID!==owner||data.user_id!==owner) return false;
+    valuableStateRevision++;
+    applyServerValuables(data.valuables);
+    renderAssets();
+    return true;
+  }catch(error){
+    if(BRIDGE_USER_ID===owner) showToast(error?.userMessage||"Speicherung nicht bestätigt. Prüfe die Verbindung und versuche es erneut.");
+    return false;
+  }finally{
+    clearTimeout(timeout);valuableBusy=false;
+    document.querySelectorAll('#svSend,#svDelete,#svGroupDelete,[data-import-valuables]').forEach(button=>button.disabled=false);
+  }
+}
+async function importLegacyValuables(){
+  const owner=BRIDGE_USER_ID, positions=legacyValuablePositions();
+  if(!positions.length||valuableBusy) return;
+  if(!await requestValuables("/v1/valuables/import","POST",{confirmed:true,positions})) return;
+  if(BRIDGE_USER_ID!==owner) return;
+  try{
+    const snapshot=readBridgeLocal();
+    if(snapshot){
+      snapshot.valuablesMigrated=true;
+      localStorage.setItem(`rove:${owner}:${BRIDGE_LOCAL_KEY}`,JSON.stringify(snapshot));
+    }
+  }catch(_){ showToast("Übernommen. Der lokale Hinweis konnte noch nicht aktualisiert werden."); }
+  renderAssets();showToast("Sachwerte im Konto gespeichert.");
 }
 // Vermoegensarten sind keine Haendler. Sie behalten deshalb eine eigene, ruhige
 // Rov.E-Iconsprache statt zufaellige Marken- oder Emoji-Grafiken zu verwenden.
@@ -5691,7 +5792,7 @@ function renderHomeSachwerteSummary(){
   if(!line) return;
   if(APP_MODE!=="bridge" || !BRIDGE_LIVE_STATE_READY){ line.hidden=true; line.textContent=""; return; }
   const total=(DATA.assets||[]).reduce((sum,asset)=>{
-    if(classifyBridgeAsset(asset)!=="local-valuables") return sum;
+    if(!["local-valuables","server-valuables"].includes(classifyBridgeAsset(asset))) return sum;
     const value=Number(asset.value);
     return sum+(Number.isFinite(value)&&value>0?value:0);
   },0);
@@ -5741,6 +5842,7 @@ function missingAssetRow(){
 }
 renderAssets();
 document.getElementById("assets").addEventListener("click",e=>{
+  if(e.target.closest("[data-import-valuables]")){ importLegacyValuables(); return; }
   if(e.target.closest("[data-add-financial-account]")){ openFinancialAccountAdd(); buzz(); return; }
   const add=e.target.closest("[data-addasset]");
   if(add){
@@ -5873,13 +5975,13 @@ function openAssetKind(kind){
   ensureAssetPlaceholders();
   const names={investments:"ETF & Investments",crypto:"Krypto",property:"Immobilie",valuables:"Sachwerte"};
   const name=names[kind];
-  let index=assetIndexByName(name);
+  let index=kind==="valuables"?valuableAssetIndex():assetIndexByName(name);
   if(index<0){
     const meta={
       investments:{assetKey:"asset:investments",name,icon:"chart",tint:"#8B7DF5",value:0,sub:"Noch nichts eingetragen",manual:true,positions:[],source:"placeholder"},
       crypto:{assetKey:"asset:crypto",name,icon:"bitcoin",tint:"#F7931A",value:0,sub:"Noch nichts eingetragen",manual:true,positions:[],source:"placeholder"},
       property:{assetKey:"asset:property",name,icon:"house",tint:"#D8B66A",value:0,sub:"Noch nicht eingetragen",source:"placeholder",emptyProperty:true},
-      valuables:{assetKey:"asset:valuables",name,icon:"gem",tint:"#F4F1EA",value:0,sub:"Noch nichts eingetragen",manual:true,positions:[],source:"local"},
+      valuables:{assetKey:"asset:valuables",name,icon:"gem",tint:"#F4F1EA",value:0,sub:"Noch nichts eingetragen",manual:true,positions:[],source:APP_MODE==="bridge"?"server-valuables":"local"},
     }[kind];
     DATA.assets.push(meta);
     index=DATA.assets.length-1;
@@ -6292,7 +6394,7 @@ function openAssetDetail(i){
   const safeAssetName=a.financialAccountId!=null?escapeAccountHtml(a.name):a.name;
   const isInvestmentGroup=a.name==="Krypto" || a.name==="ETF & Investments";
   const detailTitle=a.name==="ETF & Investments" ? "Investments" : safeAssetName;
-  let body=`<div class="dhead detail-header${isInvestmentGroup?" investment-hero":""}">
+  let body=`<div class="dhead detail-header${isInvestmentGroup?" investment-hero":""}${isValuableAsset(a)?" valuables-header":""}">
     <div class="asset-glass-slot" aria-hidden="true">${assetIcon(a)}</div>
     <div class="detail-header-main"><div class="dt">${detailTitle}</div><div class="dv">${a.sub}${dvExtra}</div></div>
     <div class="dtot">${eur(a.value)}</div>
@@ -6359,13 +6461,14 @@ function openAssetDetail(i){
   } else if(a.manual && !(APP_MODE==="bridge" && (a.name==="Krypto" || a.name==="ETF & Investments"))){
     // Sachwerte + (seit Runde 19) Krypto/ETF im eigenen Profil: keine Kurse, keine %-Änderung — der
     // Kunde trägt Name+Wert selbst ein, tippt eine Zeile an, um sie zu löschen (Doppel-Tap, Runde 36).
-    const ph = {"Krypto":"Bitcoin", "ETF & Investments":"S&P 500 ETF"}[a.name] || "Rolex";
+    const ph = {"Krypto":"Bitcoin", "ETF & Investments":"S&P 500 ETF"}[a.name] || "Auto oder Schmuck";
     const editPosition=Number.isInteger(svEditIndex) ? a.positions[svEditIndex] : null;
+    const valuableOwner=APP_MODE==="bridge"&&isValuableAsset(a)?` data-valuable-owner="${BRIDGE_USER_ID}"`:"";
     body += `<div class="detail-section">
       <div class="detail-section-label">Positionen</div>
       <div class="detail-rows">` + (a.positions.length
       ? a.positions.map((p,idx)=>`
-        <button type="button" class="drow asset-position-row" data-svedit="${idx}" aria-label="${escapeAccountHtml(p.n)} bearbeiten">
+        <button type="button" class="drow asset-position-row${isValuableAsset(a)?" valuable-row":""}" data-svedit="${idx}"${valuableOwner}${valuableOwner?` data-valuable-id="${p.id}"`:""} aria-label="${escapeAccountHtml(p.n)} bearbeiten">
           <span class="k">${escapeAccountHtml(p.n)}</span>
           <span class="v">${eur(p.v)} <span class="asset-position-edit">Bearbeiten</span></span>
         </button>`).join("")
@@ -6373,15 +6476,15 @@ function openAssetDetail(i){
       + `</div>
       <div class="detail-form">
       <div class="field">
-        <input id="svName" type="text" enterkeyhint="next" autocomplete="off" placeholder="Name, z. B. ${ph}" value="${escapeAccountHtml(editPosition?.n||"")}">
+        <input id="svName" type="text" maxlength="80" enterkeyhint="next" autocomplete="off" placeholder="Name, z. B. ${ph}" value="${escapeAccountHtml(editPosition?.n||"")}">
       </div>
       <div class="field">
-        <input id="svAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Wert, z. B. 5.000" value="${editPosition?.v??""}">
-        <button class="send" id="svSend" aria-label="${editPosition?"Position speichern":"Position hinzufügen"}"><svg viewBox="0 0 24 24"><path d="${editPosition?"M5 13l4 4L19 6":"M12 5v14M5 12h14"}"/></svg></button>
+        <input id="svAmt" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="Geschätzter Wert, z. B. 5.000" value="${editPosition?.v??""}">
+        <button class="send" id="svSend"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition?.id||""}"`:""} aria-label="${editPosition?"Position speichern":"Position hinzufügen"}"><svg viewBox="0 0 24 24"><path d="${editPosition?"M5 13l4 4L19 6":"M12 5v14M5 12h14"}"/></svg></button>
       </div>
-      ${editPosition?`<button type="button" class="investment-delete" id="svDelete">${escapeAccountHtml(editPosition.n)} löschen</button>`:""}
+      ${editPosition?`<button type="button" class="investment-delete" id="svDelete"${valuableOwner}${valuableOwner?` data-valuable-id="${editPosition.id}"`:""}>${escapeAccountHtml(editPosition.n)} löschen</button>`:""}
       </div>
-      <div class="detail-danger"><button type="button" class="investment-delete" id="svGroupDelete">${a.name} entfernen</button></div>
+      <div class="detail-danger"><button type="button" class="investment-delete" id="svGroupDelete"${valuableOwner}>${a.name} entfernen</button></div>
     </div>`;
   } else if(a.positions && APP_MODE==="bridge" && (a.name==="Krypto" || a.name==="ETF & Investments")){
     const isCrypto=a.name==="Krypto";
@@ -6693,11 +6796,37 @@ async function addContractFromText(t){
   return `<b>${chatText(name)}</b> ist gespeichert.<br>Kategorie: ${chatText(cat)} · ${eur2(amt)}/Monat.`;
 }
 async function addAssetPosition(){
-  const a=DATA.assets[dIdx];
+  const valuableForm=document.getElementById("svSend");
+  const serverValuableForm=valuableForm?.dataset.valuableOwner!=null;
+  if(serverValuableForm&&String(BRIDGE_USER_ID)!==valuableForm.dataset.valuableOwner)return;
+  const a=serverValuableForm?(DATA.assets.find(isValuableAsset)||{name:"Sachwerte",positions:[]}):DATA.assets[dIdx];
   const name=document.getElementById("svName").value.trim();
   const amt=Math.abs(parseFloat(document.getElementById("svAmt").value.replace(/\.(\d{3})\b/g,"$1").replace(",",".")))||0;
   if(!name){ document.getElementById("svName").focus(); return; }
   if(!amt){ document.getElementById("svAmt").focus(); return; }
+  if(APP_MODE==="bridge"&&a.name==="Sachwerte"){
+    if(!apiReady()||!Array.isArray(DATA.valuables)){
+      showToast("Sachwerte sind gerade nicht verfügbar. Bitte lade deinen Kontostand erneut.");return;
+    }
+    const value=parseGermanAmount(document.getElementById("svAmt").value);
+    if(!Number.isFinite(value)||value<=0||value>10000000||name.length>80||/[\u0000-\u001f\u007f]/.test(name)){
+      showToast("Bitte eine Bezeichnung und einen gültigen Schätzwert bis 10.000.000 € eingeben.");return;
+    }
+    const edited=valuableForm?.dataset.valuableId?{id:valuableForm.dataset.valuableId}
+      :Number.isInteger(svEditIndex)?a.positions[svEditIndex]:null;
+    let item={id:edited?.id||newValuableId(),n:name,v:value};
+    if(!edited){
+      if(pendingValuableCreate?.userId===BRIDGE_USER_ID){
+        const pending=pendingValuableCreate.item;
+        if(pending.n!==name||pending.v!==value){showToast("Prüfe zuerst die vorherige Speicherung oder versuche sie unverändert erneut.");return;}
+        item=pending;
+      }else pendingValuableCreate={userId:BRIDGE_USER_ID,item};
+    }
+    if(!await requestValuables(edited?`/v1/valuables/${item.id}`:"/v1/valuables",edited?"PATCH":"POST",item)) return;
+    pendingValuableCreate=null;svEditIndex=null;
+    dIdx=valuableAssetIndex();if(dIdx>=0)openAssetDetail(dIdx);
+    showToast(edited?"Sachwert aktualisiert.":"Sachwert im Konto gespeichert.");buzz();return;
+  }
   if(APP_MODE==="bridge" && (a.name==="Krypto" || a.name==="ETF & Investments")){
     const assetType=a.name==="Krypto" ? "crypto" : "etf";
     const ok=await syncInvestmentPosition(name,amt,assetType);
@@ -6991,7 +7120,12 @@ document.getElementById("dbody").addEventListener("click",e=>{
   if(send){ addAssetPosition(); return; }
   const editBtn=e.target.closest("[data-svedit]");
   if(editBtn){
-    svEditIndex=+editBtn.dataset.svedit;
+    if(editBtn.dataset.valuableOwner!=null){
+      if(editBtn.dataset.valuableOwner!==String(BRIDGE_USER_ID))return;
+      dIdx=valuableAssetIndex();if(dIdx<0)return;
+      svEditIndex=DATA.assets[dIdx].positions.findIndex(p=>p.id===editBtn.dataset.valuableId);
+      if(svEditIndex<0)return;
+    }else svEditIndex=+editBtn.dataset.svedit;
     openAssetDetail(dIdx);
     document.getElementById("svAmt")?.focus();
     buzz();
@@ -6999,11 +7133,19 @@ document.getElementById("dbody").addEventListener("click",e=>{
   }
   const svDelete=e.target.closest("#svDelete");
   if(svDelete){
-    const a=DATA.assets[dIdx], idx=svEditIndex;
-    if(!Number.isInteger(idx)||!a.positions[idx]) return;
     if(svDelete.dataset.armed!=="1"){
       svDelete.dataset.armed="1"; svDelete.classList.add("armed"); svDelete.textContent="Wirklich löschen? Nochmals tippen"; return;
     }
+    if(svDelete.dataset.valuableOwner!=null){
+      if(svDelete.dataset.valuableOwner!==String(BRIDGE_USER_ID))return;
+      requestValuables(`/v1/valuables/${svDelete.dataset.valuableId}`,"DELETE").then(ok=>{
+        if(!ok)return;svEditIndex=null;dIdx=valuableAssetIndex();
+        if(dIdx<0){dIdx=null;closeSheet();}else openAssetDetail(dIdx);
+        showToast("Sachwert gelöscht.");buzz();
+      });return;
+    }
+    const a=DATA.assets[dIdx], idx=svEditIndex;
+    if(!Number.isInteger(idx)||!a.positions[idx]) return;
     const removed=a.positions[idx];
     a.positions.splice(idx,1); svEditIndex=null;
     a.value = a.positions.reduce((s,p)=>s+p.v,0);
@@ -7019,6 +7161,12 @@ document.getElementById("dbody").addEventListener("click",e=>{
   if(svGroupDelete){
     if(svGroupDelete.dataset.armed!=="1"){
       svGroupDelete.dataset.armed="1"; svGroupDelete.classList.add("armed"); svGroupDelete.textContent="Wirklich entfernen? Nochmals tippen"; return;
+    }
+    if(svGroupDelete.dataset.valuableOwner!=null){
+      if(svGroupDelete.dataset.valuableOwner!==String(BRIDGE_USER_ID))return;
+      requestValuables("/v1/valuables","DELETE").then(ok=>{
+        if(!ok)return;dIdx=null;svEditIndex=null;closeSheet();showToast("Sachwerte gelöscht.");buzz();
+      });return;
     }
     const a=DATA.assets[dIdx], name=a.name;
     DATA.assets.splice(dIdx,1); dIdx=null; svEditIndex=null;
@@ -9400,7 +9548,7 @@ async function refreshTransactionsFromServer(){
 }
 
 // Holt die Bereiche nach, die der Bot bereits sicher verwaltet. Lokale App-Werte
-// wie Sachwerte, Bargeld oder eine manuell angelegte Immobilie bleiben dabei erhalten.
+// Lokale Alt-Sachwerte bleiben als bestaetigungspflichtige Uebernahme erhalten.
 function mergeBotContracts(serverGroups){
   const current=Array.isArray(DATA.vertraege)?DATA.vertraege:[];
   const merged=(serverGroups||[]).map(group=>{
@@ -9477,6 +9625,8 @@ function reconcilePendingBookingFromCanonical(){
 }
 async function fetchCanonicalAppState(){
   const goalRevisionAtFetch=goalStateRevision;
+  const valuableRevisionAtFetch=valuableStateRevision;
+  const valuableOwnerAtFetch=BRIDGE_USER_ID;
   const bufferRevisionAtFetch=bufferStateRevision;
   try{
     const res=await apiFetch("/v1/state",{
@@ -9485,6 +9635,9 @@ async function fetchCanonicalAppState(){
     const data=await res.json().catch(()=>({}));
     if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
 
+    if(BRIDGE_USER_ID!==valuableOwnerAtFetch||
+      (data.user_id!=null&&data.user_id!==valuableOwnerAtFetch)||
+      (Array.isArray(data.valuables)&&data.user_id!==valuableOwnerAtFetch)) return false;
     if(appDataRefreshQueued) return true;
     DATA.chartV2=data.chartV2||null;
     DATA.mentorCandidate=data.mentor_candidate||null;
@@ -9505,7 +9658,9 @@ async function fetchCanonicalAppState(){
     if(Array.isArray(data.vehicleFinancings)) DATA.vehicleFinancings=data.vehicleFinancings.map(normalizeVehicleFinancing);
     if(Object.prototype.hasOwnProperty.call(data,"netWorth")) setCanonicalNetWorth(data.netWorth);
     if(Array.isArray(data.assets)){
-      DATA.assets=mergeServerAssets(data.assets,DATA.assets,Boolean(data.features?.multi_cash_accounts_v1));
+      DATA.assets=mergeServerAssets(data.assets,DATA.assets,Boolean(data.features?.multi_cash_accounts_v1),Array.isArray(data.valuables));
+      if(Array.isArray(data.valuables)) applyServerValuables(
+        valuableRevisionAtFetch===valuableStateRevision?data.valuables:DATA.valuables);
     }
     if(Array.isArray(data.assetOrder)) DATA.assetOrder=data.assetOrder;
     if(Array.isArray(data.vertraege)) DATA.vertraege=mergeBotContracts(data.vertraege);
@@ -11613,7 +11768,9 @@ async function logoutCurrentUser(){
   }
 
   try{
-    const userId=BRIDGE_USER_ID;    localStorage.removeItem(BRIDGE_LOCAL_KEY);
+    const userId=BRIDGE_USER_ID;
+    // Preserve owned legacy valuables until their explicit server import succeeds.
+    saveBridgeLocal();
     clearPaydayHistory(userId);
     localStorage.removeItem("rove-cat-rules");
     localStorage.removeItem("rove-reminders");
@@ -14359,6 +14516,7 @@ async function bootstrapAuthenticatedApp(){
 
 async function showServerOnboarding(){
   if(ONBOARDING_DRAFT_LOAD_IN_FLIGHT)return ONBOARDING_DRAFT_LOAD_IN_FLIGHT;
+  const draftOwnerAtLoad=BRIDGE_USER_ID;
   const onboard=document.getElementById("onboard");
   if(!onboard)return false;
   setAuthSurface(true);
@@ -14372,6 +14530,9 @@ async function showServerOnboarding(){
       const response=await onboardingDraftRequest("/v1/onboarding/draft",{method:"GET",cache:"no-store"});
       const data=await response.json().catch(()=>({}));
       if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{httpStatus:response.status});
+      if(!Number.isSafeInteger(data.user_id)||data.user_id<1||BRIDGE_USER_ID!==draftOwnerAtLoad||
+        (draftOwnerAtLoad!=null&&data.user_id!==draftOwnerAtLoad))throw new Error("onboarding_account_changed");
+      BRIDGE_USER_ID=data.user_id;
       applyServerOnboardingDraft(data.draft);
       OB.step=Math.max(0,Math.min(Number(data.step)||0,OB_STEPS.length-1));
       ONBOARDING_DRAFT_SAVE_ERROR="";
@@ -14463,6 +14624,7 @@ async function loadBridgeState(){
       ? (Array.isArray(b.assets)?b.assets:[])
       : [...new Map((Array.isArray(b.assets)?b.assets:[]).map(asset=>[asset.name,asset])).values()];
     DATA.assetOrder = Array.isArray(b.assetOrder) ? b.assetOrder : [];
+    if(Array.isArray(b.valuables)) applyServerValuables(b.valuables);
     DATA.tx = (Array.isArray(b.tx) && b.tx.length) ? b.tx : [{d:"Heute", items:[]}];
     // Die Live-API liefert echte abgeschlossene Monate. Mock-Historie bleibt draussen,
     // die Cashflow-Navigation verliert beim Monatswechsel aber keine echten Buchungen mehr.
@@ -15389,13 +15551,15 @@ function installProfileAutosave(){
 const OB = { step:0, name:"", wantsApi:false, income:null, otherIncome:null, otherIncomeLabel:"",
              payday:null, contracts:{}, customFix:[], wealth:{}, etfRate:null, cashRate:null,
              etfExecutionDay:1, etfSource:"giro", etfMode:"auto",
-             goalName:"", goalTar:null, goalCur:null, autoFinType:null, fixExpanded:false };
+             goalName:"", goalTar:null, goalCur:null, autoFinType:null, fixExpanded:false,
+             valuables:[],completionId:newValuableId() };
 const OB_STEPS = ["welcome","name","path","income","fix","wealth","sparrate","etfplan","goal","done"];
+let ONBOARDING_FINISH_IN_FLIGHT=false;
 function resetOnboardingDraft(){
   Object.assign(OB,{step:0,name:"",wantsApi:false,income:null,otherIncome:null,otherIncomeLabel:"",
     payday:null,contracts:{},customFix:[],wealth:{},etfRate:null,cashRate:null,
     etfExecutionDay:1,etfSource:"giro",etfMode:"auto",goalName:"",goalTar:null,
-    goalCur:null,autoFinType:null,fixExpanded:false});
+    goalCur:null,autoFinType:null,fixExpanded:false,valuables:[],completionId:newValuableId()});
 }
 async function onboardingDraftRequest(path,options={}){
   const controller=new AbortController();
@@ -15410,7 +15574,8 @@ function serializeOnboardingDraft(){
     customFix:OB.customFix.map(item=>({n:item.n,a:item.a})),wealth:{...OB.wealth},
     etfRate:OB.etfRate,cashRate:OB.cashRate,etfExecutionDay:OB.etfExecutionDay,
     etfSource:OB.etfSource,etfMode:OB.etfMode,goalName:OB.goalName,goalTar:OB.goalTar,
-    goalCur:OB.goalCur,autoFinType:OB.autoFinType,fixExpanded:OB.fixExpanded
+    goalCur:OB.goalCur,autoFinType:OB.autoFinType,fixExpanded:OB.fixExpanded,
+    valuables:OB.valuables.map(p=>({...p})),completionId:OB.completionId
   };
 }
 function applyServerOnboardingDraft(draft){
@@ -15419,18 +15584,22 @@ function applyServerOnboardingDraft(draft){
   Object.assign(OB,draft,{
     contracts:draft.contracts&&typeof draft.contracts==="object"&&!Array.isArray(draft.contracts)?{...draft.contracts}:{},
     customFix:Array.isArray(draft.customFix)?draft.customFix.map(item=>({n:String(item.n||""),a:Number(item.a)||0})):[],
-    wealth:draft.wealth&&typeof draft.wealth==="object"&&!Array.isArray(draft.wealth)?{...draft.wealth}:{}
+    wealth:draft.wealth&&typeof draft.wealth==="object"&&!Array.isArray(draft.wealth)?{...draft.wealth}:{},
+    valuables:Array.isArray(draft.valuables)?draft.valuables.map(p=>({...p})):[],
+    completionId:/^[0-9a-f]{32}$/.test(draft.completionId||"")?draft.completionId:OB.completionId
   });
 }
 async function persistServerOnboardingDraft(step){
   if(APP_MODE!=="bridge"||!SERVER_ONBOARDING_REQUIRED)return true;
   if(!apiReady())throw new Error("not_authenticated");
+  const owner=BRIDGE_USER_ID;
   const response=await onboardingDraftRequest("/v1/onboarding/draft",{
-    method:"POST",headers:{"Content-Type":"application/json"},
+    method:"POST",headers:{"Content-Type":"application/json","X-Rove-User-ID":String(owner)},
     body:JSON.stringify({step,draft:serializeOnboardingDraft()})
   });
   const data=await response.json().catch(()=>({}));
   if(!response.ok||!data.ok)throw Object.assign(new Error(data.error||`HTTP ${response.status}`),{httpStatus:response.status});
+  if(BRIDGE_USER_ID!==owner||data.user_id!==owner)throw Object.assign(new Error("onboarding_account_changed"),{httpStatus:401});
   return true;
 }
 // Übliche weitere Einkommensquellen (Bot-Vorbild: "other_income", frei benennbar — z.B. Miete
@@ -15651,7 +15820,18 @@ function obRender(){
           <div class="ob-sub">Deine Immobilienrate erfasst du separat. Hier nur weitere Kredite eintragen.</div>
         </div>
       </div>
-      <div class="ob-count">Vermögen bisher: <b id="obWealthSum">${eur2(obWealthSum())}</b></div>`;
+      <div class="ob-count">Vermögen bisher: <b id="obWealthSum">${eur2(obWealthSum())}</b></div>
+      <details class="ob-field ob-valuables"${OB.valuables.length?' open':''}>
+        <summary>Sachwerte (optional)</summary>
+        <div class="ob-sub">Zum Beispiel Auto, Schmuck oder andere Wertgegenstände. Erfasse nur deinen aktuellen Schätzwert. Kredit, Leasing und laufende Kosten gehören nicht hierher. Sachwerte werden separat geführt und verändern den Vermögensverlauf nicht.</div>
+        ${OB.valuables.map(p=>`<div class="drow valuable-row"><span class="k">${escapeAccountHtml(p.n)}</span><span class="v">${eur2(p.v)} <button type="button" class="ob-chip" data-ob-valuable-remove="${p.id}" aria-label="${escapeAccountHtml(p.n)} entfernen">Entfernen</button></span></div>`).join("")}
+        <label class="auth-label" for="obValuableName">Bezeichnung</label>
+        <input id="obValuableName" type="text" maxlength="80" autocomplete="off" placeholder="z. B. Auto oder Schmuck">
+        <label class="auth-label" for="obValuableValue" style="margin-top:12px">Aktueller Schätzwert</label>
+        <input id="obValuableValue" type="text" inputmode="decimal" autocomplete="off" placeholder="Wert in €">
+        <button type="button" class="ob-chip" id="obValuableAdd" style="margin-top:12px">Sachwert hinzufügen</button>
+        <div id="obValuableError" class="ob-sub" role="alert"></div>
+      </details>`;
     foot.innerHTML = `<button class="ob-cta" data-ob="next">Weiter</button>`;
   }
   else if(key==="sparrate"){
@@ -15778,8 +15958,11 @@ function obBuildAssets(){
   }
   if(out.length){
     if(!w.bar) out.push({name:"Bargeld", icon:"wallet", tint:"#B08D57", value:0, sub:"im Portemonnaie"});
-    out.push({name:"Sachwerte", icon:"gem", tint:"#F4F1EA", value:0, sub:"Noch nichts eingetragen", manual:true, positions:[]});
   }
+  const valuables=OB.valuables||[];
+  if(valuables.length||out.length) out.push({name:"Sachwerte",icon:"gem",tint:"#F4F1EA",manual:true,
+    value:valuables.reduce((sum,p)=>sum+p.v,0),sub:valuables.length?"Manuelle Schätzwerte":"Noch nichts eingetragen",
+    positions:valuables.map(p=>({...p}))});
   return out;
 }
 // Budget-Vorschlag statt passivem Warten (Furkan-Feedback 16.07.: "der Kunde will geführt werden,
@@ -15834,6 +16017,7 @@ async function continueAfterServerOnboarding(){
 }
 
 async function finishOnboarding(){
+  if(ONBOARDING_FINISH_IN_FLIGHT) return;
   if(APP_MODE==="bridge"&&SERVER_ONBOARDING_AWAITING_PIN){
     await continueAfterServerOnboarding();
     return;
@@ -15844,6 +16028,8 @@ async function finishOnboarding(){
   const income=obIncomeTotal(), spar=obSparSum(), fix=obFixSum();
   const frei = OB.income!==null ? Math.max(0, income-fix-spar) : 0;
   if(APP_MODE==="bridge" && SERVER_ONBOARDING_REQUIRED){
+    ONBOARDING_FINISH_IN_FLIGHT=true;
+    const owner=BRIDGE_USER_ID;
     const button=document.querySelector('[data-ob="finish"]');
     if(button){ button.disabled=true; button.textContent="Wird eingerichtet ..."; }
     const contracts=vertraege.flatMap(group=>(group.items||[]).map(item=>({
@@ -15856,9 +16042,10 @@ async function finishOnboarding(){
     try{
       const res=await apiFetch("/v1/onboarding",{
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json","X-Rove-User-ID":String(owner)},
         body:JSON.stringify({
           name:OB.name.trim(),income:OB.income||0,other_income:OB.otherIncome||0,payday:OB.payday||0,
+          request_id:OB.completionId,valuables:OB.valuables,
           etf_savings:OB.etfRate||0,cash_savings:OB.cashRate||0,
           wealth:{
             giro:OB.wealth.giro||0,tagesgeld:OB.wealth.tages||0,bargeld:OB.wealth.bar||0,
@@ -15874,6 +16061,7 @@ async function finishOnboarding(){
       });
       const data=await res.json().catch(()=>({}));
       if(!res.ok || !data.ok) throw new Error(data.error||`HTTP ${res.status}`);
+      if(BRIDGE_USER_ID!==owner||data.user_id!==owner)throw new Error("onboarding_account_changed");
       SERVER_ONBOARDING_REQUIRED=false;
       SERVER_ONBOARDING_AWAITING_PIN=true;
       await continueAfterServerOnboarding();
@@ -15883,6 +16071,8 @@ async function finishOnboarding(){
       if(button){ button.disabled=false; button.textContent="Erneut versuchen"; }
       showToast("Deine Angaben konnten noch nicht gespeichert werden. Bitte versuch es erneut.");
       return;
+    }finally{
+      ONBOARDING_FINISH_IN_FLIGHT=false;
     }
   }
   // Der eingegebene Kontostand ist ein Schnappschuss von HEUTE — Gehalt und Fixkosten, die diesen
@@ -16026,6 +16216,16 @@ document.getElementById("onboard").addEventListener("click", e=>{
     return;
   }
   const inc=e.target.closest("[data-inc]");
+  if(e.target.closest("#obValuableAdd")){
+    const n=document.getElementById("obValuableName").value.trim();
+    const v=parseGermanAmount(document.getElementById("obValuableValue").value);
+    if(!n||n.length>80||/[\u0000-\u001f\u007f]/.test(n)||!Number.isFinite(v)||v<=0||v>10000000||OB.valuables.length>=50){
+      document.getElementById("obValuableError").textContent="Bitte eine Bezeichnung und einen gültigen Schätzwert eingeben (höchstens 50 Sachwerte).";return;
+    }
+    OB.valuables.push({id:newValuableId(),n,v});obRender();return;
+  }
+  const valuableRemove=e.target.closest("[data-ob-valuable-remove]");
+  if(valuableRemove){OB.valuables=OB.valuables.filter(p=>p.id!==valuableRemove.dataset.obValuableRemove);obRender();return;}
   if(inc){ buzz(); OB.income=+inc.dataset.inc; obRender(); return; }
   const pay=e.target.closest("[data-pay]");
   if(pay){ buzz(); obCapture(); OB.payday=+pay.dataset.pay; obRender(); return; }

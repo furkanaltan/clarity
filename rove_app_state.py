@@ -62,6 +62,7 @@ from rove_investment_contributions import (
     ensure_investment_contribution_schema,
     holding_contribution_summary,
 )
+from rove_valuables import ensure_valuables_schema, list_valuables
 from rove_financial_accounts import (
     FEATURE_MULTI_CASH_ACCOUNTS_V1,
     is_feature_enabled,
@@ -2694,6 +2695,7 @@ def prepare_state_read_schema(conn: sqlite3.Connection) -> None:
         ensure_app_scheduled_savings_table, ensure_app_goals_table,
         ensure_app_primary_goal_progress_table, ensure_app_contracts_table,
         ensure_market_tracking_schema, ensure_investment_contribution_schema,
+        ensure_valuables_schema,
     ):
         prepare(conn)
 
@@ -2703,10 +2705,9 @@ def build_live_app_data(
 ) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
-    Lokale App-Ergänzungen wie Sachwerte oder ein manuell gepflegter Immobilienwert gehören
-    absichtlich nicht hierher: Die App führt sie beim Aktualisieren weiter, statt sie zu
-    überschreiben. Der Bot ist derzeit nur Quelle für Cash, Investments, Fixkosten, Ziele und
-    Monatsbuchungen.
+    Sachwerte werden kontogebunden geliefert, bleiben aber von den zentralen
+    Finanzsummen und historischen Vermoegensverlaeufen getrennt. Lokale Altbestaende
+    duerfen erst nach ausdruecklicher Uebernahme zu diesen Positionen werden.
     """
     _prepare_for_read(conn, ensure_app_properties_table)
     _prepare_for_read(conn, ensure_debt_status_column)
@@ -2892,6 +2893,7 @@ def build_live_app_data(
         else "partial" if onboarding_step > 0
         else "incomplete"
     )
+    valuable_positions = list_valuables(conn, user_id)
     return {
         "onboardingRequired": onboarding_required,
         "onboarding": {
@@ -2917,6 +2919,7 @@ def build_live_app_data(
         "features": {FEATURE_MULTI_CASH_ACCOUNTS_V1: multi_cash},
         "financialAccounts": financial_accounts,
         "assetOrder": get_app_asset_order(conn, user_id),
+        "valuables": valuable_positions,
         "assets": (dynamic_cash_assets if multi_cash else static_cash_assets) + [a for a in (
             {"assetKey": "asset:investments", "name": "ETF & Investments", "source": "bot", "icon": "chart", "tint": "#8B7DF5",
              "value": round(etf, 2), "sub": etf_sub,
@@ -2938,6 +2941,11 @@ def build_live_app_data(
                  "coverageEquityAtStart": property_data.get("coverage_equity_at_start"),
                  "wert": "—",
              }} if property_data else None,
+            {"assetKey": "asset:valuables", "name": "Sachwerte", "source": "server-valuables",
+             "icon": "gem", "tint": "#F4F1EA", "manual": True,
+             "positions": valuable_positions,
+             "value": round(sum(item["v"] for item in valuable_positions), 2),
+             "sub": "Manuelle Schätzwerte"} if valuable_positions else None,
         ) if a],
         "tx": tx,
         "txHistory": tx_history,

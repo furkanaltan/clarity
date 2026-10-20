@@ -66,6 +66,11 @@ from rove_behavior_snapshot import (
     invalidate_behavior_snapshot,
 )
 from rove_visible_coach_v4 import get_visible_coach_v4, get_visible_pilot_metrics
+from rove_valuables import (
+    ensure_valuables_schema, list_valuables, clean_valuable, clean_valuables,
+    create_valuable, update_valuable, delete_valuable, claim_valuable_request,
+    valuable_request_matches,
+)
 from rove_app_state import (
     ACCOUNT_META,
     ASSET_ORDER_KEYS,
@@ -341,6 +346,7 @@ DATA_EXPORT_TABLES = (
     ("ziele", "app_goals"),
     ("hauptziel_fortschritt", "app_primary_goal_progress"),
     ("immobilien", "app_properties"),
+    ("sachwerte", "app_valuables"),
     ("investments", "portfolio_holdings"),
     ("investment_bewegungen", "investment_events"),
     ("portfolio_verlauf", "portfolio_snapshots"),
@@ -467,8 +473,14 @@ def cors(resp):
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    owner_bound_path = request.path.startswith("/v1/valuables") or request.path in {"/v1/onboarding", "/v1/onboarding/draft"}
+    resp.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, Authorization, X-Rove-User-ID" if owner_bound_path else "Content-Type, Authorization"
+    )
+    resp.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, PATCH, DELETE, OPTIONS" if request.path.startswith("/v1/valuables")
+        else "GET, POST, DELETE, OPTIONS"
+    )
     resp.headers["Vary"] = "Origin"
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -2858,8 +2870,20 @@ def enforce_session_pin():
             user = conn.execute(
                 "SELECT onboarding_step FROM users WHERE user_id = ?", (user_id,)
             ).fetchone()
-            if user and int(user["onboarding_step"] or 0) < 10 and not pin_row(conn, session_id):
-                return None
+            if user and not pin_row(conn, session_id):
+                if int(user["onboarding_step"] or 0) < 10:
+                    return None
+                # A lost completion response may be replayed before the first PIN setup.
+                # Only the exact committed request can return its existing acknowledgement.
+                replay = request.get_json(silent=True) if request.path == "/v1/onboarding" and request.method == "POST" else None
+                if (isinstance(replay, dict) and isinstance(replay.get("request_id"), str)
+                        and request.headers.get("X-Rove-User-ID") == str(user_id)
+                        and re.fullmatch(r"[0-9a-f]{32}", replay["request_id"])):
+                    try:
+                        if valuable_request_matches(conn, user_id, "onboarding:" + replay["request_id"], replay):
+                            return jsonify({"ok": True, "user_id": user_id, "onboardingRequired": False, "pinSetupRequired": True})
+                    except ValueError:
+                        pass
         status = pin_state(conn, session_id, touch=not read_only_gate, persist_idle_lock=not read_only_gate)
         if status != "unlocked":
             return pin_locked_response(status)
@@ -5406,6 +5430,68 @@ class OnboardingValidationError(Exception):
         self.status = status
 
 
+@app.route("/v1/valuables", methods=["GET", "POST", "DELETE", "OPTIONS"])
+@app.route("/v1/valuables/<position_id>", methods=["PATCH", "DELETE", "OPTIONS"])
+@app.route("/v1/valuables/import", methods=["POST", "OPTIONS"])
+def app_valuables(position_id=None):
+    if request.method == "OPTIONS":
+        return ("", 204)
+    is_import = request.path == "/v1/valuables/import" and request.method == "POST"
+    payload_limit = 128 * 1024 if is_import else 32 * 1024
+    if request.content_length and request.content_length > payload_limit:
+        return jsonify({"ok": False, "error": "valuables_payload_too_large"}), 413
+    payload = request.get_json(silent=True)
+    try:
+        with db() as conn:
+            begin_write(conn)
+            user_id = user_from_token(conn, "")
+            if not user_id:
+                return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
+            if request.method != "GET" and request.headers.get("X-Rove-User-ID") != str(user_id):
+                return jsonify({"ok": False, "error": "account_changed"}), 409
+            if request.method != "GET":
+                ensure_valuables_schema(conn)
+            if is_import:
+                if (not isinstance(payload, dict) or set(payload) != {"confirmed", "positions"}
+                        or payload["confirmed"] is not True or not isinstance(payload["positions"], list)
+                        or not 1 <= len(payload["positions"]) <= 500):
+                    raise ValueError("invalid_valuables_import")
+                occurrences = {}
+                for item in payload["positions"]:
+                    if not isinstance(item, dict) or set(item) != {"n", "v"}:
+                        raise ValueError("invalid_valuables_import")
+                    cleaned = clean_valuable({"id": "0" * 32, **item})
+                    key = json.dumps([cleaned["n"], cleaned["v"]], ensure_ascii=False)
+                    occurrences[key] = occurrences.get(key, 0) + 1
+                    cleaned["id"] = hashlib.sha256(
+                        f"legacy:{key}:{occurrences[key]}".encode("utf-8")
+                    ).hexdigest()[:32]
+                    create_valuable(conn, user_id, cleaned, origin="legacy")
+            elif request.method == "POST":
+                create_valuable(conn, user_id, clean_valuable(payload))
+            elif request.method == "PATCH":
+                cleaned = clean_valuable(payload)
+                if cleaned["id"] != position_id:
+                    raise ValueError("invalid_valuable_id")
+                if not update_valuable(conn, user_id, position_id, cleaned):
+                    return jsonify({"ok": False, "error": "valuable_not_found"}), 404
+            elif request.method == "DELETE":
+                if position_id is None:
+                    conn.execute("DELETE FROM app_valuables WHERE user_id = ?", (user_id,))
+                elif not delete_valuable(conn, user_id, position_id):
+                    owned_creation = conn.execute(
+                        "SELECT 1 FROM app_valuable_requests WHERE user_id=? AND request_id=?",
+                        (user_id, "create:" + position_id),
+                    ).fetchone()
+                    if not owned_creation:
+                        return jsonify({"ok": False, "error": "valuable_not_found"}), 404
+            positions = list_valuables(conn, user_id)
+        return jsonify({"ok": True, "user_id": user_id, "valuables": positions})
+    except ValueError as exc:
+        error = str(exc)
+        return jsonify({"ok": False, "error": error}), 409 if error == "valuable_request_conflict" else 400
+
+
 ONBOARDING_DRAFT_MAX_BYTES = 32 * 1024
 ONBOARDING_DRAFT_STEPS = frozenset(range(1, 10))
 ONBOARDING_DRAFT_CONTRACT_KEYS = frozenset({
@@ -5443,7 +5529,7 @@ def validate_onboarding_draft(payload: object) -> tuple[int, dict] | None:
         "contracts", "customFix", "wealth", "etfRate", "cashRate", "etfExecutionDay",
         "etfSource", "etfMode", "goalName", "goalTar", "goalCur", "autoFinType", "fixExpanded",
     }
-    if set(draft) != allowed:
+    if set(draft) - {"valuables", "completionId"} != allowed:
         return None
 
     def amount(value, maximum, *, nullable=True):
@@ -5473,6 +5559,15 @@ def validate_onboarding_draft(payload: object) -> tuple[int, dict] | None:
         return None
 
     normalized = dict(draft)
+    try:
+        if "valuables" in draft:
+            normalized["valuables"] = clean_valuables(draft["valuables"])
+        if "completionId" in draft and (
+            not isinstance(draft["completionId"], str) or not re.fullmatch(r"[0-9a-f]{32}", draft["completionId"])
+        ):
+            return None
+    except ValueError:
+        return None
     normalized["name"] = name
     normalized["otherIncomeLabel"] = other_label
     normalized["goalName"] = goal_name
@@ -5576,18 +5671,22 @@ def app_onboarding_draft():
             return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 401
         if user_id < 0:
             return jsonify({"ok": False, "error": "onboarding_draft_unavailable"}), 409
+        if request.method == "POST" and (
+            "valuables" in payload["draft"] or "completionId" in payload["draft"]
+        ) and request.headers.get("X-Rove-User-ID") != str(user_id):
+            return jsonify({"ok": False, "error": "account_changed"}), 409
         ensure_onboarding_drafts_table(conn)
         if request.method == "GET":
             row = conn.execute(
                 "SELECT step, draft_json FROM app_onboarding_drafts WHERE user_id = ?", (user_id,)
             ).fetchone()
             if not row:
-                return jsonify({"ok": True, "step": 0, "draft": None})
+                return jsonify({"ok": True, "user_id": user_id, "step": 0, "draft": None})
             try:
                 draft = json.loads(row["draft_json"])
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "onboarding_draft_unavailable"}), 503
-            return jsonify({"ok": True, "step": int(row["step"]), "draft": draft})
+            return jsonify({"ok": True, "user_id": user_id, "step": int(row["step"]), "draft": draft})
         step, draft = validated
         conn.execute(
             """INSERT INTO app_onboarding_drafts(user_id, step, draft_json, updated_at)
@@ -5598,7 +5697,7 @@ def app_onboarding_draft():
                  updated_at = CURRENT_TIMESTAMP""",
             (user_id, step, json.dumps(draft, ensure_ascii=False, allow_nan=False)),
         )
-    return jsonify({"ok": True, "step": step})
+    return jsonify({"ok": True, "user_id": user_id, "step": step})
 
 
 def optional_profile_amount(value: object, maximum: float = 1_000_000.0) -> float | None:
@@ -5613,7 +5712,20 @@ def optional_profile_amount(value: object, maximum: float = 1_000_000.0) -> floa
 def complete_app_onboarding():
     """Schreibt ein eingeladenes App-only-Profil einmalig in die produktive Datenbasis."""
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_onboarding_values"}), 400
     token = token_from_request()
+    try:
+        valuables = clean_valuables(payload.get("valuables", []))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid_onboarding_valuables"}), 400
+    completion_id = payload.get("request_id")
+    if completion_id is not None and (
+        not isinstance(completion_id, str) or not re.fullmatch(r"[0-9a-f]{32}", completion_id)
+    ):
+        return jsonify({"ok": False, "error": "invalid_onboarding_request_id"}), 400
+    if valuables and not completion_id:
+        return jsonify({"ok": False, "error": "onboarding_request_id_required"}), 400
 
     name = clean_text(payload.get("name"))[:40]
     income = onboarding_amount(payload.get("income"))
@@ -5727,6 +5839,18 @@ def complete_app_onboarding():
             ).fetchone()
             if not account or str(account["source"] or "") != "app":
                 raise OnboardingValidationError("app_registration_required", 403)
+            if completion_id and request.headers.get("X-Rove-User-ID") != str(user_id):
+                raise OnboardingValidationError("account_changed", 409)
+            if completion_id:
+                ensure_valuables_schema(conn)
+                try:
+                    first_completion = claim_valuable_request(conn, user_id, "onboarding:" + completion_id, payload)
+                except ValueError:
+                    raise OnboardingValidationError("onboarding_request_conflict", 409)
+                if not first_completion:
+                    if not user or int(user["onboarding_step"] or 0) < 10:
+                        raise OnboardingValidationError("onboarding_request_conflict", 409)
+                    return jsonify({"ok": True, "user_id": user_id, "onboardingRequired": False, "pinSetupRequired": True})
             if user and int(user["onboarding_step"] or 0) >= 10:
                 raise OnboardingValidationError("onboarding_already_completed", 409)
 
@@ -5928,6 +6052,12 @@ def complete_app_onboarding():
                     ),
                 )
 
+            try:
+                for valuable in valuables:
+                    create_valuable(conn, user_id, valuable, origin="onboarding")
+            except ValueError:
+                raise OnboardingValidationError("invalid_onboarding_valuables", 409)
+
             # Only a fully persisted profile becomes an onboarded profile.
             conn.execute(
                 "UPDATE users SET onboarding_step = 10, current_month = ? WHERE user_id = ?",
@@ -5945,6 +6075,7 @@ def complete_app_onboarding():
         "ok": True,
         "onboardingRequired": False,
         "pinSetupRequired": True,
+        **({"user_id": user_id} if completion_id else {}),
     })
 
 

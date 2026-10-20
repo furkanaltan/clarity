@@ -17,7 +17,8 @@ def function(name):
 
 
 ICONS = section("function moduleIcon(name){", "// Empty State")
-ONBOARDING = section("const OB = {", "async function persistServerOnboardingDraft(")
+ONBOARDING = re.search(r"function newValuableId\(\)\{[^\n]+", SOURCE).group() + "\n"
+ONBOARDING += section("const OB = {", "async function persistServerOnboardingDraft(")
 ONBOARDING += section("const OB_INCOME_LABELS =", "async function continueAfterServerOnboarding(")
 LOANS = section("const LOAN_NAME_RE=", "function ans_debt(){")
 MENTOR = section("function setMentorCtaTarget(", "let reportOpenInFlight=")
