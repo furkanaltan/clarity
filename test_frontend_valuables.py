@@ -136,7 +136,7 @@ function multiCashEnabled(){return MULTI_CASH_ENABLED;}
 function openFinancialAccountAdd(){accountAddOpened++;}
 function openAssetKind(kind){openedAssetKinds.push(kind);}
 function ic(){return '<svg></svg>';}
-function emptyCard({action,cta}){return `<div data-empty="${action}">${cta}</div>`;}
+function emptyCard({action,cta,sub}){return `<div data-empty="${action}"><p>${sub}</p>${cta}</div>`;}
 function cashAccountMeta(){return null;}
 function staleHint(){return '';}
 function rovePushState(name){navigation.push(name);}
@@ -427,12 +427,14 @@ MULTI_CASH_ENABLED=false;
 DATA.assets=[{name:'Girokonto',value:12500}];DATA.valuables=[];renderAssets();
 let html=document.getElementById('assets').innerHTML;
 assert.ok(html.includes('data-add-valuables'));assert.ok(html.includes('Sachwert hinzufügen'));
+assert.ok(!html.includes('Konto oder Wert hinzufügen'));
 assert.ok(!html.includes('data-add-financial-account'));
 click('assets','[data-add-valuables]');
 assert.deepEqual(openedAssetKinds,['valuables']);assert.equal(accountAddOpened,0);
 
 MULTI_CASH_ENABLED=true;renderAssets();html=document.getElementById('assets').innerHTML;
 assert.ok(html.includes('data-add-financial-account'));assert.ok(!html.includes('data-add-valuables'));
+assert.ok(html.includes('Konto oder Wert hinzufügen'));
 click('assets','[data-add-financial-account]');
 assert.equal(accountAddOpened,1);assert.deepEqual(openedAssetKinds,['valuables']);
 assert.equal(requests.length,0);
@@ -460,10 +462,26 @@ assert.ok(html.includes('id="svDelete"'));
 APP_MODE='demo';MULTI_CASH_ENABLED=false;DATA.assets=[];renderAssets();
 const html=document.getElementById('assets').innerHTML;
 assert.ok(html.includes('data-empty="valuables"'));
+assert.ok(html.includes('Sachwert hinzufügen'));
+assert.ok(html.includes('Erfasse Sachwerte mit ihrem geschätzten Wert.'));
+assert.ok(!html.includes('Konto'));assert.ok(!html.includes('Depot'));
 const empty={dataset:{empty:'valuables'}};
 await documentHandlers.click({target:{closest:selector=>selector==='[data-empty]'?empty:null}});
 assert.deepEqual(openedAssetKinds,['valuables']);
 assert.equal(accountAddOpened,0);assert.equal(requests.length,0);
+""")
+
+    def test_enabled_account_empty_state_keeps_its_existing_chooser(self):
+        self.run_js(r"""
+APP_MODE='demo';MULTI_CASH_ENABLED=true;DATA.assets=[];renderAssets();
+const html=document.getElementById('assets').innerHTML;
+assert.ok(html.includes('data-empty="financial-asset"'));
+assert.ok(html.includes('Konto oder Wert hinzufügen'));
+assert.ok(html.includes('Füge dein erstes Konto, Depot oder einen Vermögenswert hinzu.'));
+const empty={dataset:{empty:'financial-asset'}};
+await documentHandlers.click({target:{closest:selector=>selector==='[data-empty]'?empty:null}});
+assert.equal(accountAddOpened,1);assert.deepEqual(openedAssetKinds,[]);
+assert.equal(requests.length,0);
 """)
 
     def test_onboarding_rejects_invalid_values_and_more_than_fifty_items(self):

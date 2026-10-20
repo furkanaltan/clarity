@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const { chromium, webkit, devices } = require('playwright');
 
 const root = path.join(__dirname, 'frontend');
 const output = process.env.ROVE_VALUABLES_SMOKE_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'rove-valuables-browser-'));
@@ -84,6 +84,8 @@ async function loaded(page) {
   await page.locator('#app:not([hidden])').waitFor();
   await page.locator('#splash').waitFor({ state: 'detached' });
   await page.locator('[data-add-valuables]').waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Sachwert hinzufügen', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Konto oder Wert hinzufügen', exact: true }).count(), 0);
   assert.equal(await page.locator('[data-add-financial-account]').count(), 0);
   assert.equal(await page.locator('#homeSachwerteSummary').count(), 0);
   assert.ok(!(await page.locator('#tab-home').innerText()).includes('nicht im Vermögensverlauf'));
@@ -118,9 +120,14 @@ async function assertLayout(page) {
   assert.ok(layout.fields.every(box => box.left >= 0 && box.right <= layout.width), JSON.stringify(layout));
 }
 
-async function flow(browser, label, viewport) {
+async function flow(browser, label, viewport, standalone = false) {
   stored = fixtures(); writes.length = 0;
-  const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
+  const mobile = viewport.width === 390;
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block',
+    ...(mobile ? { isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent } : {}) });
+  if (standalone) await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'standalone', { get: () => true, configurable: true });
+  });
   // Any accidental external request is blocked before it reaches the network.
   await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort('blockedbyclient'));
   await context.addCookies([{ name: 'rove-synthetic-owner', value: '1', url: origin }]);
@@ -129,6 +136,7 @@ async function flow(browser, label, viewport) {
   try {
     await page.goto(origin + '/app/');
     await loaded(page);
+    if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
     await page.locator('[data-add-valuables]').scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(output, label + '-overview.png') });
     await open(page);
@@ -207,9 +215,11 @@ async function main() {
   origin = `http://127.0.0.1:${server.address().port}`;
   let browser;
   try {
-    browser = await chromium.launch({ headless: true, executablePath: process.env.ROVE_BROWSER_BIN || undefined });
+    const engine = process.env.ROVE_BROWSER_ENGINE === 'webkit' ? webkit : chromium;
+    browser = await engine.launch({ headless: true, executablePath: process.env.ROVE_BROWSER_BIN || undefined });
     await flow(browser, 'desktop', { width: 1280, height: 900 });
     await flow(browser, 'mobile-390', { width: 390, height: 844 });
+    await flow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
     console.log('SCREENSHOTS=' + output);
   } finally {
     if (browser) await browser.close();

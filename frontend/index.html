@@ -5674,7 +5674,7 @@ function renderAssets(){
     const addLabel=multiCashEnabled()?"Konto oder Wert hinzufügen":"Sachwert hinzufügen";
     box.innerHTML = emptyCard({
       icon:"bank", title:"Noch keine Werte hinterlegt",
-      sub:"Füge dein erstes Konto, Depot oder einen Vermögenswert hinzu. Dann wird dein Überblick hier sichtbar.",
+      sub:multiCashEnabled()?"Füge dein erstes Konto, Depot oder einen Vermögenswert hinzu. Dann wird dein Überblick hier sichtbar.":"Erfasse Sachwerte mit ihrem geschätzten Wert.",
       cta:addLabel,
       action:addAction})+legacyValuablesHtml();
     return;
