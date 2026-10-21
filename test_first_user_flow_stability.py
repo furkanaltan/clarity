@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import unittest
 from pathlib import Path
 
 
-FRONTEND = Path(__file__).resolve().parent / "frontend" / "index.html"
+FRONTEND = Path(os.environ.get("ROVE_FRONTEND_PATH", Path(__file__).resolve().parent / "frontend" / "index.html"))
 
 
 def section(source: str, start: str, end: str) -> str:
@@ -43,6 +44,8 @@ class FirstUserFlowStabilityTests(unittest.TestCase):
         cls.close_and_navigate = section(
             source, "function closeSheetAndNavigate(tab){", 'document.querySelectorAll(".tab")'
         )
+        cls.quick_close = section(source, "function closeQuickEntrySheet(){", "async function retryPendingBooking(){")
+        cls.retry_entry = section(source, "async function retryPendingBooking(){", "async function addEntry(){")
 
     def run_node(self, script: str):
         result = subprocess.run(
@@ -227,6 +230,7 @@ function parseEntry(){return {id:1,n:'Einkauf',a:-18.5,cat:'Shopping',bar:false,
 async function commitEntry(){events.push('save');return serverResults.shift()}
 function updateQuickCat(){}
 function closeSheetAndNavigate(tab){events.push('navigate:'+tab)}
+function closeQuickEntrySheet(){events.push('close')}
 function buzz(){}
 function showToast(message){events.push('toast:'+message)}
 function eur(value){return String(value)}
@@ -239,7 +243,110 @@ function eur2(value){return String(value)}
   assert.match(submitError.text,/Nicht gespeichert/);
   await addEntry();
   assert.equal(quickIn.value,'');
-  assert.deepEqual(events.slice(-3),['save','navigate:tx','toast:✓ Einkauf · −18.5']);
+  assert.deepEqual(events.slice(-3),['save','close','toast:✓ Einkauf · −18.5']);
+})();
+"""
+        self.run_node(script)
+
+    def test_quick_close_preserves_context_without_async_back_or_scroll_reset(self):
+        script = """
+const assert=require('node:assert/strict');
+let active='home',scroll=137,events=[];
+let ROVE_NAV_RESTORING=false,ROVE_NAV_SUPPRESSED=false;
+const DEMO_HASHES=new Set(['offline']);
+const location={hash:'',href:'http://localhost/app'};
+const history={
+  replaceState:state=>events.push(['replace',state]),
+  back(){throw new Error('Quick Add must not queue history.back()')}
+};
+function roveActiveTab(){return active}
+function go(){scroll=0;throw new Error('Quick Add must not navigate')}
+function closeSheet(options){
+  assert.equal(options.skipHistory,true);
+  events.push(['close']);
+}
+""" + self.quick_close + """
+for(const tab of ['home','ziele','tx','vertraege','analysis','buffer']){
+  active=tab;events=[];
+  closeQuickEntrySheet();
+  assert.equal(active,tab);
+  assert.equal(scroll,137);
+  assert.deepEqual(events,[['close'],['replace',{roveNav:true,tab,sheet:null}]]);
+}
+for(const mode of ['restoring','suppressed','demo']){
+  events=[];ROVE_NAV_RESTORING=mode==='restoring';ROVE_NAV_SUPPRESSED=mode==='suppressed';
+  location.hash=mode==='demo'?'#offline':'';
+  closeQuickEntrySheet();
+  assert.deepEqual(events,[['close']]);
+}
+"""
+        self.run_node(script)
+
+    def test_quick_add_double_submit_waits_for_acceptance_and_closes_once(self):
+        script = """
+const assert=require('node:assert/strict');
+let APP_MODE='bridge',BOOKING_SYNC_BUSY=false,BOOKING_STATE_UNCERTAIN=false,PENDING_BOOKING_RETRY=null;
+const quickIn={value:'Kaffee 4,50',readOnly:false};
+const submit={disabled:false},quickForm={querySelector:()=>submit};
+const events=[];let accept;
+function apiReady(){return true}
+function setQuickError(){}
+function parseEntry(){return {n:'Kaffee',a:-4.5,cat:'Restaurant'}}
+function commitEntry(){events.push('save');return new Promise(resolve=>{accept=resolve})}
+function updateQuickCat(){}
+function closeQuickEntrySheet(){events.push('close')}
+function closeSheetAndNavigate(){throw new Error('unexpected navigation')}
+function buzz(){}
+function showToast(){events.push('toast')}
+function eur2(value){return String(value)}
+""" + self.add_entry + """
+(async()=>{
+  const first=addEntry();await addEntry();
+  assert.deepEqual(events,['save']);
+  assert.equal(quickIn.value,'Kaffee 4,50');
+  assert.equal(submit.disabled,true);
+  accept(true);await first;
+  assert.deepEqual(events,['save','close','toast']);
+  assert.equal(quickIn.value,'');
+  assert.equal(quickIn.readOnly,false);
+  assert.equal(submit.disabled,false);
+})();
+"""
+        self.run_node(script)
+
+    def test_safe_retry_preserves_input_on_failure_and_context_on_success(self):
+        script = """
+const assert=require('node:assert/strict');
+const expense={n:'Kaffee',a:-4.5,requestId:'synthetic-once'};
+const pending={e:expense,raw:'Kaffee 4,50'};
+let PENDING_BOOKING_RETRY=pending,BOOKING_SYNC_BUSY=false,success=false;
+const quickIn={value:pending.raw,readOnly:true};
+const quickRetry={disabled:false,textContent:'',addEventListener(){}};
+const events=[];
+async function syncExpenseToServer(e,raw){
+  assert.equal(e,expense);assert.equal(raw,pending.raw);
+  events.push('save:'+e.requestId);
+  if(success)PENDING_BOOKING_RETRY=null;
+  return success;
+}
+function updateQuickCat(){}
+function closeQuickEntrySheet(){events.push('close')}
+function closeSheetAndNavigate(){throw new Error('unexpected navigation')}
+function buzz(){}
+function setQuickError(){}
+function showToast(){events.push('toast')}
+function eur2(value){return String(value)}
+""" + self.retry_entry + """
+(async()=>{
+  await retryPendingBooking();
+  assert.deepEqual(events,['save:synthetic-once']);
+  assert.equal(quickIn.value,pending.raw);
+  success=true;await retryPendingBooking();
+  assert.deepEqual(events,['save:synthetic-once','save:synthetic-once','close','toast']);
+  assert.equal(quickIn.value,'');
+  assert.equal(quickIn.readOnly,false);
+  assert.equal(quickRetry.disabled,false);
+  assert.equal(BOOKING_SYNC_BUSY,false);
 })();
 """
         self.run_node(script)

@@ -9868,7 +9868,7 @@ setInterval(()=>{
 
 // Daten-Teil einer neuen Buchung — gemeinsam genutzt vom „+"-Weg (addEntry) und von der
 // Coaching-Zeile (ans_cash_expense). Alles, was nur zum „+"-Sheet gehört (Eingabefeld leeren,
-// Sheet schliessen, Tab wechseln, Toast), bleibt bewusst in addEntry.
+// Sheet schliessen, Toast), bleibt bewusst in addEntry.
 function commitEntry(e, raw){
   const dgroup=e.dayGroup||"Heute"; delete e.dayGroup;   // nur Platzierungs-Info, nicht Teil des tx-Items
   let grp=DATA.tx.find(d=>d.d===dgroup);
@@ -9906,6 +9906,14 @@ function commitEntry(e, raw){
   syncExpenseToServer(e, raw);
   return true;
 }
+function closeQuickEntrySheet(){
+  const tab=roveActiveTab();
+  // Keep the current screen and scroll; history.back() could restore an older context later.
+  closeSheet({skipHistory:true});
+  if(!ROVE_NAV_RESTORING&&!ROVE_NAV_SUPPRESSED&&!DEMO_HASHES.has(location.hash.slice(1))){
+    history.replaceState({roveNav:true,tab,sheet:null},"",location.href);
+  }
+}
 async function retryPendingBooking(){
   const pending=PENDING_BOOKING_RETRY;
   if(!pending||BOOKING_SYNC_BUSY)return;
@@ -9918,7 +9926,7 @@ async function retryPendingBooking(){
     if(saved){
       if(quickIn.value===pending.raw)quickIn.value="";
       updateQuickCat();
-      closeSheetAndNavigate("tx");
+      closeQuickEntrySheet();
       buzz();
       showToast(`✓ ${pending.e.n} · −${eur2(Math.abs(pending.e.a))} gespeichert`);
     }else if(!PENDING_BOOKING_RETRY){
@@ -9978,7 +9986,7 @@ async function addEntry(){
     return;
   }
   quickIn.value=""; updateQuickCat();
-  closeSheetAndNavigate("tx"); buzz();
+  closeQuickEntrySheet(); buzz();
   const isSalary = e.a>0 && /gehalt|lohn/i.test(raw);
   if(isSalary){                       // Delight: Zahltag → Töpfe füllen?
     logActivity({t:`Gehalt eingegangen · ${eur(e.a)}`, i:"trend"});
@@ -14075,7 +14083,7 @@ document.getElementById("payLater").addEventListener("click", closeSheet);
 // Der "+"-Knopf trägt ebenfalls class="tab", hat aber kein data-tab. Ohne diese Prüfung lief bei
 // jedem Tippen auf "+" ein go(undefined): Zeile 1 nahm ALLEN Screens das .active, Zeile 2 warf
 // dann an `null.classList`. Ergebnis war ein komplett leerer Screen, bis man einen Tab antippte
-// (beim Speichern fiel es nicht auf, weil addEntry() danach go("tx") ruft — nur beim Abbrechen).
+// (beim Speichern verdeckte der damalige Cashflow-Wechsel den Fehler — nur beim Abbrechen sichtbar).
 // Seit die Tab-Leiste im Fluss liegt statt fixed, wäre sie in diesem Zustand ausserdem nach oben
 // gerutscht, weil kein Screen mehr Platz beansprucht.
 const ROVE_NAV_STATE="roveNav";
