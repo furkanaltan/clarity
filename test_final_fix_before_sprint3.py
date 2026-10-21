@@ -373,6 +373,7 @@ const document={getElementById:()=>output,querySelector:()=>mentorCard};
 const APP_MODE="bridge";
 const DATA={monthlyCheckinActions:[],featureAnnouncements:{},goals:[{}],assets:[{}],budgets:[{}],monthlyPlan:{incomeStatus:"confirmed"}};
 function mentorDataReady(){return false;} function freeBudget(){return -234;}
+function setMentorCtaTarget(){} function shouldWelcomeFirstBudget(){return false;}
 function budgetFrameStatus(){return {left:392};} function eur(value){return `${value} €`;}
 """ + mentor + """
 mentorLine();

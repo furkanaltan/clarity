@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from rove_app_state import build_mentor_candidate
+from test_feature_announcements_sprint3 import run_mentor_action
 
 
 FRONTEND = Path(__file__).resolve().parent / "frontend" / "index.html"
@@ -173,7 +174,9 @@ class MentorV2Tests(unittest.TestCase):
         candidate_branch = frontend.index('const serverCandidate=APP_MODE==="bridge" && DATA.mentorCandidate;')
         due_branch = frontend.index("if(dueActions.length)", candidate_branch)
         self.assertLess(candidate_branch, due_branch)
-        self.assertIn('else if(a==="candidate") openMentorCandidate', frontend)
+        action = run_mentor_action(frontend, "candidate")
+        self.assertTrue(action["stopped"])
+        self.assertEqual(action["calls"], [["candidate", "report:2026-09", "reports"]])
         self.assertIn("mentorFactorLabel", frontend)
 
     def test_visible_mentor_text_uses_german_umlauts(self):

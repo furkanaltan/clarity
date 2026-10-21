@@ -24,6 +24,31 @@ FRONTEND_PATH = Path(os.environ.get(
 ))
 
 
+def run_mentor_action(frontend, action):
+    start = frontend.index('document.querySelector(".mentor").addEventListener("click",e=>{')
+    handler = frontend[start:frontend.index("\n// Chart-Zustand", start)]
+    script = """
+const calls=[];
+let click, stopped=false;
+const mentorCard={dataset:{mentorDeepLink:'reports'},addEventListener(type,handler){click=handler;}};
+const document={querySelector:()=>mentorCard};
+const DATA={mentorCandidate:{id:'report:2026-09',type:'report'}};
+function buzz(){}
+function openTalk(){calls.push(['coach']);}
+function openFeatureAnnouncement(id){calls.push(['feature',id]);}
+function openMentorCandidate(candidate,route){calls.push(['candidate',candidate.id,route]);}
+""" + handler + """
+click({
+  target:{closest(selector){return selector==='[data-mentoract]'
+    ? {dataset:{mentoract:ACTION,featureId:'release-fixture'}} : null;}},
+  stopImmediatePropagation(){stopped=true;}
+});
+process.stdout.write(JSON.stringify({stopped,calls}));
+""".replace("ACTION", json.dumps(action))
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
 class FeatureAnnouncementSprintThreeServerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -53,7 +78,10 @@ class FeatureAnnouncementSprintThreeServerTests(unittest.TestCase):
         self.conn.close()
         self.temp.cleanup()
 
-    def insert(self, feature_id, *, priority="major", published_at="2026-08-27 12:00:00"):
+    def insert(self, feature_id, *, priority="major", published_hours_ago=24):
+        published_at = self.conn.execute(
+            "SELECT datetime('now', 'localtime', ?)", (f"-{published_hours_ago} hours",)
+        ).fetchone()[0]
         self.conn.execute(
             """INSERT INTO app_feature_announcements
                    (feature_id, title, short_message, priority, deep_link, published_at)
@@ -115,9 +143,9 @@ class FeatureAnnouncementSprintThreeServerTests(unittest.TestCase):
         self.assertIsNone(self.claim())
 
     def test_security_precedes_newer_major_and_only_one_is_claimed(self):
-        self.insert("major_new", priority="major", published_at="2026-08-27 14:00:00")
-        self.insert("security_old", priority="security", published_at="2026-08-27 13:00:00")
-        self.insert("major_other", priority="major", published_at="2026-08-27 15:00:00")
+        self.insert("major_new", priority="major", published_hours_ago=2)
+        self.insert("security_old", priority="security", published_hours_ago=3)
+        self.insert("major_other", priority="major", published_hours_ago=1)
         self.assertEqual(self.claim()["feature_id"], "security_old")
         self.assertEqual(self.conn.execute(
             "SELECT COUNT(*) FROM app_feature_announcement_state"
@@ -216,9 +244,10 @@ class FeatureAnnouncementSprintThreeFrontendTests(unittest.TestCase):
         self.assertIn("Ausprobieren", mentor)
         self.assertNotIn("priority===\"major\"", mentor)
 
-    def test_coach_click_reuses_sprint_two_router(self):
-        self.assertIn('openFeatureAnnouncement(r.dataset.featureId)', self.frontend)
-        self.assertIn('openFeatureAnnouncement(mentorCard.dataset.featureId)', self.frontend)
+    def test_feature_action_reuses_the_announcement_router(self):
+        result = run_mentor_action(self.frontend, "feature")
+        self.assertTrue(result["stopped"])
+        self.assertEqual(result["calls"], [["feature", "release-fixture"]])
         self.assertEqual(self.frontend.count("function openFeatureDeepLink("), 1)
 
     def test_local_open_clears_only_targeted_coach_item(self):

@@ -19,6 +19,9 @@ class PrivacyRetentionFinalTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.db = self.root / "clarity.db"
+        db_path = patch.object(api, "DB_PATH", self.db)
+        db_path.start()
+        self.addCleanup(db_path.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

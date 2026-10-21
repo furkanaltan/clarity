@@ -19,6 +19,7 @@ from rove_consumer_debt import (
     total_consumer_debt, net_worth_total, save_consumer_debt, delete_consumer_debt,
 )
 from test_financial_accounts_sprint2 import create_db
+from rove_financial_accounts import mirror_financial_accounts_to_legacy
 from test_report_story_v2 import standard_payload
 from report_html_renderer import _render_hell_pages
 
@@ -37,6 +38,7 @@ class ConsumerDebtTests(unittest.TestCase):
         self.conn.execute("UPDATE app_financial_accounts SET balance=0 WHERE user_id=1")
         self.conn.execute("UPDATE app_financial_accounts SET balance=10000 WHERE user_id=1 AND legacy_key='giro'")
         self.conn.execute("UPDATE users SET current_cash=10000,current_investments=5000 WHERE user_id=1")
+        mirror_financial_accounts_to_legacy(self.conn, 1)
         self.conn.commit()
 
     def payload(self, amount=20000, **kwargs):
@@ -142,6 +144,7 @@ class ConsumerDebtTests(unittest.TestCase):
     def test_overdraft_is_cash_only(self):
         self.conn.execute("UPDATE app_financial_accounts SET balance=-2000 WHERE user_id=1 AND legacy_key='giro'")
         self.conn.execute("UPDATE users SET current_cash=-2000 WHERE user_id=1")
+        mirror_financial_accounts_to_legacy(self.conn, 1)
         self.assertEqual(state.build_live_app_data(self.conn, 1)["netWorth"], 3000)
         for kind in ("overdraft", "mortgage", "car_financing"):
             with self.assertRaises(ValueError):

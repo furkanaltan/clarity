@@ -15,9 +15,15 @@ from rove_app_state import (
     build_live_app_data,
     ensure_app_etf_savings_plan_table,
     get_app_cash_accounts,
+    prepare_state_read_schema,
 )
 from rove_dates import business_month_key
-from rove_financial_accounts import FEATURE_MULTI_CASH_ACCOUNTS_V1, set_feature_enabled
+from rove_financial_accounts import (
+    CashReconciliationRequired,
+    FEATURE_MULTI_CASH_ACCOUNTS_V1,
+    mirror_financial_accounts_to_legacy,
+    set_feature_enabled,
+)
 from test_auth_pin_sprint9_phase2 import ensure_unlocked_test_session
 from test_financial_accounts_sprint2 import create_db
 
@@ -47,24 +53,28 @@ class StabilitySprint1Tests(unittest.TestCase):
 
     def test_multi_account_home_cash_uses_active_account_sum(self):
         with closing(self.connect()) as conn:
-            conn.execute("UPDATE app_financial_accounts SET balance = CASE id WHEN 2 THEN 1000 WHEN 3 THEN 500 ELSE 0 END WHERE user_id=1")
+            conn.execute("UPDATE app_financial_accounts SET balance = CASE legacy_key WHEN 'giro' THEN 1000 WHEN 'tagesgeld' THEN 500 ELSE 0 END WHERE user_id=1")
+            mirror_financial_accounts_to_legacy(conn, 1)
             conn.commit()
         self.assertEqual(self.state()["sts"]["konto"], 1500)
 
     def test_multi_account_drift_is_not_repaired(self):
         with closing(self.connect()) as conn:
-            conn.execute("UPDATE app_financial_accounts SET balance = CASE id WHEN 2 THEN 1000 WHEN 3 THEN 500 ELSE 0 END WHERE user_id=1")
+            prepare_state_read_schema(conn)
+            conn.execute("UPDATE app_financial_accounts SET balance = CASE legacy_key WHEN 'giro' THEN 1000 WHEN 'tagesgeld' THEN 500 ELSE 0 END WHERE user_id=1")
             conn.execute("UPDATE users SET current_cash=1400 WHERE user_id=1")
+            before = list(conn.iterdump())
             conn.commit()
-        state = self.state()
-        self.assertEqual(state["sts"]["konto"], 1500)
+        with self.assertRaises(CashReconciliationRequired):
+            self.state()
         with closing(self.connect()) as conn:
-            self.assertEqual(conn.execute("SELECT current_cash FROM users WHERE user_id=1").fetchone()[0], 1400)
+            self.assertEqual(list(conn.iterdump()), before)
 
     def test_feature_off_keeps_legacy_current_cash(self):
         self.set_multi_cash(False)
         with closing(self.connect()) as conn:
             conn.execute("UPDATE users SET current_cash=1400 WHERE user_id=1")
+            conn.execute("UPDATE app_account_balances SET amount=1150 WHERE user_id=1 AND account_key='giro'")
             conn.commit()
         self.assertEqual(self.state()["sts"]["konto"], 1400)
 
@@ -79,7 +89,8 @@ class StabilitySprint1Tests(unittest.TestCase):
 
     def test_negative_multi_account_cash_is_preserved(self):
         with closing(self.connect()) as conn:
-            conn.execute("UPDATE app_financial_accounts SET balance = CASE id WHEN 2 THEN -500 WHEN 3 THEN 200 ELSE 0 END WHERE user_id=1")
+            conn.execute("UPDATE app_financial_accounts SET balance = CASE legacy_key WHEN 'giro' THEN -500 WHEN 'tagesgeld' THEN 200 ELSE 0 END WHERE user_id=1")
+            mirror_financial_accounts_to_legacy(conn, 1)
             conn.commit()
         self.assertEqual(self.state()["sts"]["konto"], -300)
 

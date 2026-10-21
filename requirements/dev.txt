@@ -2,5 +2,6 @@
 -r api.txt
 -r bot.txt
 -r reports.txt
+-r recovery.txt
 
-# Node.js is a separate system dependency used for frontend syntax tests.
+# Node.js and GnuPG >= 2.4.4 are separate dependencies of the full suite.

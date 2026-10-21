@@ -1,6 +1,7 @@
 # Rov.E Testing
 
-Aktueller Nachweis: siehe den vollstaendigen Lauf vom 21.10.2026 unten.
+Aktueller Nachweis: siehe die Stabilisierung vom 21.10.2026 unten. Der erste
+rote Lauf bleibt als historischer Befund erhalten.
 Das Inventar mit 26 Dateien und 281 Tests weiter unten ist die historische
 Baseline vom 31.08.2026, nicht die heutige Suite. Die Tests bleiben im
 Repository-Root, weil Imports, Discovery und Frontendpfade darauf abgestimmt sind.
@@ -26,7 +27,67 @@ Zusaetzliche lokale Site-Packages koennen ueber `ROVE_EXTRA_PYTHONPATH`
 bereitgestellt werden. Der Runner setzt den kanonischen Frontendpfad auf
 `frontend/index.html`, wenn `ROVE_FRONTEND_PATH` nicht bereits gesetzt ist.
 
-## Full-Suite-Nachweis 21.10.2026
+## Stabilisierung des Full-Suite-Gates, 21.10.2026
+
+Arbeitsbasis: `7f48c45aa6ac9aec29be2a6f1cec80219a73ddbd`, Branch
+`codex/full-suite-and-sync`. Phase A aendert nur Test-Fixtures, Testannahmen,
+die Development-Abhaengigkeiten und diese Dokumentation. Keine Runtime-Datei,
+keine produktive Datenbank, keine ENV-Datei und kein Production-Zugriff.
+
+Die isolierte Python-3.12.14-Umgebung wird ausschliesslich mit
+`pip install -r requirements/dev.txt` aufgebaut. Das Manifest bindet nun auch
+die bereits versionierten Recovery-Abhaengigkeiten ein. Keine fremden
+Site-Packages einer anderen Python-Version hinzumischen. Node.js und
+GnuPG >= 2.4.4 muessen im Prozess-PATH verfuegbar sein. Fuer diesen Lauf
+wurde GnuPG 2.4.4 mit libgcrypt 1.10.3 lokal unter `/private/tmp` gebaut;
+die Tests verwenden nur temporaere synthetische Schluessel und Datenbanken.
+
+Exakter Gesamtlauf ohne zusaetzliche fremde Site-Packages:
+
+```bash
+env -u PYTHONPATH -u ROVE_EXTRA_PYTHONPATH \
+  PATH=/private/tmp/rove-fullsuite-20261021-gpg/bin:$PATH LC_ALL=C \
+  ROVE_PYTHON=/private/tmp/rove-fullsuite-20261021-venv/bin/python \
+  PYTHONPYCACHEPREFIX=/private/tmp/rove-fullsuite-20261021-pycache \
+  bash scripts/test.sh full
+```
+
+Das Paketinventar und die GPG-Quellpruefsummen liegen mit den vollstaendigen
+Testprotokollen ausserhalb des Quellbaums unter
+`/Users/furkanaltan/Documents/Codex/rove-fullsuite-stabilization-20261021/`.
+
+Die 32 urspruenglichen Befunde wurden anhand ihrer Ausloeser korrigiert:
+
+| Ursache | Befunde | Korrektur / erhaltene Pruefung |
+|---|---:|---|
+| Testumgebung | 13 | GPG fehlte und blockierte zwei Klassen; Recovery-CLI verlangt Python 3.12; AWS-SDK, Gunicorn und Web-Push fehlten. Deklarierte Abhaengigkeiten und passende Runtime bereitstellen, keine Runtime-Schutzpruefung umgehen. |
+| Widerspruechliche Finanz-Fixtures / alte Drift-Erwartung | 11 | Synthetische Salden mit dem vorhandenen Domain-Mirror konsistent aufsetzen; Konten ueber `legacy_key` statt zufaellige IDs bestimmen. Der absichtliche Drift erwartet den freigegebenen fail-closed Fehler und vergleicht den gesamten DB-Dump vor/nach dem Read. Alle Schulden-, Vermoegens-, Budget- und Historien-Sollwerte bleiben erhalten. |
+| Announcement-Zeitdaten und alte Klickannahme | 5 | Veroeffentlichung relativ zum Testzeitpunkt nach der Kontoanlage aufsetzen. Die echte Feature-Klickbehandlung ausfuehren statt einen veralteten Einzeiler zu erwarten. |
+| Mentor-Klickannahme | 1 | Echten Handler ausfuehren und genau einen Aufruf fuer den richtigen Kandidaten und seine Route erwarten; Event muss den konkurrierenden Kartenhandler stoppen. |
+| Isolierte Budget-JavaScript-Fixture | 1 | Die zwei hinzugekommenen UI-Hilfsfunktionen in der vorhandenen Unit-Fixture bereitstellen. Die Betrags- und Widerspruchspruefungen bleiben unveraendert. |
+| Account-Delete-Fixture | 1 | API-DB-Pfad an die temporaere Testdatenbank binden; die bestehenden Ownership-/Loeschassertions bleiben unveraendert. |
+
+Keine Assertion abgeschwaecht, kein Test entfernt oder zusaetzlich
+uebersprungen. Gezielte Fixture-/Klicktests: **88/88 PASS**. Die gesonderten
+WSGI-/Push-Tests bestehen mit vollstaendiger Umgebung ebenfalls.
+Recovery-/Kryptotests einschliesslich beider zuvor blockierter Klassen:
+**182/182 PASS** in 253,552 Sekunden.
+Der vollstaendige Phase-A-Gate-Lauf besteht: **2.074 Tests in 558,284 Sekunden,
+0 Failures, 0 Errors, 0 Skips**. Die hoehere Zahl entsteht durch die nun
+ausfuehrbaren Kryptoklassen und WSGI-Tests; kein Test wurde entfernt.
+Node.js: v24.18.0. Keine echte Finanzdaten-, Authentifizierungs- oder
+Reportregression ist durch diese Befunde bestaetigt. Der Runtime-Schutz bei
+widerspruechlichen Bestandskonten bleibt unveraendert aktiv.
+
+Protokoll: `full-suite-phase-a.log` im oben genannten Nachweisverzeichnis.
+SHA256: `f64a16295f9f64be990f280280d9563aaa716e55c272b39bd0b2e5d34c412c44`.
+Dieser Lauf klaert Phase A; fuer die anschliessende kanonische
+Navigationsangleichung gilt ein eigener Full-Suite-Gate vor deren Commit.
+
+Python 3.12.14 teilt die Production-Minor-Version 3.12, ist aber kein Nachweis
+unter exakt Production-Python 3.12.3 oder dem Ubuntu-Betriebssystem.
+
+## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur
 Dokumentationsaenderungen auf `codex/workflow-release-traceability`.
