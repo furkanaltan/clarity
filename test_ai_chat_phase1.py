@@ -67,7 +67,6 @@ class AiChatPhaseOneTests(unittest.TestCase):
         ]
         for patcher in self.patchers:
             patcher.start()
-        api._ai_chat_attempts.clear()
         api.app.config.update(TESTING=True)
 
     def tearDown(self):
@@ -662,7 +661,114 @@ class AiChatPhaseOneTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversations").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_conversation_messages").fetchone()[0], 0)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM app_ai_usage").fetchone()[0], 1)
+            row = conn.execute("SELECT status FROM app_ai_usage").fetchone()
+            self.assertEqual(row[0], "ai_provider_unavailable")
+
+    def test_provider_failure_consumes_the_reserved_user_limit(self):
+        with patch.object(api, "AI_CHAT_RATE_LIMIT", 1), \
+             patch.object(api, "ai_chat_provider", side_effect=RuntimeError("ai_provider_unavailable")):
+            self.assertEqual(self.post(self.client_for(), "Was ist KGV?").status_code, 503)
+            limited = self.post(self.client_for(token="token-after-failure"), "Was ist TER?")
+        self.assertEqual(limited.status_code, 429)
+        self.assertEqual(limited.get_json()["error"], "ai_rate_limited")
+        self.assertGreater(int(limited.headers["Retry-After"]), 0)
+        self.assertGreater(limited.get_json()["retry_after_seconds"], 0)
+
+    def test_rate_limit_is_user_scoped_and_expires_from_persisted_usage(self):
+        with patch.object(api, "AI_CHAT_RATE_LIMIT", 1), patch.object(api, "ai_chat_provider", self.provider()):
+            self.assertEqual(self.post(self.client_for(), "Was ist TER?").status_code, 200)
+            limited = self.post(self.client_for(token="token-limited"), "Was ist KGV?")
+            self.assertEqual(limited.status_code, 429)
+            self.assertIn("Nutzungslimit", limited.get_json()["answer"])
+            self.assertEqual(self.post(self.client_for(user_id=2, token="user-two"), "Was ist TER?").status_code, 200)
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conn.execute(
+                    "UPDATE app_ai_usage SET created_at = datetime('now', '-16 minutes') WHERE user_id = 1"
+                )
+                conn.commit()
+            self.assertEqual(self.post(self.client_for(token="token-after-window"), "Was ist KGV?").status_code, 200)
+
+    def test_ai_database_lock_returns_bounded_retryable_error(self):
+        client = self.client_for()
+        def hold_lock_for_ai_route():
+            if api.request.path == "/v1/ai/chat":
+                lock = sqlite3.connect(self.db_path, timeout=0.1)
+                lock.execute("BEGIN IMMEDIATE")
+                api.g.ai_test_lock = lock
+
+        def release_ai_test_lock(response):
+            lock = getattr(api.g, "ai_test_lock", None)
+            if lock is not None:
+                lock.rollback()
+                lock.close()
+            return response
+
+        api.app.before_request_funcs.setdefault(None, []).append(hold_lock_for_ai_route)
+        api.app.after_request_funcs.setdefault(None, []).append(release_ai_test_lock)
+        try:
+            with patch.object(api, "AI_CHAT_DB_TIMEOUT_SECONDS", 0.02):
+                response = self.post(client, "Was ist TER?")
+        finally:
+            api.app.before_request_funcs[None].remove(hold_lock_for_ai_route)
+            api.app.after_request_funcs[None].remove(release_ai_test_lock)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "ai_unavailable")
+        self.assertIn("nicht beantwortet", response.get_json()["answer"])
+
+    def test_ai_pin_gate_database_lock_returns_retryable_error(self):
+        client = self.client_for()
+
+        def hold_lock_before_pin_gate():
+            if api.request.path == "/v1/ai/chat":
+                lock = sqlite3.connect(self.db_path, timeout=0.1)
+                lock.execute("BEGIN IMMEDIATE")
+                api.g.ai_test_lock = lock
+
+        def release_ai_test_lock(response):
+            lock = getattr(api.g, "ai_test_lock", None)
+            if lock is not None:
+                lock.rollback()
+                lock.close()
+            return response
+
+        before = api.app.before_request_funcs[None]
+        before.insert(0, hold_lock_before_pin_gate)
+        api.app.after_request_funcs[None].append(release_ai_test_lock)
+        try:
+            with patch.object(api, "AI_CHAT_DB_TIMEOUT_SECONDS", 0.02):
+                response = self.post(client, "Was ist TER?")
+        finally:
+            before.remove(hold_lock_before_pin_gate)
+            api.app.after_request_funcs[None].remove(release_ai_test_lock)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "ai_unavailable")
+        self.assertIn("Deine Frage blieb erhalten", response.get_json()["answer"])
+
+    def test_provider_timeout_and_malformed_response_are_normalized(self):
+        with patch.object(api.urllib.request, "urlopen", side_effect=TimeoutError("synthetic timeout")) as call:
+            with self.assertRaisesRegex(RuntimeError, "ai_provider_unavailable"):
+                api.ai_chat_provider([])
+        self.assertEqual(call.call_args.kwargs["timeout"], api.AI_CHAT_TIMEOUT_SECONDS)
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _limit):
+                return b"not-json"
+
+        with patch.object(api.urllib.request, "urlopen", return_value=Response()):
+            with self.assertRaisesRegex(RuntimeError, "ai_provider_unavailable"):
+                api.ai_chat_provider([])
+
+        class OversizedResponse(Response):
+            def read(self, limit):
+                return b"x" * limit
+
+        with patch.object(api.urllib.request, "urlopen", return_value=OversizedResponse()):
+            with self.assertRaisesRegex(RuntimeError, "ai_invalid_response"):
+                api.ai_chat_provider([])
 
     def test_rate_limit_and_revoked_session_are_blocked(self):
         with patch.object(api, "AI_CHAT_RATE_LIMIT", 1), patch.object(api, "ai_chat_provider", self.provider()):

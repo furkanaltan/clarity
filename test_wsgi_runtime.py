@@ -216,6 +216,11 @@ class GunicornHttpTests(unittest.TestCase):
         # Loaded only by this isolated test process, never by the production unit.
         fixture = '''import os, time
 import rove_app_api as api
+api.AI_CHAT_RATE_LIMIT = 6
+def ai_test_provider(_messages):
+    time.sleep(0.15)
+    return f"synthetic-worker-{os.getpid()}", 1, 1
+api.ai_chat_provider = ai_test_provider
 from rove_app_wsgi import app
 api.send_login_email = lambda *args, **kwargs: None
 api.secrets.randbelow = lambda size: 135790
@@ -295,6 +300,130 @@ def failure():
             return response.status, response.read(), dict(response.getheaders())
         finally:
             connection.close()
+
+    @staticmethod
+    def request_at(port, method, path, data=None, user=None):
+        headers = {"Origin": "https://getrove.de"}
+        if user:
+            headers["Cookie"] = f"{api.SESSION_COOKIE_NAME}=runtime-session-{user}"
+        body = None if data is None else json.dumps(data)
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=12)
+        try:
+            connection.request(method, path, body, headers)
+            response = connection.getresponse()
+            return response.status, response.read(), dict(response.getheaders())
+        finally:
+            connection.close()
+
+    def test_ai_rate_limit_is_shared_across_workers_and_survives_restart(self):
+        def load(port, user):
+            started = time.monotonic()
+
+            def send(_index):
+                request_started = time.monotonic()
+                status, body, headers = self.request_at(
+                    port, "POST", "/v1/ai/chat", {"message": "Was ist TER?"}, user=user
+                )
+                return status, json.loads(body), headers, time.monotonic() - request_started
+
+            with ThreadPoolExecutor(max_workers=24) as pool:
+                results = list(pool.map(send, range(48)))
+            elapsed = time.monotonic() - started
+            statuses = [item[0] for item in results]
+            self.assertEqual(statuses.count(200), 6, statuses)
+            self.assertEqual(statuses.count(429), 42, statuses)
+            denied = [item for item in results if item[0] == 429]
+            self.assertTrue(all(item[1]["error"] == "ai_rate_limited" for item in denied))
+            self.assertTrue(all(int(item[2]["Retry-After"]) > 0 for item in denied))
+            worker_ids = {item[1]["answer"] for item in results if item[0] == 200}
+            latencies = sorted(item[3] for item in results)
+            return {
+                "submitted": len(results), "accepted": 6, "limited": 42,
+                "workers": len(worker_ids), "elapsed_s": elapsed,
+                "p50_ms": latencies[len(latencies) // 2] * 1000,
+                "p95_ms": latencies[min(len(latencies) - 1, int(len(latencies) * .95))] * 1000,
+            }
+
+        single = load(self.port, user=1)
+        self.assertEqual(single["workers"], 1, single)
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            multi_port = listener.getsockname()[1]
+        multi_log = self.directory / "gunicorn-ai-multi.log"
+        env = os.environ.copy()
+        env.update({
+            "CLARITY_DB_NAME": str(self.database), "ROVE_APP_AUTH_SECRET": AUTH_SECRET,
+            "CLARITY_REPORTS_DIR": str(self.reports), "ROVE_REPORT_PUBLIC_DIR": str(self.public),
+            "ROVE_APP_ALLOWED_ORIGINS": "https://getrove.de", "ROVE_VKS_EMAIL_ENABLED": "0",
+            "ROVE_VKS_LIVE_APPROVED": "0", "ROVE_VKS_MAIL_MODE": "test",
+            "ROVE_VKS_BREVO_WEBHOOK_TOKEN": "runtime-webhook-token", "BREVO_API_KEY": "",
+            "OPENAI_API_KEY": "synthetic-test-key", "ROVE_AI_CHAT_RATE_LIMIT": "6",
+            "ROVE_VAPID_PRIVATE": "", "GUNICORN_CMD_ARGS": "",
+        })
+
+        def start_multi_worker_server():
+            with multi_log.open("ab") as output:
+                process = subprocess.Popen([
+                    sys.executable, "-m", "gunicorn", "--config", str(CONFIG),
+                    "--workers", "2", "--threads", "4", "--bind", f"127.0.0.1:{multi_port}",
+                    "--worker-tmp-dir", str(self.directory), "--pythonpath", str(self.directory),
+                    "runtime_fixture:app",
+                ], cwd=ROOT, env=env, stdout=output, stderr=output, start_new_session=True)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    self.fail("Two-worker Gunicorn failed to start: " + multi_log.read_text())
+                try:
+                    if self.request_at(multi_port, "GET", "/health")[0] == 200:
+                        return process
+                except OSError:
+                    pass
+                time.sleep(.05)
+            self.fail("Two-worker Gunicorn startup timed out: " + multi_log.read_text())
+
+        def stop_multi_worker_server(process):
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+
+        process = start_multi_worker_server()
+        try:
+            with ThreadPoolExecutor(max_workers=24) as pool:
+                pids = list(pool.map(
+                    lambda _index: json.loads(self.request_at(multi_port, "GET", "/__runtime_test__/pid")[1])["pid"],
+                    range(48),
+                ))
+            self.assertGreaterEqual(len(set(pids)), 2, f"Expected two active workers; log={multi_log.read_text()}")
+            multi = load(multi_port, user=2)
+            self.assertGreaterEqual(multi["workers"], 2, {**multi, "active_workers": sorted(set(pids)), "log": multi_log.read_text()})
+            with closing(sqlite3.connect(self.database)) as conn:
+                count, statuses = conn.execute(
+                    "SELECT COUNT(*), GROUP_CONCAT(status) FROM app_ai_usage WHERE user_id=2"
+                ).fetchone()
+            self.assertEqual(count, 6)
+            self.assertEqual(statuses.split(",").count("ok"), 6)
+            stop_multi_worker_server(process)
+            process = start_multi_worker_server()
+            restarted = self.request_at(
+                multi_port, "POST", "/v1/ai/chat", {"message": "Was ist KGV?"}, user=2
+            )
+            self.assertEqual(restarted[0], 429, restarted)
+        finally:
+            stop_multi_worker_server(process)
+
+        if os.getenv("ROVE_AI_LOAD_REPORT") == "1":
+            print(
+                "AI_CHAT_GUNICORN_LOAD "
+                f"single={json.dumps(single, sort_keys=True)} "
+                f"two_worker={json.dumps(multi, sort_keys=True)} restart_limit=PASS"
+            )
 
     @classmethod
     def financial_rows(cls):

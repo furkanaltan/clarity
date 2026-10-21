@@ -25,15 +25,30 @@ Das ist keine Ausfuehrungsfreigabe und kein 10.000-Nutzer-Kapazitaetsnachweis.
   erreichbare Paketindex bietet diese Patch-Version noch nicht an. Die
   Installation direkt aus der gepinnten Requirements-Datei wurde isoliert
   unter Python 3.12.14 geprueft; keine bestehenden API-Pakete wurden aktualisiert.
-- Entwurf: ein `gthread`-Worker mit vier Threads und 64 Verbindungen. Mehrere
-  Worker sind nicht freigegeben: Auth-/Rate-Limit-Buckets liegen im
-  Prozessspeicher. Kein Preload, kein Reload, kein automatisches Recycling,
-  kein zusaetzlicher Gunicorn-Control-Socket.
+- Runtime: ein `gthread`-Worker mit vier Threads und 64 Verbindungen. Mehrere
+  Worker bleiben nicht freigegeben: Auth-, PIN- und Screenshot-Limits enthalten
+  weiterhin prozesslokale Buckets. Das persistente Ask-Rovi-Limit beseitigt
+  diese anderen Worker-Blocker nicht. Kein Preload, kein Reload, kein
+  automatisches Recycling, kein zusaetzlicher Gunicorn-Control-Socket.
 - Bind bleibt `127.0.0.1:5057`; die vorhandene Port-Variable bleibt wirksam.
   Nginx, CORS und Browser-Schutzheader werden nicht veraendert.
 - SQLite-Verbindungen werden pro Zugriff geoeffnet und geschlossen,
   Foreign Keys bleiben aktiv, Busy-Timeout bleibt 15 Sekunden. Finanzielle
   Mutationen verwenden weiterhin die bestehenden Transaktionen.
+- Ask Rovi reserviert jeden Provider-Versuch atomar in der bestehenden
+  `app_ai_usage`-Tabelle unter `BEGIN IMMEDIATE`. Damit gilt das Nutzerlimit
+  workeruebergreifend und ueber API-Neustarts hinweg; die Provider-Anfrage
+  selbst laeuft weiterhin ohne SQLite-Schreibsperre. `in_progress`-Versuche
+  zaehlen vorsorglich bis zum Ablauf des 15-Minuten-Fensters, auch wenn ein
+  Worker vor dem Abschluss endet. Erfolgreiche und fehlgeschlagene Versuche
+  aktualisieren dieselbe Zeile; die bestehende 30-Tage-Retention bleibt aktiv.
+  Das Defaultlimit bleibt 20 Provider-Versuche pro Nutzer und 15 Minuten.
+- Ask-Rovi-DB-Zugriffe haben ein separates 5-Sekunden-Busy-Timeout. Bei
+  Storage-Lock/OperationalError antwortet die API mit einem retrybaren HTTP
+  503 statt Erfolg oder einer Finanzbehauptung. Das eigene Limit antwortet
+  mit HTTP 429 und `Retry-After`. Providerantworten sind auf 64 KiB begrenzt;
+  die konfigurierte 12-Sekunden-urllib-Zeit bleibt ein Socket-Timeout und ist
+  keine harte Gesamtdeadline fuer eine langsam eintreffende Antwort.
 - API-Import startet keine Scheduler. Reports, Maintenance, Marktwerte und
   Reminder bleiben in ihren bestehenden separaten Services/Timern.
   Keine Streaming-/SSE-Route wurde gefunden.
@@ -114,6 +129,24 @@ Kein hoeherer Timeout, kein Retry, kein Request-Mutex, keine Sleeps und keine
 Reduktion auf einen Thread wurden eingefuehrt. Der vorhandene SQLite-Journal-
 Modus bleibt unveraendert. Der Writer-Lock-Regressionstest besteht sowohl mit
 DELETE-Journal als auch mit WAL.
+
+### Ask-Rovi-Limit und isolierter Lastnachweis, 21.10.2026
+
+Der prozesslokale `_ai_chat_attempts`-Bucket wurde durch eine atomare
+Reservierung in `app_ai_usage` ersetzt. Es gibt keine neue Tabelle, keinen
+Dienst und keine Finanzdaten-/Schemaaenderung. Der Schritt belegt nicht die
+Eignung fuer 10.000 gleichzeitige Nutzer und hebt die Ein-Worker-Vorgabe nicht
+auf.
+
+Isolierter Gunicorn-/SQLite-Test mit Python 3.12.14, Gunicorn 26.2.2,
+temporaerer WAL-Datenbank, synthetischen Nutzern und lokalem Provider-Stub
+(150 ms Antwortzeit; kein externer Provider): je 48 parallele Requests eines
+Nutzers. Ein Worker / vier Threads: 6 HTTP 200, 42 HTTP 429, 0,643 s gesamt,
+p50 249 ms, p95 387 ms. Zwei Worker / je vier Threads: ebenfalls 6 HTTP 200,
+42 HTTP 429, beide Worker nachgewiesen, 0,319 s gesamt, p50 125 ms, p95
+221 ms. Nach vollstaendigem Serverneustart mit derselben Testdatenbank blieb
+das Nutzerlimit aktiv. Das sind lokale Messwerte fuer diesen synthetischen
+Burst und keine Produktions- oder OpenAI-Durchsatzprognose.
 
 ### Benachbarte Read-Endpunkte
 

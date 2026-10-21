@@ -119,6 +119,23 @@ Protokoll: `full-suite-phase-b.log` im oben genannten Nachweisverzeichnis.
 SHA256: `d27b86c34f94d3fb27626e39d7735d7db07eaf421684d16cae2c4b554f799db1`.
 Keine neue Finanzdaten-, Authentifizierungs- oder Reportregression bestaetigt.
 
+## Phase 2: Ask-Rovi-Rate-Limit und Runtime-Stabilitaet, 21.10.2026
+
+Aufbauend auf Phase 1 wird das Ask-Rovi-Providerlimit in der bestehenden
+`app_ai_usage`-Tabelle atomar reserviert. Gezielte API- und isolierte
+Gunicorn-Regressionen: **70/70 PASS**. Der Full-Suite-Gate-Lauf mit dem
+isolierten Python-3.12.14-/GPG-2.4.4-Setup oben besteht: **2.086 Tests in
+546,762 Sekunden, 0 Failures und 0 Errors**.
+
+Der Lasttest verwendet ausschliesslich eine temporaere WAL-Datenbank,
+synthetische Nutzer und einen lokalen Provider-Stub. Bei je 48 parallelen
+Anfragen pro Nutzer wurden mit einem Worker und mit zwei Workern jeweils genau
+6 Requests zugelassen und 42 mit HTTP 429 begrenzt. Das Limit blieb nach einem
+vollstaendigen Neustart des isolierten Testservers erhalten. Die Messwerte
+stehen in `docs/WSGI_RUNTIME.md`; sie sind keine Produktions- oder
+10.000-Nutzer-Kapazitaetsprognose. Keine Production-Daten oder -Services wurden
+verwendet.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur
