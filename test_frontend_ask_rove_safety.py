@@ -99,6 +99,23 @@ assert.equal(isExplicitWalletCashQuestion("wie viel bargeld habe ich?"),true);
 '''
         self.run_node(script)
 
+    def test_explicit_wallet_question_defers_to_server_instead_of_local_asset(self):
+        wallet = self._function("isExplicitWalletCashQuestion", "function isAvailableCashQuestion")
+        available = self._function("isAvailableCashQuestion", "// Dispatcher: Thema")
+        dispatcher = self._function("roveAnswer", "// Vorschlags-Chips zeigen die Bandbreite")
+        script = f'''const assert=require("node:assert/strict");
+function isChatQuestionOrHypothesis(){{return true;}}
+function isPersonalTradeRecommendationQuestion(){{return false;}}
+{wallet}
+{available}
+{dispatcher}
+(async()=>{{
+  const answer=await roveAnswer("Wie viel Bargeld habe ich?");
+  assert.equal(answer,null,"wallet balances must be answered by the canonical API");
+}})().catch(error=>{{console.error(error);process.exitCode=1;}});
+'''
+        self.run_node(script)
+
     def test_personal_buy_sell_questions_hit_the_deterministic_boundary(self):
         trade = self._function("isPersonalTradeRecommendationQuestion", "function ans_available_cash")
         script = f'''const assert=require("node:assert/strict");

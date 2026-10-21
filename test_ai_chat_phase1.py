@@ -330,8 +330,11 @@ class AiChatPhaseOneTests(unittest.TestCase):
                     (1, "checking", "Girokonto", 2000),
                     (2, "savings", "Tagesgeld", 2100),
                     (3, "wallet", "Bargeld", 500),
+                    (4, "wallet", "Bargeld unterwegs", 125),
+                    (5, "wallet", "Archiviertes Bargeld", 900),
                 ),
             )
+            conn.execute("UPDATE app_financial_accounts SET status='inactive' WHERE id=5")
             conn.commit()
 
         self.assertEqual(api.ai_chat_intent("Wie viel Cash habe ich?"), "available_cash")
@@ -342,12 +345,52 @@ class AiChatPhaseOneTests(unittest.TestCase):
             available = self.post(self.client_for(token="cash-available"), "Wie viel Geld habe ich verfügbar?")
             wallet = self.post(self.client_for(token="cash-wallet"), "Wie viel Bargeld habe ich?")
         self.assertEqual(cash.status_code, 200, cash.get_json())
-        self.assertIn("4.600,00 €", cash.get_json()["answer"])
+        self.assertIn("4.725,00 €", cash.get_json()["answer"])
         self.assertEqual(cash.get_json()["intent"], "available_cash")
-        self.assertIn("4.600,00 €", available.get_json()["answer"])
+        self.assertIn("4.725,00 €", available.get_json()["answer"])
         self.assertEqual(available.get_json()["intent"], "available_cash")
-        self.assertIn("500,00 €", wallet.get_json()["answer"])
+        self.assertIn("625,00 €", wallet.get_json()["answer"])
         self.assertEqual(wallet.get_json()["intent"], "wallet_cash")
+
+    def test_legacy_wallet_question_uses_legacy_split_and_empty_split_is_zero(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            api.ensure_app_account_balances_table(conn)
+            conn.execute("UPDATE users SET current_cash=4600 WHERE user_id=2")
+            conn.executemany(
+                "INSERT INTO app_account_balances(user_id, account_key, amount) VALUES (2, ?, ?)",
+                (("giro", 2500), ("tagesgeld", 1700), ("bargeld", 400)),
+            )
+            conn.commit()
+
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("wallet balance must be deterministic")):
+            legacy = self.post(self.client_for(user_id=2, token="legacy-wallet"), "Wie viel Bargeld habe ich?")
+            empty = self.post(self.client_for(token="empty-wallet"), "Wie viel Bargeld habe ich?")
+        self.assertEqual(legacy.status_code, 200, legacy.get_json())
+        self.assertIn("400,00 € Bargeld", legacy.get_json()["answer"])
+        self.assertEqual(legacy.get_json()["intent"], "wallet_cash")
+        self.assertEqual(empty.status_code, 200, empty.get_json())
+        self.assertIn("0,00 € Bargeld", empty.get_json()["answer"])
+        self.assertEqual(empty.get_json()["intent"], "wallet_cash")
+
+    def test_multi_account_wallet_question_with_no_wallet_returns_zero(self):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO app_user_features VALUES (1, ?, 1)",
+                (api.FEATURE_MULTI_CASH_ACCOUNTS_V1,),
+            )
+            conn.executemany(
+                """INSERT INTO app_financial_accounts
+                   (id, user_id, account_type, name, currency, balance, source, status)
+                   VALUES (?, 1, ?, ?, 'EUR', ?, 'manual', 'active')""",
+                ((10, "checking", "Girokonto", 250), (11, "savings", "Tagesgeld", 750)),
+            )
+            conn.commit()
+
+        with patch.object(api, "ai_chat_provider", side_effect=AssertionError("wallet balance must be deterministic")):
+            response = self.post(self.client_for(token="no-wallet"), "Wie viel Bargeld habe ich?")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertIn("0,00 € Bargeld", response.get_json()["answer"])
+        self.assertEqual(response.get_json()["intent"], "wallet_cash")
 
     def test_spending_context_reuses_classification_and_booking_month(self):
         month_key = api.business_month_key()

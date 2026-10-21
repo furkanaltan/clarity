@@ -2479,6 +2479,7 @@
   #talksheet .thead .face{border-color:rgba(222,230,236,.34);background:linear-gradient(145deg,rgba(89,102,115,.58),rgba(17,25,34,.95));box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 5px 12px rgba(0,0,0,.14)}
   #talksheet .bub.rov{border-color:rgba(211,221,229,.16);background:linear-gradient(145deg,rgba(35,46,58,.88),rgba(14,21,30,.82));box-shadow:inset 0 1px 0 rgba(255,255,255,.065),0 6px 14px rgba(0,0,0,.08)}
   #talksheet .bub.me{background:linear-gradient(145deg,rgba(76,137,165,.86),rgba(34,92,119,.92));box-shadow:inset 0 1px 0 rgba(225,246,255,.16),0 6px 14px rgba(0,0,0,.11)}
+  #talksheet #chat>.bub{flex-shrink:0}
   #talksheet .field{border-color:rgba(211,221,229,.2);background:linear-gradient(145deg,rgba(32,42,53,.94),rgba(11,18,27,.94));box-shadow:inset 0 1px 0 rgba(255,255,255,.075),0 9px 20px rgba(0,0,0,.16)}
   #talksheet .qsug .qs{border:1px solid rgba(211,221,229,.17);background:rgba(255,255,255,.045);color:#b8dce9}
 
@@ -13467,10 +13468,6 @@ function ans_available_cash(){
   if(!Number.isFinite(amount)) return `Dein verfügbarer Cash-Stand ist gerade nicht verfügbar.`;
   return `Du hast aktuell <b>${eur(amount)}</b> verfügbar.`;
 }
-function ans_wallet_cash(){
-  const wallet=(DATA.assets||[]).find(asset=>asset.accountType==="wallet" || /^(bargeld|bargeld \/ wallet)$/i.test(String(asset.name||"")));
-  return wallet ? ans_asset(wallet) : `Dein Bargeldbestand ist gerade nicht verfügbar.`;
-}
 function isExplicitWalletCashQuestion(t){
   return /\b(?:bargeld|portemonnaie|geldbeutel|geldbörse|geldboerse|wallet)\b/.test(t)
     && /wie viel|wieviel|wie hoch|kontostand|stand|zeig|zeige|nenn mir/.test(t);
@@ -13499,7 +13496,8 @@ async function roveAnswer(raw){
   if(/\b(?:habe ich|hab ich|hatte ich|bekam ich|bekomme ich|ist .{0,60} eingegangen|war das)\b/.test(t)
      && /gutschrift|rückerstattung|rueckerstattung|erstattet|refund/.test(t))
     return `Ich kann aus der Frage allein keine Gutschrift bestätigen. Prüfe dafür bitte die Buchungen in der App.`;
-  if(isExplicitWalletCashQuestion(t)) return ans_wallet_cash();
+  // Wallet-Salden immer über dieselbe serverseitige Kontenquelle wie Mehrkonten und Legacy lesen.
+  if(isExplicitWalletCashQuestion(t)) return null;
   if(isAvailableCashQuestion(t)) return ans_available_cash();
   // Mentor-Fakten, Erklärungen und Verbesserungsfragen müssen vor lokalen Budget-/Score-Fallbacks
   // zur API gelangen, damit dort dieselben kanonischen Mentor-/Score-Daten verwendet werden.
@@ -13664,6 +13662,9 @@ const SUGGESTIONS = [
 let pendingBudgetSuggestion=null;
 let aiConversationId=null;
 const chatEl=()=>document.getElementById("chat");
+function scrollChatToLatest(chat=chatEl()){
+  requestAnimationFrame(()=>{ chat.scrollTop=chat.scrollHeight; });
+}
 function appendSafeChatMarkup(parent,node){
   if(node.nodeType===Node.TEXT_NODE){ parent.appendChild(document.createTextNode(node.nodeValue||"")); return; }
   if(node.nodeType!==Node.ELEMENT_NODE) return;
@@ -13694,55 +13695,96 @@ function pushBub(who, content, options={}){
   }
   if(options.text) d.appendChild(document.createTextNode(content));
   else renderSafeChatMarkup(d,content);
-  c.appendChild(d); c.scrollTop=c.scrollHeight; return d;
+  c.appendChild(d); scrollChatToLatest(c); return d;
 }
 function rovReply(html){
   const c=chatEl(), t=document.createElement("div");
   t.className="bub rov"; t.innerHTML='<span class="typing"><i></i><i></i><i></i></span>';
-  c.appendChild(t); c.scrollTop=c.scrollHeight;
-  setTimeout(()=>{ t.remove(); pushBub("rov", html); }, 620);
-}
-// Nicht-Treffer: kurz und menschlich. Kein Statusblock, kein Support-Bot-Text.
-function roveFallback(){
-  return `Ich habe das nicht verstanden.<br>Bitte beschreibe deine Anfrage genauer.`+
-    `<br><span style="color:var(--muted)">Zum Beispiel: „Was habe ich diesen Monat ausgegeben?“ oder „Lidl 34 €“.</span>`;
+  c.appendChild(t); scrollChatToLatest(c);
+  return new Promise(resolve=>setTimeout(()=>{ t.remove(); pushBub("rov", html); resolve(); }, 620));
 }
 async function askRoveAi(message){
-  if(!apiReady()) return null;
+  if(!apiReady()) return {ok:false,message:"Rov.E ist gerade nicht verbunden. Prüfe deine Internetverbindung und versuche es erneut."};
   try{
     const response=await apiFetch("/v1/ai/chat",{
       method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({message,conversation_id:aiConversationId})
     });
     const data=await response.json().catch(()=>null);
+    if(!response.ok || data?.ok===false){
+      const serverMessage=typeof data?.answer==="string"&&data.answer.trim()?data.answer.trim():"";
+      if(response.status===401)
+        return {ok:false,message:"Deine Sitzung ist abgelaufen. Melde dich bitte erneut an und sende deine Frage danach noch einmal."};
+      if(response.status===423)
+        return {ok:false,message:"Bitte entsperre Rov.E erneut und sende deine Frage danach noch einmal."};
+      if(serverMessage) return {ok:false,message:serverMessage};
+      if(response.status===429)
+        return {ok:false,message:"Rov.E ist gerade stark ausgelastet. Warte kurz und versuche es erneut."};
+      if(response.status>=500)
+        return {ok:false,message:"Rov.E kann gerade nicht antworten. Deine Frage ist erhalten geblieben – versuche es erneut."};
+      return {ok:false,message:"Deine Frage konnte gerade nicht verarbeitet werden. Prüfe den Text und versuche es erneut."};
+    }
+    if(typeof data?.answer!=="string"||!data.answer.trim())
+      return {ok:false,message:"Rov.E hat gerade keine Antwort erhalten. Deine Frage ist erhalten geblieben – versuche es erneut."};
     if(data?.conversation_id) aiConversationId=data.conversation_id;
-    if(typeof data?.answer!=="string") return null;
-    return {answer:data.answer,ai:data.kind==="ai"};
-  }catch(e){ return null; }
+    return {ok:true,answer:data.answer,ai:data.kind==="ai"};
+  }catch(e){
+    return {ok:false,message:"Die Verbindung zu Rov.E ist fehlgeschlagen. Prüfe dein Internet und versuche es erneut."};
+  }
 }
 function rovAiReply(text){
   const c=chatEl(), t=document.createElement("div");
   t.className="bub rov"; t.innerHTML='<span class="typing"><i></i><i></i><i></i></span>';
-  c.appendChild(t); c.scrollTop=c.scrollHeight;
-  setTimeout(()=>{ t.remove(); pushBub("rov",text,{text:true,ai:true}); },620);
+  c.appendChild(t); scrollChatToLatest(c);
+  return new Promise(resolve=>setTimeout(()=>{ t.remove(); pushBub("rov",text,{text:true,ai:true}); resolve(); },620));
 }
+let askRoveInFlight=false;
+let lastFailedAsk=null;
 async function askRove(text){
-  const t=(text||"").trim(); if(!t) return;
-  pushBub("me", t,{text:true});
-  const a=await roveAnswer(t);
-  if(a){ rovReply(a); return; }
-  const ai=await askRoveAi(t);
-  if(ai?.ai){
-    const c=chatEl();
-    if(!c.dataset.aiDisclosure){
-      pushBub("rov ai-disclosure","Antworten von Rov.E AI werden mithilfe künstlicher Intelligenz erstellt.",{text:true});
-      c.dataset.aiDisclosure="1";
-    }
-    rovAiReply(ai.answer);
-    return;
+  const t=(text||"").trim(); if(!t||askRoveInFlight) return {ok:false};
+  askRoveInFlight=true;
+  const send=document.getElementById("talkSend");
+  send.disabled=true; send.setAttribute("aria-busy","true");
+  let userBubble;
+  if(lastFailedAsk?.text===t&&lastFailedAsk.userBubble?.isConnected){
+    userBubble=lastFailedAsk.userBubble;
+    lastFailedAsk.errorBubble?.remove();
+    lastFailedAsk=null;
+  }else{
+    userBubble=pushBub("me",t,{text:true});
   }
-  if(ai?.answer){ rovReply(ai.answer); return; }
-  rovReply(roveFallback());
+  const showFailure=message=>{
+    const errorBubble=pushBub("rov",message,{text:true});
+    lastFailedAsk={text:t,userBubble,errorBubble};
+    return {ok:false};
+  };
+  try{
+    const answer=await roveAnswer(t);
+    if(answer){
+      await rovReply(answer);
+      lastFailedAsk=null;
+      return {ok:true};
+    }
+    const ai=await askRoveAi(t);
+    if(!ai?.ok) return showFailure(ai?.message||"Rov.E kann gerade nicht antworten. Deine Frage ist erhalten geblieben – versuche es erneut.");
+    if(ai.ai){
+      const c=chatEl();
+      if(!c.dataset.aiDisclosure){
+        pushBub("rov ai-disclosure","Antworten von Rov.E AI werden mithilfe künstlicher Intelligenz erstellt.",{text:true});
+        c.dataset.aiDisclosure="1";
+      }
+      await rovAiReply(ai.answer);
+    }else{
+      await rovReply(ai.answer);
+    }
+    lastFailedAsk=null;
+    return {ok:true};
+  }catch(e){
+    return showFailure("Rov.E kann gerade nicht antworten. Deine Frage ist erhalten geblieben – versuche es erneut.");
+  }finally{
+    askRoveInFlight=false;
+    send.disabled=false; send.removeAttribute("aria-busy");
+  }
 }
 function openTalk(){
   closeAllSheetsSoft();
@@ -13761,8 +13803,23 @@ document.getElementById("qsug").addEventListener("click",e=>{
   const s=e.target.closest(".qs"); if(s) askRove(s.textContent);
 });
 const talkIn=document.getElementById("talkIn");
-document.getElementById("talkSend").addEventListener("click",()=>{ askRove(talkIn.value); talkIn.value=""; });
-talkIn.addEventListener("keydown",e=>{ if(e.key==="Enter"){ askRove(talkIn.value); talkIn.value=""; } });
+function syncTalkViewport(){
+  const talksheet=document.getElementById("talksheet");
+  if(talksheet.classList.contains("on")&&document.activeElement===talkIn) scrollChatToLatest();
+}
+talkIn.addEventListener("focus",syncTalkViewport);
+window.addEventListener("resize",syncTalkViewport);
+if(window.visualViewport) visualViewport.addEventListener("resize",syncTalkViewport);
+async function submitAskRove(){
+  const submitted=talkIn.value.trim();
+  if(!submitted) return;
+  const result=await askRove(submitted);
+  if(result?.ok&&talkIn.value.trim()===submitted) talkIn.value="";
+}
+document.getElementById("talkSend").addEventListener("click",()=>{ void submitAskRove(); });
+talkIn.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&!e.isComposing){ e.preventDefault(); void submitAskRove(); }
+});
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
 if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>openTalk()); }

@@ -1,0 +1,223 @@
+// Exercise Ask Rovi with synthetic accounts and a local-only API transport.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+const { chromium, webkit, devices } = require('playwright');
+
+const source = process.env.ROVE_FRONTEND_PATH || path.join(__dirname, 'frontend', 'index.html');
+const output = process.env.ROVE_ASK_ROVI_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'rove-ask-rovi-'));
+let origin, requests, nextOutcome;
+
+function reset() {
+  requests = [];
+  nextOutcome = '';
+}
+
+function state() {
+  return {
+    ok: true, user_id: 1, netWorth: 12500, onboardingRequired: false,
+    onboarding: { required: false, status: 'completed', completed: true, step: 10 },
+    identity: { name: 'Synthetic Mentor', email: 'synthetic@example.test' },
+    features: { multi_cash_accounts_v1: true },
+    financialAccounts: [
+      { id: 1, name: 'Girokonto', type: 'checking', balance: 12000, legacyKey: 'giro', roles: ['expense', 'income', 'fixed_cost', 'screenshot'] },
+      { id: 2, name: 'Bargeld', type: 'wallet', balance: 50, roles: [] },
+      { id: 3, name: 'Bargeld unterwegs', type: 'wallet', balance: 75, roles: [] },
+    ],
+    assets: [
+      { name: 'Girokonto', value: 12000, source: 'bot', icon: 'bank', financialAccountId: 1, assetKey: 'cash-account:1' },
+      { name: 'Bargeld', value: 50, source: 'bot', icon: 'cash', financialAccountId: 2, assetKey: 'cash-account:2' },
+      { name: 'Bargeld unterwegs', value: 75, source: 'bot', icon: 'cash', financialAccountId: 3, assetKey: 'cash-account:3' },
+    ],
+    tx: [], valuables: [], budgets: [], goals: [], vertraege: [], reports: [],
+    sts: { konto: 12125, income: 3000, fixRest: 0, sparraten: 0, available: 12125,
+      free_month_remaining: 12125, financial_month_budget: 0, variableMonthExpenses: 0,
+      category_budget_total: 0, category_spent: 0, monthExpenses: 0 },
+    monthlyPlan: { incomeStatus: 'confirmed', savingsStatus: 'confirmed', status: 'confirmed' },
+  };
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, origin);
+  const json = (body, status = 200) => {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(body));
+  };
+  if (url.pathname.startsWith('/__api/')) {
+    const apiPath = url.pathname.slice('/__api'.length);
+    if (apiPath === '/v1/auth/me') return json({ ok: true, user_id: 1 });
+    if (apiPath.startsWith('/v1/auth/pin/')) return json({ ok: true, pin_status: 'unlocked', onboarding_required: false });
+    if (apiPath.startsWith('/v1/push/')) return json({ ok: true, enabled: false });
+    if (apiPath === '/v1/state') return json(state());
+    if (apiPath === '/v1/ai/chat' && req.method === 'POST') {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      const payload = JSON.parse(raw);
+      requests.push(payload);
+      const outcome = nextOutcome;
+      nextOutcome = '';
+      await new Promise(resolve => setTimeout(resolve, 220));
+      if (outcome === 'server-error') return json({ ok: false, error: 'synthetic_unavailable' }, 503);
+      if (payload.message.toLowerCase().includes('bargeld')) {
+        return json({ ok: true, kind: 'rove', intent: 'wallet_cash',
+          conversation_id: 'synthetic-conversation', answer: 'Du hast aktuell 125,00 € Bargeld.' });
+      }
+      return json({ ok: true, kind: 'rove', conversation_id: 'synthetic-conversation', answer: 'Antwort nach erneutem Versuch.' });
+    }
+    return json({ ok: false, error: 'synthetic_route_not_found' }, 404);
+  }
+  const file = url.pathname === '/app/' ? 'index.html' : url.pathname.slice('/app/'.length);
+  if (!url.pathname.startsWith('/app/') || !['index.html', 'logo.png', 'app-icon.png', 'manifest.webmanifest', 'sw.js'].includes(file)) {
+    res.writeHead(404).end(); return;
+  }
+  let body = fs.readFileSync(file === 'index.html' ? source : path.join(__dirname, 'frontend', file));
+  if (file === 'index.html') body = body.toString().replace('"https://getrove.de/app-api"', JSON.stringify(origin + '/__api'));
+  const mime = { '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.js': 'application/javascript', '.webmanifest': 'application/manifest+json' };
+  res.writeHead(200, { 'Content-Type': mime[path.extname(file)], 'Cache-Control': 'no-store' });
+  res.end(body);
+});
+
+async function flow(browser, label, viewport, standalone = false) {
+  reset();
+  const mobile = viewport.width === 390;
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block',
+    ...(mobile ? { isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent } : {}) });
+  if (standalone) await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'standalone', { get: () => true, configurable: true });
+  });
+  const failedRequests = [];
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url());
+    if (url.origin === origin && url.pathname === '/__api/v1/ai/chat' && nextOutcome === 'network-error') {
+      nextOutcome = '';
+      return route.abort('failed');
+    }
+    return url.origin === origin ? route.continue() : route.abort('blockedbyclient');
+  });
+  const page = await context.newPage(), errors = [];
+  page.setDefaultTimeout(10000);
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('requestfailed', request => failedRequests.push(request.url()));
+  try {
+    await page.goto(origin + '/app/');
+    await page.locator('#app:not([hidden])').waitFor();
+    await page.locator('#splash').waitFor({ state: 'detached' });
+    await page.waitForFunction(() => BRIDGE_USER_ID === 1 && DATA.financialAccounts.length === 3);
+    if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
+
+    await page.locator('#tab-home .mentor').click();
+    await page.locator('#talksheet.on').waitFor();
+    const input = page.locator('#talkIn');
+    await input.focus();
+
+    await input.fill('Wie viel Bargeld habe ich?');
+    await page.locator('#talkSend').click();
+    await page.getByText('Du hast aktuell 125,00 € Bargeld.', { exact: true }).waitFor();
+    assert.equal(requests.length, 1, 'explicit wallet questions must use canonical API');
+    assert.equal(requests[0].message, 'Wie viel Bargeld habe ich?');
+    assert.equal(await input.inputValue(), '');
+
+    nextOutcome = 'server-error';
+    const serverQuestion = 'Was bedeutet Duration bei Anleihen?';
+    await input.fill(serverQuestion);
+    await page.locator('#talkSend').click();
+    await page.getByText(/Rov\.E kann gerade nicht antworten/, { exact: false }).waitFor();
+    assert.equal(await input.inputValue(), serverQuestion, 'server failure must preserve the prompt');
+    assert.equal(await page.locator('.bub.me').filter({ hasText: serverQuestion }).count(), 1);
+
+    await input.press('Enter');
+    await page.getByText('Antwort nach erneutem Versuch.', { exact: true }).waitFor();
+    assert.equal(await input.inputValue(), '', 'successful retry should clear only the submitted prompt');
+    assert.equal(await page.locator('.bub.me').filter({ hasText: serverQuestion }).count(), 1, 'retry must reuse the original user bubble');
+    assert.equal(await page.locator('.bub.rov').filter({ hasText: 'Antwort nach erneutem Versuch.' }).count(), 1);
+
+    nextOutcome = 'network-error';
+    const networkQuestion = 'Wie funktioniert ein Anleiheindex?';
+    const requestsBeforeNetworkFailure = requests.length;
+    await input.fill(networkQuestion);
+    await page.locator('#talkSend').click();
+    await page.getByText(/Verbindung zu Rov\.E ist fehlgeschlagen/, { exact: false }).waitFor();
+    assert.equal(requests.length, requestsBeforeNetworkFailure, 'aborted network request must not reach the API fixture');
+    assert.equal(failedRequests.filter(url => url.includes('/v1/ai/chat')).length, 1);
+    assert.equal(await input.inputValue(), networkQuestion, 'network failure must preserve the prompt');
+    assert.equal(await page.locator('.bub.me').filter({ hasText: networkQuestion }).count(), 1);
+
+    await input.press('Enter');
+    await page.waitForFunction(() => [...document.querySelectorAll('.bub.rov')]
+      .filter(node => node.textContent === 'Antwort nach erneutem Versuch.').length === 2);
+    assert.equal(await page.locator('.bub.me').filter({ hasText: networkQuestion }).count(), 1);
+    assert.equal(await page.locator('.bub.rov').filter({ hasText: 'Antwort nach erneutem Versuch.' }).count(), 2);
+
+    await input.fill('Erste Frage bei laufender Antwort');
+    await page.locator('#talkSend').click();
+    await page.waitForTimeout(80);
+    await input.fill('Meine neue Frage bleibt erhalten');
+    await page.waitForTimeout(900);
+    assert.equal(await input.inputValue(), 'Meine neue Frage bleibt erhalten', 'late completion must not erase newer input');
+    await input.fill('');
+
+    const beforeDuplicate = requests.length;
+    await page.evaluate(async () => {
+      const prompt = 'Was ist eine Duration?';
+      const results = await Promise.all([askRove(prompt), askRove(prompt)]);
+      window.__askRoveDuplicateResults = results;
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll('.bub.rov')]
+      .filter(node => node.textContent === 'Antwort nach erneutem Versuch.').length === 4);
+    assert.equal(requests.length, beforeDuplicate + 1, 'concurrent sends must make one API request');
+    assert.equal(await page.locator('.bub.me').filter({ hasText: 'Was ist eine Duration?' }).count(), 1);
+    assert.deepEqual(errors, []);
+
+    if (mobile) {
+      await page.setViewportSize({ width: 390, height: 560 }); // iOS keyboard-sized visual viewport.
+      await input.focus();
+      await page.waitForTimeout(150);
+      const geometry = await page.evaluate(() => {
+        const sheet = document.getElementById('talksheet').getBoundingClientRect();
+        const field = document.querySelector('#talksheet .field').getBoundingClientRect();
+        const feed = document.getElementById('chat');
+        const feedRect = feed.getBoundingClientRect();
+        const lastBubble = feed.lastElementChild?.getBoundingClientRect();
+        return { innerHeight: window.innerHeight, visualHeight: window.visualViewport?.height ?? window.innerHeight,
+          sheetBottom: sheet.bottom, fieldBottom: field.bottom,
+          feedScrollHeight: feed.scrollHeight, feedClientHeight: feed.clientHeight,
+          feedScrollTop: feed.scrollTop, feedMaxScroll: feed.scrollHeight - feed.clientHeight,
+          lastBubbleBottom: lastBubble?.bottom, feedBottom: feedRect.bottom };
+      });
+      assert.ok(geometry.sheetBottom <= geometry.visualHeight + 2, JSON.stringify(geometry));
+      assert.ok(geometry.fieldBottom <= geometry.visualHeight + 2, JSON.stringify(geometry));
+      assert.ok(geometry.feedScrollHeight > geometry.feedClientHeight, JSON.stringify(geometry));
+      assert.ok(Math.abs(geometry.feedMaxScroll - geometry.feedScrollTop) <= 2, JSON.stringify(geometry));
+      assert.ok(geometry.lastBubbleBottom <= geometry.feedBottom + 2, JSON.stringify(geometry));
+      await page.screenshot({ path: path.join(output, label + '-keyboard-390.png') });
+    } else {
+      await page.screenshot({ path: path.join(output, label + '-desktop.png') });
+    }
+    console.log(label.toUpperCase() + '_WALLET_ERROR_RETRY_DEDUP_LAYOUT=PASS');
+  } finally {
+    await context.close();
+  }
+}
+
+async function main() {
+  fs.mkdirSync(output, { recursive: true });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  let browser;
+  try {
+    const engine = process.env.ROVE_BROWSER_ENGINE === 'webkit' ? webkit : chromium;
+    browser = await engine.launch({ headless: true, executablePath: process.env.ROVE_BROWSER_BIN || undefined });
+    await flow(browser, 'desktop', { width: 1280, height: 900 });
+    await flow(browser, 'mobile-390', { width: 390, height: 844 });
+    await flow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
+    console.log('SCREENSHOTS=' + output);
+  } finally {
+    if (browser) await browser.close();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+
+main().catch(error => { console.error(error); process.exitCode = 1; });
