@@ -8,6 +8,9 @@ Diese Regeln halten Repository und Laufzeit nachvollziehbar.
 - `frontend/index.html` ist die kanonische aktive Frontendquelle.
 - Produktion wird nur aus bewusst geprueften kanonischen Quellen aktualisiert.
 - Alte Work-Kopien sind Referenzmaterial, keine Entwicklungsquelle.
+- `AGENTS.md` ist der automatisch geladene Repository-Einstieg und verweist auf
+  diese Regeln und `docs/DEVELOPMENT_WORKFLOW.md`. Skills und externe
+  `CLAUDE.md`-/Handoff-Dateien duerfen keinen abweichenden Workflow definieren.
 
 ## Root directory
 
@@ -55,6 +58,9 @@ Diese Regeln halten Repository und Laufzeit nachvollziehbar.
 - Wenn die Umgebung die Suite verhindert, werden fehlende Pakete und die
   genaue Einschraenkung dokumentiert.
 - Bekannte Baseline-Fehler werden nicht durch abgeschwaechte Assertions versteckt.
+- Der vollstaendige Lauf, Runtime, Quellstand, Ergebnis und unabhaengige
+  Baseline-/Umgebungsfehler werden nachvollziehbar festgehalten. Ein gezieltes
+  PASS ersetzt keinen Full-Suite-Nachweis und keine Freigabe trotz roter Tests.
 
 ## Documentation and deployment
 

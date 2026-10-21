@@ -12,8 +12,10 @@ Produktionsfreigabe. Repository-Regeln und Ownership stehen in
 
 Dieser Modus gilt, solange Rov.E nicht oeffentlich mit zahlenden Kunden laeuft.
 
-1. Ausschliesslich im kanonischen App-Checkout arbeiten. Der aktuelle
-   Arbeits-/Release-Branch bleibt vorerst `feature_clarityr-report`.
+1. Ausschliesslich im kanonischen App-Checkout arbeiten. Der bestehende
+   Integrationsbranch ist `feature_clarityr-report`; aufgabenbezogene lokale
+   Arbeit wird auf `codex/<aufgabe>` vom bewusst gewaehlten Stand isoliert.
+   Ein neuer Arbeitsbranch ist keine Freigabe, seine gesamte Historie zu deployen.
 2. Vor Beginn Branch, HEAD und Working Tree pruefen. Unabhaengige oder fremde
    Aenderungen bleiben unangetastet; unklarer Scope wird vor dem Editieren
    geklaert.
@@ -34,6 +36,18 @@ Dieser Modus gilt, solange Rov.E nicht oeffentlich mit zahlenden Kunden laeuft.
 Keine dauerhafte Source of Truth in `/private/tmp`, alten Workspaces oder
 unreferenzierten Kopien anlegen. Temporaere Build-Artefakte duerfen dort liegen,
 aber nicht als Entwicklungsbasis dienen.
+
+Die bestehende Reihenfolge gilt auch fuer kleine Frontend-Fixes:
+
+Lokale Entwicklung -> relevante Tests und Full-Suite -> task-only Commit ->
+Remote-Abgleich und von Furkan genehmigter/ausgefuehrter Push -> isolierter
+Release-Kandidat -> Production-Baseline und Hashes -> Backup/Rollback ->
+manuelles Deployment -> Healthchecks -> bestaetigte Betreiberabnahme -> FROZEN.
+
+FROZEN bedeutet: keine weitere Aenderung ohne neuen, ausdruecklichen Scope.
+Ein Healthcheck oder lokaler Browser-Smoke ersetzt keine produktive Abnahme.
+Bereits erfolgte Releases werden mit ihrem echten Nachweisstand dokumentiert;
+spaeter ausgefuehrte Tests gelten nicht rueckwirkend als Vorabfreigabe.
 
 ## 2. Live-Modus
 
@@ -69,6 +83,7 @@ unklare Datenwirkung oder ein nicht getesteter Rollback ist ein NO-GO.
 Vor jedem Production-Deploy muessen dokumentiert und geprueft sein:
 
 - freigegebener Commit und erwarteter Remote-HEAD;
+- frisch gelesene Remote-Refs und ein eindeutiger Quell-/Zielbranch-Vergleich;
 - aktueller Production-Commit sowie exakte Commit-/Dateidifferenz;
 - sauberer bzw. erklaerter Production-Working-Tree ohne ueberschreibbare
   lokale Aenderungen;
@@ -78,17 +93,35 @@ Vor jedem Production-Deploy muessen dokumentiert und geprueft sein:
 - exakter Rollback-Commit bzw. Restore-Befehl und betroffene Services;
 - erwartete Build-ID und Hash fuer statische Frontend-Artefakte.
 
+Ein lokaler Remote-Tracking-Stand ohne aktuellen Abruf ist kein Servernachweis.
+Alle relevanten Branch-Refs vergleichen, nicht nur einen engen Fetch-Refspec.
+Fehlende lokale Commits und fremde Remote-Commits getrennt ausweisen. Weder
+Defaultbranch noch Branchname beweisen eine Integrations- oder Push-Freigabe.
+Vor einem Push benennt Furkan Quelle, Ziel und gepruefte Commitliste; unmittelbar
+davor den Remote-Stand erneut pruefen. Kein automatischer Merge, Rebase oder
+Force-Push. Das Zurueckhalten eines Push ist keine Deployment-Freigabe.
+
+Ein isolierter Kandidat besitzt eine exakte Runtime-Allowlist sowie Basis- und
+Ziel-Hashes. Ein freigegebener Datei-Overlay in einem erklaerten Production-
+Checkout darf dessen fremde Dateien, Git-HEAD, Index oder ENV nicht bereinigen.
+Der Runtime-Stand wird dann ueber diese Dateihashes belegt, nicht nur ueber HEAD.
+Ein Artefakt aus Basis plus Patch ist mit beiden Git-Staenden, Build-Anleitung
+und Hash zuzuordnen. Ist der Basisstand nicht vollstaendig versioniert, bleibt
+das eine ausdrueckliche Reproduzierbarkeitsluecke; kein normales Release-GO.
+
 Kein ungezieltes `git pull` als Release-Abkuerzung. Auf dem Server wird der
 freigegebene Commit explizit verifiziert; der Produktionsstand muss auf der
 freigegebenen Release-Kette liegen und unerwartete Commits muessen vor dem
 Deploy gestoppt werden. Nur tatsaechlich betroffene Services neu starten.
 
-Bei fehlgeschlagenem Health- oder Smoke-Test sofort den vorher verifizierten
-Code-/Frontend-Stand wiederherstellen, betroffene Services kontrolliert
-starten und Health erneut pruefen. Datenbank-Rollback ist getrennt vom
-Code-Rollback und darf nur ueber das kontrollierte Restore-Verfahren aus
-`RUNBOOK.md` erfolgen. Eine Code-Ruecknahme setzt keine Datenmigration
-automatisch zurueck.
+Bei fehlgeschlagenem Health- oder Smoke-Test sofort STOP. Nur einen vorher
+verifizierten und mit den inzwischen geschriebenen Daten kompatiblen Code-/
+Frontend-Stand wiederherstellen; betroffene Services kontrolliert starten und
+Health erneut pruefen. Nach kanonischen Mehrkontenbuchungen ist alter Legacy-
+Backend-Code kein sicherer Rollback. Dann gilt der vorbereitete kompatible
+Forward-Fix-/Einschraenkungsplan, nicht eine automatische Code-Ruecknahme.
+Datenbank-Rollback bleibt getrennt und darf nur ueber das kontrollierte Restore-
+Verfahren aus `RUNBOOK.md` erfolgen. Ein Code-Rollback setzt keine Daten zurueck.
 
 ## 4. Financial-Truth-Gates
 
@@ -124,8 +157,14 @@ Groessere kuenftige Features sollen schrittweise steuerbar sein: intern, Beta,
 deaktivierbar sein. Das ist ein verbindliches Zielprinzip, keine Freigabe zum
 Bau einer Flag-Infrastruktur in diesem Dokument.
 
-Aktuell bleibt `feature_clarityr-report` der Arbeits-/Release-Branch. Spaeteres
-Zielbild:
+`feature_clarityr-report` bleibt der bestehende Integrationsbranch. Der lesende
+GitHub-Abgleich vom 21.10.2026 bestaetigt: `main` ist zwar Remote-Default, aber
+wesentlich aelter; daraus folgt keine Umstellung auf `main`. `codex/*` sind
+aufgabenbezogene Arbeitsbranches. Deren Synchronisierung ist erst nach exaktem
+Historienvergleich und ausdruecklicher Push-Freigabe erlaubt. Ein moeglicher
+Fast-Forward ist kein Auftrag, alle enthaltenen Commits produktiv auszuliefern.
+
+Spaeteres Zielbild, weiterhin ohne automatische Umstellung:
 
 - `main`: Production Source of Truth;
 - `develop`: integrierter und getesteter Entwicklungsstand;

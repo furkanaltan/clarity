@@ -60,6 +60,12 @@ Commit- und Scope-Pruefung. Abhaengig von den geaenderten Entry Points wird
 `rove-app-api`, `clarity-bot` oder beides neu gestartet. Ein reiner
 Frontend-Deploy benoetigt keinen Service-Neustart.
 
+Ein explizit freigegebener isolierter Datei-Release wird ueber seine Runtime-
+Allowlist und Basis-/Ziel-Hashes identifiziert. Ein erklaerter veraenderter
+Production-Checkout wird dabei nicht bereinigt und dessen HEAD/Index nicht
+nebenbei umgestellt. Ein inaktiver Bot bleibt ohne eigene Freigabe inaktiv,
+auch wenn `bot.py` Teil der freigegebenen Dateien ist.
+
 Vor jedem Deploy:
 
 ```bash
@@ -70,10 +76,13 @@ python3 -m py_compile GEAENDERTE_DATEI.py
 
 ## Frontend-Deploy
 
-Die kanonischen Dateien unter `frontend/` werden gemeinsam nach
-`/var/www/getrove/app/` kopiert. Vorher muss ein Backup der dort vorhandenen
-Dateien erstellt und der lokale Hash dokumentiert werden. Nach dem Upload wird
-der Serverhash verglichen. Es wird kein API-Service neu gestartet.
+Nur die freigegebene Allowlist aus dem geprueften Frontend-Artefakt bereitstellen.
+Vorher Live-Basis und root-only Sicherung der betroffenen Dateien per Hash
+bestaetigen. Upload nur in Staging, nicht direkt auf die Live-Datei; nach der
+Hashpruefung auf demselben Dateisystem atomisch ersetzen. Bei einem reinen
+`index.html`-Fix andere Assets unveraendert lassen und deren Hashes pruefen.
+Danach oeffentlichen Hash, Build-Marker und beide API-Healthchecks pruefen.
+Es wird kein API-Service neu gestartet. Betreiberabnahme separat bestaetigen.
 
 ## Healthcheck
 
@@ -182,8 +191,10 @@ kein Auftrag zur Restore-Ausfuehrung oder zum Production-Deploy.
 
 ## Rollback
 
-- Backend: nur auf einen vorher verifizierten Commit wechseln und danach die
-  betroffenen Dienste neu starten.
+- Backend: nur auf einen vorher verifizierten, mit neuen Daten kompatiblen
+  Stand wechseln und danach betroffene Dienste neu starten. Nach kanonischen
+  Mehrkontenbuchungen ist alter Legacy-Code kein sicherer Rollback. Bei
+  ungepruefter Kompatibilitaet STOP und freigegebenen Forward-Fix verwenden.
 - Frontend: zuvor gesicherte statische Dateien atomar wiederherstellen; kein
   Service-Neustart erforderlich.
 - Datenbank: nur ueber den oben beschriebenen Restore-Ablauf.

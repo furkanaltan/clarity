@@ -230,9 +230,17 @@ Das Script prüft, dass `frontend/index.html` bereits committed ist, liest den
 Commit-Hash und setzt `rove-frontend-build` automatisch auf
 `frontend-<git-short-commit>`. Commit-Hash, Build-ID und ausgeliefertes Artefakt
 sind damit gemeinsam verifizierbar. Eine unveränderte ID darf nicht erneut
-veröffentlicht werden. Die fünf Dateien werden als Satz gesichert und
-veröffentlicht. Danach werden Serverhashes, die gleiche Meta-ID und
-PWA-Verhalten geprüft. Kein Backend-Service wird neu gestartet.
+veröffentlicht werden. Die freigegebene Runtime-Allowlist bestimmt, welche
+Dateien bereitgestellt werden; unveraenderte Assets werden nicht ueberschrieben.
+Betroffene Dateien vorher root-only sichern, in Staging hashpruefen und atomisch
+wechseln. Danach oeffentliche Hashes, Build-ID, beide API-Healthchecks und
+PWA-Verhalten pruefen. Kein Backend-Service wird neu gestartet.
+
+Historische isolierte Artefakte koennen von der kanonischen Frontendquelle
+abweichen. Basis, Git-Patch und ausgelieferten Hash dann ausdruecklich zuordnen;
+ein passender Build-Marker allein beweist keine Reproduzierbarkeit aus diesem
+Commit. Siehe `quick-add-context-fix.md`. Keine stille Uebernahme solcher
+Abweichungen in einen weiteren normalen Release.
 
 Die Nginx-Konfiguration ist derzeit nicht kanonisch im Repository versioniert.
 Für die Live-Installation müssen deshalb ausserhalb dieses Repositories
@@ -266,7 +274,10 @@ Nginx-Pruefung angewendet werden. Der Service Worker bleibt ohne `fetch`-Handler
 - Bot Service: `clarity-bot.service`
 - Datenbank: `/root/clarity/clarity.db`, niemals über Git
 
-Code wird per Git verteilt. Konfiguration und Secrets bleiben in geschützten
+Code wird regulaer nach Remote-Abgleich und autorisiertem Push per Git verteilt.
+Explizit freigegebene isolierte Datei-Releases verwenden stattdessen eine genaue
+Allowlist und Basis-/Ziel-Hashes; der Production-Checkout wird nicht bereinigt.
+Konfiguration und Secrets bleiben in geschützten
 Environment-Dateien. Daten und generierte Reports bleiben außerhalb des
 Repositorys. Welche Services neu gestartet werden, ergibt sich ausschließlich
 aus den geänderten Entry Points; ein Frontend-Only-Release braucht keinen

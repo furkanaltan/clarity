@@ -1,8 +1,9 @@
 # Rov.E Testing
 
-Stand: 31.08.2026. Die kanonische Test-Suite besteht aus 26 Dateien im
-Repository-Root. Die Dateien bleiben dort, weil Imports, `unittest`-Discovery
-und einzelne Frontendpfade auf diese Lage abgestimmt sind.
+Aktueller Nachweis: siehe den vollstaendigen Lauf vom 21.10.2026 unten.
+Das Inventar mit 26 Dateien und 281 Tests weiter unten ist die historische
+Baseline vom 31.08.2026, nicht die heutige Suite. Die Tests bleiben im
+Repository-Root, weil Imports, Discovery und Frontendpfade darauf abgestimmt sind.
 
 ## Zentraler Einstieg
 
@@ -24,6 +25,49 @@ Eine abweichende Python-Laufzeit kann mit `ROVE_PYTHON` gesetzt werden.
 Zusaetzliche lokale Site-Packages koennen ueber `ROVE_EXTRA_PYTHONPATH`
 bereitgestellt werden. Der Runner setzt den kanonischen Frontendpfad auf
 `frontend/index.html`, wenn `ROVE_FRONTEND_PATH` nicht bereits gesetzt ist.
+
+## Full-Suite-Nachweis 21.10.2026
+
+Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur
+Dokumentationsaenderungen auf `codex/workflow-release-traceability`.
+Alle Produkt- und Testdateien blieben unveraendert. Keine Assertions entfernt,
+keine Tests uebersprungen und kein Fehler als Erfolg umgewertet.
+
+Ausgefuehrt im kanonischen Checkout:
+
+```bash
+ROVE_PYTHON=/private/tmp/rove-assets-test-venv/bin/python \
+ROVE_EXTRA_PYTHONPATH=/usr/local/lib/python3.14/site-packages \
+bash scripts/test.sh full
+```
+
+Python 3.14.6; damit ausdruecklich kein Testnachweis unter Production-Python 3.12.3.
+Ergebnis: **FAIL**, 1.982 Tests in 292,662 Sekunden, 9 Failures und 23 Errors.
+Zwei Fehler entstehen bereits in `setUpClass`; 1.982 bedeutet daher nicht,
+dass jeder entdeckte Test ausgefuehrt werden konnte. Browser-Smokes in `.cjs`
+werden durch diesen Python-Runner nicht automatisch gestartet.
+
+| Gruppe | Befunde | Beobachtung / offene Einordnung |
+|---|---:|---|
+| Consumer Debt / alte Konten-Stabilitaet | 11 Errors | `cash_reconciliation_required`; widerspruechliche Testbestandswerte treffen den neuen Schutz. Kein Beleg fuer einen neuen Datenverlust, auch kein pauschaler PASS. |
+| Feature Announcements Sprint 3 | 3 Errors, 2 Failures | Erwartete Claims fehlen / alter Coach-Routing-String. Produktfehler vs. ueberholte Erwartung noch nicht abschliessend geklaert. |
+| Mentor V2 | 1 Failure | Frontend-String-Erwartung weicht ab; keine Testanpassung. |
+| Budget-Frontend-Fixture | 1 Error | Ausgefuehrtes Node-Fixture scheitert; keine Produktkorrektur in diesem Auftrag. |
+| Account-Delete-Fixture | 1 Error | Ungepatchter DB-Zugriff endet mit `unable to open database file`. Keine DB angelegt oder repariert. |
+| Recovery | 6 Errors, 5 Failures | GPG fehlt, `boto3`/`botocore` fehlen; CLI-Tests sehen teils `runtime_invalid`. Umgebungsabhaengige Befunde, kein Recovery-PASS. |
+| WSGI | 1 Error | `gunicorn` fehlt im ausgewaehlten Interpreter; Modul nicht geladen. |
+| Push-Transport | 1 Failure | Erwarteter Send-Aufruf fehlt; fehlende optionale Transportabhaengigkeit als Ursache noch nicht abschliessend verifiziert. |
+
+Der vollstaendige unveraenderte lokale Lauf liegt unter
+`/Users/furkanaltan/Documents/Codex/rove-workflow-repair-20261021/full-suite-before-commit.log`.
+SHA256: `4e5ca3ad2d3f22c16354b857be06f5eb38cc5d5788d8b7d34b260f0653c3ad0e`.
+Das Log bleibt ausserhalb des Quellbaums. Keine Production-Verbindung.
+
+Die Befunde stammen aus dem unveraenderten Produkt-/Teststand. Dieser Auftrag
+erstellt ausschliesslich Dokumentations-Commits mit offen ausgewiesenem roten
+Gesamtlauf. Das ist kein bestandener Produkt-/Release-Gate. Weitere Releases
+bleiben bis zur Einordnung/Behebung und passendem Gesamtlauf NO-GO.
+Ein heutiger Lauf ersetzt keinen fehlenden Vorabnachweis aelterer Releases.
 
 ## Testinventar
 
