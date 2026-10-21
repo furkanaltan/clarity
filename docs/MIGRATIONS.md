@@ -1,5 +1,68 @@
 # Rov.E Migrations
 
+## Sachwerte und Onboarding-Entwuerfe (19./20.10.2026)
+
+Nachtrag fuer die bereits freigegebenen Quellen `3073a46` und `b1aa0ce`;
+dieser Dokumentationsnachtrag fuehrt keine Schemaoperation aus.
+
+- `rove_app_api.ensure_onboarding_drafts_table()` legt
+  `app_onboarding_drafts(user_id, step, draft_json, updated_at)` additiv an.
+  `user_id` ist Primaerschluessel und Nutzer-FK mit `ON DELETE CASCADE`.
+  Schritte bleiben 1 bis 9; die JSON-Struktur wird am bestehenden Endpunkt
+  validiert. `valuables` und `completionId` sind optionale Erweiterungen,
+  alte Entwuerfe werden nicht umgeschrieben.
+- `rove_valuables.ensure_valuables_schema()` legt `app_valuables` mit
+  `(user_id, position_id)` als Primaerschluessel, manuellem Namen,
+  ganzzahligem `value_cents`, Herkunft sowie Zeitstempeln an. Positions-IDs
+  sind 32-stellige Hexwerte; Werte sind per CHECK positiv und begrenzt.
+- `app_valuable_requests` besitzt `(user_id, request_id)` als Primaerschluessel
+  und speichert den Payload-Hash statt einer zweiten Position. Nutzer-FKs
+  entfernen Positionen und Quittungen beim bestehenden Account-Delete.
+- Vorbereitung ist `CREATE TABLE IF NOT EXISTS`, kein Tabellenumbau,
+  Salden-Backfill oder Import lokaler Browserdaten. Lesehelfer legen kein
+  Schema an. Bestehende Startup-/Write-Pfade bereiten es vor; Write-Aufrufer
+  halten die Transaktion und rollen bei Fehlern vollstaendig zurueck.
+- Onboarding-Abschluss schreibt Sachwerte und Abschluss atomar; Wiederholungen
+  nutzen dieselben IDs und die nutzergebundene Abschlussquittung. Kein Bezug
+  zu Kredit-/Leasingvertraegen und keine Aenderung der Vermoegenshistorie.
+
+Die Operator-Belege des Releases vom 20.10. enthalten die ausgelieferten
+Runtime-Hashes; hier wurde keine erneute Live-Schemainventur durchgefuehrt.
+Code-Rollback darf diese Tabellen und neu gespeicherte Sachwerte nicht
+loeschen oder durch eine alte Datenbank ersetzen. Frontend-Kompatibilitaet
+und fortgesetzter Zugriff auf vorhandene Sachwerte sind gesondert zu pruefen.
+
+## Mehrkonten-Quittungen und Modellmarkierung (20./21.10.2026)
+
+Nachtrag fuer `27af4c9ccaff71c60939481fcfaae2d256f1b518`.
+`rove_financial_accounts.ensure_financial_accounts_schema()` ergaenzt additiv:
+
+- `app_financial_account_requests`: `(user_id, request_id)` als Primaerschluessel,
+  Payload-Hash und resultierende Konto-ID; zusammengesetzter FK verhindert
+  eine Quittung auf ein fremdes Konto. Anlage und Quittung werden gemeinsam
+  committed. Nutzerloeschung entfernt die Quittungen.
+- `app_financial_account_migrations`: eine Zeile pro Nutzer, Quelle
+  `onboarding` oder `reconciled`, optionale Plan-/Vorher-/Nachher-Pruefsummen.
+  Die Tabelle ist eine Modellmarkierung/Quittung, keine Freigabe einer
+  automatischen Bestandsmigration. Nutzer-FK mit `ON DELETE CASCADE`.
+
+Bestehende Konten-/Rollen-/Featuretabellen bleiben erhalten. Neue Nutzer
+werden im vorhandenen Onboarding-Abschluss konsistent initialisiert; ein
+Schemaaufruf allein migriert oder aktiviert keine Bestandskonten. Der alte
+Feature-Schluessel bleibt Kompatibilitaetsspiegel, nicht allgemeine Pilotpflicht.
+Widerspruechliche Bestandswerte duerfen HTTP 409 liefern; kein stiller Ausgleich.
+
+Der Operator hat die fuenf Backend-Dateien am 21.10. hashverifiziert bereitgestellt
+und nur die API neu gestartet. Das ist kein neuer Apply-Auftrag. Vor einem
+weiteren Lauf gelten die bestehenden Backup-/Integrity-/Freigabe-Gates.
+Nach neuen kanonischen Konto-IDs/Buchungen ist Legacy-Backend-Code **kein**
+sicherer Rollback: kompatiblen Forward-Fix vorbereiten, keine Tabellenloeschung,
+Saldenkorrektur, Bestandsmigration oder automatische DB-Ruecksicherung.
+
+Gezielte bestehende Nachweise: `test_onboarding_draft.py`, `test_valuables_model.py`,
+`test_valuables_api.py`, `test_financial_accounts_final.py`. Der aktuelle
+Full-Suite-Status steht separat in `TESTING.md`, nicht als pauschaler PASS hier.
+
 ## Contract cancellation finalization V3 (28.09.2026)
 
 The API-owned savepoint migration extends case/event CHECK constraints for

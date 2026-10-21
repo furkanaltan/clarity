@@ -1,5 +1,23 @@
 # Quick-Add navigation
 
+## Bestaetigter Release-Status, 21.10.2026
+
+`frontend-d94b3c7` wurde durch Furkan nach konkreter Dateiwechsel-Freigabe
+atomisch bereitgestellt. Seine uebermittelte Terminalausgabe bestaetigt den
+oeffentlichen und lokalen SHA256
+`e77e5789ace28a9724584b458c64159ac82af6efeec174dc13d5c424a3861262`,
+Build-Marker, beide API-Healthchecks und unveraenderte weitere Assets.
+Kein Dienstneustart. Kein Push in diesem Ablauf.
+
+Deployment: **PASS laut Operator-Beleg**, kein neuer Live-Zugriff durch Codex.
+Produktive iPhone-/Mac-Betreiberabnahme: **PENDING**, noch keine ausdrueckliche
+Bestaetigung im vorliegenden Verlauf. Daher kein behauptetes FROZEN nach Abnahme.
+Die lokalen Browser-Smokes unten ersetzen diese Abnahme nicht.
+Artefaktzuordnung und verbleibende kanonische Quellabweichung stehen in
+`RELEASE_TRACEABILITY_20261021.md`.
+
+## Ursache und lokale Validierung
+
 The normal save and safe-retry success paths explicitly called
 `closeSheetAndNavigate("tx")`. This caused a confirmed Dashboard entry to switch
 to Cashflow. The browser regression reproduced `tab-tx` instead of `tab-home`.
