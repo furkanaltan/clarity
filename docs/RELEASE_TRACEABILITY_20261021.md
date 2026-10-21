@@ -2,7 +2,12 @@
 
 Dies ist ein Nachweis bestehender Releases, kein neuer Deploy-Auftrag und keine
 zweite Arbeitsregel. Massgeblich bleibt `DEVELOPMENT_WORKFLOW.md`. Keine
-Production-Verbindung, Datei-/ENV-/Datenmutation oder Push in diesem Auftrag.
+Production-Verbindung, produktive Datei-/ENV-/Datenmutation oder Push in diesem Auftrag.
+
+Fortschreibung nach freigegebener Teststabilisierung: Phase A ist mit
+`4e3635d` abgeschlossen (2.074/2.074 PASS). Der Arbeitsbranch ist jetzt
+`codex/full-suite-and-sync`; die kanonische Navigationsangleichung und die
+konkrete Git-Synchronisierung stehen in den nachgefuehrten Abschnitten unten.
 
 ## Frisch verifizierter GitHub-Stand
 
@@ -115,9 +120,9 @@ vollstaendige manuelle Abnahme vor: **PENDING**, kein behauptetes FROZEN.
 Quick-Add: atomischer Wechsel, oeffentlicher Hash/Marker, beide Healthchecks,
 weitere Assets unveraendert und kein Dienstneustart laut letztem Operator-Beleg.
 
-### Exakte Reproduktion und noch offene kanonische Angleichung
+### Exakte Reproduktion und kanonische Angleichung
 
-Ein Standardbuild nur aus dem jeweiligen Source-Commit ergibt **nicht** diese
+Ein Standardbuild nur aus dem jeweiligen historischen Source-Commit ergibt **nicht** diese
 Production-Bytes. Der Unterschied besteht aus Build-Marker plus dem bereits
 isoliert freigegebenen Report-/Mentor-Navigationsfragment (Vorschau fuer laufende
 Reports). Keine Renderer-, Berechnungs-, Login- oder Datenaenderung.
@@ -125,7 +130,8 @@ Reports). Keine Renderer-, Berechnungs-, Login- oder Datenaenderung.
 Der exakte kleine Unterschied ist jetzt als historischer Source-Nachweis
 versioniert: `releases/20261021/frontend-d94b3c7-production.patch`.
 Patch-SHA256: `41ebca6732e06c75bb4eb5f9c2e05578e1133228d17bdb7f4233e0e1d48f8be2`.
-Er wurde **nicht** auf die kanonische Runtime-Datei angewendet.
+Beim ersten Nachweisauftrag wurde er **nicht** auf die kanonische Runtime-Datei
+angewendet. Der damalige Build-Marker bleibt Teil des historischen Patches.
 
 Lokale Rekonstruktion in einem temporaeren Verzeichnis, fern von Production:
 
@@ -135,16 +141,24 @@ Lokale Rekonstruktion in einem temporaeren Verzeichnis, fern von Production:
    durch den jeweiligen Marker aus der Tabelle ersetzen.
 4. SHA256 gegen die Tabelle vergleichen.
 
-Ergebnis der tatsaechlich ausgefuehrten Rekonstruktion: **3/3 bytegenau PASS**.
-Damit ist die historische Artefaktableitung in Git nachvollziehbar. Die
-kanonische Runtime-Quelle ist trotzdem noch nicht angeglichen; diese Luecke
-wird nicht durch einen passenden Marker oder einen Dokumentations-Commit verdeckt.
+Ergebnis der erneut ausgefuehrten historischen Rekonstruktion:
+**3/3 bytegenau PASS**. Historische Commits und Archiv-Refs werden nicht
+umgeschrieben; fuer die beiden aelteren Quellen bleibt der versionierte
+historische Patch Teil der Reproduktionsanleitung.
 
-Minimaler spaeterer Korrekturweg: ausschliesslich dieses bestaetigte Navigations-
-Fragment (nicht den alten Build-Marker) in einem gesondert freigegebenen
-Source-Angleichungscommit uebernehmen; Vorschau/Ready/Web/PDF und Monatscheck-
-Unveraendertheit gezielt testen, Full-Suite bestehen, autorisierten Push und
-neuen isolierten Build mit neuer ID vorbereiten. Kein jetziger Produktedit.
+Die anschliessend ausdruecklich freigegebene Phase B gleicht ausschliesslich
+`openMentorCandidate()` an dieses bereits ausgelieferte Fragment an. Der
+kanonische Marker bleibt `frontend-__GIT_COMMIT__`; Renderer, Finanzwerte,
+Monatscheck, Login und Backend bleiben unveraendert. Neue Tests reproduzierten
+vorher die abweichenden Vorschau-/Fehlerwege und pruefen jetzt Running-Preview,
+Ready-Web/PDF, richtigen Monat, fehlende Artefakte und unveraenderten Monatscheck.
+
+Die aktuelle kanonische Quelle ergibt ueber den vorhandenen Release-Builder
+mit dem ausdruecklich historischen Marker `frontend-d94b3c7` direkt und ohne
+zusaetzlichen Patch den bestaetigten SHA256 `e77e5789ace28a9724584b458c64159ac82af6efeec174dc13d5c424a3861262`.
+Damit sind alle zuletzt freigegebenen Mehrkonten-, Sachwerte- und Quick-Add-
+Frontendbytes erhalten. Neue regulaere Builds tragen weiterhin ihre neue
+Commit-ID, niemals einen zurueckdatierten Production-Marker.
 
 ## Mehrkonten-Backend: Git- und Dateizuordnung
 
@@ -163,40 +177,55 @@ Die fuenf ausgelieferten Dateien sind bytegenau die Quellen aus `27af4c9`:
 Nur API-Neustart, Bot inaktiv, ENV unveraendert laut Operator-Ausgaben.
 Kein ganzer Entwicklungsbranch wurde als Production-Code aktiviert.
 
-## Synchronisierung: vorbereitet, nicht freigegeben
+## Synchronisierung auf den Integrationsbranch: vorbereitet
 
-Der aktuelle Dokumentationsbranch basiert auf d94b3c7. Alle aelteren kanonischen
+Der Arbeitsbranch `codex/full-suite-and-sync` erbt d94b3c7 und die beiden
+Dokumentations-Commits `e588a73`, `7f48c45`. Danach folgen `4e3635d` fuer die
+Teststabilisierung und dieser Navigations-/Nachweiscommit. Alle aelteren kanonischen
 Arbeitsbranches bis f762ae5/27af4c9 sind Vorfahren; sie muessen nicht alle einzeln
 zusammengefuehrt oder separat gepusht werden. `main` und `rove-website-private`
 bleiben unangetastet. Die isolierte Production-Kette bleibt eine getrennte Referenz.
 
-Minimaler sicherer Vorschlag fuer Furkans **noch erforderliche** Push-Entscheidung:
+Der erneute Abruf nach bestandenem Phase-A-Gate bestaetigt unveraenderte
+Remote-Refs. Vor dem Navigationscommit: **0 Remote-only / 39 Local-only**
+gegen `origin/feature_clarityr-report`. Mit diesem Change umfasst die zur
+Pruefung vorgelegte Kette **40 Commits**: die oben gelisteten 36 plus die
+beiden Dokumentations-Commits, Teststabilisierung und Navigationsangleichung.
 
-1. Quellarchivierung des Dokumentationsbranches auf einen gleichnamigen neuen
-   Remote-Branch pruefen; die oben genannten 36 Vorlaeufer plus neue reine
-   Dokumentations-Commits gehoeren dann zur sichtbaren Historie. Keine
-   pauschale Produkt-/Deployment-Freigabe dieser Historie.
-2. Separat die lokale Production-Archivreferenz mit exaktem Target `851c8abb...`
-   als neuen Remote-Branch sichern; niemals auf den Source-Zweig rebasen.
-3. Erst danach ueber einen expliziten Fast-Forward des Integrationsbranches
-   entscheiden. Gegen den aktuell gelesenen Remote ist dies technisch moeglich,
-   aber **nicht ausgefuehrt oder freigegeben**. Kein Force-Push.
-4. Unmittelbar vor jedem genehmigten Push Remote-Refs erneut pruefen; bei einem
-   neuen/fremden Commit STOP. Freigabe muss Quell-SHA, Zielref und Commitliste nennen.
+Konkreter Vorschlag fuer Furkans **noch erforderliche** Push-Entscheidung:
+
+1. Quelle: abgeschlossener `codex/full-suite-and-sync` mit der im Uebergabeblock
+   genannten exakten SHA und vollstaendiger Commitliste. Ziel ausschliesslich
+   `refs/heads/feature_clarityr-report` auf `origin`.
+2. Erwarteter Remote-Target bleibt `4e6c29074acb7f08f7908ea34f2d405051b4925b`.
+   Unmittelbar vor Ausfuehrung frisch lesen, auf Gleichheit pruefen und
+   `git merge-base --is-ancestor` fuer Quelle/Ziel bestehen lassen.
+3. Furkan fuehrt nach seiner Freigabe den normalen Fast-Forward-Push persoenlich
+   aus. Codex fuehrt auch keinen Dry-Run-Push aus. Kein Force-Push und kein Merge.
+4. Separate Archivhistorien bleiben unangetastet und sind kein Push-Ziel:
+   `codex/production-baseline-20261019` bleibt auf `851c8abb10040a3dc6aeed61beb4ef1e72b5bd59`,
+   `codex/report-v2-production-20261011` auf `86b8577f82ab6eae860ff70062e7f22f70ca2db3`.
+
+Diese Synchronisierung der Source-Historie ist weiterhin keine Production-
+Allowlist und kein Deployment. Insbesondere werden keine Archiv-Commits
+zusammengefuehrt oder alte Production-Dateien dabei ersetzt.
 
 Die externen Wegweiser liegen im separaten lokalen Repository
 `/Users/furkanaltan/Documents/Codex`: nur `CLAUDE.md` und der vorhandene
-`.agents/skills/rove-deploy/SKILL.md` werden separat versioniert. Dessen schon
+`.agents/skills/rove-deploy/SKILL.md` wurden mit `fea5908` separat versioniert. Dessen schon
 vorhandene fremde Aenderung an `ONBOARDING.md` bleibt unangetastet. Die globale
 CTO-`~/.codex/AGENTS.md` bleibt bytegleich unveraendert.
 
 ## Offene Gates
 
-- Full-Suite **FAIL**, unveraenderte Tests; Ergebnis und Gruppen in `TESTING.md`.
+- Full-Suite Phase A **2.074/2.074 PASS**, Phase B **2.077/2.077 PASS**;
+  jeweils keine Failures, Errors oder Skips. Protokolle und Runtime in `TESTING.md`.
 - Autorisierter Push noch ausstehend; GitHub ist frisch verifiziert, aber nicht synchron.
-- Kanonischer Standardbuild noch nicht an das versionierte historische Fragment angeglichen.
+- Kanonische Quelle angeglichen; historische Reproduktion 3/3 bytegenau, letzter
+  Production-Build direkt aus der aktuellen Quelle mit historischem Marker reproduziert.
 - Produktive Mehrkonten-/Quick-Add-Betreiberabnahme nicht ausdruecklich bestaetigt.
 
-**NO-GO fuer einen weiteren normalen Release.** Dokumentation und lokale
-Quellarchivierung sind keine Production-Freigabe. Keine Migration/Saldoentscheidung,
-kein Runtime-Edit, keine Datenbank-/ENV-Aktion und kein Deployment in diesem Auftrag.
+**GO fuer die Freigabepruefung des manuellen Push, noch keine Ausfuehrungsfreigabe.**
+Der manuelle Push wird mit bestandenem Phase-B-Gate zur Freigabe vorgelegt. Kein weiterer
+Production-Release ist hier freigegeben. Keine Migration/Saldoentscheidung,
+keine Datenbank-/ENV-Aktion und kein Deployment in diesem Auftrag.

@@ -13,7 +13,7 @@ Deployment: **PASS laut Operator-Beleg**, kein neuer Live-Zugriff durch Codex.
 Produktive iPhone-/Mac-Betreiberabnahme: **PENDING**, noch keine ausdrueckliche
 Bestaetigung im vorliegenden Verlauf. Daher kein behauptetes FROZEN nach Abnahme.
 Die lokalen Browser-Smokes unten ersetzen diese Abnahme nicht.
-Artefaktzuordnung und verbleibende kanonische Quellabweichung stehen in
+Artefaktzuordnung und die inzwischen kanonisch angeglichene Navigation stehen in
 `RELEASE_TRACEABILITY_20261021.md`.
 
 ## Ursache und lokale Validierung
@@ -40,9 +40,12 @@ JavaScript syntax checks passed.
 - Dashboard values and existing budget/account views update after confirmation.
 - Chromium and WebKit, desktop and 390 px including standalone iPhone-PWA layout.
 
-The release artifact must be built on the verified production frontend
+The original isolated mini-release was built on the verified production frontend
 `frontend-release-20261021-27af4c9` (SHA256
 `2eb7ae476b1e8aa5139aa858d087dce45c326fcc7bdf886c1b70d0a82e117bd8`),
-with only this frontend patch and its build marker applied. This preserves the
-existing production-only report-navigation adjustment. No backend release or
-service restart is required.
+with only this frontend patch and its build marker applied. The separately
+approved source alignment now preserves that report-navigation adjustment in
+the canonical frontend. With the historical `frontend-d94b3c7` marker, the
+canonical source directly reproduces the confirmed `e77e5789...` artifact;
+future builds use the normal builder and their own new Git commit ID. No
+unversioned Production base is needed. No new deployment is performed here.

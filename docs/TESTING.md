@@ -87,6 +87,38 @@ Navigationsangleichung gilt ein eigener Full-Suite-Gate vor deren Commit.
 Python 3.12.14 teilt die Production-Minor-Version 3.12, ist aber kein Nachweis
 unter exakt Production-Python 3.12.3 oder dem Ubuntu-Betriebssystem.
 
+## Phase B: kanonische Report-Navigation und Push-Vorbereitung
+
+Arbeitsbasis ist der bestandene Phase-A-Commit `4e3635d`. Die einzige
+Runtime-Aenderung ist das bereits produktive Fragment in
+`frontend/index.html:openMentorCandidate()`. Keine Aenderung an Report-
+Berechnungen, Renderern, Daten, Monatscheck, Auth oder Backend.
+
+Die angepassten Navigationstests reproduzierten vor dem Fix acht falsche
+Ergebnisse in ihren Unterfaellen. Nach der Angleichung bestehen **79/79**
+gezielte Navigations-/Mentor-/Onboarding-/Quick-Add-/Buildtests. Die Vorschau
+zeigt weiterhin die gelieferten Vermoegens-, Ausgaben- und Sparquotenwerte;
+laufende Reports erzeugen keinen Ready-/Opened-Zustand und keine Dateiaktionen.
+
+Die bestehenden Browser-Smokes `test_quick_add_browser.cjs` und
+`test_frontend_valuables_browser.cjs` bestehen unveraendert: **12/12 Flows**
+in Chromium und WebKit, jeweils Desktop, 390 px und Standalone-iPhone-PWA.
+Synthetischer lokaler Transport, alle externen Requests blockiert; Quick-Add-
+Kontext, Retry/Doppelklick/Reload sowie Sachwerte-CRUD/Kontowechsel geprueft.
+Browser mussten ausserhalb der Prozess-Sandbox gestartet werden, nachdem
+beide Engines dort schon vor dem Laden einer Testseite abbrachen.
+
+Die aktuelle kanonische Quelle reproduziert mit dem historischen Build-Marker
+direkt den bestaetigten d94b3c7-Hash; historische Ableitung einschliesslich
+f762ae5 und 27af4c9 **3/3 bytegenau PASS**, siehe `RELEASE_TRACEABILITY_20261021.md`.
+Der abschliessende Full-Suite-Lauf vor dem Phase-B-Commit besteht:
+**2.077 Tests in 524,150 Sekunden, 0 Failures, 0 Errors, 0 Skips**.
+Gleiche isolierte Python-3.12.14-/GPG-2.4.4-Umgebung und gleicher Runner wie
+Phase A; drei zusaetzliche Navigationstests, keine entfernten Tests.
+Protokoll: `full-suite-phase-b.log` im oben genannten Nachweisverzeichnis.
+SHA256: `d27b86c34f94d3fb27626e39d7735d7db07eaf421684d16cae2c4b554f799db1`.
+Keine neue Finanzdaten-, Authentifizierungs- oder Reportregression bestaetigt.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur

@@ -132,17 +132,77 @@ function openMonthlyPlan(){{calls.push(['monthly-plan']);}}
             [{"month": "2026-08", "status": "ready", "pdfAvailable": True}],
         )
         self.assertFalse(result["opened"])
-        self.assertEqual(result["calls"], [["message", "Dein Monatsreport ist noch nicht verfügbar."]])
+        self.assertEqual(result["calls"], [
+            ["archive"], ["sheet", "repsheet"],
+            ["message", "Dein Monatsreport ist noch nicht verfügbar."],
+        ])
 
-    def test_unfinished_or_missing_report_artifacts_explain_unavailability(self):
+    def test_running_report_opens_matching_preview_without_marking_it_opened(self):
+        for candidate in (
+            {"type": "report", "id": "report:2026-09"},
+            {"type": "report_ready", "id": "ready-september"},
+        ):
+            with self.subTest(candidate=candidate):
+                result = self.run_report_navigation(
+                    candidate,
+                    [
+                        {"month": "2026-08", "status": "ready", "pdfAvailable": True},
+                        {"month": "2026-09", "status": "running"},
+                    ],
+                    events=[{"event_id": "ready-september", "event_type": "report_ready", "source_id": "2026-09"}],
+                )
+                self.assertTrue(result["opened"])
+                self.assertEqual(result["calls"], [
+                    ["archive"], ["sheet", "repsheet"], ["detail", "2026-09"],
+                    ["sheet", "repdetailsheet"],
+                ])
+
+    def test_ready_web_report_opens_matching_month_without_pdf(self):
+        result = self.run_report_navigation(
+            {"type": "report", "id": "report:2026-09"},
+            [{"month": "2026-09", "status": "ready", "pdfAvailable": False, "webUrl": "/synthetic-web-report"}],
+        )
+        self.assertTrue(result["opened"])
+        self.assertEqual(result["calls"], [
+            ["archive"], ["sheet", "repsheet"], ["detail", "2026-09"],
+            ["sheet", "repdetailsheet"], ["opened", "2026-09"],
+        ])
+
+    def test_existing_running_preview_displays_current_values_without_file_actions(self):
+        start = self.frontend.index("function renderReportDetail(")
+        renderer = self.frontend[start:self.frontend.index("function formatReportExpiry(", start)]
+        script = """
+const DATA={reports:[{month:'2026-09',m:'September 2026',status:'running'}]};
+const body={innerHTML:''};
+const document={getElementById:()=>body};
+function reportStats(){return {end:12345,expenses:67,spar:25};}
+function topCategory(){return null;}
+function eur(value){return `${value} EUR`;}
+function moduleIcon(){return '';}
+""" + renderer + "\nrenderReportDetail(0);process.stdout.write(body.innerHTML);"
+        result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+        self.assertIn("Zwischenstand", result.stdout)
+        self.assertIn("Vermögen aktuell", result.stdout)
+        self.assertIn("12345 EUR", result.stdout)
+        self.assertIn("Ausgaben bisher", result.stdout)
+        self.assertIn("67 EUR", result.stdout)
+        self.assertIn("Sparquote", result.stdout)
+        self.assertIn("25 %", result.stdout)
+        self.assertNotIn("data-report-web", result.stdout)
+        self.assertNotIn("data-report-pdf", result.stdout)
+
+    def test_unavailable_status_or_missing_artifacts_explain_unavailability(self):
         for report in (
-            {"month": "2026-09", "status": "running"},
+            {"month": "2026-09", "status": "failed"},
             {"month": "2026-09", "status": "ready", "pdfAvailable": False, "webUrl": ""},
         ):
             with self.subTest(report=report):
                 result = self.run_report_navigation({"type": "report", "id": "report:2026-09"}, [report])
                 self.assertFalse(result["opened"])
-                self.assertEqual(result["calls"], [["message", "Dein Monatsreport ist noch nicht verfügbar."]])
+                self.assertEqual(result["calls"], [
+                    ["archive"], ["sheet", "repsheet"],
+                    ["message", "Dein Monatsreport ist noch nicht verfügbar."],
+                ])
 
     def test_unknown_report_month_is_not_guessed_from_available_reports(self):
         for candidate in (
@@ -153,7 +213,10 @@ function openMonthlyPlan(){{calls.push(['monthly-plan']);}}
             with self.subTest(candidate=candidate):
                 result = self.run_report_navigation(candidate, [{"month": "2026-09", "status": "ready", "pdfAvailable": True}])
                 self.assertFalse(result["opened"])
-                self.assertEqual(result["calls"], [["message", "Dein Monatsreport ist noch nicht verfügbar."]])
+                self.assertEqual(result["calls"], [
+                    ["archive"], ["sheet", "repsheet"],
+                    ["message", "Dein Monatsreport ist noch nicht verfügbar."],
+                ])
 
     def test_monthly_check_keeps_its_existing_confirmation_flow(self):
         result = self.run_report_navigation(

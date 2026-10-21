@@ -4920,11 +4920,19 @@ async function openMentorCandidate(candidate,route){
       : (DATA.mentorEvents||[]).find(event=>event?.event_id===candidate.id && event.event_type==="report_ready")?.source_id;
     const index=(DATA.reports||[]).findIndex(report=>report?.month===month);
     const report=DATA.reports?.[index];
-    if(!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(month||"")) || report?.status!=="ready" || (!report.pdfAvailable&&!report.webUrl)){
+    openReports();
+    if(!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(month||"")) || !report){
       showToast("Dein Monatsreport ist noch nicht verfügbar.");
       return false;
     }
-    openReports();
+    if(report.status==="ready" && !report.pdfAvailable && !report.webUrl){
+      showToast("Dein Monatsreport ist noch nicht verfügbar.");
+      return false;
+    }
+    if(report.status!=="ready" && report.status!=="running"){
+      showToast("Dein Monatsreport ist noch nicht verfügbar.");
+      return false;
+    }
     openReportDetail(index);
     return true;
   }
