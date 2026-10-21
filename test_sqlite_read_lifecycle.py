@@ -110,6 +110,9 @@ class SqliteReadLifecycleTests(unittest.TestCase):
 
     def test_get_state_executes_no_sqlite_write_operations(self):
         self.assert_no_request_writes("/v1/state")
+        response = self.request("/v1/state")
+        self.assertNotIn("financial_insight_shadow", response.get_json())
+        self.assertNotIn("coach_v4_shadow", response.get_json())
 
     def test_get_transactions_executes_no_sqlite_write_operations(self):
         self.assert_no_request_writes("/v1/transactions")

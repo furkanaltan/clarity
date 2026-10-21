@@ -21,6 +21,7 @@ from rove_behavior_snapshot import (
     ensure_behavior_snapshot_table,
     get_behavior_snapshot_metrics,
     get_behavior_snapshot_status,
+    get_shadow_insight_contracts,
     get_visible_behavior_snapshot,
     invalidate_behavior_snapshot,
     process_pending_behavior_snapshots,
@@ -434,6 +435,105 @@ class BehaviorSnapshotTests(unittest.TestCase):
         self.assertLess(len(json.dumps(payload)), 4096)
         self.assertLess(elapsed, 0.1)
 
+    def test_primary_shadow_insight_is_persisted_and_source_changes_fail_closed(self):
+        insight = {
+            "insight_id": "behavior_insight:stable-1",
+            "insight_type": "spending_trend_improving",
+            "primary_coach_insight": True,
+            "coach_eligible": True,
+            "coach_suppression_reason": None,
+            "conflicting_evidence": False,
+            "superseded_by_pattern_id": None,
+            "pattern_strength": "high",
+            "financial_relevance": "high",
+            "confidence_class": "high",
+            "period_start": "2026-06-01",
+            "period_end": "2026-08-31",
+            "category": "restaurant",
+            "merchant": "private merchant should not persist",
+            "source_pattern_ids": ["pattern:stable-1"],
+            "source_ids": ["raw-row-1"],
+            "evidence_summary": {
+                "pattern_type": "category_spending_improving",
+                "category": "restaurant",
+                "merchant": "private merchant should not persist",
+            },
+            "evidence_metrics": {
+                "months_compared": 3,
+                "monthly_amounts": [
+                    {"month": "2026-06", "amount": 180.0},
+                    {"month": "2026-07", "amount": 140.0},
+                    {"month": "2026-08", "amount": 95.0},
+                ],
+            },
+        }
+
+        def inspector(*_args, **_kwargs):
+            return {"patterns": [], "insight_candidates": [insight]}
+
+        with patch.object(behavior_patterns, "build_shadow_inspector", inspector), \
+             patch.object(behavior_patterns, "build_visible_behavior_insight", self.visible):
+            result = recompute_behavior_snapshot(self.conn, 1)
+        self.assertEqual(result["status"], SNAPSHOT_STATUS_READY)
+        candidates, status = get_shadow_insight_contracts(self.conn, 1)
+        self.assertEqual(status, "ready")
+        self.assertEqual(len(candidates), 1)
+        contract = candidates[0]
+        self.assertEqual(contract["insight_id"], "v4:behavior_insight:stable-1")
+        self.assertEqual(contract["visibility"], "shadow_only")
+        encoded = json.dumps(contract)
+        self.assertNotIn("private merchant", encoded)
+        self.assertNotIn("raw-row-1", encoded)
+        self.assertIn("months_compared", contract["evidence"]["metrics"])
+
+        self.conn.execute(
+            "INSERT INTO expenses(id,user_id,amount,created_at,transaction_at) "
+            "VALUES (9,1,12.0,'2026-09-18','2026-09-18')"
+        )
+        candidates_after_change, changed_status = get_shadow_insight_contracts(self.conn, 1)
+        self.assertEqual(candidates_after_change, [])
+        self.assertEqual(changed_status, "source_watermark_mismatch")
+
+    def test_suppressed_or_ambiguous_primary_is_not_persisted(self):
+        insight = {
+            "insight_id": "conflicting",
+            "insight_type": "budget_attention",
+            "primary_coach_insight": True,
+            "coach_eligible": True,
+            "coach_suppression_reason": None,
+            "conflicting_evidence": True,
+            "superseded_by_pattern_id": None,
+            "pattern_strength": "high",
+            "financial_relevance": "high",
+            "confidence_class": "high",
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+            "source_pattern_ids": ["pattern-1"],
+            "evidence_summary": {"pattern_type": "category_budget_pressure"},
+            "evidence_metrics": {"months_compared": 3},
+        }
+        with patch.object(
+            behavior_patterns,
+            "build_shadow_inspector",
+            lambda *_args, **_kwargs: {"patterns": [], "insight_candidates": [insight]},
+        ), patch.object(behavior_patterns, "build_visible_behavior_insight", self.visible):
+            recompute_behavior_snapshot(self.conn, 1)
+        self.assertEqual(get_shadow_insight_contracts(self.conn, 1)[0], [])
+
+    def test_shadow_read_fails_closed_when_contract_column_or_snapshot_is_missing(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("CREATE TABLE app_behavior_snapshot (user_id INTEGER PRIMARY KEY)")
+            self.assertEqual(get_shadow_insight_contracts(conn, 1), ([], "contract_schema_missing"))
+        finally:
+            conn.close()
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            self.assertEqual(get_shadow_insight_contracts(conn, 1), ([], "snapshot_missing"))
+        finally:
+            conn.close()
+
     def test_migration_is_safe_on_fresh_and_existing_databases(self):
         fresh = sqlite3.connect(":memory:")
         try:
@@ -486,7 +586,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertTrue(dry["changed"])
             self.assertEqual(
                 dry["planned_changes"],
-                ["create_table_with_metric_columns", "create_queue_index"],
+                ["create_table_with_metrics_and_shadow_contract", "create_queue_index"],
             )
             self.assertTrue(result_is_valid(dry, apply=False))
 
@@ -496,6 +596,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertTrue(first["table_after"])
             self.assertTrue(first["queue_index_after"])
             self.assertTrue(first["metrics_after"])
+            self.assertTrue(first["shadow_contract_after"])
             self.assertEqual(first["remaining_changes"], [])
             self.assertEqual(first["integrity_check"], "ok")
             self.assertEqual(first["foreign_key_errors"], 0)
@@ -590,12 +691,14 @@ class BehaviorSnapshotTests(unittest.TestCase):
                     "metrics_no_evidence_users",
                     "metrics_suppression_reasons_json",
                     "metrics_insight_types_json",
+                    "shadow_insight_contract_json",
                 )},
             )
 
             result = run_snapshot_migration(db_path, apply=True)
             self.assertTrue(result["changed"])
             self.assertTrue(result["metrics_after"])
+            self.assertTrue(result["shadow_contract_after"])
             self.assertTrue(result_is_valid(result, apply=True))
 
             with sqlite3.connect(db_path) as conn:
@@ -607,6 +710,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertIn("metrics_max_recompute_duration_ms", columns)
             self.assertIn("metrics_suppression_reasons_json", columns)
             self.assertIn("metrics_insight_types_json", columns)
+            self.assertIn("shadow_insight_contract_json", columns)
 
             after_dry = run_snapshot_migration(db_path, apply=False)
             self.assertFalse(after_dry["changed"])
@@ -673,6 +777,7 @@ class BehaviorSnapshotTests(unittest.TestCase):
                 "add_column:metrics_recomputes_completed",
                 dry["planned_changes"],
             )
+            self.assertIn("add_column:shadow_insight_contract_json", dry["planned_changes"])
             self.assertNotIn(
                 "add_column:metrics_recomputes_started",
                 dry["planned_changes"],

@@ -224,7 +224,7 @@ nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
 | `repair_etf_contribution_assignments.py` | 20.08.2026 | Legacy-ETF-Zuordnungen reparieren | Bedingt | UNKNOWN | UNKNOWN ohne Nutzer- und Schema-Pruefung | `rove_investment_contributions.py` |
 | `prepare_multi_account_active_testers.py` | 20.08.2026 | Aktive Tester fuer Multi-Account vorbereiten | Nein/bedingt | UNKNOWN | Nein ohne Rollout-Pruefung | `migrate_financial_accounts.py`, `rove_financial_accounts.py` |
 | `migrate_report_snapshots_v2.py` | 21.08.2026 | Additive Report-Snapshot-Tabelle | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `report_engine.py` |
-| `migrate_behavior_snapshot.py` | 18.09.2026 | Additive Coach-V4-Snapshot-Tabelle und Queue-Index | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `rove_behavior_snapshot.py` |
+| `migrate_behavior_snapshot.py` | 18.09./21.10.2026 | Additive Coach-V4-Snapshot-Tabelle, Queue-Index und interner V3/V4-Shadow-Vertrag | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `rove_behavior_snapshot.py` |
 | `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
 | `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
 | `monthly_financial_snapshots` | 07.09.2026 | Immutable Finanzwerte fuer abgeschlossene Monatsreports | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_app_state.py`, Monatsabschluss |
@@ -235,6 +235,28 @@ Schema-Vorbereitung in `rove_app_state.py` und
 `rove_financial_accounts.py` nachgeruestet. Der user-scoped Unique-Index ist
 idempotent; historische Bewegungen behalten einen leeren Wert und werden nicht
 nachtraeglich dedupliziert.
+
+### Gemeinsamer V3/V4-Insight-Shadow-Vertrag (21.10.2026)
+
+`migrate_behavior_snapshot.py` ergaenzt `app_behavior_snapshot` additiv um
+`shadow_insight_contract_json` (nullable TEXT). Die Spalte speichert hoechstens
+den bereits durch Coach V4 ausgewaehlten, coach-geeigneten Shadow-Kandidaten im
+versionierten gemeinsamen Vertrag. Sie enthaelt keine Rohbuchungs-IDs oder
+Nutzerkennung. Bestehende Snapshot-Zeilen bleiben unveraendert; bis zur
+expliziten Migration liefert die neue Shadow-Lesehilfe fail-closed keine V4-
+Kandidaten. Das API-GET legt kein Schema an.
+
+Der Snapshot-Worker schreibt den Vertrag nur nach unveraendertem Source-
+Watermark. Der Leseweg prueft Snapshot-/Engine-/Vertragsversion, Ready-/Idle-
+Status, Alter und aktuellen nutzerbezogenen Source-Watermark. Fehlende,
+veraltete, widerspruechliche oder nicht eindeutig priorisierte Evidenz wird
+nicht weitergereicht. Die V3-Mentorentscheidung bleibt der aktive Kandidat;
+V4 bleibt intern im Shadow Mode. Der gemeinsame Pfad wird nicht an das
+Frontend, Ask Rovi oder Reports ausgegeben. Die allgemeine Pilot-Flag und die
+Allowlist werden nicht aktiviert oder veraendert.
+
+Die Production-Anwendung dieser Spalte ist `UNKNOWN`; es wurde in diesem Block
+keine Production-Pruefung oder -Migration ausgefuehrt.
 
 `app_auth_login_limits` wird additiv und idempotent durch `ensure_auth_tables()`
 in `rove_app_api.py` angelegt. Die Tabelle speichert ausschliesslich gehashte

@@ -12,6 +12,7 @@ from pathlib import Path
 from rove_behavior_snapshot import (
     SNAPSHOT_METRIC_COLUMNS,
     SNAPSHOT_TABLE,
+    SHADOW_INSIGHT_COLUMN,
     ensure_behavior_snapshot_table,
 )
 
@@ -59,6 +60,7 @@ def _schema_state(conn: sqlite3.Connection) -> dict[str, bool]:
         "table": _has_object(conn, "table", SNAPSHOT_TABLE),
         "queue_index": _has_object(conn, "index", SNAPSHOT_QUEUE_INDEX),
         "metrics": all(column in columns for column in SNAPSHOT_METRIC_COLUMNS),
+        "shadow_contract": SHADOW_INSIGHT_COLUMN in columns,
     }
 
 
@@ -75,7 +77,7 @@ def _planned_changes(conn: sqlite3.Connection) -> list[str]:
     """Describe only additive operations the migration would perform."""
     state = _schema_state(conn)
     if not state["table"]:
-        return ["create_table_with_metric_columns", "create_queue_index"]
+        return ["create_table_with_metrics_and_shadow_contract", "create_queue_index"]
 
     planned = []
     if not state["queue_index"]:
@@ -86,6 +88,8 @@ def _planned_changes(conn: sqlite3.Connection) -> list[str]:
         for name in SNAPSHOT_METRIC_DEFINITIONS
         if name not in columns
     )
+    if SHADOW_INSIGHT_COLUMN not in columns:
+        planned.append(f"add_column:{SHADOW_INSIGHT_COLUMN}")
     return planned
 
 
@@ -96,6 +100,14 @@ def _add_metric_columns(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f'ALTER TABLE "{SNAPSHOT_TABLE}" ADD COLUMN "{name}" {definition}'
             )
+
+
+def _add_shadow_insight_column(conn: sqlite3.Connection) -> None:
+    if SHADOW_INSIGHT_COLUMN not in _snapshot_columns(conn):
+        conn.execute(
+            f'ALTER TABLE "{SNAPSHOT_TABLE}" '
+            f'ADD COLUMN "{SHADOW_INSIGHT_COLUMN}" TEXT'
+        )
 
 
 def create_backup(db_path: Path) -> Path:
@@ -132,6 +144,7 @@ def run(db_path: Path, *, apply: bool) -> dict:
                 conn.execute("BEGIN IMMEDIATE")
                 ensure_behavior_snapshot_table(conn)
                 _add_metric_columns(conn)
+                _add_shadow_insight_column(conn)
                 integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
                 foreign_key_errors = list(conn.execute("PRAGMA foreign_key_check"))
                 if integrity != "ok" or foreign_key_errors:
@@ -161,6 +174,8 @@ def run(db_path: Path, *, apply: bool) -> dict:
         "table_after": after["table"],
         "queue_index_after": after["queue_index"],
         "metrics_after": after["metrics"],
+        "shadow_contract_before": before["shadow_contract"],
+        "shadow_contract_after": after["shadow_contract"],
         "planned_changes": planned_changes,
         "remaining_changes": remaining_changes,
         "changed": changed or bool(planned_changes),
@@ -177,7 +192,10 @@ def result_is_valid(result: dict, *, apply: bool) -> bool:
         and result["foreign_key_errors"] == 0
     )
     if apply:
-        valid = valid and result["table_after"] and result["queue_index_after"] and result["metrics_after"]
+        valid = (
+            valid and result["table_after"] and result["queue_index_after"]
+            and result["metrics_after"] and result["shadow_contract_after"]
+        )
     return bool(valid)
 
 

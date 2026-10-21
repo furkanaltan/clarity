@@ -17,6 +17,7 @@ from typing import Any
 
 
 SNAPSHOT_TABLE = "app_behavior_snapshot"
+SHADOW_INSIGHT_COLUMN = "shadow_insight_contract_json"
 SNAPSHOT_VERSION = 1
 BEHAVIOR_ENGINE_VERSION = "coach-v4-shadow-1"
 BEHAVIOR_CONTRACT_VERSION = 1
@@ -91,6 +92,7 @@ def ensure_behavior_snapshot_table(conn: sqlite3.Connection) -> None:
             primary_coach_insight_id TEXT,
             primary_report_insight_id TEXT,
             visible_coach_payload_json TEXT,
+            shadow_insight_contract_json TEXT,
             recompute_state TEXT NOT NULL DEFAULT 'idle'
                 CHECK(recompute_state IN ('idle', 'pending', 'running')),
             invalidation_version INTEGER NOT NULL DEFAULT 0,
@@ -543,6 +545,83 @@ def get_visible_behavior_snapshot(
     return payload if isinstance(payload, dict) else None
 
 
+def get_shadow_insight_contracts(
+    conn: sqlite3.Connection,
+    user_id: int,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    """Read only fresh, versioned shadow contracts; every other state fails closed."""
+    if not _table_exists(conn, SNAPSHOT_TABLE):
+        return [], "snapshot_missing"
+    if SHADOW_INSIGHT_COLUMN not in _snapshot_columns(conn):
+        return [], "contract_schema_missing"
+    row = conn.execute(
+        f"""SELECT snapshot_version, engine_version, behavior_contract_version,
+                   generated_at, status, recompute_state, source_watermark,
+                   {SHADOW_INSIGHT_COLUMN}
+              FROM {SNAPSHOT_TABLE} WHERE user_id=?""",
+        (int(user_id),),
+    ).fetchone()
+    if not row:
+        return [], "snapshot_row_missing"
+    snapshot_version = _row_value(row, "snapshot_version", 0)
+    engine_version = _row_value(row, "engine_version", 1)
+    contract_version = _row_value(row, "behavior_contract_version", 2)
+    generated_at = _row_value(row, "generated_at", 3)
+    status = _row_value(row, "status", 4)
+    recompute_state = _row_value(row, "recompute_state", 5)
+    source_watermark = _row_value(row, "source_watermark", 6)
+    payload_json = _row_value(row, SHADOW_INSIGHT_COLUMN, 7)
+    if status != SNAPSHOT_STATUS_READY or recompute_state != SNAPSHOT_RECOMPUTE_IDLE:
+        return [], "snapshot_not_ready"
+    try:
+        if (
+            int(snapshot_version or 0) != SNAPSHOT_VERSION
+            or str(engine_version or "") != BEHAVIOR_ENGINE_VERSION
+            or int(contract_version or 0) != BEHAVIOR_CONTRACT_VERSION
+        ):
+            return [], "snapshot_version_mismatch"
+        generated = datetime.fromisoformat(str(generated_at))
+        current = now or datetime.now(timezone.utc)
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age_seconds = (current - generated).total_seconds()
+        if age_seconds < -60 or age_seconds > SNAPSHOT_MAX_AGE_SECONDS:
+            return [], "snapshot_stale"
+        from rove_financial_insights import INSIGHT_CONTRACT_VERSION
+
+        payload = json.loads(payload_json or "[]")
+        if not isinstance(payload, list) or len(payload) > 1:
+            return [], "invalid_shadow_contract"
+        if not payload:
+            return [], "no_candidate"
+        if compute_behavior_source_watermark(conn, int(user_id)) != str(source_watermark or ""):
+            return [], "source_watermark_mismatch"
+        watermark_digest = hashlib.sha256(str(source_watermark or "").encode("utf-8")).hexdigest()
+        generated_iso = generated.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        for item in payload:
+            if (
+                not isinstance(item, dict)
+                or item.get("contract_version") != INSIGHT_CONTRACT_VERSION
+                or item.get("producer") != "coach_v4_shadow"
+                or item.get("visibility") != "shadow_only"
+                or not isinstance(item.get("evidence"), dict)
+                or not item.get("evidence")
+                or not isinstance(item.get("freshness"), dict)
+                or item["freshness"].get("generated_at") != generated_iso
+                or item["freshness"].get("source_watermark_sha256") != watermark_digest
+                or not isinstance(item.get("dedupe_key"), str)
+                or not isinstance(item.get("insight_type"), str)
+                or not isinstance(item.get("claim_limits"), list)
+            ):
+                return [], "invalid_shadow_contract"
+        return payload, "ready"
+    except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+        return [], "invalid_shadow_contract"
+
+
 def _claim_recompute(conn: sqlite3.Connection, user_id: int, now: str) -> int | None:
     _ensure_row(conn, user_id, now)
     cursor = conn.execute(
@@ -614,27 +693,40 @@ def recompute_behavior_snapshot(
         payload = build_visible_behavior_insight(primary) if primary else None
         primary_report = next((item for item in insights if item.get("primary_report_insight")), None)
         generated_at = _now_text()
+        from rove_financial_insights import build_v4_shadow_contracts
+
+        shadow_contracts = build_v4_shadow_contracts(
+            insights, generated_at=generated_at, source_watermark=after
+        )
+        shadow_contract_json = json.dumps(
+            shadow_contracts, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        assignments = [
+            "snapshot_version=?", "engine_version=?", "behavior_contract_version=?",
+            "generated_at=?", "source_watermark=?", "status='ready'", "stale_reason=NULL",
+            "primary_coach_insight_id=?", "primary_report_insight_id=?",
+            "visible_coach_payload_json=?", "recompute_state='idle'",
+            "last_error_class=NULL", "updated_at=?",
+        ]
+        parameters: list[Any] = [
+            SNAPSHOT_VERSION,
+            BEHAVIOR_ENGINE_VERSION,
+            int(VISIBLE_BEHAVIOR_CONTRACT_VERSION),
+            generated_at,
+            after,
+            primary.get("insight_id") if primary else None,
+            primary_report.get("insight_id") if primary_report else None,
+            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) if payload else None,
+            generated_at,
+        ]
+        if SHADOW_INSIGHT_COLUMN in _snapshot_columns(conn):
+            assignments.append(f"{SHADOW_INSIGHT_COLUMN}=?")
+            parameters.append(shadow_contract_json)
+        parameters.extend((int(user_id), claim))
         conn.execute(
-            f"""UPDATE {SNAPSHOT_TABLE}
-                SET snapshot_version=?, engine_version=?, behavior_contract_version=?,
-                    generated_at=?, source_watermark=?, status='ready', stale_reason=NULL,
-                    primary_coach_insight_id=?, primary_report_insight_id=?,
-                    visible_coach_payload_json=?, recompute_state='idle',
-                    last_error_class=NULL, updated_at=?
-                WHERE user_id=? AND invalidation_version=?""",
-            (
-                SNAPSHOT_VERSION,
-                BEHAVIOR_ENGINE_VERSION,
-                int(VISIBLE_BEHAVIOR_CONTRACT_VERSION),
-                generated_at,
-                after,
-                primary.get("insight_id") if primary else None,
-                primary_report.get("insight_id") if primary_report else None,
-                json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) if payload else None,
-                generated_at,
-                int(user_id),
-                claim,
-            ),
+            f"UPDATE {SNAPSHOT_TABLE} SET {', '.join(assignments)} "
+            "WHERE user_id=? AND invalidation_version=?",
+            parameters,
         )
         _record_recompute_metrics(
             conn, int(user_id), outcome="completed", started_perf=started_perf

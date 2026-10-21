@@ -64,7 +64,13 @@ from rove_behavior_patterns import build_shadow_inspector
 from rove_behavior_snapshot import (
     delete_behavior_snapshot,
     get_behavior_snapshot_metrics,
+    get_shadow_insight_contracts,
     invalidate_behavior_snapshot,
+)
+from rove_financial_insights import (
+    build_shadow_insight_path,
+    get_shadow_insight_metrics,
+    record_shadow_insight_evaluation,
 )
 from rove_visible_coach_v4 import get_visible_coach_v4, get_visible_pilot_metrics
 from rove_valuables import (
@@ -4077,6 +4083,25 @@ def current_app_state():
         else:
             conn.execute("SAVEPOINT state_read")
         state = build_live_app_data(conn, user_id, activate_due_savings=refresh)
+        try:
+            v4_shadow_candidates, shadow_snapshot_status = get_shadow_insight_contracts(
+                conn, user_id
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            v4_shadow_candidates, shadow_snapshot_status = [], "read_error"
+        feature_state = state.get("features") or {}
+        shadow_profile_mode = (
+            "multi_account"
+            if feature_state.get(FEATURE_MULTI_CASH_ACCOUNTS_V1)
+            else "legacy"
+        )
+        shadow_path = build_shadow_insight_path(
+            state.get("mentor_candidate"),
+            v4_shadow_candidates,
+            snapshot_status=shadow_snapshot_status,
+            profile_mode=shadow_profile_mode,
+        )
+        record_shadow_insight_evaluation(shadow_path)
         # The identity is derived from the authenticated HttpOnly session above;
         # expose it only as an additive consistency marker for the frontend.
         state["user_id"] = int(user_id)
@@ -4322,7 +4347,12 @@ def admin_coach_snapshot_metrics():
         if auth_error:
             return auth_error
         metrics = get_behavior_snapshot_metrics(conn)
-    return jsonify({"ok": True, **metrics, "visible_pilot": get_visible_pilot_metrics()})
+    return jsonify({
+        "ok": True,
+        **metrics,
+        "visible_pilot": get_visible_pilot_metrics(),
+        "shared_insight_shadow": get_shadow_insight_metrics(),
+    })
 
 @app.route("/v1/admin/invitations", methods=["POST"])
 def admin_create_invitation():
