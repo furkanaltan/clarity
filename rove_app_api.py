@@ -72,6 +72,12 @@ from rove_financial_insights import (
     get_shadow_insight_metrics,
     record_shadow_insight_evaluation,
 )
+from rove_coach_v4_delivery import (
+    answer_v4_question,
+    build_visible_mentor_insight,
+    resolve_v4_transaction_examples,
+    v4_question_mode,
+)
 from rove_visible_coach_v4 import get_visible_coach_v4, get_visible_pilot_metrics
 from rove_valuables import (
     ensure_valuables_schema, list_valuables, clean_valuable, clean_valuables,
@@ -2719,6 +2725,12 @@ def ai_chat():
     message = " ".join(payload["message"].split())
     if not message or len(message) > AI_CHAT_MAX_INPUT_CHARS:
         return jsonify({"ok": False, "error": "invalid_ai_request"}), 400
+    selected_insight_id = payload.get("insight_id")
+    if selected_insight_id is not None and (
+        not isinstance(selected_insight_id, str)
+        or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", selected_insight_id)
+    ):
+        return jsonify({"ok": False, "error": "invalid_insight_id"}), 400
     if ai_chat_contains_obvious_secret(message):
         return jsonify({
             "ok": False,
@@ -2735,6 +2747,56 @@ def ai_chat():
             if not session:
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
             user_id, _session_id = session
+            selected_question_mode = v4_question_mode(message) if selected_insight_id else None
+            if selected_insight_id:
+                # Pattern resolution may scan the authenticated user's bounded
+                # financial history. Release the rate-limit/auth transaction
+                # before this strictly read-only work.
+                conn.commit()
+                try:
+                    with db(read_only=True, timeout=AI_CHAT_DB_TIMEOUT_SECONDS) as insight_conn:
+                        fresh_session = session_user_from_cookie(insight_conn, touch=False)
+                        if not fresh_session or fresh_session[0] != user_id:
+                            return jsonify({"ok": False, "error": "not_logged_in"}), 401
+                        contracts, snapshot_status = get_shadow_insight_contracts(
+                            insight_conn, user_id
+                        )
+                        visible = get_visible_coach_v4(insight_conn, user_id)
+                        candidate = build_visible_mentor_insight(None, contracts, visible)
+                        if not candidate or candidate.get("insight_id") != selected_insight_id:
+                            return jsonify({
+                                "ok": False,
+                                "error": "insight_no_longer_current",
+                                "answer": "Dieser Hinweis ist nicht mehr aktuell oder nicht für dieses Konto verfügbar. Aktualisiere bitte deine Übersicht.",
+                            }), 409
+                        contract = next(
+                            item for item in contracts
+                            if isinstance(item, dict) and item.get("insight_id") == selected_insight_id
+                        )
+                        transactions = None
+                        if selected_question_mode == "transactions":
+                            transactions = resolve_v4_transaction_examples(
+                                insight_conn, user_id, contract
+                            )
+                        return jsonify({
+                            "ok": True,
+                            "kind": "rove",
+                            "deterministic": True,
+                            "intent": "coach_v4_insight",
+                            "insight_id": selected_insight_id,
+                            "answer": answer_v4_question(
+                                selected_question_mode, candidate, transactions
+                            ),
+                        })
+                except sqlite3.Error as exc:
+                    logger.warning(
+                        "Coach-V4-Erklaerung nicht verfuegbar (%s)", type(exc).__name__
+                    )
+                    return jsonify({
+                        "ok": False,
+                        "error": "insight_explanation_unavailable",
+                        "answer": "Rov.E kann diesen Hinweis gerade nicht sicher prüfen. Deine Frage ist erhalten geblieben – bitte versuche es erneut.",
+                    }), 503
             intent = ai_chat_intent(message)
             if intent == "action":
                 return jsonify({"ok": True, "kind": "rove", "answer": "Dafür nutzt du bitte die normale Rov.E-Funktion. Ich kann deine Finanzdaten nicht verändern."})
@@ -4105,9 +4167,14 @@ def current_app_state():
         # The identity is derived from the authenticated HttpOnly session above;
         # expose it only as an additive consistency marker for the frontend.
         state["user_id"] = int(user_id)
-        # V4 remains server-gated and default-off. This nullable additive field is
-        # ignored by the existing frontend until a separately reviewed UI pilot.
+        # The existing server gate remains default-off; the frontend consumes
+        # only this joined DTO when that gate returns a current supported insight.
         state["coach_v4_visible"] = get_visible_coach_v4(conn, user_id)
+        state["coach_v4_insight"] = build_visible_mentor_insight(
+            state.get("mentor_candidate"),
+            shadow_path.get("v4_candidates"),
+            state["coach_v4_visible"],
+        )
         coach_announcement = None
         if refresh:
             coach_announcement = claim_coach_announcement(

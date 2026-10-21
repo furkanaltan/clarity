@@ -182,6 +182,16 @@ def adapt_v4_shadow_candidate(
     metrics = _safe_evidence(evidence_metrics)
     if not isinstance(metrics, dict) or not metrics:
         return None
+    raw_sources = insight.get("source_ids")
+    if (
+        insight_type in {"budget_attention", "spending_trend_improving"}
+        and isinstance(raw_sources, (list, tuple))
+        and 0 < len(raw_sources) <= 10000
+        and all(isinstance(source_id, (str, int)) for source_id in raw_sources)
+    ):
+        # Count-only evidence is safe to share; raw booking identifiers remain
+        # excluded from the persisted contract and are resolved only on demand.
+        metrics["source_transaction_count"] = len({str(source_id) for source_id in raw_sources})
     raw_pattern_ids = insight.get("source_pattern_ids")
     if not isinstance(raw_pattern_ids, (list, tuple)):
         return None

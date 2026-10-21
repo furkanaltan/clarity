@@ -105,7 +105,10 @@ console.log(JSON.stringify(before === JSON.stringify(DATA)));
         route = "if(isEtfReviewQuestion(t)) return ans_etf_review();"
         self.assertIn('"ETF prüfen"', self.source)
         self.assertIn(route, self.source)
-        self.assertLess(self.source.index(route), self.source.index("const ai=await askRoveAi(t)"))
+        self.assertLess(
+            self.source.index(route),
+            self.source.index("const ai=await askRoveAi(t,activeMentorInsightId)"),
+        )
 
 
 if __name__ == "__main__":

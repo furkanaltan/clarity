@@ -8,15 +8,17 @@ const { chromium, webkit, devices } = require('playwright');
 
 const source = process.env.ROVE_FRONTEND_PATH || path.join(__dirname, 'frontend', 'index.html');
 const output = process.env.ROVE_ASK_ROVI_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'rove-ask-rovi-'));
-let origin, requests, nextOutcome;
+let origin, requests, nextOutcome, nextCoachV4Insight, nextV3Candidate;
 
 function reset() {
   requests = [];
   nextOutcome = '';
+  nextCoachV4Insight = null;
+  nextV3Candidate = null;
 }
 
 function state() {
-  return {
+  const result = {
     ok: true, user_id: 1, netWorth: 12500, onboardingRequired: false,
     onboarding: { required: false, status: 'completed', completed: true, step: 10 },
     identity: { name: 'Synthetic Mentor', email: 'synthetic@example.test' },
@@ -36,7 +38,14 @@ function state() {
       free_month_remaining: 12125, financial_month_budget: 0, variableMonthExpenses: 0,
       category_budget_total: 0, category_spent: 0, monthExpenses: 0 },
     monthlyPlan: { incomeStatus: 'confirmed', savingsStatus: 'confirmed', status: 'confirmed' },
+    mentor_candidate: nextV3Candidate,
+    coach_v4_insight: nextCoachV4Insight,
   };
+  if (nextCoachV4Insight) {
+    result.tx = [{ d: 'Heute', items: [{ a: -4.5, n: 'Café', cat: 'Essen', classification: 'consumption' }] }];
+    result.budgets = [{ cat: 'Essen', limit: 500, source: 'bot' }];
+  }
+  return result;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -60,6 +69,15 @@ const server = http.createServer(async (req, res) => {
       nextOutcome = '';
       await new Promise(resolve => setTimeout(resolve, 220));
       if (outcome === 'server-error') return json({ ok: false, error: 'synthetic_unavailable' }, 503);
+      if (payload.insight_id) {
+        const answer = payload.message.includes('Warum')
+          ? 'Der Hinweis beruht auf dem belegten Budgetrahmen; eine Ursache ist nicht belegt.'
+          : payload.message.includes('Welche')
+            ? 'Der Hinweis stützt sich auf 3 Buchungen im belegten Zeitraum. Beispiel: Café, 4,50 €.'
+            : 'Du kannst die Buchungen prüfen und selbst über deinen Rahmen entscheiden.';
+        return json({ ok: true, kind: 'rove', intent: 'coach_v4_insight', insight_id: payload.insight_id,
+          conversation_id: 'synthetic-conversation', answer });
+      }
       if (payload.message.toLowerCase().includes('bargeld')) {
         return json({ ok: true, kind: 'rove', intent: 'wallet_cash',
           conversation_id: 'synthetic-conversation', answer: 'Du hast aktuell 125,00 € Bargeld.' });
@@ -201,6 +219,86 @@ async function flow(browser, label, viewport, standalone = false) {
   }
 }
 
+async function mentorInsightFlow(browser, label, viewport, standalone = false) {
+  reset();
+  nextCoachV4Insight = {
+    insight_id: 'v4:shadow:behavior_insight:synthetic-7',
+    insight_type: 'budget_attention',
+    title: 'Dein Budget ist diesen Monat unter Druck',
+    message: 'Bei Essen liegst du über deinem eigenen Rahmen.',
+    facts: { category: 'Essen', period: { start: '2026-10-01', end: '2026-10-21' } },
+  };
+  const mobile = viewport.width === 390;
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block',
+    ...(mobile ? { isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent } : {}) });
+  if (standalone) await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'standalone', { get: () => true, configurable: true });
+  });
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url());
+    return url.origin === origin ? route.continue() : route.abort('blockedbyclient');
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(10000);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(origin + '/app/');
+    await page.locator('#app:not([hidden])').waitFor();
+    await page.locator('#splash').waitFor({ state: 'detached' });
+    await page.waitForFunction(() => DATA.coachV4Insight?.insight_id === 'v4:shadow:behavior_insight:synthetic-7');
+    const mentor = page.locator('#tab-home .mentor');
+    await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
+    await page.evaluate(() => {
+      DATA.monthlyPlan = { ...DATA.monthlyPlan, incomeStatus: 'pending' };
+      DATA.payday = { gebucht: false, faellig: true };
+      mentorLine();
+    });
+    await page.getByText(/Gehalt ist für diesen Monat noch nicht bestätigt/, { exact: false }).waitFor();
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null);
+    await page.evaluate(() => {
+      DATA.monthlyPlan.incomeStatus = 'confirmed';
+      mentorLine();
+    });
+    await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
+    if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
+    await mentor.click();
+    await page.locator('#talksheet.on').waitFor();
+    await page.getByText(/Du hast den Hinweis/, { exact: false }).waitFor();
+    for (const question of ['Warum sagst du mir das?', 'Welche Ausgaben meinst du?', 'Was kann ich konkret ändern?']) {
+      await page.locator('#qsug .qs').filter({ hasText: question }).waitFor();
+    }
+
+    nextOutcome = 'server-error';
+    await page.locator('#qsug .qs').filter({ hasText: 'Warum sagst du mir das?' }).click();
+    await page.getByText(/Rov\.E kann gerade nicht antworten/, { exact: false }).waitFor();
+    assert.equal(await page.locator('.bub.me').filter({ hasText: 'Warum sagst du mir das?' }).count(), 1);
+    await page.locator('#qsug .qs').filter({ hasText: 'Warum sagst du mir das?' }).click();
+    await page.getByText(/eine Ursache ist nicht belegt/, { exact: false }).waitFor();
+    assert.equal(await page.locator('.bub.me').filter({ hasText: 'Warum sagst du mir das?' }).count(), 1);
+    await page.locator('#qsug .qs').filter({ hasText: 'Welche Ausgaben meinst du?' }).click();
+    await page.getByText(/3 Buchungen im belegten Zeitraum/, { exact: false }).waitFor();
+    await page.locator('#qsug .qs').filter({ hasText: 'Was kann ich konkret ändern?' }).click();
+    await page.getByText(/selbst über deinen Rahmen entscheiden/, { exact: false }).waitFor();
+    assert.equal(requests.length, 4, 'one failed request plus three successful context questions');
+    assert.ok(requests.every(request => request.insight_id === nextCoachV4Insight.insight_id));
+    assert.equal(errors.length, 0, errors.join('\n'));
+    if (mobile) {
+      await page.locator('#qsug').evaluate(element => { element.scrollLeft = 0; });
+      const chip = await page.locator('#qsug .qs').first().boundingBox();
+      assert.ok(chip && chip.x >= 0 && chip.x + chip.width <= viewport.width + 2, JSON.stringify(chip));
+      await page.screenshot({ path: path.join(output, label + '-mentor-insight-390.png') });
+    } else {
+      await page.screenshot({ path: path.join(output, label + '-mentor-insight-desktop.png') });
+    }
+    console.log(label.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   fs.mkdirSync(output, { recursive: true });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -212,6 +310,9 @@ async function main() {
     await flow(browser, 'desktop', { width: 1280, height: 900 });
     await flow(browser, 'mobile-390', { width: 390, height: 844 });
     await flow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
+    await mentorInsightFlow(browser, 'desktop', { width: 1280, height: 900 });
+    await mentorInsightFlow(browser, 'mobile-390', { width: 390, height: 844 });
+    await mentorInsightFlow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
     console.log('SCREENSHOTS=' + output);
   } finally {
     if (browser) await browser.close();

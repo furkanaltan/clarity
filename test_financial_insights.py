@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import sqlite3
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from rove_financial_insights import (
     adapt_v3_mentor_candidate,
@@ -12,6 +14,12 @@ from rove_financial_insights import (
     get_shadow_insight_metrics,
     record_shadow_insight_evaluation,
     reset_shadow_insight_metrics,
+)
+from rove_coach_v4_delivery import (
+    answer_v4_question,
+    build_visible_mentor_insight,
+    resolve_v4_transaction_examples,
+    v4_question_mode,
 )
 
 
@@ -97,6 +105,7 @@ class FinancialInsightContractTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["visibility"], "shadow_only")
         self.assertEqual(first["period"]["start"], "2026-07-01")
+        self.assertEqual(first["evidence"]["metrics"]["source_transaction_count"], 1)
         self.assertEqual(first["priority"]["basis"], "existing_v4_primary_coach_arbitration")
         self.assertIn("descriptive_only", first["claim_limits"])
         self.assertEqual(first["evidence"]["source_pattern_ids"], ["pattern-7"])
@@ -176,6 +185,99 @@ class FinancialInsightContractTests(unittest.TestCase):
             )
             self.assertEqual(path["v4_candidates"], [])
             self.assertEqual(path["profile_mode"], "multi_account")
+
+    def test_visible_mentor_join_keeps_shared_id_and_fails_closed_on_v3_or_fact_mismatch(self):
+        contract = adapt_v4_shadow_candidate(
+            self.v4_candidate(), generated_at=self.NOW.isoformat(),
+            source_watermark=self.WATERMARK,
+        )
+        visible = {
+            "insight_type": "spending_trend_improving",
+            "category_display": "Restaurants",
+            "period_start": "2026-07-01", "period_end": "2026-09-30",
+            "title": "Deine Ausgaben entwickeln sich positiv",
+            "message": "Bei Restaurants sind deine Ausgaben gesunken.",
+            "monthly_amounts": [
+                {"month": "2026-07", "amount": 120.0},
+                {"month": "2026-08", "amount": 90.0},
+                {"month": "2026-09", "amount": 70.0},
+            ],
+        }
+        result = build_visible_mentor_insight(None, [contract], visible)
+        self.assertEqual(result["insight_id"], contract["insight_id"])
+        self.assertEqual(result["evidence"]["metrics"]["monthly_amounts"], visible["monthly_amounts"])
+        self.assertNotIn("private merchant", str(result))
+        self.assertIsNone(build_visible_mentor_insight(self.v3_candidate(), [contract], visible))
+        visible["monthly_amounts"][0]["amount"] = 999
+        self.assertIsNone(build_visible_mentor_insight(None, [contract], visible))
+
+    def test_context_questions_are_deterministic_and_claim_limited(self):
+        self.assertEqual(v4_question_mode("Warum sagst du mir das?"), "why")
+        self.assertEqual(v4_question_mode("Welche Ausgaben meinst du?"), "transactions")
+        self.assertEqual(v4_question_mode("Was kann ich konkret ändern?"), "action")
+        self.assertIsNone(v4_question_mode("Wie viel Bargeld habe ich?"))
+        insight = {
+            "insight_type": "spending_trend_improving",
+            "facts": {
+                "category": "Restaurants",
+                "monthly_amounts": [
+                    {"month": "2026-07", "amount": 120},
+                    {"month": "2026-08", "amount": 90},
+                    {"month": "2026-09", "amount": 70},
+                ],
+                "transaction_count": 8,
+            },
+        }
+        answer = answer_v4_question("why", insight)
+        self.assertIn("120,00 €", answer)
+        self.assertIn("70,00 €", answer)
+        self.assertIn("8 Buchungen", answer)
+        self.assertIn("Ursache lässt sich daraus nicht ableiten", answer)
+        answer = answer_v4_question("transactions", insight, {
+            "count": 8,
+            "examples": [{"date": "2026-09-04", "label": "Café", "amount": 4.5}],
+        })
+        self.assertIn("8 Buchungen", answer)
+        self.assertIn("4,50 €", answer)
+
+    def test_transaction_examples_resolve_exact_user_scoped_detector_sources(self):
+        raw = self.v4_candidate(
+            source_ids=["1", "2"],
+            evidence_metrics={
+                "months_compared": 3,
+                "monthly_amounts": [
+                    {"month": "2026-07", "amount": 120.0},
+                    {"month": "2026-08", "amount": 90.0},
+                    {"month": "2026-09", "amount": 70.0},
+                ],
+            },
+        )
+        contract = adapt_v4_shadow_candidate(
+            raw, generated_at=self.NOW.isoformat(), source_watermark=self.WATERMARK,
+        )
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""CREATE TABLE expenses (
+            id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, category TEXT,
+            merchant TEXT, transaction_at TEXT, created_at TEXT
+        )""")
+        conn.executemany(
+            "INSERT INTO expenses VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (1, 7, 4.5, "Essen", "Café", "2026-08-03 12:00:00", "2026-08-03 12:01:00"),
+                (2, 7, 20.0, "Essen", "Markt", "2026-09-04 10:00:00", "2026-09-04 10:01:00"),
+                (3, 8, 900.0, "Essen", "Fremdes Konto", "2026-09-04 10:00:00", "2026-09-04 10:01:00"),
+            ),
+        )
+        conn.commit()
+        inspector = {"insight_candidates": [raw]}
+        with patch("rove_coach_v4_delivery.compute_behavior_source_watermark", return_value=self.WATERMARK), \
+             patch("rove_coach_v4_delivery.build_shadow_inspector", return_value=inspector):
+            result = resolve_v4_transaction_examples(conn, 7, contract)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual([item["label"] for item in result["examples"]], ["Café", "Markt"])
+        self.assertNotIn("Fremdes Konto", str(result))
+        conn.close()
 
     def test_incomplete_period_and_inconsistent_dedupe_are_rejected(self):
         insight = self.v4_candidate(period_end=None)

@@ -156,6 +156,85 @@ class AiChatPhaseOneTests(unittest.TestCase):
         self.assertEqual(response.get_json()["kind"], "ai")
         self.assertEqual(response.get_json()["answer"], "Ich helfe dir bei Fragen zu deinen Finanzen und Rov.E.")
 
+    def test_selected_v4_insight_uses_same_id_and_deterministic_transaction_evidence(self):
+        insight_id = "v4:shadow:behavior_insight:synthetic"
+        contracts = [{"insight_id": insight_id}]
+        visible = {"insight_type": "budget_attention"}
+        candidate = {
+            "insight_id": insight_id,
+            "insight_type": "budget_attention",
+            "facts": {"category": "Essen", "period": {"start": "2026-10-01", "end": "2026-10-21"}},
+        }
+        with patch.object(api, "get_shadow_insight_contracts", return_value=(contracts, "ready")), \
+             patch.object(api, "get_visible_coach_v4", return_value=visible), \
+             patch.object(api, "build_visible_mentor_insight", return_value=candidate), \
+             patch.object(api, "resolve_v4_transaction_examples", return_value={
+                 "count": 2,
+                 "examples": [{"date": "2026-10-03", "label": "Café", "amount": 4.5}],
+             }) as resolve, \
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("V4 evidence must not use AI")):
+            response = self.post(
+                self.client_for(token="v4-context"),
+                "Welche Ausgaben meinst du?",
+                insight_id=insight_id,
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["insight_id"], insight_id)
+        self.assertTrue(payload["deterministic"])
+        self.assertIn("2 Buchungen", payload["answer"])
+        self.assertIn("4,50 €", payload["answer"])
+        resolve.assert_called_once()
+
+    def test_selected_v4_insight_is_suppressed_when_gate_or_snapshot_is_missing(self):
+        insight_id = "v4:shadow:behavior_insight:stale"
+        with patch.object(api, "get_shadow_insight_contracts", return_value=([], "snapshot_stale")), \
+             patch.object(api, "get_visible_coach_v4", return_value=None), \
+             patch.object(api, "build_visible_mentor_insight", return_value=None), \
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("stale V4 must not reach AI")):
+            response = self.post(
+                self.client_for(token="v4-stale"),
+                "Warum sagst du mir das?",
+                insight_id=insight_id,
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "insight_no_longer_current")
+
+    def test_unrecognized_question_in_v4_context_never_falls_back_to_ai(self):
+        insight_id = "v4:shadow:behavior_insight:bounded"
+        contracts = [{"insight_id": insight_id}]
+        candidate = {"insight_id": insight_id, "facts": {}}
+        with patch.object(api, "get_shadow_insight_contracts", return_value=(contracts, "ready")), \
+             patch.object(api, "get_visible_coach_v4", return_value={"insight_type": "budget_attention"}), \
+             patch.object(api, "build_visible_mentor_insight", return_value=candidate), \
+             patch.object(api, "resolve_v4_transaction_examples") as resolve, \
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("context must not use AI")):
+            response = self.post(
+                self.client_for(token="v4-unrecognized-question"),
+                "Kannst du mir noch mehr dazu sagen?",
+                insight_id=insight_id,
+            )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["insight_id"], insight_id)
+        self.assertTrue(payload["deterministic"])
+        self.assertIn("reichen nicht aus", payload["answer"])
+        resolve.assert_not_called()
+
+    def test_selected_v4_insight_cannot_be_resolved_for_another_users_session(self):
+        insight_id = "v4:shadow:behavior_insight:other-user"
+        with patch.object(api, "get_shadow_insight_contracts", return_value=([], "no_candidate")), \
+             patch.object(api, "get_visible_coach_v4", return_value=None), \
+             patch.object(api, "build_visible_mentor_insight", return_value=None), \
+             patch.object(api, "ai_chat_provider", side_effect=AssertionError("unowned V4 must not reach AI")):
+            response = self.post(
+                self.client_for(user_id=2, token="v4-other-user"),
+                "Warum sagst du mir das?",
+                insight_id=insight_id,
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"], "insight_no_longer_current")
+
     def test_system_prompt_requires_plain_text_without_markdown(self):
         self.assertIn("keine Sternchen", api.AI_CHAT_SYSTEM_PROMPT)
         self.assertIn("keine Markdown-Syntax", api.AI_CHAT_SYSTEM_PROMPT)

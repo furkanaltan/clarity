@@ -3706,6 +3706,7 @@ const DATA = {
   buffer:null,
   chartV2:null,
   mentorCandidate:null,
+  coachV4Insight:null,
   mentorEvents:[],
   features:{},
   featureAnnouncements:{unseen_count:0,eligible:[],archive:[]},
@@ -4734,6 +4735,7 @@ function mentorLine(){
   const el=document.getElementById("mentorSay");
   const mentor=document.querySelector(".mentor");
   setMentorCtaTarget("coach");
+  if(mentor) delete mentor.dataset.coachV4InsightId;
   const dueActions=(DATA.monthlyCheckinActions||[]).filter(action=>action?.due&&!action?.completed);
   mentor?.classList.remove("feature-announcement");
   if(mentor){
@@ -4846,6 +4848,21 @@ function mentorLine(){
     return;
   }
 
+  const coachV4Insight=DATA.coachV4Insight;
+  const coachV4Available=APP_MODE==="bridge" && coachV4Insight?.insight_id
+    && !mentorV4InsightSeenToday(coachV4Insight.insight_id);
+  if(coachV4Available && mentorIncomeReminderDue()){
+    el.innerHTML='<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div>'+
+      '<div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>';
+    return;
+  }
+  if(coachV4Available){
+    if(mentor) mentor.dataset.coachV4InsightId=coachV4Insight.insight_id;
+    el.innerHTML=`<div class="m-free"><b>${announcementEscape(coachV4Insight.title)}</b></div>`+
+      `<div class="m-note">${announcementEscape(coachV4Insight.message)} · <span class="m-nudge"><b>Warum?</b></span></div>`;
+    return;
+  }
+
   const score=DATA.score||{}, points=score.points||{};
   const activeDays=Number(score.tracking_days_90||0);
   const candidates=[];
@@ -4891,6 +4908,15 @@ function mentorLine(){
   el.innerHTML=selected.html;
   setMentorCtaTarget(selected.target);
 }
+function mentorV4InsightSeenToday(insightId){
+  try{
+    const seen=JSON.parse(localStorage.getItem("roveCoachV4Seen")||"null");
+    return seen?.id===insightId&&seen?.day===new Date().toLocaleDateString("sv-SE");
+  }catch(e){return false;}
+}
+function markMentorV4InsightSeen(insightId){
+  try{localStorage.setItem("roveCoachV4Seen",JSON.stringify({id:insightId,day:new Date().toLocaleDateString("sv-SE")}));}catch(e){}
+}
 let reportOpenInFlight=null;
 async function markReportOpened(reportMonth){
   const month=String(reportMonth||"").trim();
@@ -4905,6 +4931,7 @@ async function markReportOpened(reportMonth){
       DATA.mentorEvents=Array.isArray(data.mentor_events)?data.mentor_events:[];
       DATA.mentorCandidate=Object.prototype.hasOwnProperty.call(data,"mentor_candidate")
         ? data.mentor_candidate : null;
+      DATA.coachV4Insight=data.coach_v4_insight||null;
       mentorLine();
       return true;
     }catch(error){
@@ -9704,6 +9731,7 @@ async function fetchCanonicalAppState(){
     if(appDataRefreshQueued) return true;
     DATA.chartV2=data.chartV2||null;
     DATA.mentorCandidate=data.mentor_candidate||null;
+    DATA.coachV4Insight=data.coach_v4_insight||null;
     DATA.mentorEvents=Array.isArray(data.mentor_events)?data.mentor_events:[];
     if(Array.isArray(data.tx)){
       DATA.tx=data.tx.length?data.tx:[{d:"Heute",items:[]}];
@@ -13703,12 +13731,12 @@ function rovReply(html){
   c.appendChild(t); scrollChatToLatest(c);
   return new Promise(resolve=>setTimeout(()=>{ t.remove(); pushBub("rov", html); resolve(); }, 620));
 }
-async function askRoveAi(message){
+async function askRoveAi(message,insightId=null){
   if(!apiReady()) return {ok:false,message:"Rov.E ist gerade nicht verbunden. Prüfe deine Internetverbindung und versuche es erneut."};
   try{
     const response=await apiFetch("/v1/ai/chat",{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({message,conversation_id:aiConversationId})
+      body:JSON.stringify({message,conversation_id:aiConversationId,...(insightId?{insight_id:insightId}:{})})
     });
     const data=await response.json().catch(()=>null);
     if(!response.ok || data?.ok===false){
@@ -13740,6 +13768,7 @@ function rovAiReply(text){
 }
 let askRoveInFlight=false;
 let lastFailedAsk=null;
+let activeMentorInsightId=null;
 async function askRove(text){
   const t=(text||"").trim(); if(!t||askRoveInFlight) return {ok:false};
   askRoveInFlight=true;
@@ -13759,13 +13788,13 @@ async function askRove(text){
     return {ok:false};
   };
   try{
-    const answer=await roveAnswer(t);
+    const answer=activeMentorInsightId?null:await roveAnswer(t);
     if(answer){
       await rovReply(answer);
       lastFailedAsk=null;
       return {ok:true};
     }
-    const ai=await askRoveAi(t);
+    const ai=await askRoveAi(t,activeMentorInsightId);
     if(!ai?.ok) return showFailure(ai?.message||"Rov.E kann gerade nicht antworten. Deine Frage ist erhalten geblieben – versuche es erneut.");
     if(ai.ai){
       const c=chatEl();
@@ -13786,15 +13815,23 @@ async function askRove(text){
     send.disabled=false; send.removeAttribute("aria-busy");
   }
 }
-function openTalk(){
+function openTalk(options={}){
   closeAllSheetsSoft();
   const c=chatEl();
+  const insight=options?.insight&&typeof options.insight.insight_id==="string"
+    && /^v4:[A-Za-z0-9:_-]{1,200}$/.test(options.insight.insight_id)?options.insight:null;
+  activeMentorInsightId=insight?.insight_id||null;
   if(!c.dataset.init){
     const _nm=(typeof PROFILE_META!=="undefined"&&PROFILE_META.name)?" "+PROFILE_META.name:"";
     pushBub("rov", `Hallo${_nm}. Ich bin Rov.E, dein Finanzassistent.<br>Was soll ich prüfen?`);
     c.dataset.init="1";
   }
-  document.getElementById("qsug").innerHTML = SUGGESTIONS.map(q=>`<span class="qs">${q}</span>`).join("");
+  if(insight&&c.dataset.contextInsightId!==insight.insight_id){
+    c.dataset.contextInsightId=insight.insight_id;
+    pushBub("rov",`Du hast den Hinweis „${announcementEscape(insight.title)}“ geöffnet. Ich erkläre ihn anhand der dazu gespeicherten Evidenz.`);
+  }else if(!insight){delete c.dataset.contextInsightId;}
+  const suggestions=insight?["Warum sagst du mir das?","Welche Ausgaben meinst du?","Was kann ich konkret ändern?"]:SUGGESTIONS;
+  document.getElementById("qsug").innerHTML = suggestions.map(q=>`<span class="qs">${announcementEscape(q)}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("talksheet").classList.add("on");
   rovePushState("talksheet");
   requestAnimationFrame(()=>liftTabbar());
@@ -13822,7 +13859,14 @@ talkIn.addEventListener("keydown",e=>{
 });
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
-if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>openTalk()); }
+if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>{
+  const insight=DATA.coachV4Insight;
+  if(insight?.insight_id&&mentorCard.dataset.coachV4InsightId===insight.insight_id){
+    markMentorV4InsightSeen(insight.insight_id);
+    mentorLine();
+    openTalk({insight});
+  }else openTalk();
+}); }
 
 // ===================== EMPTY STATES: Verkabelung + Home-Kopf + Demo =====================
 // Home-Kopf im leeren Zustand beruhigen — keine 0,00-€-Wüste, kein leeres Diagramm
@@ -14776,6 +14820,9 @@ async function loadBridgeState(){
     if(!botBudgets.length) DATA.budgets = [];
     if(b.series) DATA.series = b.series;
     DATA.chartV2=b.chartV2||null;
+    DATA.mentorCandidate=b.mentor_candidate||null;
+    DATA.coachV4Insight=b.coach_v4_insight||null;
+    DATA.mentorEvents=Array.isArray(b.mentor_events)?b.mentor_events:[];
     if(b.histDates) DATA.histDates = b.histDates;   // echte Datums-Labels vom Server (27.07.)
     if(b.identity) DATA.identity = b.identity;      // Name + Login-Adresse des Kontos (27.07.)
     if(b.payday) DATA.payday = b.payday;            // Zahltag des Kontos (27.07.)

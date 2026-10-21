@@ -17,19 +17,31 @@ class CoachCardNavigationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.frontend = FRONTEND_PATH.read_text(encoding="utf-8")
 
-    def test_card_surface_always_opens_coach(self):
-        self.assertIn(
-            'mentorCard.addEventListener("click",()=>openTalk())',
-            self.frontend,
-        )
-        self.assertNotIn(
-            'if(mentorCard.dataset.mentorDeepLink) openMentorCandidate(DATA.mentorCandidate,mentorCard.dataset.mentorDeepLink)',
-            self.frontend,
-        )
-        self.assertNotIn(
-            'else if((DATA.monthlyCheckinActions||[]).some(action=>action?.due&&!action?.completed)) openMonthlyPlan()',
-            self.frontend,
-        )
+    def test_card_surface_opens_coach_and_preserves_v4_insight_context(self):
+        start = self.frontend.index("// A due check-in owns the complete card;")
+        end = self.frontend.index("\n\n// ===================== EMPTY STATES:", start)
+        handler = self.frontend[start:end]
+        insight = {"insight_id": "v4:category-trend", "title": "Ausgaben im Blick"}
+        script = f"""
+const DATA={{coachV4Insight:{json.dumps(insight)}}}, calls=[], listeners={{}};
+const card={{dataset:{{coachV4InsightId:"v4:category-trend"}},style:{{}},
+  addEventListener:(name,fn)=>listeners[name]=fn}};
+const document={{querySelector:selector=>selector==="#tab-home .mentor"?card:null}};
+function markMentorV4InsightSeen(id){{calls.push(["seen",id]);}}
+function mentorLine(){{calls.push(["render"]);}}
+function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||null]);}}
+{handler}
+listeners.click();
+card.dataset.coachV4InsightId="v4:another-insight";
+listeners.click();
+process.stdout.write(JSON.stringify(calls));
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [
+            ["seen", "v4:category-trend"], ["render"],
+            ["talk", "v4:category-trend"], ["talk", None],
+        ])
 
     def test_arrow_is_explicit_cta_with_coach_fallback(self):
         self.assertIn(

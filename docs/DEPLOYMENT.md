@@ -140,22 +140,33 @@ Produktiv beobachtete Environment-Dateien:
 
 Die Inhalte wurden nicht gelesen.
 
-### Coach V4 sichtbarer Pilot
+### Coach V4 kontrollierter Prelaunch-Test
 
-Der serverseitige sichtbare V4-Gate ist standardmäßig deaktiviert. Für einen
-kontrollierten Pilot werden ausschließlich diese nicht sensitiven Schalter aus
-der API-Umgebung gelesen:
+Der serverseitige sichtbare V4-Gate bleibt standardmäßig deaktiviert. Die
+Mentor-/Ask-Rovi-Integration verwendet ausschließlich den vorhandenen Gate;
+es gibt keine zweite Allowlist und keine automatische globale Freigabe. Für
+einen kontrollierten Test werden die bereits vorhandenen, nicht sensitiven
+Schalter ausschließlich in der isolierten Testumgebung verwendet:
 
 - `ROVE_COACH_V4_VISIBLE_ENABLED=1` aktiviert den Gate grundsätzlich.
 - `ROVE_COACH_V4_VISIBLE_USER_IDS=123,456` begrenzt ihn auf eine explizite
   User-Allowlist.
 
-Ohne beide Bedingungen liefert `/v1/state` kein sichtbares V4-DTO. Ein
-Rollback erfolgt durch Entfernen der Allowlist oder Setzen des Flags auf `0`;
-ein Frontend- oder Datenbank-Rollback ist dafür nicht erforderlich. Der Gate
-liest ausschließlich einen aktuellen, versionierten Snapshot und verwirft
-stale, fehlerhafte oder inkompatible Snapshots. Die vorhandene V3-Mentorlogik
-bleibt davon getrennt.
+Ohne beide Bedingungen liefert `/v1/state` keinen nutzersichtbaren V4-Hinweis.
+Ein Rollback erfolgt durch Entfernen der Allowlist oder Setzen des Flags auf
+`0`; ein Datenbank-Rollback ist dafür nicht erforderlich. Der Gate liest nur
+einen aktuellen, versionierten Snapshot und verwirft veraltete, fehlerhafte,
+widersprüchliche oder inkompatible Evidenz. Der Frontend-Hinweis wird hinter
+V3, Monatsaktionen und dringenden Budgetzuständen eingeordnet. Ask Rovi nimmt
+nur die stabile Insight-ID an und löst Evidenz serverseitig für den
+authentifizierten Nutzer erneut auf.
+
+Eine spätere Production-Nutzung erfordert weiterhin eine ausdrückliche
+Betreiberfreigabe nach bestandener Full-Suite, synthetischen Evidenz- und
+Ownership-Regressionen, Chromium-/WebKit-Smokes, manueller Desktop-/iPhone-PWA-
+Abnahme sowie Bestätigung, dass die Produktionsumgebung den Gate nicht global
+aktiviert. Dieses Release ändert keine Production-ENV und aktiviert V4 nicht
+automatisch.
 
 ## Clean-Room-Plan
 
