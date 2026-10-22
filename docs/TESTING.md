@@ -184,6 +184,33 @@ Test-Setup aus Block 4B. Der Lauf enthaelt ausschliesslich lokale synthetische
 Testdaten und lokale Testdienste; kein Production-Zugriff, Push oder
 Deployment. Coach V4 bleibt weiterhin hinter dem bestehenden Production-Gate.
 
+## Coach V4 explizite globale Gate-Mode, 22.10.2026
+
+Arbeitsbasis: `29efc6ebcc6ba717e3d648292642bbd2054c136a`, task-only Branch
+`codex/coach-v4-global-gate`. Der bestehende Server-Gate kennt nun die
+ausdruecklichen Modi `OFF`, `ON_SCOPED` und `ON_GLOBAL`. `ON_GLOBAL` verlangt
+weiterhin den Master-Schalter und wirkt nur an API-Aufrufen mit serverseitig
+authentifizierter Nutzer-ID. Bei fehlendem Modus bleibt die bisherige
+`ENABLED=1`-plus-numerische-Allowlist-Konfiguration `ON_SCOPED`; fehlende oder
+ungueltige Freigabekonfiguration faellt auf `OFF`. Evidenzpruefung,
+Priorisierung, Deduplizierung und Display-Acknowledge wurden nicht veraendert.
+
+Gezielte Gate-/Coach-/Snapshot-/WSGI-Regressionen: **250/250 PASS**. Die
+Full-Suite besteht: **2.166 Tests in 549,941 Sekunden, 0 Failures, 0 Errors,
+0 Skips**. Runtime Python 3.12.14 und GnuPG 2.4.4; voller Aufruf:
+
+```bash
+env -u PYTHONPATH -u ROVE_EXTRA_PYTHONPATH \
+  PATH=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/gpg/bin:$PATH LC_ALL=C \
+  ROVE_PYTHON=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/venv/bin/python \
+  PYTHONPYCACHEPREFIX=/tmp/rove-pycache-global-gate \
+  bash scripts/test.sh full
+```
+
+Alle Daten waren lokal und synthetisch. Kein Production-Zugriff, ENV-Wechsel,
+Push oder Deployment. `ON_GLOBAL` wurde in keiner Laufzeitkonfiguration
+aktiviert.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur

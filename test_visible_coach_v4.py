@@ -36,6 +36,7 @@ class VisibleCoachV4Tests(unittest.TestCase):
         self,
         payload,
         *,
+        user_id=7,
         status="ready",
         snapshot_version=SNAPSHOT_VERSION,
         engine=BEHAVIOR_ENGINE_VERSION,
@@ -58,7 +59,7 @@ class VisibleCoachV4Tests(unittest.TestCase):
                 recompute_state=excluded.recompute_state,
                 updated_at=excluded.updated_at""",
             (
-                7,
+                user_id,
                 snapshot_version,
                 engine,
                 contract,
@@ -69,8 +70,8 @@ class VisibleCoachV4Tests(unittest.TestCase):
             ),
         )
         self.conn.execute(
-            "UPDATE app_behavior_snapshot SET recompute_state=? WHERE user_id=7",
-            (recompute_state,),
+            "UPDATE app_behavior_snapshot SET recompute_state=? WHERE user_id=?",
+            (recompute_state, user_id),
         )
         self.conn.commit()
 
@@ -111,7 +112,7 @@ class VisibleCoachV4Tests(unittest.TestCase):
             "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
             "ROVE_COACH_V4_VISIBLE_USER_IDS": "7",
             **env,
-        }, clear=False):
+        }, clear=True):
             return get_visible_coach_v4(self.conn, 7, now=self.NOW)
 
     def test_flag_off_is_default_deny(self):
@@ -136,9 +137,77 @@ class VisibleCoachV4Tests(unittest.TestCase):
         with patch.dict(os.environ, {
             "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
             "ROVE_COACH_V4_VISIBLE_USER_IDS": "999",
-        }, clear=False):
+        }, clear=True):
             self.assertIsNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
         self.assertEqual(get_visible_pilot_metrics()["skipped"], {"not_allowlisted": 1})
+
+    def test_explicit_scoped_mode_preserves_allowlist_behavior(self):
+        self.snapshot(self.budget_payload())
+        self.snapshot(self.budget_payload(), user_id=8)
+        with patch.dict(os.environ, {
+            "ROVE_COACH_V4_VISIBLE_MODE": "ON_SCOPED",
+            "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
+            "ROVE_COACH_V4_VISIBLE_USER_IDS": "7",
+        }, clear=True):
+            self.assertIsNotNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
+            self.assertIsNone(get_visible_coach_v4(self.conn, 8, now=self.NOW))
+
+    def test_global_mode_allows_existing_and_new_user_ids_without_allowlist(self):
+        self.snapshot(self.budget_payload())
+        self.snapshot(self.budget_payload(), user_id=800_007)
+        with patch.dict(os.environ, {
+            "ROVE_COACH_V4_VISIBLE_MODE": "ON_GLOBAL",
+            "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
+            "ROVE_COACH_V4_VISIBLE_USER_IDS": "",
+        }, clear=True):
+            existing_user = get_visible_coach_v4(self.conn, 7, now=self.NOW)
+            new_user = get_visible_coach_v4(self.conn, 800_007, now=self.NOW)
+        self.assertIsNotNone(existing_user)
+        self.assertIsNotNone(new_user)
+
+    def test_explicit_off_mode_and_master_switch_disable_global_delivery(self):
+        self.snapshot(self.budget_payload())
+        cases = (
+            {"ROVE_COACH_V4_VISIBLE_MODE": "OFF", "ROVE_COACH_V4_VISIBLE_ENABLED": "1"},
+            {"ROVE_COACH_V4_VISIBLE_MODE": "ON_GLOBAL", "ROVE_COACH_V4_VISIBLE_ENABLED": "0"},
+        )
+        for env in cases:
+            with self.subTest(env=env), patch.dict(os.environ, {
+                "ROVE_COACH_V4_VISIBLE_USER_IDS": "7",
+                **env,
+            }, clear=True):
+                self.assertIsNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
+
+    def test_invalid_explicit_mode_and_scoped_configuration_fail_closed(self):
+        self.snapshot(self.budget_payload())
+        cases = (
+            {"ROVE_COACH_V4_VISIBLE_MODE": "ON_EVERYONE", "ROVE_COACH_V4_VISIBLE_USER_IDS": "7"},
+            {"ROVE_COACH_V4_VISIBLE_MODE": "", "ROVE_COACH_V4_VISIBLE_USER_IDS": "7"},
+            {"ROVE_COACH_V4_VISIBLE_MODE": "ON_SCOPED", "ROVE_COACH_V4_VISIBLE_USER_IDS": "7,invalid"},
+            {"ROVE_COACH_V4_VISIBLE_MODE": "ON_SCOPED", "ROVE_COACH_V4_VISIBLE_USER_IDS": ""},
+            {"ROVE_COACH_V4_VISIBLE_USER_IDS": "7,invalid"},
+        )
+        for env in cases:
+            with self.subTest(env=env), patch.dict(os.environ, {
+                "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
+                **env,
+            }, clear=True):
+                self.assertIsNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
+
+    def test_global_mode_requires_master_switch(self):
+        self.snapshot(self.budget_payload())
+        with patch.dict(os.environ, {"ROVE_COACH_V4_VISIBLE_MODE": "ON_GLOBAL"}, clear=True):
+            self.assertIsNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
+
+    def test_missing_mode_keeps_legacy_scoped_config_and_missing_gate_fails_closed(self):
+        self.snapshot(self.budget_payload())
+        with patch.dict(os.environ, {
+            "ROVE_COACH_V4_VISIBLE_ENABLED": "1",
+            "ROVE_COACH_V4_VISIBLE_USER_IDS": "7",
+        }, clear=True):
+            self.assertIsNotNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(get_visible_coach_v4(self.conn, 7, now=self.NOW))
 
     def test_stale_error_and_version_mismatch_fail_closed(self):
         for status, expected in (("stale", "stale"), ("error", "error")):

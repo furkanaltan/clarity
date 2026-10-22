@@ -28,6 +28,8 @@ from rove_behavior_patterns import VISIBLE_BEHAVIOR_CONTRACT_VERSION
 
 VISIBLE_FLAG_ENV = "ROVE_COACH_V4_VISIBLE_ENABLED"
 VISIBLE_ALLOWLIST_ENV = "ROVE_COACH_V4_VISIBLE_USER_IDS"
+VISIBLE_MODE_ENV = "ROVE_COACH_V4_VISIBLE_MODE"
+VISIBLE_GATE_MODES = frozenset({"OFF", "ON_SCOPED", "ON_GLOBAL"})
 ALLOWED_VISIBLE_INSIGHT_TYPES = frozenset({
     "budget_attention",
     "spending_trend_improving",
@@ -132,10 +134,46 @@ def _allowlisted_user_ids() -> frozenset[int]:
     return frozenset(values)
 
 
+def _strict_allowlisted_user_ids() -> frozenset[int] | None:
+    """Parse an explicit scoped allowlist; malformed lists fail closed."""
+    raw = os.getenv(VISIBLE_ALLOWLIST_ENV)
+    if raw is None or not raw.strip():
+        return None
+
+    values: set[int] = set()
+    for item in raw.split(","):
+        item = item.strip()
+        if not re.fullmatch(r"[1-9]\d{0,18}", item):
+            return None
+        user_id = int(item)
+        if user_id > 9_223_372_036_854_775_807:
+            return None
+        values.add(user_id)
+    return frozenset(values) or None
+
+
+def _visible_gate_mode() -> str:
+    """Resolve explicit modes while retaining the legacy scoped configuration."""
+    raw_mode = os.environ.get(VISIBLE_MODE_ENV)
+    if raw_mode is None:
+        # Existing deployments use ENABLED=1 plus numeric IDs for ON_SCOPED.
+        if _flag_enabled() and _strict_allowlisted_user_ids():
+            return "ON_SCOPED"
+        return "OFF"
+
+    mode = raw_mode.strip().upper()
+    if mode not in VISIBLE_GATE_MODES or mode == "OFF" or not _flag_enabled():
+        return "OFF"
+    if mode == "ON_GLOBAL":
+        return mode
+    return "ON_SCOPED" if _strict_allowlisted_user_ids() else "OFF"
+
+
 def visible_pilot_config() -> dict[str, Any]:
     """Return non-sensitive config facts for tests and internal diagnostics."""
     return {
         "enabled": _flag_enabled(),
+        "mode": _visible_gate_mode(),
         "allowlist_configured": bool(_allowlisted_user_ids()),
         "allowed_insight_types": sorted(ALLOWED_VISIBLE_INSIGHT_TYPES),
         "contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
@@ -670,10 +708,11 @@ def get_visible_coach_v4(
 ) -> dict[str, Any] | None:
     """Return the visible pilot DTO, or None for every unsafe/non-pilot state."""
     _record_request()
-    if not _flag_enabled():
+    mode = _visible_gate_mode()
+    if mode == "OFF":
         _record_skip("flag_off")
         return None
-    if int(user_id) not in _allowlisted_user_ids():
+    if mode == "ON_SCOPED" and int(user_id) not in _allowlisted_user_ids():
         _record_skip("not_allowlisted")
         return None
     try:

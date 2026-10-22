@@ -140,33 +140,41 @@ Produktiv beobachtete Environment-Dateien:
 
 Die Inhalte wurden nicht gelesen.
 
-### Coach V4 kontrollierter Prelaunch-Test
+### Coach V4 Sichtbarkeits-Gate
 
-Der serverseitige sichtbare V4-Gate bleibt standardmäßig deaktiviert. Die
-Mentor-/Ask-Rovi-Integration verwendet ausschließlich den vorhandenen Gate;
-es gibt keine zweite Allowlist und keine automatische globale Freigabe. Für
-einen kontrollierten Test werden die bereits vorhandenen, nicht sensitiven
-Schalter ausschließlich in der isolierten Testumgebung verwendet:
+Der serverseitige V4-Gate bleibt standardmäßig deaktiviert. Die Mentor-/Ask-Rovi-
+Integration verwendet ausschließlich diesen Gate. `ROVE_COACH_V4_VISIBLE_MODE`
+unterstützt `OFF`, `ON_SCOPED` und `ON_GLOBAL`; unbekannte oder ausdrücklich
+leere Werte schalten fail-closed auf `OFF`. Der bestehende Master-Schalter
+`ROVE_COACH_V4_VISIBLE_ENABLED=1` muss zusätzlich gesetzt sein; `0` deaktiviert
+V4 in jedem Modus. Fehlt `ROVE_COACH_V4_VISIBLE_MODE`, bleibt die bisherige
+Konfiguration rückwärtskompatibel: `ENABLED=1` plus eine numerische Allowlist
+ergibt `ON_SCOPED`, andernfalls `OFF`.
 
-- `ROVE_COACH_V4_VISIBLE_ENABLED=1` aktiviert den Gate grundsätzlich.
-- `ROVE_COACH_V4_VISIBLE_USER_IDS=123,456` begrenzt ihn auf eine explizite
-  User-Allowlist.
+- `ON_SCOPED` verlangt eine nichtleere, ausschließlich aus positiven
+  numerischen IDs bestehende `ROVE_COACH_V4_VISIBLE_USER_IDS`-Allowlist.
+- `ON_GLOBAL` liefert für alle authentifizierten Rov.E-Nutzer; die Allowlist
+  wird in diesem Modus nicht ausgewertet. Der vorhandene Master-Schalter bleibt
+  als sofortiger Kill-Switch wirksam.
+- `OFF` deaktiviert V4 unabhängig von Allowlist und Master-Schalter.
 
-Ohne beide Bedingungen liefert `/v1/state` keinen nutzersichtbaren V4-Hinweis.
-Ein Rollback erfolgt durch Entfernen der Allowlist oder Setzen des Flags auf
-`0`; ein Datenbank-Rollback ist dafür nicht erforderlich. Der Gate liest nur
-einen aktuellen, versionierten Snapshot und verwirft veraltete, fehlerhafte,
-widersprüchliche oder inkompatible Evidenz. Der Frontend-Hinweis wird hinter
-V3, Monatsaktionen und dringenden Budgetzuständen eingeordnet. Ask Rovi nimmt
-nur die stabile Insight-ID an und löst Evidenz serverseitig für den
+Das Setzen oder Ändern dieser Variablen erfordert einen kontrollierten Neustart
+des API-Dienstes. Für den sofortigen Rückweg `MODE=OFF` setzen oder den Master-
+Schalter auf `0` setzen und denselben Dienst neu starten. Um wieder auf die
+bisherige Kohorte zu begrenzen, `MODE=ON_SCOPED` setzen und die bestehende
+numerische Allowlist erhalten. Ein Datenbank-Rollback ist nicht erforderlich.
+Der Gate liest weiterhin nur einen aktuellen,
+versionierten Snapshot und verwirft veraltete, fehlerhafte, widersprüchliche
+oder inkompatible Evidenz. Der Frontend-Hinweis bleibt hinter V3,
+Monatsaktionen und dringenden Budgetzuständen eingeordnet. Ask Rovi nimmt nur
+die stabile Insight-ID an und löst Evidenz serverseitig für den
 authentifizierten Nutzer erneut auf.
 
-Eine spätere Production-Nutzung erfordert weiterhin eine ausdrückliche
-Betreiberfreigabe nach bestandener Full-Suite, synthetischen Evidenz- und
-Ownership-Regressionen, Chromium-/WebKit-Smokes, manueller Desktop-/iPhone-PWA-
-Abnahme sowie Bestätigung, dass die Produktionsumgebung den Gate nicht global
-aktiviert. Dieses Release ändert keine Production-ENV und aktiviert V4 nicht
-automatisch.
+`ON_GLOBAL` ist eine ausdrückliche Betreiberentscheidung und darf nicht durch
+Deployment-Defaults aktiviert werden. Vor einer Production-Aktivierung gelten
+Full-Suite, synthetische Evidenz- und Ownership-Regressionen, Chromium-/WebKit-
+Smokes sowie die manuelle Desktop-/iPhone-PWA-Abnahme. Code-Deployment und
+Änderung der Production-ENV sind getrennte Freigabeschritte.
 
 ## Clean-Room-Plan
 
