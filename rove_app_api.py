@@ -98,7 +98,8 @@ from rove_app_state import (
     build_app_contract_groups,
     build_mentor_candidate,
     build_live_app_data,
-    claim_coach_insight_shown,
+    acknowledge_coach_insight_display,
+    reserve_coach_insight_display,
     get_opened_coach_insight_context,
     mark_coach_insight_opened,
     build_buffer_data,
@@ -4238,19 +4239,24 @@ def current_app_state():
 
 @app.route("/v1/coach/insights/<action>", methods=["POST"])
 def update_coach_insight_memory(action: str):
-    """Atomically claim a validated V4 display or persist its explicit opening."""
-    if action not in {"claim", "opened"}:
+    """Reserve, acknowledge a rendered V4 insight, or persist its explicit opening."""
+    if action not in {"claim", "acknowledged", "opened"}:
         return jsonify({"ok": False, "error": "invalid_coach_insight_action"}), 404
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": "invalid_coach_insight_request"}), 400
     insight_id = payload.get("insight_id")
     fingerprint = payload.get("evidence_fingerprint")
+    reservation_token = payload.get("reservation_token")
     if (
         not isinstance(insight_id, str)
         or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", insight_id)
         or not isinstance(fingerprint, str)
         or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+        or (action in {"claim", "acknowledged"} and (
+            not isinstance(reservation_token, str)
+            or not re.fullmatch(r"[a-f0-9]{32}", reservation_token)
+        ))
     ):
         return jsonify({"ok": False, "error": "invalid_coach_insight_request"}), 400
 
@@ -4260,6 +4266,14 @@ def update_coach_insight_memory(action: str):
             user_id = user_from_token(conn, token_from_request())
             if not user_id:
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
+            if action == "acknowledged":
+                acknowledged = acknowledge_coach_insight_display(
+                    conn, user_id, insight_id, fingerprint, reservation_token
+                )
+                if not acknowledged:
+                    return jsonify({"ok": False, "error": "coach_insight_reservation_expired"}), 409
+                conn.commit()
+                return jsonify({"ok": True, "acknowledged": True})
             if action == "opened":
                 opened = mark_coach_insight_opened(
                     conn, user_id, insight_id, fingerprint
@@ -4304,9 +4318,11 @@ def update_coach_insight_memory(action: str):
                 or not contract
             ):
                 return jsonify({"ok": False, "error": "coach_insight_no_longer_current"}), 409
-            shown = claim_coach_insight_shown(conn, user_id, candidate, contract)
+            reservation = reserve_coach_insight_display(
+                conn, user_id, candidate, contract, reservation_token
+            )
             conn.commit()
-            return jsonify({"ok": True, "shown": shown})
+            return jsonify({"ok": True, **reservation})
     except sqlite3.OperationalError as exc:
         logger.warning("Coach-Insight-Speicher nicht verfuegbar (%s)", type(exc).__name__)
         return jsonify({"ok": False, "error": "coach_insight_memory_unavailable"}), 503

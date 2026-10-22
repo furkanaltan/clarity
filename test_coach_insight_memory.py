@@ -12,11 +12,20 @@ from unittest.mock import patch
 
 import rove_app_api as api
 from rove_app_state import (
-    claim_coach_insight_shown,
+    acknowledge_coach_insight_display,
     ensure_app_coach_insight_memory_table,
     get_opened_coach_insight_context,
     mark_coach_insight_opened,
+    reserve_coach_insight_display,
 )
+
+
+def claim_coach_insight_shown(conn, user_id, insight, contract):
+    """Test helper for the former atomic shown claim: reserve and then acknowledge."""
+    result = reserve_coach_insight_display(conn, user_id, insight, contract, "a" * 32)
+    return result.get("status") == "reserved" and acknowledge_coach_insight_display(
+        conn, user_id, insight["insight_id"], insight["evidence_fingerprint"], "a" * 32
+    )
 
 
 class CoachInsightMemoryTests(unittest.TestCase):
@@ -91,6 +100,122 @@ class CoachInsightMemoryTests(unittest.TestCase):
             self.assertEqual(
                 phone.execute("SELECT COUNT(*) FROM app_coach_insight_memory WHERE user_id=1").fetchone()[0],
                 1,
+            )
+
+    def test_transport_failure_leaves_only_expiring_reservation(self):
+        insight = self.insight()
+        with self.connection() as phone, self.connection() as desktop:
+            first = reserve_coach_insight_display(phone, 1, insight, self.contract(insight), "1" * 32)
+            self.assertEqual(first["status"], "reserved")
+            phone.commit()  # Claim reached SQLite, but the client never rendered it.
+            other = reserve_coach_insight_display(desktop, 1, insight, self.contract(insight), "2" * 32)
+            self.assertEqual(other["status"], "reserved_elsewhere")
+            desktop.commit()
+            state = phone.execute(
+                "SELECT COUNT(*) FROM app_coach_insight_memory WHERE user_id=1"
+            ).fetchone()[0]
+            self.assertEqual(state, 0)
+            self.assertEqual(phone.execute(
+                "SELECT COUNT(*) FROM app_coach_insight_display_reservations WHERE user_id=1"
+            ).fetchone()[0], 1)
+            self.assertFalse(mark_coach_insight_opened(
+                phone, 1, insight["insight_id"], insight["evidence_fingerprint"]
+            ))
+            self.assertIsNone(get_opened_coach_insight_context(
+                phone, 1, insight["insight_id"], insight["evidence_fingerprint"]
+            ))
+            phone.execute(
+                "UPDATE app_coach_insight_display_reservations SET expires_at=datetime('now','-1 second') WHERE user_id=1"
+            )
+            phone.commit()
+            retry = reserve_coach_insight_display(desktop, 1, insight, self.contract(insight), "2" * 32)
+            self.assertEqual(retry["status"], "reserved")
+            self.assertTrue(acknowledge_coach_insight_display(
+                desktop, 1, insight["insight_id"], insight["evidence_fingerprint"], "2" * 32
+            ))
+
+    def test_claim_response_loss_retries_same_reservation_token(self):
+        insight = self.insight()
+        with self.connection() as conn:
+            token = "3" * 32
+            first = reserve_coach_insight_display(conn, 1, insight, self.contract(insight), token)
+            conn.commit()  # Simulate server commit followed by a dropped response.
+            retry = reserve_coach_insight_display(conn, 1, insight, self.contract(insight), token)
+            self.assertEqual(first["status"], "reserved")
+            self.assertEqual(retry["status"], "reserved")
+            self.assertTrue(acknowledge_coach_insight_display(
+                conn, 1, insight["insight_id"], insight["evidence_fingerprint"], token
+            ))
+            self.assertTrue(acknowledge_coach_insight_display(
+                conn, 1, insight["insight_id"], insight["evidence_fingerprint"], token
+            ))
+
+    def test_expired_or_stale_reservation_cannot_acknowledge(self):
+        insight = self.insight()
+        with self.connection() as conn:
+            reserve_coach_insight_display(conn, 1, insight, self.contract(insight), "4" * 32)
+            conn.execute(
+                "UPDATE app_coach_insight_display_reservations SET expires_at=datetime('now','-1 second') WHERE user_id=1"
+            )
+            conn.commit()
+            self.assertFalse(acknowledge_coach_insight_display(
+                conn, 1, insight["insight_id"], insight["evidence_fingerprint"], "4" * 32
+            ))
+            retry = reserve_coach_insight_display(conn, 1, insight, self.contract(insight), "5" * 32)
+            self.assertEqual(retry["status"], "reserved")
+            self.assertFalse(acknowledge_coach_insight_display(
+                conn, 1, insight["insight_id"], insight["evidence_fingerprint"], "4" * 32
+            ))
+
+    def test_failed_escalation_reservation_preserves_last_confirmed_display(self):
+        first = self.insight()
+        escalated = self.insight(
+            insight_id="v4:synthetic-escalated", fingerprint="c" * 64,
+            amount_current=170, amount_over_budget=70,
+        )
+        with self.connection() as conn:
+            self.assertTrue(claim_coach_insight_shown(conn, 1, first, self.contract(first)))
+            self._age_shown_record(conn, 2)
+            reserve = reserve_coach_insight_display(
+                conn, 1, escalated, self.contract(escalated), "d" * 32
+            )
+            self.assertEqual(reserve["status"], "reserved")
+            saved = conn.execute(
+                "SELECT insight_id,evidence_fingerprint,shown_at FROM app_coach_insight_memory WHERE user_id=1"
+            ).fetchone()
+            self.assertEqual(saved["insight_id"], first["insight_id"])
+            self.assertEqual(saved["evidence_fingerprint"], first["evidence_fingerprint"])
+            conn.execute(
+                "UPDATE app_coach_insight_display_reservations SET expires_at=datetime('now','-1 second') WHERE user_id=1"
+            )
+            conn.commit()
+            retry = reserve_coach_insight_display(
+                conn, 1, escalated, self.contract(escalated), "e" * 32
+            )
+            self.assertEqual(retry["status"], "reserved")
+            still_saved = conn.execute(
+                "SELECT evidence_fingerprint FROM app_coach_insight_memory WHERE user_id=1"
+            ).fetchone()[0]
+            self.assertEqual(still_saved, first["evidence_fingerprint"])
+
+    def test_reservation_survives_connection_restart_but_acknowledged_display_suppresses_reload(self):
+        insight = self.insight()
+        token = "6" * 32
+        with self.connection() as conn:
+            result = reserve_coach_insight_display(conn, 1, insight, self.contract(insight), token)
+            self.assertEqual(result["status"], "reserved")
+        with self.connection() as restarted:
+            self.assertEqual(
+                reserve_coach_insight_display(restarted, 1, insight, self.contract(insight), "7" * 32)["status"],
+                "reserved_elsewhere",
+            )
+            self.assertTrue(acknowledge_coach_insight_display(
+                restarted, 1, insight["insight_id"], insight["evidence_fingerprint"], token
+            ))
+        with self.connection() as reload_conn:
+            self.assertEqual(
+                reserve_coach_insight_display(reload_conn, 1, insight, self.contract(insight), "8" * 32)["status"],
+                "suppressed",
             )
 
     def test_changed_evidence_retriggers_and_keeps_last_opened_context(self):
@@ -195,24 +320,37 @@ class CoachInsightMemoryTests(unittest.TestCase):
     def test_concurrent_device_claim_has_exactly_one_winner(self):
         insight = self.insight()
         barrier = threading.Barrier(2)
+        tokens = iter(("1" * 32, "2" * 32))
+        token_lock = threading.Lock()
 
         def claim():
+            with token_lock:
+                token = next(tokens)
             with self.connection() as conn:
                 barrier.wait(timeout=5)
                 conn.execute("BEGIN IMMEDIATE")
-                result = claim_coach_insight_shown(conn, 1, insight, self.contract(insight))
+                result = reserve_coach_insight_display(conn, 1, insight, self.contract(insight), token)
                 conn.commit()
-                return result
+                return result["status"]
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(lambda _index: claim(), range(2)))
-        self.assertEqual(sorted(outcomes), [False, True])
+        self.assertEqual(sorted(outcomes), ["reserved", "reserved_elsewhere"])
 
     def test_users_are_isolated_and_delete_cascades_memory(self):
         insight = self.insight()
+        pending = self.insight(insight_id="v4:pending", fingerprint="b" * 64)
+        pending["insight_type"] = "subscription_cluster"
+        pending["dedupe_key"] = "coach:subscription_cluster"
         with self.connection() as conn:
             self.assertTrue(claim_coach_insight_shown(conn, 1, insight, self.contract(insight)))
             self.assertTrue(claim_coach_insight_shown(conn, 2, insight, self.contract(insight)))
+            self.assertEqual(reserve_coach_insight_display(
+                conn, 1, pending, self.contract(pending), "1" * 32
+            )["status"], "reserved")
+            self.assertEqual(reserve_coach_insight_display(
+                conn, 2, pending, self.contract(pending), "2" * 32
+            )["status"], "reserved")
             mark_coach_insight_opened(conn, 1, insight["insight_id"], insight["evidence_fingerprint"])
             self.assertIsNone(get_opened_coach_insight_context(conn, 2))
             conn.execute("DELETE FROM users WHERE user_id=1")
@@ -224,6 +362,12 @@ class CoachInsightMemoryTests(unittest.TestCase):
                 conn.execute("SELECT COUNT(*) FROM app_coach_insight_memory WHERE user_id=2").fetchone()[0],
                 1,
             )
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_coach_insight_display_reservations WHERE user_id=1"
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM app_coach_insight_display_reservations WHERE user_id=2"
+            ).fetchone()[0], 1)
 
     def test_missing_table_does_not_self_migrate_on_claim(self):
         with self.connection() as conn:
@@ -260,6 +404,9 @@ class CoachInsightMemoryTests(unittest.TestCase):
                 "SELECT dedupe_key,last_opened_insight_id FROM app_coach_insight_memory"
             ).fetchone()
             self.assertEqual(row, ("coach:budget_attention", "v4:legacy"))
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_coach_insight_display_reservations'"
+            ).fetchone())
             conn.commit()
 
     def test_api_claim_rechecks_v3_winner_and_persists_once(self):
@@ -276,12 +423,18 @@ class CoachInsightMemoryTests(unittest.TestCase):
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             payload = {"insight_id": insight["insight_id"], "evidence_fingerprint": insight["evidence_fingerprint"]}
+            payload["reservation_token"] = "9" * 32
             first = client.post("/v1/coach/insights/claim", json=payload)
             second = client.post("/v1/coach/insights/claim", json=payload)
         self.assertEqual(first.status_code, 200, first.get_json())
-        self.assertTrue(first.get_json()["shown"])
+        self.assertEqual(first.get_json()["status"], "reserved")
         self.assertEqual(second.status_code, 200, second.get_json())
-        self.assertFalse(second.get_json()["shown"])
+        self.assertEqual(second.get_json()["status"], "reserved")
+        acknowledged = client.post("/v1/coach/insights/acknowledged", json=payload)
+        self.assertEqual(acknowledged.status_code, 200, acknowledged.get_json())
+        self.assertTrue(acknowledged.get_json()["acknowledged"])
+        duplicate_acknowledgement = client.post("/v1/coach/insights/acknowledged", json=payload)
+        self.assertTrue(duplicate_acknowledgement.get_json()["acknowledged"])
         opened = client.post("/v1/coach/insights/opened", json=payload)
         self.assertEqual(opened.status_code, 200, opened.get_json())
         self.assertTrue(opened.get_json()["opened"])
@@ -299,6 +452,29 @@ class CoachInsightMemoryTests(unittest.TestCase):
         with v3_patches[0], v3_patches[1], v3_patches[2], v3_patches[3], v3_patches[4]:
             blocked = client.post("/v1/coach/insights/claim", json=payload)
         self.assertEqual(blocked.status_code, 409)
+
+    def test_acknowledgement_requires_matching_user_and_live_reservation(self):
+        self._prepare_api_db()
+        insight = self.insight()
+        contract = self.contract(insight)
+        with self.connection() as conn:
+            reserved = reserve_coach_insight_display(conn, 1, insight, contract, "c" * 32)
+            self.assertEqual(reserved["status"], "reserved")
+            self.assertFalse(acknowledge_coach_insight_display(
+                conn, 2, insight["insight_id"], insight["evidence_fingerprint"], "c" * 32
+            ))
+        client = self._client()
+        payload = {
+            "insight_id": insight["insight_id"],
+            "evidence_fingerprint": insight["evidence_fingerprint"],
+            "reservation_token": "c" * 32,
+        }
+        ack = client.post("/v1/coach/insights/acknowledged", json=payload)
+        self.assertEqual(ack.status_code, 200, ack.get_json())
+        with self.connection() as conn:
+            self.assertTrue(mark_coach_insight_opened(
+                conn, 1, insight["insight_id"], insight["evidence_fingerprint"]
+            ))
 
     def test_opened_context_survives_chat_reload_without_ai_fallback(self):
         self._prepare_api_db()
@@ -334,11 +510,49 @@ class CoachInsightMemoryTests(unittest.TestCase):
             response = client.post("/v1/coach/insights/claim", json={
                 "insight_id": insight["insight_id"],
                 "evidence_fingerprint": insight["evidence_fingerprint"],
+                "reservation_token": "b" * 32,
             })
         self.assertEqual(response.status_code, 503)
         with self.connection() as conn:
             self.assertIsNone(conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_coach_insight_memory'"
+            ).fetchone())
+
+    def test_acknowledgement_missing_table_returns_503(self):
+        self._prepare_api_db()
+        with self.connection() as conn:
+            conn.execute("DROP TABLE app_coach_insight_memory")
+        response = self._client().post("/v1/coach/insights/acknowledged", json={
+            "insight_id": "v4:synthetic",
+            "evidence_fingerprint": "a" * 64,
+            "reservation_token": "d" * 32,
+        })
+        self.assertEqual(response.status_code, 503, response.get_json())
+        with self.connection() as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_coach_insight_memory'"
+            ).fetchone())
+
+    def test_missing_reservation_table_fails_closed_without_schema_recreation(self):
+        self._prepare_api_db()
+        with self.connection() as conn:
+            conn.execute("DROP TABLE app_coach_insight_display_reservations")
+        insight = self.insight()
+        contract = self.contract(insight)
+        with patch.object(api, "build_live_app_data", return_value={"mentor_candidate": None, "features": {}}), \
+             patch.object(api, "get_shadow_insight_contracts", return_value=([contract], "ready")), \
+             patch.object(api, "build_shadow_insight_path", return_value={"v4_candidates": [contract]}), \
+             patch.object(api, "get_visible_coach_v4", return_value={"insight_type": "budget_attention"}), \
+             patch.object(api, "build_visible_mentor_insight", return_value=insight):
+            response = self._client().post("/v1/coach/insights/claim", json={
+                "insight_id": insight["insight_id"],
+                "evidence_fingerprint": insight["evidence_fingerprint"],
+                "reservation_token": "e" * 32,
+            })
+        self.assertEqual(response.status_code, 503, response.get_json())
+        with self.connection() as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_coach_insight_display_reservations'"
             ).fetchone())
 
     def test_missing_opened_context_table_fails_closed_for_coach_question(self):

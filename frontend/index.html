@@ -4863,6 +4863,7 @@ function mentorLine(){
     }
     el.innerHTML=`<div class="m-free"><b>${announcementEscape(coachV4Insight.title)}</b></div>`+
       `<div class="m-note">${announcementEscape(coachV4Insight.message)} · <span class="m-nudge"><b>Warum?</b></span></div>`;
+    acknowledgeMentorV4AfterRender(coachV4Insight);
     return;
   }
 
@@ -4912,34 +4913,116 @@ function mentorLine(){
   setMentorCtaTarget(selected.target);
 }
 let coachV4ClaimKey=null, coachV4ClaimStatus="idle", coachV4ClaimRetryAt=0;
+let coachV4ReservationToken=null, coachV4ClaimTimer=null, coachV4AckPromise=null, coachV4AckKey=null;
+function newCoachV4ReservationToken(){
+  const bytes=new Uint8Array(16);
+  if(window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+  else for(let i=0;i<bytes.length;i++) bytes[i]=Math.floor(Math.random()*256);
+  return [...bytes].map(value=>value.toString(16).padStart(2,"0")).join("");
+}
+function scheduleCoachV4ClaimRetry(key,delayMs){
+  clearTimeout(coachV4ClaimTimer);
+  coachV4ClaimRetryAt=Date.now()+delayMs;
+  coachV4ClaimTimer=setTimeout(()=>{
+    if(key!==coachV4ClaimKey||!DATA.coachV4Insight) return;
+    coachV4ClaimStatus="idle";
+    mentorLine();
+  },delayMs);
+}
 function claimMentorV4Insight(insight){
   const insightId=insight?.insight_id, fingerprint=insight?.evidence_fingerprint;
   if(!apiReady()||!insightId||!(/^[a-f0-9]{64}$/.test(fingerprint||""))) return false;
   const key=`${insightId}:${fingerprint}`;
-  if(key!==coachV4ClaimKey){coachV4ClaimKey=key;coachV4ClaimStatus="idle";coachV4ClaimRetryAt=0;}
+  if(key!==coachV4ClaimKey){
+    clearTimeout(coachV4ClaimTimer);
+    coachV4ClaimKey=key;coachV4ClaimStatus="idle";coachV4ClaimRetryAt=0;
+    coachV4ReservationToken=newCoachV4ReservationToken();coachV4AckPromise=null;coachV4AckKey=null;
+  }
   if(coachV4ClaimStatus==="idle"||
     (coachV4ClaimStatus==="failed"&&Date.now()>=coachV4ClaimRetryAt)){
-    coachV4ClaimStatus="pending";
-    coachV4ClaimRetryAt=Date.now()+30000;
+    coachV4ClaimStatus="claiming";
     apiFetch("/v1/coach/insights/claim",{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({insight_id:insightId,evidence_fingerprint:fingerprint})
+      body:JSON.stringify({insight_id:insightId,evidence_fingerprint:fingerprint,reservation_token:coachV4ReservationToken})
     }).then(async response=>{
       const data=await response.json().catch(()=>({}));
       if(key!==coachV4ClaimKey) return;
       if(!response.ok||!data.ok){
         coachV4ClaimStatus=response.status===409?"suppressed":"failed";
+        if(response.status!==409) scheduleCoachV4ClaimRetry(key,5000);
         if(response.status===409&&DATA.coachV4Insight?.evidence_fingerprint===fingerprint)
           DATA.coachV4Insight=null;
-      }else coachV4ClaimStatus=data.shown===true?"shown":"suppressed";
+      }else if(data.status==="reserved"){
+        coachV4ClaimStatus="reserved";
+      }else if(data.status==="reserved_elsewhere"){
+        coachV4ClaimStatus="busy";
+        scheduleCoachV4ClaimRetry(key,Math.max(1000,Number(data.retry_after_seconds||1)*1000+250));
+      }else if(data.status==="suppressed"||data.status==="invalid"){
+        coachV4ClaimStatus="suppressed";
+        if(DATA.coachV4Insight?.evidence_fingerprint===fingerprint) DATA.coachV4Insight=null;
+      }else{
+        coachV4ClaimStatus="failed";
+        scheduleCoachV4ClaimRetry(key,5000);
+      }
       mentorLine();
     }).catch(()=>{
       if(key!==coachV4ClaimKey) return;
       coachV4ClaimStatus="failed";
+      scheduleCoachV4ClaimRetry(key,5000);
       mentorLine();
     });
   }
-  return coachV4ClaimStatus==="shown";
+  return coachV4ClaimStatus==="reserved"||coachV4ClaimStatus==="acknowledging"||coachV4ClaimStatus==="shown";
+}
+function acknowledgeMentorV4AfterRender(insight){
+  const key=`${insight?.insight_id||""}:${insight?.evidence_fingerprint||""}`;
+  if(coachV4ClaimStatus!=="reserved"||key!==coachV4ClaimKey) return;
+  const paint=()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const mentor=document.querySelector("#tab-home .mentor");
+    const rect=mentor?.getBoundingClientRect?.();
+    if(key!==coachV4ClaimKey||coachV4ClaimStatus!=="reserved"||
+      document.visibilityState==="hidden"||
+      mentor?.dataset.coachV4InsightId!==insight.insight_id||
+      mentor?.dataset.coachV4InsightFingerprint!==insight.evidence_fingerprint||
+      !rect||rect.width<=0||rect.height<=0) return;
+    void acknowledgeMentorV4Insight(insight);
+  }));
+  if(typeof requestAnimationFrame==="function") paint();
+}
+async function acknowledgeMentorV4Insight(insight){
+  if(!apiReady()||!insight?.insight_id||!insight?.evidence_fingerprint||!coachV4ReservationToken) return false;
+  if(coachV4ClaimStatus==="shown") return true;
+  const key=`${insight.insight_id}:${insight.evidence_fingerprint}`;
+  if(coachV4AckPromise&&coachV4AckKey===key) return coachV4AckPromise;
+  if(key!==coachV4ClaimKey||coachV4ClaimStatus!=="reserved") return false;
+  coachV4ClaimStatus="acknowledging";
+  coachV4AckKey=key;
+  coachV4AckPromise=(async()=>{
+    try{
+      const response=await apiFetch("/v1/coach/insights/acknowledged",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({insight_id:insight.insight_id,evidence_fingerprint:insight.evidence_fingerprint,reservation_token:coachV4ReservationToken})
+      });
+      const result=await response.json().catch(()=>({}));
+      if(key!==coachV4ClaimKey) return false;
+      if(response.ok&&result.ok===true&&result.acknowledged===true){
+        coachV4ClaimStatus="shown";coachV4ClaimRetryAt=0;return true;
+      }
+      if(response.status===409){coachV4ClaimStatus="idle";mentorLine();return false;}
+      coachV4ClaimStatus="reserved";
+      setTimeout(()=>acknowledgeMentorV4AfterRender(insight),5000);
+      return false;
+    }catch(error){
+      if(key===coachV4ClaimKey){
+        coachV4ClaimStatus="reserved";
+        setTimeout(()=>acknowledgeMentorV4AfterRender(insight),5000);
+      }
+      return false;
+    }finally{
+      if(coachV4AckKey===key){coachV4AckPromise=null;coachV4AckKey=null;}
+    }
+  })();
+  return coachV4AckPromise;
 }
 async function markMentorV4InsightOpened(insight){
   if(!apiReady()||!insight?.insight_id||!insight?.evidence_fingerprint) return false;
@@ -4960,6 +5043,7 @@ async function openMentorCoach(){
   if(insight?.insight_id&&insight?.evidence_fingerprint&&
     mentor?.dataset.coachV4InsightId===insight.insight_id&&
     mentor?.dataset.coachV4InsightFingerprint===insight.evidence_fingerprint){
+    await acknowledgeMentorV4Insight(insight);
     await markMentorV4InsightOpened(insight);
     mentorLine();
     openTalk({insight});

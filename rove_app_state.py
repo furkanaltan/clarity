@@ -583,12 +583,29 @@ def ensure_app_coach_insight_memory_table(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_app_coach_insight_memory_dedupe "
         "ON app_coach_insight_memory(user_id, dedupe_key, shown_at DESC)"
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_coach_insight_display_reservations (
+            user_id INTEGER NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            reservation_token TEXT NOT NULL,
+            insight_id TEXT NOT NULL,
+            evidence_fingerprint TEXT NOT NULL,
+            insight_type TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, dedupe_key),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
 
 
 COACH_INSIGHT_CONTEXT_MAX_BYTES = 64 * 1024
 COACH_INSIGHT_RETRIGGER_DAYS = 7
 COACH_POSITIVE_RETRIGGER_DAYS = 30
 COACH_WARNING_REPEAT_DAYS = 30
+COACH_INSIGHT_RESERVATION_SECONDS = 60
 
 
 def _coach_material_money_change(old: object, new: object) -> bool:
@@ -663,15 +680,16 @@ def _coach_insight_urgent_escalation(previous: object, current: dict) -> bool:
     return math.isfinite(before) and math.isfinite(after) and after - before >= max(10.0, abs(before) * 0.25)
 
 
-def claim_coach_insight_shown(
+def reserve_coach_insight_display(
     conn: sqlite3.Connection,
     user_id: int,
     insight: dict,
     contract: dict,
-) -> bool:
-    """Atomically claim one display per stable insight/evidence version."""
+    reservation_token: str,
+) -> dict:
+    """Reserve a candidate briefly; an explicit render acknowledgement marks it shown."""
     if getattr(conn, "state_read_only", False):
-        return False
+        return {"status": "unavailable"}
     insight_id = str(insight.get("insight_id") or "")
     fingerprint = str(insight.get("evidence_fingerprint") or "")
     insight_type = str(insight.get("insight_type") or "")
@@ -681,14 +699,35 @@ def claim_coach_insight_shown(
     if (
         not all((insight_id, fingerprint, insight_type, period_start, period_end))
         or dedupe_key != f"coach:{insight_type}"
+        or not re.fullmatch(r"[a-f0-9]{32}", str(reservation_token or ""))
     ):
-        return False
+        return {"status": "invalid"}
     context = json.dumps(
         {"insight": insight, "contract": contract},
         ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
     if len(context.encode("utf-8")) > COACH_INSIGHT_CONTEXT_MAX_BYTES:
-        return False
+        return {"status": "invalid"}
+
+    active = conn.execute(
+        """SELECT insight_id,evidence_fingerprint,reservation_token,
+                  max(1,CAST((julianday(expires_at)-julianday('now'))*86400 AS INTEGER)) AS retry_after
+             FROM app_coach_insight_display_reservations
+             WHERE user_id=? AND dedupe_key=? AND datetime(expires_at)>CURRENT_TIMESTAMP""",
+        (int(user_id), dedupe_key),
+    ).fetchone()
+    if active:
+        if (
+            str(active["insight_id"]) == insight_id
+            and str(active["evidence_fingerprint"]) == fingerprint
+            and str(active["reservation_token"]) == reservation_token
+        ):
+            return {"status": "reserved", "retry_after_seconds": 0}
+        return {
+            "status": "reserved_elsewhere",
+            "retry_after_seconds": int(active["retry_after"] or 1),
+        }
+
     row = conn.execute(
         """SELECT rowid AS memory_rowid, insight_id, evidence_fingerprint,
                   insight_type, shown_at, context_json
@@ -702,12 +741,12 @@ def claim_coach_insight_shown(
         same_evidence = str(row["evidence_fingerprint"]) == fingerprint
         if same_evidence:
             if insight_type != "budget_attention" or elapsed_days is None or elapsed_days < COACH_WARNING_REPEAT_DAYS:
-                return False
+                return {"status": "suppressed"}
         else:
             try:
                 previous = json.loads(row["context_json"])
             except (TypeError, json.JSONDecodeError):
-                return False
+                return {"status": "suppressed"}
             if not _coach_insight_materially_changed(previous, insight):
                 # A still-active budget warning may have a new rolling period
                 # (and therefore a new fingerprint) without changed amounts.
@@ -717,7 +756,7 @@ def claim_coach_insight_shown(
                     or elapsed_days is None
                     or elapsed_days < COACH_WARNING_REPEAT_DAYS
                 ):
-                    return False
+                    return {"status": "suppressed"}
             else:
                 positive = insight_type in {"spending_trend_improving", "budget_recovery"}
                 cooldown = COACH_POSITIVE_RETRIGGER_DAYS if positive else COACH_INSIGHT_RETRIGGER_DAYS
@@ -725,32 +764,82 @@ def claim_coach_insight_shown(
                     not _coach_insight_urgent_escalation(previous, insight)
                     and (elapsed_days is None or elapsed_days < cooldown)
                 ):
-                    return False
-    if row:
-        exact = conn.execute(
-            "SELECT rowid FROM app_coach_insight_memory WHERE user_id=? AND insight_id=?",
-            (int(user_id), insight_id),
+                    return {"status": "suppressed"}
+    cursor = conn.execute(
+        """INSERT INTO app_coach_insight_display_reservations
+           (user_id,dedupe_key,reservation_token,insight_id,evidence_fingerprint,insight_type,
+            period_start,period_end,context_json,expires_at)
+           VALUES (?,?,?,?,?,?,?,?,?,datetime('now', ?))
+           ON CONFLICT(user_id,dedupe_key) DO UPDATE SET
+             reservation_token=excluded.reservation_token,
+             insight_id=excluded.insight_id,
+             evidence_fingerprint=excluded.evidence_fingerprint,
+             insight_type=excluded.insight_type,
+             period_start=excluded.period_start,
+             period_end=excluded.period_end,
+             context_json=excluded.context_json,
+             expires_at=excluded.expires_at
+           WHERE datetime(app_coach_insight_display_reservations.expires_at)<=CURRENT_TIMESTAMP""",
+        (int(user_id), dedupe_key, reservation_token, insight_id, fingerprint, insight_type,
+         period_start, period_end, context, f"+{COACH_INSIGHT_RESERVATION_SECONDS} seconds"),
+    )
+    return {"status": "reserved"} if cursor.rowcount == 1 else {"status": "unavailable"}
+
+
+def acknowledge_coach_insight_display(
+    conn: sqlite3.Connection,
+    user_id: int,
+    insight_id: str,
+    fingerprint: str,
+    reservation_token: str,
+) -> bool:
+    """Persist successful rendering; duplicate acknowledgements are safe to retry."""
+    if getattr(conn, "state_read_only", False):
+        return False
+    row = conn.execute(
+        """SELECT dedupe_key,reservation_token,context_json,insight_type,period_start,period_end
+             FROM app_coach_insight_display_reservations
+             WHERE user_id=? AND insight_id=? AND evidence_fingerprint=?
+               AND datetime(expires_at)>CURRENT_TIMESTAMP""",
+        (int(user_id), str(insight_id), str(fingerprint)),
+    ).fetchone()
+    if not row:
+        # A lost acknowledgement response is safe: the display row proves it committed.
+        shown = conn.execute(
+            "SELECT 1 FROM app_coach_insight_memory WHERE user_id=? AND insight_id=? AND evidence_fingerprint=?",
+            (int(user_id), str(insight_id), str(fingerprint)),
         ).fetchone()
-    else:
-        exact = None
-    if exact:
-        cursor = conn.execute(
-            """UPDATE app_coach_insight_memory
-                  SET dedupe_key=?, evidence_fingerprint=?, insight_type=?, period_start=?, period_end=?,
-                      context_json=?, shown_at=CURRENT_TIMESTAMP, opened_at=NULL
-                WHERE rowid=? AND user_id=?""",
-            (dedupe_key, fingerprint, insight_type, period_start, period_end, context,
-             exact["rowid"], int(user_id)),
-        )
-    else:
-        cursor = conn.execute(
-            """INSERT INTO app_coach_insight_memory
-               (user_id,dedupe_key,insight_id,evidence_fingerprint,insight_type,period_start,period_end,context_json)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (int(user_id), dedupe_key, insight_id, fingerprint, insight_type,
-             period_start, period_end, context),
-        )
-    return cursor.rowcount == 1
+        return shown is not None
+    if (
+        str(row["reservation_token"] or "") != str(reservation_token)
+    ):
+        return False
+    cursor = conn.execute(
+        """DELETE FROM app_coach_insight_display_reservations
+             WHERE user_id=? AND dedupe_key=? AND insight_id=? AND evidence_fingerprint=?
+               AND reservation_token=? AND datetime(expires_at)>CURRENT_TIMESTAMP""",
+        (int(user_id), str(row["dedupe_key"]), str(insight_id), str(fingerprint), str(reservation_token)),
+    )
+    if cursor.rowcount != 1:
+        return False
+    conn.execute(
+        """INSERT INTO app_coach_insight_memory
+           (user_id,dedupe_key,insight_id,evidence_fingerprint,insight_type,period_start,period_end,context_json)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(user_id,insight_id) DO UPDATE SET
+             dedupe_key=excluded.dedupe_key,
+             evidence_fingerprint=excluded.evidence_fingerprint,
+             insight_type=excluded.insight_type,
+             period_start=excluded.period_start,
+             period_end=excluded.period_end,
+             context_json=excluded.context_json,
+             shown_at=CURRENT_TIMESTAMP,
+             opened_at=NULL""",
+        (int(user_id), str(row["dedupe_key"]), str(insight_id), str(fingerprint),
+         str(row["insight_type"]), str(row["period_start"]), str(row["period_end"]),
+         str(row["context_json"])),
+    )
+    return True
 
 
 def mark_coach_insight_opened(

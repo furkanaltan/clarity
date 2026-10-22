@@ -32,6 +32,7 @@ const card={{dataset:{{coachV4InsightId:"v4:synthetic",coachV4InsightFingerprint
   addEventListener:(_name,fn)=>listener=fn}};
 const document={{querySelector:()=>card}};
 function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||null]);}}
+function acknowledgeMentorV4Insight(insight){{calls.push(["acknowledged",insight.insight_id]);return Promise.resolve(true);}}
 function markMentorV4InsightOpened(insight){{calls.push(["opened",insight.insight_id,insight.evidence_fingerprint]);return Promise.resolve().then(()=>{{calls.push(["saved"]);return true;}});}}
 function mentorLine(){{}}
 function buzz(){{}}
@@ -46,6 +47,7 @@ function buzz(){{}}
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [
+            ["acknowledged", "v4:synthetic"],
             ["opened", "v4:synthetic", "a" * 64], ["saved"], ["talk", "v4:synthetic"]
         ])
 
@@ -62,6 +64,7 @@ const card={{dataset:{{coachV4InsightId:"v4:category-trend",coachV4InsightFinger
   addEventListener:(name,fn)=>listeners[name]=fn}};
 const document={{querySelector:selector=>selector==="#tab-home .mentor"?card:null}};
 function markMentorV4InsightOpened(value){{calls.push(["opened",value.insight_id,value.evidence_fingerprint]);return Promise.resolve(true);}}
+function acknowledgeMentorV4Insight(value){{calls.push(["acknowledged",value.insight_id]);return Promise.resolve(true);}}
 function mentorLine(){{calls.push(["render"]);}}
 function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||null]);}}
 {helper}
@@ -78,14 +81,118 @@ function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||nul
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [
-            ["opened", "v4:category-trend", "b" * 64], ["render"],
+            ["acknowledged", "v4:category-trend"], ["opened", "v4:category-trend", "b" * 64], ["render"],
             ["talk", "v4:category-trend"], ["talk", None],
         ])
 
     def test_v4_deduplication_is_server_owned_not_daily_local_storage(self):
         self.assertIn('"/v1/coach/insights/claim"', self.frontend)
+        self.assertIn('"/v1/coach/insights/acknowledged"', self.frontend)
         self.assertIn('"/v1/coach/insights/opened"', self.frontend)
         self.assertNotIn("roveCoachV4Seen", self.frontend)
+        self.assertIn('data.status==="suppressed"||data.status==="invalid"', self.frontend)
+        self.assertIn('coachV4ClaimStatus="failed";\n        scheduleCoachV4ClaimRetry(key,5000);', self.frontend)
+
+    def test_display_acknowledgement_follows_two_render_frames_and_checks_visibility(self):
+        helper_start = self.frontend.index("function acknowledgeMentorV4AfterRender(insight){")
+        helper_end = self.frontend.index("\nasync function acknowledgeMentorV4Insight", helper_start)
+        helper = self.frontend[helper_start:helper_end]
+        self.assertIn("requestAnimationFrame(()=>requestAnimationFrame", helper)
+        self.assertIn('document.visibilityState==="hidden"', helper)
+        self.assertIn("coachV4InsightFingerprint!==insight.evidence_fingerprint", helper)
+        self.assertIn('coachV4ClaimStatus!=="reserved"', helper)
+
+    def test_client_acknowledges_only_after_the_mentor_dom_renders(self):
+        helper_start = self.frontend.index('let coachV4ClaimKey=null, coachV4ClaimStatus="idle"')
+        helper_end = self.frontend.index("\nasync function markMentorV4InsightOpened", helper_start)
+        helper = self.frontend[helper_start:helper_end]
+        insight = {
+            "insight_id": "v4:rendered", "evidence_fingerprint": "c" * 64,
+            "title": "Ausgaben im Blick", "insight_type": "category_trend",
+        }
+        script = f"""
+const DATA={{coachV4Insight:{json.dumps(insight)}}}, calls=[], frames=[];
+let rendered=false;
+const mentor={{dataset:{{}},getBoundingClientRect:()=>({{width:320,height:80}})}};
+const document={{visibilityState:"visible",querySelector:()=>mentor}};
+const window={{crypto:null}};
+function requestAnimationFrame(callback){{frames.push(callback);}}
+function apiReady(){{return true;}}
+function apiFetch(path,options){{
+  const payload=JSON.parse(options.body);calls.push([path,payload.reservation_token,rendered]);
+  if(path.endsWith("/claim")) return Promise.resolve({{ok:true,status:200,json:async()=>({{ok:true,status:"reserved"}})}});
+  if(!rendered) throw new Error("ack before render");
+  return Promise.resolve({{ok:true,status:200,json:async()=>({{ok:true,acknowledged:true}})}});
+}}
+function mentorLine(){{
+  if(claimMentorV4Insight(DATA.coachV4Insight)){{
+    mentor.dataset.coachV4InsightId=DATA.coachV4Insight.insight_id;
+    mentor.dataset.coachV4InsightFingerprint=DATA.coachV4Insight.evidence_fingerprint;
+    rendered=true;
+    acknowledgeMentorV4AfterRender(DATA.coachV4Insight);
+  }}
+}}
+{helper}
+claimMentorV4Insight(DATA.coachV4Insight);
+(async()=>{{
+  await new Promise(resolve=>setImmediate(resolve));
+  while(frames.length){{frames.shift()();await new Promise(resolve=>setImmediate(resolve));}}
+  await new Promise(resolve=>setImmediate(resolve));
+  process.stdout.write(JSON.stringify({{calls,status:coachV4ClaimStatus,rendered}}));
+}})();
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual([call[0] for call in payload["calls"]], [
+            "/v1/coach/insights/claim", "/v1/coach/insights/acknowledged"
+        ])
+        self.assertFalse(payload["calls"][0][2])
+        self.assertTrue(payload["calls"][1][2])
+        self.assertEqual(payload["calls"][0][1], payload["calls"][1][1])
+        self.assertEqual(payload["status"], "shown")
+
+    def test_old_acknowledgement_cannot_replace_new_insight_inflight_request(self):
+        helper_start = self.frontend.index('let coachV4ClaimKey=null, coachV4ClaimStatus="idle"')
+        helper_end = self.frontend.index("\nasync function markMentorV4InsightOpened", helper_start)
+        helper = self.frontend[helper_start:helper_end]
+        script = f"""
+const calls=[], pending={{}};
+const insightA={{insight_id:"v4:old",evidence_fingerprint:"a".repeat(64)}};
+const insightB={{insight_id:"v4:new",evidence_fingerprint:"b".repeat(64)}};
+const DATA={{coachV4Insight:insightB}};
+const window={{crypto:null}};
+function apiReady(){{return true;}}
+function apiFetch(_path,options){{
+  const id=JSON.parse(options.body).insight_id;calls.push(id);
+  return new Promise(resolve=>pending[id]=resolve);
+}}
+{helper}
+(async()=>{{
+  const oldKey=`${{insightA.insight_id}}:${{insightA.evidence_fingerprint}}`;
+  coachV4ClaimKey=oldKey;coachV4ClaimStatus="reserved";coachV4ReservationToken="1".repeat(32);
+  const oldAck=acknowledgeMentorV4Insight(insightA);
+  coachV4ClaimKey=`${{insightB.insight_id}}:${{insightB.evidence_fingerprint}}`;
+  coachV4ClaimStatus="reserved";coachV4ReservationToken="2".repeat(32);
+  coachV4AckPromise=null;coachV4AckKey=null;
+  const newAck=acknowledgeMentorV4Insight(insightB);
+  const duplicateAck=acknowledgeMentorV4Insight(insightB);
+  const duplicateCalls=calls.length;
+  pending[insightA.insight_id]({{ok:true,status:200,json:async()=>({{ok:true,acknowledged:true}})}});
+  await oldAck;
+  const newRequestStillTracked=coachV4AckKey===`${{insightB.insight_id}}:${{insightB.evidence_fingerprint}}`;
+  pending[insightB.insight_id]({{ok:true,status:200,json:async()=>({{ok:true,acknowledged:true}})}});
+  await Promise.all([newAck,duplicateAck]);
+  process.stdout.write(JSON.stringify({{calls,duplicateCalls,newRequestStillTracked,status:coachV4ClaimStatus}}));
+}})();
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["calls"], ["v4:old", "v4:new"])
+        self.assertEqual(payload["duplicateCalls"], 2)
+        self.assertTrue(payload["newRequestStillTracked"])
+        self.assertEqual(payload["status"], "shown")
 
     def test_income_reminder_keeps_v3_priority_before_server_claim(self):
         mentor_start = self.frontend.index("function mentorLine(){")

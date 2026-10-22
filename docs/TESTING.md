@@ -166,6 +166,24 @@ wieder erscheinen kann. Keine bestehenden Finanzformeln, Login-, Mehrkonten-,
 Sachwerte- oder Report-Implementierungen wurden geaendert; Coach V4 bleibt
 production-seitig hinter dem bestehenden Gate deaktiviert.
 
+## Financial Intelligence Block 4C: bestaetigte Insight-Anzeige, 22.10.2026
+
+Arbeitsbasis: `0d3f4641112131ba41fbebe17ed6a203ed44abc4`. Der Claim schreibt
+nicht mehr voreilig einen Anzeigezeitpunkt. Eine kurzlebige, nutzer- und
+Dedupeschluessel-gebundene SQLite-Reservierung wird erst nach dem sichtbaren
+Frontend-Rendern per idempotentem Acknowledge atomar in die bestehende
+Coach-Memory uebernommen. Die alte Anzeige-/Erklaerungshistorie bleibt bei
+abgebrochenen oder abgelaufenen Versuchen erhalten. V3-Prioritaet,
+Wiederanzeige-Cooldowns und Ask-Rovi-Erklaerungskontext bleiben unveraendert.
+
+Gezielte Memory-/API-/Mentor-Regressionen: **46/46 PASS**. Angrenzende
+V3-/V4-/Coaching-Regressionen: **255/255 PASS**. Der abschliessende Full-Suite-
+Lauf besteht: **2.155 Tests in 549,119 Sekunden, 0 Failures, 0 Errors,
+0 Skips**. Ausgefuehrt mit dem dokumentierten isolierten Python-3.12-/GPG-
+Test-Setup aus Block 4B. Der Lauf enthaelt ausschliesslich lokale synthetische
+Testdaten und lokale Testdienste; kein Production-Zugriff, Push oder
+Deployment. Coach V4 bleibt weiterhin hinter dem bestehenden Production-Gate.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur
