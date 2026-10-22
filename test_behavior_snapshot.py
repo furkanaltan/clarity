@@ -8,7 +8,13 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import rove_behavior_patterns as behavior_patterns
-from migrate_behavior_snapshot import result_is_valid, run as run_snapshot_migration
+from migrate_behavior_snapshot import (
+    ReadOnlyPreflightError,
+    SchemaConflictError,
+    _connect_readonly,
+    result_is_valid,
+    run as run_snapshot_migration,
+)
 from rove_behavior_snapshot import (
     BEHAVIOR_CONTRACT_VERSION,
     BEHAVIOR_ENGINE_VERSION,
@@ -593,6 +599,17 @@ class BehaviorSnapshotTests(unittest.TestCase):
             first = run_snapshot_migration(db_path, apply=True)
             second = run_snapshot_migration(db_path, apply=True)
             self.assertTrue(first["changed"])
+            from contextlib import closing
+            backup_path = Path(first["backup"])
+            self.assertEqual(backup_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(backup_path.parent.stat().st_mode & 0o777, 0o700)
+            with closing(_connect_readonly(backup_path)) as backup:
+                self.assertEqual(
+                    backup.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
+                self.assertEqual(
+                    backup.execute("PRAGMA foreign_key_check").fetchall(), []
+                )
             self.assertTrue(first["table_after"])
             self.assertTrue(first["queue_index_after"])
             self.assertTrue(first["metrics_after"])
@@ -625,6 +642,128 @@ class BehaviorSnapshotTests(unittest.TestCase):
             self.assertEqual([row for row in before_tables if row[0] != "app_behavior_snapshot"],
                              [row for row in after_tables if row[0] != "app_behavior_snapshot"])
             self.assertEqual(before_expense, after_expense)
+
+    def test_snapshot_migration_dry_run_is_read_only_and_denies_sql_writes(self):
+        import tempfile
+        from contextlib import closing
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "readonly-preflight.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+            before = db_path.read_bytes()
+            sidecars = [Path(f"{db_path}{suffix}") for suffix in ("-wal", "-shm", "-journal")]
+            self.assertFalse(any(path.exists() for path in sidecars))
+
+            dry = run_snapshot_migration(db_path, apply=False)
+            self.assertTrue(dry["changed"])
+            self.assertEqual(dry["mode"], "dry-run")
+            self.assertEqual(db_path.read_bytes(), before)
+            self.assertFalse(any(path.exists() for path in sidecars))
+
+            with closing(_connect_readonly(db_path)) as conn:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    conn.execute("CREATE TABLE forbidden_write (id INTEGER)")
+            self.assertEqual(db_path.read_bytes(), before)
+            self.assertFalse(any(path.exists() for path in sidecars))
+
+    def test_snapshot_migration_plans_only_the_missing_shadow_column(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "shadow-column.db"
+            with sqlite3.connect(db_path) as conn:
+                ensure_behavior_snapshot_table(conn)
+                conn.execute(
+                    "ALTER TABLE app_behavior_snapshot "
+                    "DROP COLUMN shadow_insight_contract_json"
+                )
+            before = db_path.read_bytes()
+
+            dry = run_snapshot_migration(db_path, apply=False)
+
+            self.assertEqual(
+                dry["planned_changes"],
+                ["add_column:shadow_insight_contract_json"],
+            )
+            self.assertEqual(dry["remaining_changes"], dry["planned_changes"])
+            self.assertFalse(dry["shadow_contract_after"])
+            self.assertEqual(db_path.read_bytes(), before)
+
+    def test_snapshot_migration_dry_run_refuses_existing_sqlite_sidecars(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "sidecars.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+            before_db = db_path.read_bytes()
+            sidecars = {
+                suffix: Path(f"{db_path}{suffix}")
+                for suffix in ("-wal", "-shm", "-journal")
+            }
+            for suffix, sidecar in sidecars.items():
+                sidecar.write_bytes(f"fixture{suffix}".encode())
+            before_sidecars = {suffix: path.read_bytes() for suffix, path in sidecars.items()}
+
+            with self.assertRaises(ReadOnlyPreflightError):
+                run_snapshot_migration(db_path, apply=False)
+
+            self.assertEqual(db_path.read_bytes(), before_db)
+            self.assertEqual(
+                {suffix: path.read_bytes() for suffix, path in sidecars.items()},
+                before_sidecars,
+            )
+
+    def test_snapshot_migration_dry_run_refuses_wal_format_without_sidecars(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "wal-format.db"
+            with sqlite3.connect(db_path) as conn:
+                self.assertEqual(
+                    conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower(),
+                    "wal",
+                )
+                conn.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY)")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            for suffix in ("-wal", "-shm", "-journal"):
+                Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+            before = db_path.read_bytes()
+            self.assertEqual(before[18:20], b"\x02\x02")
+
+            with self.assertRaises(ReadOnlyPreflightError):
+                run_snapshot_migration(db_path, apply=False)
+
+            self.assertEqual(db_path.read_bytes(), before)
+            self.assertFalse(any(Path(f"{db_path}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal")))
+
+    def test_snapshot_migration_refuses_misnamed_queue_index_contract(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index-conflict.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE users (user_id INTEGER PRIMARY KEY, value TEXT);
+                    CREATE TABLE app_behavior_snapshot (
+                        user_id INTEGER PRIMARY KEY,
+                        recompute_state TEXT,
+                        updated_at TEXT
+                    );
+                    CREATE INDEX idx_app_behavior_snapshot_queue ON users(value);
+                    """
+                )
+            before = db_path.read_bytes()
+            with self.assertRaises(SchemaConflictError):
+                run_snapshot_migration(db_path, apply=False)
+            self.assertEqual(db_path.read_bytes(), before)
 
     def test_canonical_migration_upgrades_existing_snapshot_metrics(self):
         import tempfile

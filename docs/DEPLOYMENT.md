@@ -57,7 +57,7 @@ Installationsaktion.
 | `rove-report-enqueue.service` | Reportjobs anlegen | System-Python, `rove_report_worker.py enqueue` | `.env` | root | oneshot |
 | `rove-report-worker.service` | Reportjobs verarbeiten | System-Python, `rove_report_worker.py process` | `.env` | root | oneshot |
 | `rove-report-maintenance.service` | Reports aufräumen/archivieren | System-Python, `rove_report_worker.py maintain` | `.env` | root | oneshot |
-| `rove-behavior-snapshot.service` | Einen Snapshot-User verarbeiten | API-Venv, `rove_behavior_snapshot.py --process-pending --limit 1` | keine | root | oneshot |
+| `rove-behavior-snapshot.service` | Bis zu drei Snapshot-Nutzer pro Lauf verarbeiten | API-Venv, `rove_behavior_snapshot.py --process-pending --limit 3` | keine | root | oneshot |
 
 ## Timer
 
@@ -70,7 +70,7 @@ Installationsaktion.
 | `rove-report-maintenance.timer` | täglich 03:10 Europe/Berlin | Ja |
 | `rove-report-worker.timer` | 2 Minuten nach Boot, danach 1 Minute nach Ende | Nein |
 | `rove-tracking-reminders.timer` | 3 Minuten nach Boot, danach 10 Minuten nach Ende | Ja |
-| `rove-behavior-snapshot.timer` | alle 15 Minuten, Systemzeitzone | Ja |
+| `rove-behavior-snapshot.timer` | alle 5 Minuten, Systemzeitzone | Ja |
 
 Alle zehn Services und acht Timer sind unter `deploy/systemd/` als
 sanitizierte Templates abgebildet. Produktion nutzt bei API und Bot teilweise
@@ -314,11 +314,15 @@ und die DB nur über den kontrollierten Restore-Prozess anfassen.
 Die versionierten Templates
 `deploy/systemd/rove-behavior-snapshot.service` und
 `deploy/systemd/rove-behavior-snapshot.timer` starten ausschließlich den
-kanonischen, auf einen Nutzer begrenzten Snapshot-Worker. Der Worker verarbeitet
-höchstens einen Pending-Nutzer pro Lauf; die CAS-Sperre im Snapshot-Code bleibt
-die zusätzliche Schutzschicht gegen parallele Verarbeitung. Die Templates sind
-kein Produktions-Enablement und dürfen erst nach einem separaten Pilot-Gate
-installiert werden.
+kanonischen Snapshot-Worker mit `--limit 3` alle fünf Minuten. Das ist eine
+Obergrenze von drei Pending-Nutzern je Lauf, keine Durchsatzgarantie; die
+CAS-Sperre im Snapshot-Code bleibt die zusätzliche Schutzschicht gegen
+parallele Verarbeitung. Die Templates sind kein Produktions-Enablement und
+dürfen erst nach einem separaten Pilot-Gate installiert werden. Die zuletzt
+vorgelegte Production-Ausgabe bestätigte den Fünf-Minuten-Timer, aber der
+effektive `ExecStart` war abgeschnitten. Production-Konfiguration gilt daher
+bis zu einer vollständigen lesenden Abfrage als `UNKNOWN` und darf nicht aus
+diesem Template abgeleitet werden.
 
 Rollback des Piloten:
 

@@ -279,7 +279,7 @@ nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
 | `repair_etf_contribution_assignments.py` | 20.08.2026 | Legacy-ETF-Zuordnungen reparieren | Bedingt | UNKNOWN | UNKNOWN ohne Nutzer- und Schema-Pruefung | `rove_investment_contributions.py` |
 | `prepare_multi_account_active_testers.py` | 20.08.2026 | Aktive Tester fuer Multi-Account vorbereiten | Nein/bedingt | UNKNOWN | Nein ohne Rollout-Pruefung | `migrate_financial_accounts.py`, `rove_financial_accounts.py` |
 | `migrate_report_snapshots_v2.py` | 21.08.2026 | Additive Report-Snapshot-Tabelle | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `report_engine.py` |
-| `migrate_behavior_snapshot.py` | 18.09./21.10.2026 | Additive Coach-V4-Snapshot-Tabelle, Queue-Index und interner V3/V4-Shadow-Vertrag | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `rove_behavior_snapshot.py` |
+| `migrate_behavior_snapshot.py` | 18.09./21.10.2026 | Additive Coach-V4-Snapshot-Tabelle, Queue-Index und interner V3/V4-Shadow-Vertrag | Ja | UNKNOWN | Ja, zuerst strikt read-only Dry-run | `rove_behavior_snapshot.py` |
 | `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
 | `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
 | `monthly_financial_snapshots` | 07.09.2026 | Immutable Finanzwerte fuer abgeschlossene Monatsreports | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_app_state.py`, Monatsabschluss |
@@ -312,6 +312,30 @@ Allowlist werden nicht aktiviert oder veraendert.
 
 Die Production-Anwendung dieser Spalte ist `UNKNOWN`; es wurde in diesem Block
 keine Production-Pruefung oder -Migration ausgefuehrt.
+
+`migrate_behavior_snapshot.py --dry-run` verwendet einen SQLite-URI mit
+`mode=ro`, setzt `query_only=ON` und sperrt nicht freigegebene SQL-Aktionen per
+Authorizer. Es liest Schema, Integritaet und Foreign Keys, erstellt weder Backup
+noch Sidecar und schreibt keine Aenderungen. Der Vorabcheck bricht absichtlich
+ab, wenn `-wal`, `-shm` oder `-journal` vorhanden ist, die DB ein WAL-Dateiformat
+verwendet oder ein gleichnamiger Queue-Index nicht exakt auf
+`(recompute_state, updated_at)` der Snapshot-Tabelle zeigt. In diesen Faellen
+nicht auf `immutable=1`, eine schreibbare Verbindung oder das Entfernen von
+Sidecars ausweichen; zuerst einen separat freigegebenen, konsistenten
+Read-only-Snapshot-Weg klaeren.
+
+`--apply` ist davon getrennt und bleibt eine schreibende, explizit
+freizugebende Migration. Vor der Transaktion muss das root-only Backup-Verzeichnis
+Modus `0700` haben; die Sicherungsdatei wird mit Modus `0600` angelegt und vor
+Schemaaenderungen auf SQLite-Integritaet und Foreign Keys geprueft. Ein ungueltig
+geschuetztes Backup-Verzeichnis oder eine ungueltige Sicherung blockiert den
+Apply-Pfad. Dieser
+wendet nur fehlende additive Elemente an; eine vorhandene, aber abweichende
+Indexdefinition ist ein Konflikt und wird nicht ersetzt. Bei Fehlern wird die
+Schema-Transaktion zurueckgerollt und das Backup behalten. Nach erfolgreicher
+Migration wird die additive nullable Spalte nicht isoliert aus der aktiven DB
+entfernt oder per Datenbank-Restore zurueckgerollt. Bei Codeproblemen gilt nur
+ein vorher kompatibilitaetsgepruefter Code-Rueckweg; andernfalls Forward-Fix.
 
 `app_auth_login_limits` wird additiv und idempotent durch `ensure_auth_tables()`
 in `rove_app_api.py` angelegt. Die Tabelle speichert ausschliesslich gehashte
