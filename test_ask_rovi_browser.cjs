@@ -9,12 +9,15 @@ const { chromium, webkit, devices } = require('playwright');
 const source = process.env.ROVE_FRONTEND_PATH || path.join(__dirname, 'frontend', 'index.html');
 const output = process.env.ROVE_ASK_ROVI_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'rove-ask-rovi-'));
 let origin, requests, nextOutcome, nextCoachV4Insight, nextV3Candidate;
+let coachReservations, shownCoachInsights;
 
 function reset() {
   requests = [];
   nextOutcome = '';
   nextCoachV4Insight = null;
   nextV3Candidate = null;
+  coachReservations = new Map();
+  shownCoachInsights = new Set();
 }
 
 function state() {
@@ -60,6 +63,38 @@ const server = http.createServer(async (req, res) => {
     if (apiPath.startsWith('/v1/auth/pin/')) return json({ ok: true, pin_status: 'unlocked', onboarding_required: false });
     if (apiPath.startsWith('/v1/push/')) return json({ ok: true, enabled: false });
     if (apiPath === '/v1/state') return json(state());
+    if (apiPath.startsWith('/v1/coach/insights/')) {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      const payload = JSON.parse(raw || '{}');
+      const key = `${payload.insight_id}:${payload.evidence_fingerprint}`;
+      const insight = nextCoachV4Insight;
+      const matches = insight && payload.insight_id === insight.insight_id &&
+        payload.evidence_fingerprint === insight.evidence_fingerprint;
+      if (!matches) return json({ ok: false, error: 'insight_not_current' }, 409);
+      if (apiPath.endsWith('/claim')) {
+        if (shownCoachInsights.has(key)) return json({ ok: true, status: 'suppressed' });
+        const existing = coachReservations.get(key);
+        if (existing && existing !== payload.reservation_token) {
+          return json({ ok: true, status: 'reserved_elsewhere', retry_after_seconds: 1 });
+        }
+        coachReservations.set(key, payload.reservation_token);
+        return json({ ok: true, status: 'reserved' });
+      }
+      if (apiPath.endsWith('/acknowledged')) {
+        if (coachReservations.get(key) !== payload.reservation_token) {
+          return json({ ok: false, error: 'reservation_missing' }, 409);
+        }
+        shownCoachInsights.add(key);
+        return json({ ok: true, acknowledged: true });
+      }
+      if (apiPath.endsWith('/opened')) {
+        return shownCoachInsights.has(key)
+          ? json({ ok: true, opened: true })
+          : json({ ok: false, error: 'insight_not_acknowledged' }, 409);
+      }
+      return json({ ok: false, error: 'synthetic_route_not_found' }, 404);
+    }
     if (apiPath === '/v1/ai/chat' && req.method === 'POST') {
       let raw = '';
       for await (const chunk of req) raw += chunk;
@@ -281,6 +316,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
   reset();
   nextCoachV4Insight = {
     insight_id: 'v4:shadow:behavior_insight:synthetic-' + scenario.key,
+    evidence_fingerprint: 'a'.repeat(64),
     insight_type: scenario.type,
     title: scenario.title,
     message: scenario.message,
@@ -305,7 +341,8 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     await page.goto(origin + '/app/');
     await page.locator('#app:not([hidden])').waitFor();
     await page.locator('#splash').waitFor({ state: 'detached' });
-    await page.waitForFunction(id => DATA.coachV4Insight?.insight_id === id, nextCoachV4Insight.insight_id);
+    await page.waitForFunction(id => DATA.coachV4Insight?.insight_id === id,
+      nextCoachV4Insight.insight_id);
     const mentor = page.locator('#tab-home .mentor');
     await page.getByText(scenario.title, { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
@@ -365,7 +402,8 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     await page.reload();
     await page.locator('#app:not([hidden])').waitFor();
     await page.locator('#splash').waitFor({ state: 'detached' });
-    await page.waitForFunction(id => DATA.coachV4Insight?.insight_id === id, nextCoachV4Insight.insight_id);
+    await page.waitForFunction(() => BRIDGE_USER_ID === 1 &&
+      DATA.financialAccounts.length === 3 && DATA.coachV4Insight === null);
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'reload must not repeat the opened insight');
     console.log(label.toUpperCase() + '_' + scenario.key.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
   } finally {

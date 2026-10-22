@@ -5043,8 +5043,12 @@ async function openMentorCoach(){
   if(insight?.insight_id&&insight?.evidence_fingerprint&&
     mentor?.dataset.coachV4InsightId===insight.insight_id&&
     mentor?.dataset.coachV4InsightFingerprint===insight.evidence_fingerprint){
-    await acknowledgeMentorV4Insight(insight);
+    const acknowledged=await acknowledgeMentorV4Insight(insight);
     await markMentorV4InsightOpened(insight);
+    if(acknowledged&&DATA.coachV4Insight?.insight_id===insight.insight_id&&
+      DATA.coachV4Insight?.evidence_fingerprint===insight.evidence_fingerprint){
+      DATA.coachV4Insight=null;
+    }
     mentorLine();
     openTalk({insight});
   }else openTalk();
