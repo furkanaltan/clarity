@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import sqlite3
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import test_coach_v4 as fixtures
-from rove_behavior_patterns import build_shadow_inspector
+from rove_behavior_patterns import build_shadow_inspector, build_visible_behavior_insight
 from rove_behavior_snapshot import (
     ensure_behavior_snapshot_table,
     get_shadow_insight_contracts,
@@ -22,6 +23,7 @@ from rove_coach_v4_delivery import (
     answer_v4_question,
     build_visible_mentor_insight,
     resolve_v4_transaction_examples,
+    v4_question_mode,
 )
 from rove_visible_coach_v4 import get_visible_coach_v4
 
@@ -48,17 +50,19 @@ class CoachingQualityScenarios(unittest.TestCase):
         }):
             return get_visible_coach_v4(self.conn, 1, now=now or self.now)
 
-    def pipeline(self, v3=None):
+    def pipeline(self, v3=None, now=None):
+        moment = now or self.now
+        engine_now = moment.replace(tzinfo=None)
         self.conn.commit()
         before = self.financial_fingerprint()
-        inspector = build_shadow_inspector(self.conn, 1, now=self.profile.NOW)
+        inspector = build_shadow_inspector(self.conn, 1, now=engine_now)
         ensure_behavior_snapshot_table(self.conn)
         # Freeze the snapshot clock as well as the detector's business date.
-        with patch("rove_behavior_snapshot._now_text", return_value=self.now.isoformat()):
-            outcome = recompute_behavior_snapshot(self.conn, 1, now=self.now)
+        with patch("rove_behavior_snapshot._now_text", return_value=moment.isoformat()):
+            outcome = recompute_behavior_snapshot(self.conn, 1, now=moment)
         self.assertEqual(outcome["status"], "ready", outcome)
-        contracts, status = get_shadow_insight_contracts(self.conn, 1, now=self.now)
-        visible = self.gated_visible()
+        contracts, status = get_shadow_insight_contracts(self.conn, 1, now=moment)
+        visible = self.gated_visible(now=moment)
         joined = build_visible_mentor_insight(v3, contracts, visible)
         self.assertEqual(self.financial_fingerprint(), before)
         return inspector, contracts, status, visible, joined
@@ -75,6 +79,13 @@ class CoachingQualityScenarios(unittest.TestCase):
     def add_improvement(self):
         self.profile._add_historical_months(((90, 90), (70, 70), (45, 45)))
 
+    def assert_v3_precedence(self, now=None):
+        _inspector, _contracts, _status, visible, joined = self.pipeline(
+            v3={"type": "budget_overrun", "priority": 900}, now=now
+        )
+        self.assertIsNotNone(visible)
+        self.assertIsNone(joined)
+
     def test_delivery_weekday_pattern_has_exact_dates_count_and_amount(self):
         for index, (day, amount) in enumerate(((7, 30), (14, 28), (21, 28)), 1):
             self.profile.add_expense(index, "Lieferando", "Restaurants", amount,
@@ -88,8 +99,22 @@ class CoachingQualityScenarios(unittest.TestCase):
         self.assertEqual((selected["period_start"], selected["period_end"]), ("2026-09-01", "2026-09-30"))
         self.assertEqual(status, "ready")
         self.assertEqual(contracts[0]["insight_id"], "v4:" + selected["insight_id"])
-        self.assertIsNone(visible)  # This existing type remains outside the visible gate.
-        self.assertIsNone(joined)
+        self.assertIsNotNone(visible)
+        self.assertIsNotNone(joined)
+        self.assertEqual(joined["insight_id"], contracts[0]["insight_id"])
+        self.assertEqual(joined["facts"]["transaction_count"], 3)
+        self.assertEqual(joined["facts"]["merchant"], "Lieferando")
+        self.assertEqual(joined["facts"]["amount_current"], 86)
+        self.assertIn("3 von 4 Montagen", visible["message"])
+        answer = answer_v4_question("why", joined)
+        self.assertIn("86,00 €", answer)
+        self.assertIn("Lieferando", answer)
+        examples = resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW)
+        self.assertEqual(examples["count"], 3)
+        self.assertEqual(answer_v4_question("transactions", joined, examples).count("Lieferando"), 3)
+        self.assert_v3_precedence()
+        self.profile.conn.execute("UPDATE expenses SET amount=31 WHERE id=1")
+        self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW))
         self.assertEqual(inspector["primary_coach_insight"], self.pipeline()[0]["primary_coach_insight"])
 
     def test_one_day_with_three_orders_is_not_a_weekday_habit(self):
@@ -110,8 +135,21 @@ class CoachingQualityScenarios(unittest.TestCase):
         self.assertEqual(len(selected["source_ids"]), 6)
         self.assertEqual(status, "ready")
         self.assertEqual(len(contracts), 1)
-        self.assertIsNone(visible)
-        self.assertIsNone(joined)
+        self.assertIsNotNone(visible)
+        self.assertIsNotNone(joined)
+        self.assertEqual(joined["facts"]["monthly_amounts"],
+                         [{"month": row["month"], "amount": row["amount"]} for row in values])
+        self.assertEqual(joined["facts"]["transaction_count"], 6)
+        answer = answer_v4_question("why", joined)
+        for fact in ("90,00 €", "140,00 €", "200,00 €", "6 Buchungen"):
+            self.assertIn(fact, answer)
+        self.assertIn("Ursache", answer)
+        self.assert_v3_precedence()
+        inconsistent = copy.deepcopy(selected)
+        inconsistent["evidence_metrics"]["absolute_change_eur"] = 111
+        self.assertIsNone(build_visible_behavior_insight(inconsistent))
+        self.profile.conn.execute("UPDATE expenses SET amount=999 WHERE id=1")
+        self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW))
 
     def test_post_salary_pattern_needs_three_reliable_cycles_and_has_no_causal_claim(self):
         self.profile._salary_cycle_fixture()
@@ -125,7 +163,22 @@ class CoachingQualityScenarios(unittest.TestCase):
         self.assertEqual(status, "ready")
         self.assertIn("no_causal_claims", contracts[0]["claim_limits"])
         self.assertIn("temporal_correlation_only", contracts[0]["claim_limits"])
-        self.assertIsNone(visible)
+        self.assertIsNotNone(visible)
+        self.assertEqual(visible["insight_type"], "post_income_pattern")
+        _, _, _, _, joined = self.pipeline()
+        self.assertIsNotNone(joined)
+        answer = answer_v4_question("why", joined)
+        for fact in ("3 Gehaltszyklen", "200,00 €", "40,00 €", "160,00 €", "6 Buchungen"):
+            self.assertIn(fact, answer)
+        self.assertIn("kein Beleg für eine Ursache", answer)
+        examples = resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW)
+        self.assertEqual(examples["count"], 6)
+        self.assert_v3_precedence()
+        inconsistent = copy.deepcopy(selected)
+        inconsistent["evidence_metrics"]["absolute_delta_eur"] = 161
+        self.assertIsNone(build_visible_behavior_insight(inconsistent))
+        self.profile.conn.execute("UPDATE expenses SET amount=201 WHERE id=101")
+        self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW))
         self.conn.execute("DELETE FROM app_cash_movements WHERE id=3")
         two_cycles = build_shadow_inspector(self.conn, 1, now=self.profile.NOW)
         self.assertFalse(any(item["insight_type"] == "post_income_pattern" and item["coach_eligible"]
@@ -135,17 +188,81 @@ class CoachingQualityScenarios(unittest.TestCase):
         for key, name in (("c1", "Netflix"), ("c2", "NETFLIX.COM"),
                           ("c3", "Disney+"), ("c4", "Paramount+")):
             self.profile.add_contract(key, name, 25)
-        inspector, _, _, visible, _ = self.pipeline()
+        inspector, contracts, _, visible, joined = self.pipeline()
         pattern = next(item for item in inspector["patterns"] if item["pattern_type"] == "similar_recurring_services")
         self.assertEqual(pattern["observations"]["service_count"], 3)
         self.assertEqual(pattern["observations"]["monthly_normalized_total"], 75)
         self.assertTrue(pattern["observations"]["duplicate_ambiguous"])
-        self.assertIsNone(visible)
+        self.assertEqual(visible["insight_type"], "subscription_cluster")
+        self.assertEqual(joined["facts"]["service_count"], 3)
+        self.assertEqual(joined["facts"]["monthly_normalized_total"], 75)
+        answer = answer_v4_question("why", joined)
+        self.assertIn("75,00 €", answer)
+        self.assertIn("belegt weder", answer)
+        self.assertIn("kündigt nichts", answer_v4_question("action", joined))
+        self.assertEqual(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW)["count"], 4)
+        self.assertEqual(v4_question_mode("Welche Verträge meinst du?"), "transactions")
+        self.assert_v3_precedence()
         self.conn.execute("UPDATE app_contracts SET amount=35 WHERE contract_id='c2'")
+        self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW))
         ambiguous = build_shadow_inspector(self.conn, 1, now=self.profile.NOW)
         pattern = next(item for item in ambiguous["patterns"] if item["pattern_type"] == "similar_recurring_services")
         self.assertIsNone(pattern["observations"]["monthly_normalized_total"])
         self.assertFalse(pattern["eligible_for_coach"])
+
+    def test_budget_recovery_requires_closed_month_and_explains_historical_rows(self):
+        self.profile.configure_budget_plan(income=1500, fixed_costs=1200)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08")):
+            self.profile.add_budget("Restaurants", month, 100)
+            self.profile.add_month(index * 10 + 1, month, (80, 80))
+        self.profile.add_budget("Restaurants", "2026-09", 100)
+        self.profile.add_expense(100, "Restaurant", "Restaurants", 20, "2026-09-05 12:00:00")
+        self.profile.add_expense(101, "Restaurant", "Restaurants", 20, "2026-09-10 12:00:00")
+
+        before_close = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        inspector, contracts, _, visible, _ = self.pipeline(now=before_close)
+        self.assertFalse(any(item["insight_type"] == "budget_recovery" and item["coach_eligible"]
+                             for item in inspector["insight_candidates"]))
+        self.assertEqual(contracts, [])
+        self.assertIsNone(visible)
+
+        closed_month = datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc)
+        inspector, contracts, status, visible, joined = self.pipeline(now=closed_month)
+        selected = next(item for item in inspector["insight_candidates"]
+                        if item["insight_type"] == "budget_recovery" and item["primary_coach_insight"])
+        self.assertEqual(status, "ready")
+        self.assertEqual(len(contracts), 1)
+        self.assertEqual(visible["insight_type"], "budget_recovery")
+        self.assertEqual(joined["insight_id"], contracts[0]["insight_id"])
+        self.assertEqual(joined["facts"]["amount_current"], 40)
+        self.assertEqual(joined["facts"]["budget_amount"], 100)
+        self.assertEqual(joined["facts"]["months_over_budget"], 3)
+        self.assertEqual(len(joined["facts"]["historical_budget_evidence"]), 3)
+        why = answer_v4_question("why", joined)
+        for fact in ("40,00 €", "100,00 €", "Juni 2026", "Juli 2026", "August 2026", "Ursache"):
+            self.assertIn(fact, why)
+        examples = resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=closed_month)
+        self.assertEqual(examples["count"], 2)
+        self.assertIn("2 Buchungen", answer_v4_question("transactions", joined, examples))
+        self.assertIn("beibehalten", answer_v4_question("action", joined))
+        self.assert_v3_precedence(now=closed_month)
+        self.profile.conn.execute("UPDATE expenses SET amount=90 WHERE id=100")
+        self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=closed_month))
+
+    def test_budget_recovery_is_suppressed_after_material_budget_change(self):
+        self.profile.configure_budget_plan(income=1500, fixed_costs=1200)
+        for index, month in enumerate(("2026-06", "2026-07", "2026-08")):
+            self.profile.add_budget("Restaurants", month, 100)
+            self.profile.add_month(index * 10 + 1, month, (80, 80))
+        self.profile.add_budget("Restaurants", "2026-09", 200)
+        self.profile.add_expense(100, "Restaurant", "Restaurants", 20, "2026-09-05 12:00:00")
+        self.profile.add_expense(101, "Restaurant", "Restaurants", 20, "2026-09-10 12:00:00")
+        closed_month = datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc)
+        inspector, contracts, _, visible, _ = self.pipeline(now=closed_month)
+        self.assertFalse(any(item["insight_type"] == "budget_recovery" and item["coach_eligible"]
+                             for item in inspector["insight_candidates"]))
+        self.assertEqual(contracts, [])
+        self.assertIsNone(visible)
 
     def test_current_budget_pressure_keeps_complete_shared_evidence(self):
         self.add_current_pressure()
@@ -233,6 +350,15 @@ class CoachingQualityScenarios(unittest.TestCase):
         self.assertIsNone(build_visible_mentor_insight(None, [], visible))
         self.assertIsNone(resolve_v4_transaction_examples(self.conn, 1, contracts[0], now=self.profile.NOW))
 
+    def test_visible_v4_gate_remains_off_without_server_configuration(self):
+        self.add_current_pressure()
+        self.pipeline()
+        with patch.dict(os.environ, {
+            "ROVE_COACH_V4_VISIBLE_ENABLED": "",
+            "ROVE_COACH_V4_VISIBLE_USER_IDS": "",
+        }):
+            self.assertIsNone(get_visible_coach_v4(self.conn, 1, now=self.now))
+
     def test_inconsistent_legacy_snapshot_totals_are_rejected(self):
         self.add_current_pressure()
         self.pipeline()
@@ -312,6 +438,57 @@ class CoachingQualityScenarios(unittest.TestCase):
                     conn.execute("UPDATE app_behavior_snapshot SET status='stale' WHERE user_id=1")
                     conn.commit()
                 self.assertEqual(fixture.post(client, "Warum sagst du mir das?", insight_id=insight_id).status_code, 409)
+        finally:
+            fixture.tearDown()
+
+    def test_real_chat_api_explains_subscription_contracts_without_ai(self):
+        import test_ai_chat_phase1 as api_fixtures
+        import rove_app_api as api
+
+        fixture = api_fixtures.AiChatPhaseOneTests(methodName="runTest")
+        fixture.setUp()
+        try:
+            now = datetime.now(timezone.utc)
+            with closing(sqlite3.connect(fixture.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("""CREATE TABLE app_contracts (
+                    user_id INTEGER NOT NULL, contract_id TEXT NOT NULL, name TEXT NOT NULL,
+                    category TEXT NOT NULL, amount REAL NOT NULL, frequency TEXT,
+                    status TEXT NOT NULL, active INTEGER NOT NULL, created_at TEXT, updated_at TEXT,
+                    PRIMARY KEY(user_id, contract_id)
+                )""")
+                for contract_id, name in (
+                    ("n1", "Netflix"), ("n2", "NETFLIX.COM"),
+                    ("d1", "Disney+"), ("p1", "Paramount+"),
+                ):
+                    conn.execute(
+                        "INSERT INTO app_contracts VALUES (1,?,?, 'Abos',25,'monthly','active',1,?,?)",
+                        (contract_id, name, now.isoformat(), now.isoformat()),
+                    )
+                self.assertEqual(recompute_behavior_snapshot(conn, 1, now=now)["status"], "ready")
+                contracts, status = get_shadow_insight_contracts(conn, 1, now=now)
+                self.assertEqual(status, "ready")
+                self.assertEqual(contracts[0]["insight_type"], "subscription_cluster")
+                insight_id = contracts[0]["insight_id"]
+                conn.commit()
+            client = fixture.client_for(token="quality-subscription")
+            with patch.dict(os.environ, {"ROVE_COACH_V4_VISIBLE_ENABLED": "1",
+                                         "ROVE_COACH_V4_VISIBLE_USER_IDS": "1"}), \
+                 patch.object(api, "ai_chat_provider", side_effect=AssertionError("must remain deterministic")):
+                why = fixture.post(client, "Warum sagst du mir das?", insight_id=insight_id)
+                self.assertEqual(why.status_code, 200, why.get_json())
+                self.assertTrue(why.get_json()["deterministic"])
+                self.assertIn("3 aktive Services", why.get_json()["answer"])
+                self.assertIn("75,00 €", why.get_json()["answer"])
+                self.assertIn("belegt weder", why.get_json()["answer"])
+                which = fixture.post(client, "Welche Verträge meinst du?", insight_id=insight_id)
+                self.assertEqual(which.status_code, 200, which.get_json())
+                self.assertIn("4 aktive Vertragszeilen", which.get_json()["answer"])
+                self.assertIn("NETFLIX.COM", which.get_json()["answer"])
+                self.assertIn("25,00 € pro Monat", which.get_json()["answer"])
+                action = fixture.post(client, "Was kann ich konkret ändern?", insight_id=insight_id)
+                self.assertEqual(action.status_code, 200, action.get_json())
+                self.assertIn("kündigt nichts", action.get_json()["answer"])
         finally:
             fixture.tearDown()
 

@@ -71,10 +71,10 @@ const server = http.createServer(async (req, res) => {
       if (outcome === 'server-error') return json({ ok: false, error: 'synthetic_unavailable' }, 503);
       if (payload.insight_id) {
         const answer = payload.message.includes('Warum')
-          ? 'Der Hinweis beruht auf dem belegten Budgetrahmen; eine Ursache ist nicht belegt.'
+          ? nextCoachV4Insight.browserAnswers.why
           : payload.message.includes('Welche')
-            ? 'Der Hinweis stützt sich auf 3 Buchungen im belegten Zeitraum. Beispiel: Café, 4,50 €.'
-            : 'Du kannst die Buchungen prüfen und selbst über deinen Rahmen entscheiden.';
+            ? nextCoachV4Insight.browserAnswers.evidence
+            : nextCoachV4Insight.browserAnswers.action;
         return json({ ok: true, kind: 'rove', intent: 'coach_v4_insight', insight_id: payload.insight_id,
           conversation_id: 'synthetic-conversation', answer });
       }
@@ -219,14 +219,73 @@ async function flow(browser, label, viewport, standalone = false) {
   }
 }
 
-async function mentorInsightFlow(browser, label, viewport, standalone = false) {
+const mentorScenarios = [
+  {
+    key: 'delivery-weekday', type: 'repeated_spending_pattern',
+    title: 'Wiederkehrende Bestellungen',
+    message: 'An 3 von 4 Montagen gab es Buchungen bei Lieferando mit insgesamt 86,00 €.',
+    evidenceQuestion: 'Welche Ausgaben meinst du?',
+    browserAnswers: {
+      why: '3 von 4 Montagen: 3 Buchungen bei Lieferando über 86,00 €; keine Ursache belegt.',
+      evidence: '3 Buchungen im Zeitraum, Beispiel Lieferando 30,00 €.',
+      action: 'Du kannst die Buchungen prüfen und selbst einen Wochenrahmen wählen.',
+    },
+  },
+  {
+    key: 'rising-category', type: 'spending_trend_worsening',
+    title: 'Ausgaben steigen',
+    message: 'Bei Restaurants stiegen die erfassten Ausgaben über 3 aufeinanderfolgende Monate von 90,00 € auf 200,00 €.',
+    evidenceQuestion: 'Welche Ausgaben meinst du?',
+    browserAnswers: {
+      why: 'Restaurants: Juni 90,00 €, Juli 140,00 €, August 200,00 €; 6 Buchungen, Ursache nicht belegt.',
+      evidence: '6 Buchungen im Zeitraum. Beispiel Restaurant 45,00 €.',
+      action: 'Du kannst die Buchungen prüfen und selbst über deinen Rahmen entscheiden.',
+    },
+  },
+  {
+    key: 'post-income', type: 'post_income_pattern',
+    title: 'Ausgaben nach Geldeingang',
+    message: 'In 3 Gehaltszyklen lagen Ausgaben im Schnitt bei 200,00 € gegenüber 40,00 € in der Vergleichsbasis. Kein Kausalbeleg.',
+    evidenceQuestion: 'Welche Ausgaben meinst du?',
+    browserAnswers: {
+      why: '3 Zyklen, 200,00 € gegenüber 40,00 €, 6 Buchungen; zeitlicher Zusammenhang, keine Ursache belegt.',
+      evidence: '6 Buchungen in den belegten Zeitfenstern. Beispiel Restaurant 100,00 €.',
+      action: 'Du kannst nach Geldeingang erst deine geplanten Ausgaben prüfen.',
+    },
+  },
+  {
+    key: 'similar-contracts', type: 'subscription_cluster',
+    title: 'Ähnliche laufende Verträge',
+    message: '3 laufende Verträge sind als Streaming eingeordnet; Monatswert 75,00 €. Ähnlichkeit beweist kein Doppelabo.',
+    evidenceQuestion: 'Welche Verträge meinst du?',
+    browserAnswers: {
+      why: '3 aktive Services, Monatswert 75,00 €; das belegt weder ein unnötiges Doppelabo noch Ersparnis.',
+      evidence: '4 aktive Vertragszeilen: Netflix 25,00 € pro Monat; Ähnlichkeit beweist kein Doppelabo.',
+      action: 'Du kannst einzeln prüfen, ob du die Verträge noch nutzt. Rov.E kündigt nichts.',
+    },
+  },
+  {
+    key: 'budget-recovery', type: 'budget_recovery',
+    title: 'Budget-Recovery bei Restaurants',
+    message: 'Im abgeschlossenen Monat lagen die Ausgaben bei 40,00 € von 100,00 €. Zuvor lag Restaurants in 3 Monaten über dem Rahmen.',
+    evidenceQuestion: 'Welche Ausgaben meinst du?',
+    browserAnswers: {
+      why: 'Restaurants: 40,00 € von 100,00 €; zuvor Juni, Juli und August über dem Rahmen; keine Ursache belegt.',
+      evidence: '2 Buchungen im abgeschlossenen Monat. Beispiel Restaurant 20,00 €.',
+      action: 'Wenn der Rahmen passt, kannst du deinen bisherigen Umgang beibehalten.',
+    },
+  },
+];
+
+async function mentorInsightFlow(browser, label, viewport, standalone = false, scenario = mentorScenarios[0]) {
   reset();
   nextCoachV4Insight = {
-    insight_id: 'v4:shadow:behavior_insight:synthetic-7',
-    insight_type: 'budget_attention',
-    title: 'Dein Budget ist diesen Monat unter Druck',
-    message: 'Bei Essen liegst du über deinem eigenen Rahmen.',
+    insight_id: 'v4:shadow:behavior_insight:synthetic-' + scenario.key,
+    insight_type: scenario.type,
+    title: scenario.title,
+    message: scenario.message,
     facts: { category: 'Essen', period: { start: '2026-10-01', end: '2026-10-21' } },
+    browserAnswers: scenario.browserAnswers,
   };
   const mobile = viewport.width === 390;
   const context = await browser.newContext({ viewport, serviceWorkers: 'block',
@@ -246,9 +305,9 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     await page.goto(origin + '/app/');
     await page.locator('#app:not([hidden])').waitFor();
     await page.locator('#splash').waitFor({ state: 'detached' });
-    await page.waitForFunction(() => DATA.coachV4Insight?.insight_id === 'v4:shadow:behavior_insight:synthetic-7');
+    await page.waitForFunction(id => DATA.coachV4Insight?.insight_id === id, nextCoachV4Insight.insight_id);
     const mentor = page.locator('#tab-home .mentor');
-    await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
+    await page.getByText(scenario.title, { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
     await page.evaluate(() => {
       DATA.mentorCandidate = { type: 'budget_overrun', priority: 100,
@@ -269,7 +328,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
       DATA.monthlyPlan.incomeStatus = 'confirmed';
       mentorLine();
     });
-    await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
+    await page.getByText(scenario.title, { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
     if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
     if (standalone || !mobile) await mentor.locator('[data-mentor-cta]').click();
@@ -277,7 +336,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     await page.locator('#talksheet.on').waitFor();
     await page.getByText(/Du hast den Hinweis/, { exact: false }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'opened insight is suppressed for today');
-    for (const question of ['Warum sagst du mir das?', 'Welche Ausgaben meinst du?', 'Was kann ich konkret ändern?']) {
+    for (const question of ['Warum sagst du mir das?', scenario.evidenceQuestion, 'Was kann ich konkret ändern?']) {
       await page.locator('#qsug .qs').filter({ hasText: question }).waitFor();
     }
 
@@ -286,12 +345,12 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     await page.getByText(/Rov\.E kann gerade nicht antworten/, { exact: false }).waitFor();
     assert.equal(await page.locator('.bub.me').filter({ hasText: 'Warum sagst du mir das?' }).count(), 1);
     await page.locator('#qsug .qs').filter({ hasText: 'Warum sagst du mir das?' }).click();
-    await page.getByText(/eine Ursache ist nicht belegt/, { exact: false }).waitFor();
+    await page.getByText(scenario.browserAnswers.why, { exact: true }).waitFor();
     assert.equal(await page.locator('.bub.me').filter({ hasText: 'Warum sagst du mir das?' }).count(), 1);
-    await page.locator('#qsug .qs').filter({ hasText: 'Welche Ausgaben meinst du?' }).click();
-    await page.getByText(/3 Buchungen im belegten Zeitraum/, { exact: false }).waitFor();
+    await page.locator('#qsug .qs').filter({ hasText: scenario.evidenceQuestion }).click();
+    await page.getByText(scenario.browserAnswers.evidence, { exact: true }).waitFor();
     await page.locator('#qsug .qs').filter({ hasText: 'Was kann ich konkret ändern?' }).click();
-    await page.getByText(/selbst über deinen Rahmen entscheiden/, { exact: false }).waitFor();
+    await page.getByText(scenario.browserAnswers.action, { exact: true }).waitFor();
     assert.equal(requests.length, 4, 'one failed request plus three successful context questions');
     assert.ok(requests.every(request => request.insight_id === nextCoachV4Insight.insight_id));
     assert.equal(errors.length, 0, errors.join('\n'));
@@ -299,16 +358,16 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
       await page.locator('#qsug').evaluate(element => { element.scrollLeft = 0; });
       const chip = await page.locator('#qsug .qs').first().boundingBox();
       assert.ok(chip && chip.x >= 0 && chip.x + chip.width <= viewport.width + 2, JSON.stringify(chip));
-      await page.screenshot({ path: path.join(output, label + '-mentor-insight-390.png') });
+      await page.screenshot({ path: path.join(output, label + '-' + scenario.key + '-mentor-insight-390.png') });
     } else {
-      await page.screenshot({ path: path.join(output, label + '-mentor-insight-desktop.png') });
+      await page.screenshot({ path: path.join(output, label + '-' + scenario.key + '-mentor-insight-desktop.png') });
     }
     await page.reload();
     await page.locator('#app:not([hidden])').waitFor();
     await page.locator('#splash').waitFor({ state: 'detached' });
-    await page.waitForFunction(() => DATA.coachV4Insight?.insight_id === 'v4:shadow:behavior_insight:synthetic-7');
+    await page.waitForFunction(id => DATA.coachV4Insight?.insight_id === id, nextCoachV4Insight.insight_id);
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'reload must not repeat the opened insight');
-    console.log(label.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
+    console.log(label.toUpperCase() + '_' + scenario.key.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
   } finally {
     await context.close();
   }
@@ -325,9 +384,10 @@ async function main() {
     await flow(browser, 'desktop', { width: 1280, height: 900 });
     await flow(browser, 'mobile-390', { width: 390, height: 844 });
     await flow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
-    await mentorInsightFlow(browser, 'desktop', { width: 1280, height: 900 });
-    await mentorInsightFlow(browser, 'mobile-390', { width: 390, height: 844 });
-    await mentorInsightFlow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
+    for (const scenario of mentorScenarios) {
+      await mentorInsightFlow(browser, 'desktop', { width: 1280, height: 900 }, false, scenario);
+      await mentorInsightFlow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true, scenario);
+    }
     console.log('SCREENSHOTS=' + output);
   } finally {
     if (browser) await browser.close();

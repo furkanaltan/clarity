@@ -32,6 +32,10 @@ _SENSITIVE_EVIDENCE_KEYS = frozenset({
 _ALLOWED_V4_SUMMARY_KEYS = frozenset({
     "pattern_type", "composite_type", "category", "direction",
 })
+_EXPENSE_EVIDENCE_TYPES = frozenset({
+    "budget_attention", "repeated_spending_pattern", "spending_trend_improving",
+    "spending_trend_worsening", "post_income_pattern", "budget_recovery",
+})
 
 
 def _now_iso(now: datetime | None = None) -> str:
@@ -184,7 +188,7 @@ def adapt_v4_shadow_candidate(
         return None
     raw_sources = insight.get("source_ids")
     if (
-        insight_type in {"budget_attention", "spending_trend_improving"}
+        insight_type in _EXPENSE_EVIDENCE_TYPES
         and isinstance(raw_sources, (list, tuple))
         and 0 < len(raw_sources) <= 10000
         and all(isinstance(source_id, (str, int)) for source_id in raw_sources)

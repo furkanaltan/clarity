@@ -1,6 +1,8 @@
 # Financial Intelligence: Coaching-Qualitaet, Block 3
 
 Stand: 22.10.2026. Basis: `84bbc604f7dda73ab68b32c7f49b09bf925438b4`.
+Die Matrix und Befunde dokumentieren den damaligen Block-3-Stand; spaetere
+Aufloesungen der Darstellungsluecken stehen unter Block 4A weiter unten.
 Alle Profile sind synthetisch. Geprueft werden die bestehende Engine, der echte
 Snapshot, der gemeinsame Insight-Vertrag und die deterministische Erklaerung.
 Ein bestandener Engine-Test ist kein Nachweis einer nutzersichtbaren Funktion.
@@ -73,11 +75,10 @@ ohne weitere Code- oder Testaenderung. Die neun Runtime-/Testdateien stimmen
 mit `source-before-tests.sha256` ueberein; kein Test wurde abgeschwaecht oder
 uebersprungen. Die Ursache des einmaligen Verbindungsabbruchs bleibt unbewiesen.
 
-Die vier gesperrten Mustertypen und Budget-Recovery sind konkrete verbleibende
-Darstellungsluecken. Der Gate wurde in diesem Qualitaetsblock nicht auf weitere
-Typen erweitert. Fuer deren sichtbare Nutzung fehlen typspezifische Texte,
-gemeinsame Faktenprojektionen und deterministische Erklaerungen mit passenden
-Abnahmen. Neue Detektoren sind dafuer nicht erforderlich.
+Zum damaligen Stand von Block 3 blieben vier Mustertypen und Budget-Recovery
+gesperrt. Die anschliessende gezielte Integration und Abnahme dieser Muster ist
+unter Block 4A dokumentiert; die historische Matrix oben bleibt als damaliger
+Vorher-Nachweis erhalten.
 
 Die bestehende Wiederholungsregel gilt lokal fuer dieselbe Insight-ID am
 selben Tag. Eine dauerhafte oder geraeteuebergreifende Quittierung gibt es
@@ -86,3 +87,65 @@ noch nicht; dafuer wird hier kein neues Zustandsmodell eingefuehrt.
 Coach V4 bleibt standardmaessig deaktiviert. Sichtbarkeit wird ausschliesslich
 fuer synthetische Tests ueber die vorhandenen Schalter gesetzt. Kein Push,
 Deployment oder Zugriff auf Produktionsdaten ist Bestandteil dieses Nachweises.
+
+## Block 4A: bestehende V4-Muster fuer Mentor und Ask Rovi
+
+Arbeitsbasis: `f4141c9ee9eb0f4d240374a987652fdfac776d15`. Die Integration nutzt
+die vorhandenen V4-Detektoren, den gemeinsamen Insight-Vertrag, den vorhandenen
+V3-Prioritaetsentscheid und den bestehenden sichtbaren Default-Deny-Gate. Keine
+neuen Muster, Finanzformeln oder globalen Rangregeln. Die bestehende
+Improvement-Ausgabe bleibt mit ihrem bisherigen Monatsreihen-Vertrag kompatibel.
+
+| Bestehendes Muster | Sichtbares Evidence-Gate und Grenze | Ergebnis |
+|---|---|---|
+| Lieferdienst/Wochentag | Mindestens vier passende Wochentage im Zeitraum, mindestens drei Buchungstage, mindestens 60 Prozent Wiederholung und 30 EUR belegte Gesamtsumme; Karten- und Chatfakten stimmen mit demselben Vertrag ueberein. | PASS; ein einzelner Tag mit mehreren Bestellungen bleibt unsichtbar. |
+| Steigende Kategorieausgaben | Mindestens drei aufeinanderfolgende Monate, streng steigende Monatswerte und der vorhandene Delta-Wert muss exakt zu den Endpunkten passen. | PASS; fehlende, lueckenhafte, nicht monotone oder widerspruechliche Reihen werden unterdrueckt. |
+| Ausgaben nach Gehalt | Mindestens drei verlaessliche Gehaltszyklen, nur vorhandene 3-/7-Tage-Fenster, mindestens zwei Buchungen je Zyklus, expliziter Zeitkorrelations-Hinweis und Delta-Konsistenz zwischen Durchschnitt, Basis und Differenz. | PASS; die Darstellung behauptet keine Ursache. Zwei Zyklen, unsichere Gehaltseingaenge oder widerspruechliche Werte bleiben unsichtbar. |
+| Aehnliche laufende Vertraege | Mindestens zwei Services, vollstaendige Frequenz, bestaetigter Aktivstatus und vollstaendige Datenqualitaet. Aehnlichkeit wird weder als bewiesenes Doppelabo noch als Ersparnis dargestellt. | PASS; Ask Rovi nennt aktuelle, nutzergebundene Vertragszeilen statt Ausgabebuchungen. Widerspruechliche Duplikate liefern keinen erfundenen Gesamtbetrag. |
+| Positive Budget-Recovery | Nur abgeschlossener Monat, vergleichbare Budgetrahmen, mindestens drei belegte fruehere Ueberschreitungsmonate und aktuelle Kategorieausgaben innerhalb des aktuellen positiven Rahmens. | PASS; die Aussage gilt nur fuer die Kategorie, nicht fuer Gesamtbudget oder Ursache. Materielle Budgetaenderung unterdrueckt den Hinweis. |
+
+Gezielte Regressionen: **18/18** in `test_coaching_quality`; gemeinsam mit
+Sichtbarkeits- und Vertragsregressionen **43/43 PASS**. Abgedeckt sind positive
+Faelle, zu wenige Buchungen/Zyklen, unvollstaendige oder widerspruechliche
+Monats-/Budgetdaten, veraenderte oder veraltete Quellen, aktuelle user-scoped
+Beispiele, deterministische Warum-/Buchungs-/Handlungsantworten, Dedupe und
+V3-Vorrang. Der Test fuer widerspruechliche Monatsreihe und Delta bestaetigt
+fail-closed Verhalten. Der vorhandene V4-Flag-/Allowlist-Gate bleibt unveraendert
+und ohne Serverkonfiguration standardmaessig aus; keine globale Freigabe und
+keine Production-Konfiguration wurde geaendert.
+
+Browser-Smokes mit synthetischem lokalem API-Transport: Chromium **13/13** und
+WebKit **13/13** Flows. Je Engine: allgemeine Desktop-, 390-px- und
+Standalone-iPhone-PWA-Flows sowie die fuenf Muster auf Desktop und iPhone-PWA.
+Geprueft wurden Mentorprioritaet, dieselbe Insight-ID im Ask-Rovi-Kontext,
+deterministische Antworten, Retry, Dedupe nach erneutem Laden und mobile
+Darstellung. Screenshots liegen ausserhalb des Repositories unter
+`/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/` in den
+Ordnern `block4a-browser-chromium/` und `block4a-browser-webkit/`. Die
+Standalone-Emulation ist kein physischer iPhone-Test.
+
+Der finale Pflichtlauf `bash scripts/test.sh full` besteht mit **2.126 Tests in
+541,236 Sekunden, 0 Failures, 0 Errors, 0 Skips**. Verwendet wurde die
+isolierte Python-3.12.14-/GPG-2.4.4-Umgebung aus dem bestehenden Workflow; der
+Loopback-/GPG-Lauf lief ausserhalb der Sandboxbeschraenkung mit ausschliesslich
+synthetischen lokalen Testdaten. Das Protokoll liegt ausserhalb des Quellbaums
+unter `/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/`.
+
+Der unmittelbar vorherige Gesamtlauf hatte einen einzelnen Fehler im
+unveraenderten WSGI-Test zur Worker-PID-Verteilung: unter paralleler Last wurden
+die Requests nur einem der gestarteten Worker zugeordnet. Derselbe Test bestand
+isoliert; der unveraenderte abschliessende Gesamtlauf bestand anschliessend
+vollstaendig. Es wurden weder Produktcode noch Testannahmen fuer diesen Lauf
+geaendert.
+
+Ein erster eingeschraenkter Gesamtlauf deckte eine versehentliche Ausweitung
+des neuen Delta-Gates auf den bestehenden positiven Trendtyp auf. Das Gate ist
+auf den neuen steigenden Trend begrenzt; die alten Improvement-Vertraege und
+Assertions bestehen unveraendert. Ein zusaetzlicher Konsistenzcheck verwirft
+nur den Fall, dass der bestehende steigende Trend-Delta nicht zu seinen
+belegten Monatsendpunkten passt. Kein Test wurde entfernt oder abgeschwaecht.
+
+Coach V4 bleibt bis zur ausdruecklichen manuellen Freigabe aus. Die in den
+Browser-Smokes simulierte Test-Sichtbarkeit ist keine Production-Abnahme. Kein
+Push, Deployment, Produktionsdatenzugriff oder Aenderung an Reports, Login,
+Mehrkonten oder Sachwerten.

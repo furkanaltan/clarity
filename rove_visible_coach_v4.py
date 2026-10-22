@@ -31,6 +31,11 @@ VISIBLE_ALLOWLIST_ENV = "ROVE_COACH_V4_VISIBLE_USER_IDS"
 ALLOWED_VISIBLE_INSIGHT_TYPES = frozenset({
     "budget_attention",
     "spending_trend_improving",
+    "repeated_spending_pattern",
+    "spending_trend_worsening",
+    "post_income_pattern",
+    "subscription_cluster",
+    "budget_recovery",
 })
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -40,6 +45,13 @@ _SAFE_CATEGORIES = frozenset({
     "Medien", "Medizin", "Mode", "Musik", "Restaurants", "Shopping",
     "Sonstiges", "Sport-Streaming", "Streaming", "Unterhaltung",
 })
+_CATEGORY_ALIASES = {
+    "streaming_video": "Streaming",
+    "streaming_music": "Musik",
+    "sport_streaming": "Sport-Streaming",
+    "cloud_software": "Cloud und Software",
+    "news_media": "Medien",
+}
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _ALLOWED_SOURCE_FIELDS = frozenset({
@@ -62,9 +74,26 @@ _ALLOWED_SOURCE_FIELDS = frozenset({
     "pattern_strength",
     "transaction_count",
     "active_days",
+    "merchant_display",
+    "weekday",
+    "weekday_opportunities",
+    "occurrence_ratio",
+    "cycles_used",
+    "window_days",
+    "temporal_correlation_only",
+    "service_count",
+    "monthly_normalized_total",
+    "frequency_complete",
+    "activity_confidence",
+    "data_quality",
+    "duplicate_ambiguous",
+    "reference_period_start",
+    "reference_period_end",
+    "months_over_budget",
+    "historical_budget_evidence",
 })
 _INTERNAL_OR_UNSAFE_FIELDS = frozenset({
-    "merchant", "merchant_display", "source_ids", "source_pattern_ids",
+    "merchant", "source_ids", "source_pattern_ids",
     "pattern_id", "insight_id", "account_id", "provider_id", "iban",
     "token", "secret", "suppression_reason", "coach_suppression_reason",
     "report_suppression_reason", "coach_eligible", "report_eligible",
@@ -191,6 +220,7 @@ def _finite_number(value: object, *, minimum: float | None = None) -> float | No
 def _safe_category(value: object) -> str | None:
     if not isinstance(value, str):
         return None
+    value = _CATEGORY_ALIASES.get(value, value)
     value = " ".join(value.split()).strip()
     if value not in _SAFE_CATEGORIES or _CONTROL_RE.search(value):
         return None
@@ -250,10 +280,50 @@ def _source_payload_is_safe(payload: dict[str, Any]) -> bool:
         return False
     if payload.get("confidence_class") == "high" and payload.get("pattern_strength", "high") != "high":
         return False
-    for field in ("transaction_count", "active_days"):
+    for field in (
+        "transaction_count", "active_days", "weekday_opportunities", "cycles_used",
+        "window_days", "service_count", "months_compared", "months_over_budget",
+        "weekday",
+    ):
         if field in payload:
             value = _finite_number(payload[field], minimum=0)
             if value is None or not value.is_integer():
+                return False
+    if "weekday" in payload and payload["weekday"] > 6:
+        return False
+    if "occurrence_ratio" in payload:
+        ratio = _finite_number(payload["occurrence_ratio"], minimum=0)
+        if ratio is None or ratio > 1:
+            return False
+    for field in ("temporal_correlation_only", "frequency_complete", "duplicate_ambiguous"):
+        if field in payload and not isinstance(payload[field], bool):
+            return False
+    if "activity_confidence" in payload and payload["activity_confidence"] not in {"verified", "unknown"}:
+        return False
+    if "data_quality" in payload and payload["data_quality"] not in {"complete", "activity_unknown", "frequency_unknown"}:
+        return False
+    if "merchant_display" in payload:
+        value = payload["merchant_display"]
+        if (
+            not isinstance(value, str) or not value.strip() or len(value) > 80
+            or _CONTROL_RE.search(value)
+        ):
+            return False
+    if "monthly_amounts" in payload and _safe_monthly_amounts(payload["monthly_amounts"]) is None:
+        return False
+    if "historical_budget_evidence" in payload:
+        rows = payload["historical_budget_evidence"]
+        if not isinstance(rows, list) or len(rows) > 12:
+            return False
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"month", "amount_spent", "monthly_limit", "amount_over"}
+                or not isinstance(row.get("month"), str)
+                or not _MONTH_RE.fullmatch(row["month"])
+                or any(_finite_number(row.get(key), minimum=0) is None
+                       for key in ("amount_spent", "monthly_limit", "amount_over"))
+            ):
                 return False
     return True
 
@@ -304,6 +374,7 @@ def _render_budget_attention(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _render_spending_improvement(payload: dict[str, Any]) -> dict[str, Any] | None:
     category = _safe_category(payload.get("category_display"))
     monthly = _safe_monthly_amounts(payload.get("monthly_amounts"))
+    delta = _finite_number(payload.get("amount_delta"))
     # Positive patterns have medium financial relevance in the existing engine.
     # Keep their confidence label and require the engine's high pattern strength.
     strong_evidence = payload.get("confidence_class") == "high" or (
@@ -316,6 +387,7 @@ def _render_spending_improvement(payload: dict[str, Any]) -> dict[str, Any] | No
         or not category
         or not monthly
         or len(monthly) < 3
+        or (delta is not None and delta >= 0)
         or not all(left["amount"] > right["amount"] for left, right in zip(monthly, monthly[1:]))
     ):
         return None
@@ -328,15 +400,228 @@ def _render_spending_improvement(payload: dict[str, Any]) -> dict[str, Any] | No
             f"Bei {category} sind deine erfassten Ausgaben über {len(monthly)} Monate "
             f"von {_euro(monthly[0]['amount'])} auf {_euro(monthly[-1]['amount'])} gesunken."
         ),
+        "direction": "improving",
         "monthly_amounts": monthly,
         "months_compared": len(monthly),
         "confidence_class": payload["confidence_class"],
     }
+    if delta is not None:
+        result["amount_delta"] = delta
     for field in ("period_start", "period_end"):
         value = _safe_period(payload.get(field))
         if value:
             result[field] = value
     return result
+
+
+def _visible_period_payload(payload: dict[str, Any]) -> dict[str, str] | None:
+    start = _safe_period(payload.get("period_start"))
+    end = _safe_period(payload.get("period_end"))
+    if not start or not end or start > end:
+        return None
+    return {"period_start": start, "period_end": end}
+
+
+def _render_repeated_spending(payload: dict[str, Any]) -> dict[str, Any] | None:
+    subject = payload.get("merchant_display") or _safe_category(payload.get("category_display"))
+    period = _visible_period_payload(payload)
+    weekday = payload.get("weekday")
+    opportunities = payload.get("weekday_opportunities")
+    active_days = payload.get("active_days")
+    count = payload.get("transaction_count")
+    total = _finite_number(payload.get("amount_current"), minimum=30)
+    ratio = _finite_number(payload.get("occurrence_ratio"), minimum=0.60)
+    confidence = payload.get("confidence_class")
+    if not (
+        subject and period and isinstance(weekday, int) and not isinstance(weekday, bool)
+        and 0 <= weekday <= 6 and isinstance(opportunities, int) and opportunities >= 4
+        and isinstance(active_days, int) and 3 <= active_days <= opportunities
+        and isinstance(count, int) and count >= active_days
+        and total is not None and ratio is not None and ratio <= 1
+        and confidence in {"medium", "high"}
+    ):
+        return None
+    weekday_name = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")[weekday]
+    return {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": "repeated_spending_pattern",
+        **period,
+        "category_display": _safe_category(payload.get("category_display")),
+        "merchant_display": payload.get("merchant_display"),
+        "weekday": weekday,
+        "weekday_opportunities": opportunities,
+        "occurrence_ratio": ratio,
+        "active_days": active_days,
+        "transaction_count": count,
+        "amount_current": total,
+        "confidence_class": confidence,
+        "title": "Wiederkehrende Bestellungen",
+        "message": (
+            f"An {active_days} von {opportunities} {weekday_name}en gab es Buchungen "
+            f"bei {subject} mit insgesamt {_euro(total)}."
+        ),
+    }
+
+
+def _render_spending_worsening(payload: dict[str, Any]) -> dict[str, Any] | None:
+    category = _safe_category(payload.get("category_display"))
+    period = _visible_period_payload(payload)
+    monthly = _safe_monthly_amounts(payload.get("monthly_amounts"))
+    count = payload.get("transaction_count")
+    change = _finite_number(payload.get("amount_delta"), minimum=0.01)
+    confidence = payload.get("confidence_class")
+    if not (
+        category and period and monthly and len(monthly) >= 3
+        and payload.get("months_compared") == len(monthly)
+        and payload.get("direction") == "worsening"
+        and all(left["amount"] < right["amount"] for left, right in zip(monthly, monthly[1:]))
+        and isinstance(count, int) and count > 0 and change is not None
+        and confidence in {"medium", "high"}
+    ):
+        return None
+    return {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": "spending_trend_worsening",
+        **period,
+        "category_display": category,
+        "direction": "worsening",
+        "monthly_amounts": monthly,
+        "months_compared": len(monthly),
+        "amount_reference": monthly[0]["amount"],
+        "amount_current": monthly[-1]["amount"],
+        "amount_delta": change,
+        "transaction_count": count,
+        "confidence_class": confidence,
+        "title": "Ausgaben steigen",
+        "message": (
+            f"Bei {category} stiegen die erfassten Ausgaben über {len(monthly)} "
+            f"aufeinanderfolgende Monate von {_euro(monthly[0]['amount'])} "
+            f"auf {_euro(monthly[-1]['amount'])}."
+        ),
+    }
+
+
+def _render_post_income(payload: dict[str, Any]) -> dict[str, Any] | None:
+    period = _visible_period_payload(payload)
+    cycles = payload.get("cycles_used")
+    window = payload.get("window_days")
+    count = payload.get("transaction_count")
+    after = _finite_number(payload.get("amount_current"), minimum=0)
+    baseline = _finite_number(payload.get("amount_reference"), minimum=0)
+    delta = _finite_number(payload.get("amount_delta"), minimum=0.01)
+    confidence = payload.get("confidence_class")
+    if not (
+        period and isinstance(cycles, int) and cycles >= 3
+        and window in {3, 7} and isinstance(count, int) and count >= cycles * 2
+        and after is not None and baseline is not None and delta is not None
+        and round(after - baseline, 2) == delta
+        and payload.get("temporal_correlation_only") is True
+        and confidence in {"medium", "high"}
+    ):
+        return None
+    return {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": "post_income_pattern",
+        **period,
+        "cycles_used": cycles,
+        "window_days": window,
+        "amount_current": after,
+        "amount_reference": baseline,
+        "amount_delta": delta,
+        "transaction_count": count,
+        "temporal_correlation_only": True,
+        "confidence_class": confidence,
+        "title": "Ausgaben nach Geldeingang",
+        "message": (
+            f"In {cycles} erfassten Gehaltszyklen lagen Ausgaben in den ersten "
+            f"{window} Tagen im Schnitt bei {_euro(after)} gegenüber "
+            f"{_euro(baseline)} in deiner Vergleichsbasis. Das ist ein zeitlicher "
+            "Zusammenhang, kein Beleg für eine Ursache."
+        ),
+    }
+
+
+def _render_subscription_cluster(payload: dict[str, Any]) -> dict[str, Any] | None:
+    category = _safe_category(payload.get("category_display"))
+    period = _visible_period_payload(payload)
+    count = payload.get("service_count")
+    monthly_total = _finite_number(payload.get("monthly_normalized_total"), minimum=0.01)
+    confidence = payload.get("confidence_class")
+    duplicate_ambiguous = payload.get("duplicate_ambiguous")
+    if not (
+        category and period and isinstance(count, int) and count >= 2
+        and monthly_total is not None and payload.get("frequency_complete") is True
+        and payload.get("activity_confidence") == "verified"
+        and payload.get("data_quality") == "complete"
+        and isinstance(duplicate_ambiguous, bool)
+        and confidence in {"medium", "high"}
+    ):
+        return None
+    duplicate_note = (
+        " Ähnliche Mehrfachzeilen wurden nicht als zusätzliche Servicefamilie gezählt."
+        if duplicate_ambiguous else ""
+    )
+    return {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": "subscription_cluster",
+        **period,
+        "category_display": category,
+        "service_count": count,
+        "monthly_normalized_total": monthly_total,
+        "frequency_complete": True,
+        "activity_confidence": "verified",
+        "data_quality": "complete",
+        "duplicate_ambiguous": duplicate_ambiguous,
+        "confidence_class": confidence,
+        "title": "Ähnliche laufende Verträge",
+        "message": (
+            f"{count} laufende Verträge sind als {category} eingeordnet; "
+            f"der erfasste Monatswert beträgt {_euro(monthly_total)}. "
+            f"Ähnlichkeit beweist kein Doppelabo oder Einsparpotenzial.{duplicate_note}"
+        ),
+    }
+
+
+def _render_budget_recovery(payload: dict[str, Any]) -> dict[str, Any] | None:
+    category = _safe_category(payload.get("category_display"))
+    period = _visible_period_payload(payload)
+    reference_start = _safe_period(payload.get("reference_period_start"))
+    reference_end = _safe_period(payload.get("reference_period_end"))
+    current = _finite_number(payload.get("amount_current"), minimum=0)
+    limit = _finite_number(payload.get("budget_amount"), minimum=0.01)
+    months_over = payload.get("months_over_budget")
+    history = payload.get("historical_budget_evidence")
+    count = payload.get("transaction_count")
+    confidence = payload.get("confidence_class")
+    if not (
+        category and period and reference_start and reference_end
+        and reference_start <= reference_end and current is not None and limit is not None
+        and current <= limit and isinstance(months_over, int) and months_over >= 3
+        and isinstance(history, list) and len(history) >= 3
+        and isinstance(count, int) and count > 0
+        and confidence in {"medium", "high"}
+    ):
+        return None
+    return {
+        "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
+        "insight_type": "budget_recovery",
+        **period,
+        "reference_period_start": reference_start,
+        "reference_period_end": reference_end,
+        "category_display": category,
+        "amount_current": current,
+        "budget_amount": limit,
+        "months_over_budget": months_over,
+        "historical_budget_evidence": history,
+        "transaction_count": count,
+        "confidence_class": confidence,
+        "title": "Budget-Recovery bei " + category,
+        "message": (
+            f"Im abgeschlossenen Monat lagen die erfassten Ausgaben bei "
+            f"{_euro(current)} von {_euro(limit)}. Zuvor lag {category} "
+            f"in {months_over} Monaten über dem gesetzten Rahmen."
+        ),
+    }
 
 
 def _render_visible_payload(payload: object) -> dict[str, Any] | None:
@@ -347,7 +632,16 @@ def _render_visible_payload(payload: object) -> dict[str, Any] | None:
         return None
     if insight_type == "budget_attention":
         return _render_budget_attention(payload)
-    return _render_spending_improvement(payload)
+    renderers = {
+        "spending_trend_improving": _render_spending_improvement,
+        "repeated_spending_pattern": _render_repeated_spending,
+        "spending_trend_worsening": _render_spending_worsening,
+        "post_income_pattern": _render_post_income,
+        "subscription_cluster": _render_subscription_cluster,
+        "budget_recovery": _render_budget_recovery,
+    }
+    renderer = renderers.get(insight_type)
+    return renderer(payload) if renderer else None
 
 
 def _snapshot_skip_reason(status: dict[str, Any]) -> str | None:

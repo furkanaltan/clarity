@@ -1301,20 +1301,27 @@ def _visible_required_metrics(insight_type: str, payload: dict[str, Any]) -> tup
             "category_display", "amount_current", "budget_amount",
             "amount_over_budget", "overall_budget_status",
         ),
-        "repeated_spending_pattern": ("period_start", "period_end"),
-        "spending_trend_worsening": ("category_display", "months_compared"),
+        "repeated_spending_pattern": (
+            "period_start", "period_end", "weekday", "weekday_opportunities",
+            "occurrence_ratio", "transaction_count", "amount_current",
+        ),
+        "spending_trend_worsening": (
+            "category_display", "months_compared", "monthly_amounts", "amount_delta",
+        ),
         "spending_trend_improving": ("category_display", "months_compared"),
         "post_income_pattern": (
-            "cycles_used", "window_days", "amount_current",
-            "amount_reference", "amount_delta",
+            "cycles_used", "window_days", "amount_current", "amount_reference",
+            "amount_delta", "temporal_correlation_only", "transaction_count",
         ),
         "subscription_cluster": (
             "category_display", "service_count", "monthly_normalized_total",
+            "frequency_complete", "activity_confidence",
         ),
         "budget_recovery": (
             "category_display", "period_start", "period_end",
             "reference_period_start", "reference_period_end", "amount_current",
-            "amount_reference", "amount_delta",
+            "budget_amount", "months_over_budget", "historical_budget_evidence",
+            "transaction_count",
         ),
     }
     return required.get(insight_type, ())
@@ -1375,6 +1382,13 @@ def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None,
     amount_delta = _visible_number(metrics, "amount_over", "absolute_change_eur", "difference_eur", "absolute_delta_eur")
     if insight_type == "repeated_spending_pattern":
         amount_current = _visible_number(metrics, "amount_total")
+        for field, value in (
+            ("weekday", _visible_count(metrics, "weekday")),
+            ("weekday_opportunities", _visible_count(metrics, "weekday_opportunities")),
+            ("occurrence_ratio", _visible_number(metrics, "occurrence_ratio")),
+        ):
+            if value is not None:
+                payload[field] = value
     elif insight_type == "subscription_cluster":
         amount_current = _visible_number(metrics, "monthly_normalized_total")
     elif insight_type in {"spending_trend_worsening", "spending_trend_improving"} and monthly_amounts:
@@ -1387,6 +1401,31 @@ def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None,
             payload["budget_amount"] = _visible_number(budget_context, "current_limit")
         payload["reference_period_start"] = metrics.get("historical_period_start")
         payload["reference_period_end"] = metrics.get("historical_period_end")
+        payload["months_over_budget"] = _visible_count(metrics, "months_over_budget")
+        historical = metrics.get("historical_budget_evidence")
+        if isinstance(historical, list):
+            safe_history = []
+            for row in historical:
+                if not isinstance(row, dict):
+                    continue
+                month = row.get("month")
+                spent = _visible_number(row, "amount_spent")
+                limit = _visible_number(row, "monthly_limit")
+                over = _visible_number(row, "amount_over")
+                if (
+                    isinstance(month, str)
+                    and re.fullmatch(r"\d{4}-\d{2}", month)
+                    and spent is not None and limit is not None and over is not None
+                    and row.get("over_budget") is True
+                ):
+                    safe_history.append({
+                        "month": month,
+                        "amount_spent": spent,
+                        "monthly_limit": limit,
+                        "amount_over": over,
+                    })
+            if safe_history:
+                payload["historical_budget_evidence"] = safe_history
     for field, value in (
         ("amount_current", amount_current),
         ("amount_reference", amount_reference),
@@ -1418,6 +1457,22 @@ def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if monthly_normalized_total is not None:
         payload["monthly_normalized_total"] = monthly_normalized_total
 
+    raw_source_ids = insight.get("source_ids")
+    if (
+        isinstance(raw_source_ids, (list, tuple))
+        and 0 < len(raw_source_ids) <= 10000
+        and all(isinstance(source_id, (str, int)) for source_id in raw_source_ids)
+    ):
+        payload["transaction_count"] = len({str(source_id) for source_id in raw_source_ids})
+
+    if insight_type == "post_income_pattern":
+        payload["temporal_correlation_only"] = metrics.get("temporal_correlation_only")
+    elif insight_type == "subscription_cluster":
+        payload["frequency_complete"] = metrics.get("frequency_complete")
+        payload["activity_confidence"] = metrics.get("activity_confidence")
+        payload["data_quality"] = metrics.get("data_quality")
+        payload["duplicate_ambiguous"] = metrics.get("duplicate_ambiguous")
+
     if insight_type == "repeated_spending_pattern" and not (category_display or merchant_display):
         return None, "missing_display_subject"
     if insight_type in {"spending_trend_worsening", "spending_trend_improving", "budget_attention", "budget_recovery"} and not category_display:
@@ -1426,10 +1481,63 @@ def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None,
         payload.pop("category_display", None)
         payload.pop("merchant_display", None)
         payload.pop("monthly_amounts", None)
+        post_average = _visible_number(metrics, "post_income_average_eur")
+        baseline_average = _visible_number(metrics, "personal_baseline_average_eur")
+        delta = _visible_number(metrics, "absolute_delta_eur")
         if metrics.get("temporal_correlation_only") is not True:
             return None, "missing_temporal_correlation_guard"
+        if _visible_count(metrics, "cycles_used") is None or _visible_count(metrics, "cycles_used") < 3:
+            return None, "insufficient_salary_cycles"
+        if _visible_count(metrics, "window_days") not in {3, 7}:
+            return None, "unsupported_salary_window"
+        if (
+            post_average is None or baseline_average is None or delta is None
+            or round(post_average - baseline_average, 2) != delta
+        ):
+            return None, "inconsistent_salary_delta"
     if insight_type == "subscription_cluster" and metrics.get("frequency_complete") is not True:
         return None, "incomplete_frequency"
+    if insight_type == "subscription_cluster" and metrics.get("activity_confidence") != "verified":
+        return None, "unverified_contract_activity"
+    if insight_type == "subscription_cluster" and _visible_count(metrics, "service_count") is None:
+        return None, "missing_service_count"
+    if insight_type == "repeated_spending_pattern":
+        if _visible_count(metrics, "weekday") not in range(7):
+            return None, "invalid_weekday"
+        if (_visible_count(metrics, "weekday_opportunities") or 0) < 4:
+            return None, "insufficient_weekday_opportunities"
+        if (_visible_number(metrics, "occurrence_ratio") or 0) < 0.60:
+            return None, "insufficient_weekday_recurrence"
+        if (_visible_count(metrics, "occurrence_date_count") or 0) < 3:
+            return None, "insufficient_occurrence_dates"
+        if (_visible_number(metrics, "amount_total") or 0) < 30:
+            return None, "insufficient_repeated_amount"
+    if insight_type == "spending_trend_worsening":
+        values = payload.get("monthly_amounts") or []
+        delta = _visible_number(metrics, "absolute_change_eur")
+        if len(values) < 3 or payload.get("direction") != "worsening":
+            return None, "insufficient_worsening_history"
+        if payload.get("months_compared") != len(values):
+            return None, "inconsistent_worsening_month_count"
+        if not all(left["amount"] < right["amount"] for left, right in zip(values, values[1:])):
+            return None, "non_monotonic_worsening_history"
+        if delta is None:
+            return None, "missing_worsening_change_evidence"
+        if round(values[-1]["amount"] - values[0]["amount"], 2) != delta:
+            return None, "inconsistent_worsening_change_evidence"
+    if insight_type == "budget_recovery":
+        if not isinstance(budget_context, dict) or budget_context.get("comparable") is not True:
+            return None, "incomparable_recovery_budgets"
+        if _visible_count(metrics, "months_over_budget") is None or _visible_count(metrics, "months_over_budget") < 3:
+            return None, "insufficient_recovery_history"
+        if not isinstance(payload.get("historical_budget_evidence"), list) or len(payload["historical_budget_evidence"]) < 3:
+            return None, "missing_recovery_budget_rows"
+        if _visible_number(budget_context, "current_spent") is None or _visible_number(budget_context, "current_limit") is None:
+            return None, "missing_current_recovery_budget"
+        if _visible_number(budget_context, "current_spent") > _visible_number(budget_context, "current_limit"):
+            return None, "recovery_not_within_budget"
+        if _visible_number(budget_context, "current_limit") <= 0:
+            return None, "invalid_current_recovery_budget"
     if insight_type in {"spending_trend_worsening", "spending_trend_improving"} and not (payload.get("monthly_amounts") or payload.get("amount_delta") is not None):
         return None, "missing_trend_metric"
     if insight_type == "repeated_spending_pattern" and payload.get("transaction_count") is None and payload.get("active_days") is None:

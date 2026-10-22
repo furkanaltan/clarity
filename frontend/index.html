@@ -13838,7 +13838,9 @@ function openTalk(options={}){
     c.dataset.contextInsightId=insight.insight_id;
     pushBub("rov",`Du hast den Hinweis „${announcementEscape(insight.title)}“ geöffnet. Ich erkläre dir den Hinweis anhand deiner erfassten Daten.`);
   }else if(!insight){delete c.dataset.contextInsightId;}
-  const suggestions=insight?["Warum sagst du mir das?","Welche Ausgaben meinst du?","Was kann ich konkret ändern?"]:SUGGESTIONS;
+  const evidenceQuestion=insight?.insight_type==="subscription_cluster"
+    ? "Welche Verträge meinst du?" : "Welche Ausgaben meinst du?";
+  const suggestions=insight?["Warum sagst du mir das?",evidenceQuestion,"Was kann ich konkret ändern?"]:SUGGESTIONS;
   document.getElementById("qsug").innerHTML = suggestions.map(q=>`<span class="qs">${announcementEscape(q)}</span>`).join("");
   sheetBg.classList.add("on"); document.getElementById("talksheet").classList.add("on");
   rovePushState("talksheet");
