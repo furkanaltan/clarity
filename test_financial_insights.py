@@ -211,6 +211,99 @@ class FinancialInsightContractTests(unittest.TestCase):
         visible["monthly_amounts"][0]["amount"] = 999
         self.assertIsNone(build_visible_mentor_insight(None, [contract], visible))
 
+    @staticmethod
+    def visible_v4():
+        return {
+            "insight_type": "spending_trend_improving",
+            "category_display": "Restaurants",
+            "period_start": "2026-07-01", "period_end": "2026-09-30",
+            "title": "Deine Ausgaben entwickeln sich positiv",
+            "message": "Bei Restaurants sind deine Ausgaben gesunken.",
+            "monthly_amounts": [
+                {"month": "2026-07", "amount": 120.0},
+                {"month": "2026-08", "amount": 90.0},
+                {"month": "2026-09", "amount": 70.0},
+            ],
+        }
+
+    def test_score_fallback_yields_to_valid_v4_in_legacy_and_multi_account_profiles(self):
+        from rove_app_state import build_mentor_candidate
+
+        fallback = build_mentor_candidate(
+            score={"value": 81, "tracking_days_90": 8},
+            budget_truth={"free_month_remaining": 100, "category_remaining": 100},
+            monthly_actions=[], goals=[], contracts=[], reports=[],
+            income=3000, fixed_costs=1000, debt_status="none",
+        )
+        before = copy.deepcopy(fallback)
+        self.assertEqual((fallback["id"], fallback["type"], fallback["priority"]),
+                         ("motivation", "motivation", 10))
+        contract = adapt_v4_shadow_candidate(
+            self.v4_candidate(), generated_at=self.NOW.isoformat(),
+            source_watermark=self.WATERMARK,
+        )
+        for profile_mode in ("legacy", "multi_account"):
+            with self.subTest(profile_mode=profile_mode):
+                path = build_shadow_insight_path(
+                    fallback, [contract], snapshot_status="ready",
+                    profile_mode=profile_mode, now=self.NOW,
+                )
+                joined = build_visible_mentor_insight(
+                    fallback, path["v4_candidates"], self.visible_v4()
+                )
+                self.assertIsNotNone(joined)
+                self.assertEqual(joined, build_visible_mentor_insight(
+                    None, [contract], self.visible_v4()
+                ))
+        self.assertEqual(fallback, before)
+
+    def test_concrete_and_unknown_v3_candidates_keep_priority_over_v4(self):
+        contract = adapt_v4_shadow_candidate(
+            self.v4_candidate(), generated_at=self.NOW.isoformat(),
+            source_watermark=self.WATERMARK,
+        )
+        candidates = [
+            self.v3_candidate(type=kind, priority=priority)
+            for kind, priority in (
+                ("budget_overrun", 100), ("consumer_debt", 95),
+                ("liquidity", 90), ("monthly_action", 50), ("report", 30),
+                ("unknown", 1),
+            )
+        ]
+        candidates.extend([
+            self.v3_candidate(id="motivation", type="motivation", priority=50),
+            self.v3_candidate(id="concrete", type="motivation", priority=10),
+        ])
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(build_visible_mentor_insight(
+                    candidate, [contract], self.visible_v4()
+                ))
+
+    def test_score_fallback_never_bypasses_missing_stale_or_conflicting_v4_evidence(self):
+        fallback = self.v3_candidate(id="motivation", type="motivation", priority=10)
+        contract = adapt_v4_shadow_candidate(
+            self.v4_candidate(), generated_at=self.NOW.isoformat(),
+            source_watermark=self.WATERMARK,
+        )
+        for status in ("snapshot_missing", "snapshot_stale", "source_watermark_mismatch"):
+            with self.subTest(status=status):
+                path = build_shadow_insight_path(
+                    fallback, [contract], snapshot_status=status,
+                    profile_mode="multi_account", now=self.NOW,
+                )
+                self.assertIsNone(build_visible_mentor_insight(
+                    fallback, path["v4_candidates"], self.visible_v4()
+                ))
+        self.assertIsNone(build_visible_mentor_insight(fallback, [], self.visible_v4()))
+        self.assertIsNone(build_visible_mentor_insight(fallback, [contract], None))
+        conflicting = self.visible_v4()
+        conflicting["monthly_amounts"][0]["amount"] = 999
+        self.assertIsNone(build_visible_mentor_insight(fallback, [contract], conflicting))
+        missing = copy.deepcopy(contract)
+        missing["evidence"] = {}
+        self.assertIsNone(build_visible_mentor_insight(fallback, [missing], self.visible_v4()))
+
     def test_context_questions_are_deterministic_and_claim_limited(self):
         self.assertEqual(v4_question_mode("Warum sagst du mir das?"), "why")
         self.assertEqual(v4_question_mode("Welche Ausgaben meinst du?"), "transactions")

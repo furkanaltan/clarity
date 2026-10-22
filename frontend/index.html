@@ -4743,15 +4743,9 @@ function mentorLine(){
     delete mentor.dataset.mentorDeepLink;
   }
   const serverCandidate=APP_MODE==="bridge" && DATA.mentorCandidate;
-  if(shouldWelcomeFirstBudget()){
-    mentor?.classList.remove("monthly-due");
-    setMentorCtaTarget("budget-setup");
-    el.innerHTML='<div class="m-free"><b>Willkommen bei Rov.E!</b></div>'+
-      '<div class="m-note">Dein Finanzüberblick beginnt hier. Richte jetzt dein erstes Budget ein und behalte deine Ausgaben im Blick.</div>'+
-      '<button type="button" class="m-nudge mentor-budget-cta" data-mentoract="budget-setup"><b>Budget einrichten</b></button>';
-    return;
-  }
-  if(serverCandidate){
+  const scoreFallback=serverCandidate?.id==="motivation" && serverCandidate.type==="motivation"
+    && serverCandidate.priority===10;
+  const renderServerCandidate=()=>{
     mentor?.classList.remove("monthly-due");
     const deepLink=String(serverCandidate.deep_link||"");
     if(mentor && deepLink){
@@ -4760,6 +4754,17 @@ function mentorLine(){
     }
     el.innerHTML=`<div class="m-free" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.title)}</b></div>`+
       `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"${deepLink==="reports"?' data-mentoract="candidate"':""}><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
+  };
+  if(shouldWelcomeFirstBudget()){
+    mentor?.classList.remove("monthly-due");
+    setMentorCtaTarget("budget-setup");
+    el.innerHTML='<div class="m-free"><b>Willkommen bei Rov.E!</b></div>'+
+      '<div class="m-note">Dein Finanzüberblick beginnt hier. Richte jetzt dein erstes Budget ein und behalte deine Ausgaben im Blick.</div>'+
+      '<button type="button" class="m-nudge mentor-budget-cta" data-mentoract="budget-setup"><b>Budget einrichten</b></button>';
+    return;
+  }
+  if(serverCandidate && (!scoreFallback || !DATA.coachV4Insight?.insight_id)){
+    renderServerCandidate();
     return;
   }
   mentor?.classList.remove("monthly-due");
@@ -4864,6 +4869,10 @@ function mentorLine(){
     el.innerHTML=`<div class="m-free"><b>${announcementEscape(coachV4Insight.title)}</b></div>`+
       `<div class="m-note">${announcementEscape(coachV4Insight.message)} · <span class="m-nudge"><b>Warum?</b></span></div>`;
     acknowledgeMentorV4AfterRender(coachV4Insight);
+    return;
+  }
+  if(scoreFallback){
+    renderServerCandidate();
     return;
   }
 

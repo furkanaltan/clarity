@@ -107,7 +107,14 @@ def build_visible_mentor_insight(
     visible_dto: object,
 ) -> dict[str, Any] | None:
     """Join the exact shared contract to the existing gated V4 presentation."""
-    if v3_candidate or not isinstance(contracts, list) or len(contracts) != 1:
+    score_fallback = (
+        isinstance(v3_candidate, dict)
+        and v3_candidate.get("id") == "motivation"
+        and v3_candidate.get("type") == "motivation"
+        and v3_candidate.get("priority") == 10
+    )
+    # Only the generic score fallback yields; concrete V3 actions keep priority.
+    if (v3_candidate and not score_fallback) or not isinstance(contracts, list) or len(contracts) != 1:
         return None
     contract, visible = contracts[0], visible_dto
     if not isinstance(contract, dict) or not isinstance(visible, dict):

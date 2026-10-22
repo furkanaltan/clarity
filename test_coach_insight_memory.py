@@ -453,6 +453,58 @@ class CoachInsightMemoryTests(unittest.TestCase):
             blocked = client.post("/v1/coach/insights/claim", json=payload)
         self.assertEqual(blocked.status_code, 409)
 
+    def test_api_score_fallback_claim_uses_real_join_and_preserves_dedupe_and_v3_recheck(self):
+        self._prepare_api_db()
+        client = self._client()
+        template = self.insight()
+        contract = self.contract(template)
+        contract["confidence"] = "high"
+        contract["evidence"] = {"metrics": {
+            "amount_spent": 120, "monthly_limit": 100, "amount_over": 20,
+        }}
+        visible = {
+            "insight_type": "budget_attention", "confidence_class": "high",
+            "category_display": "Essen", "period_start": "2026-10-01",
+            "period_end": "2026-10-21", "amount_current": 120,
+            "budget_amount": 100, "amount_over_budget": 20,
+            "overall_budget_status": "under_pressure", "title": "Budget im Blick",
+            "message": "Dein Budget ist unter Druck.",
+        }
+        state = {"mentor_candidate": {
+            "id": "motivation", "type": "motivation", "priority": 10,
+        }, "features": {}}
+        from rove_coach_v4_delivery import build_visible_mentor_insight
+        insight = build_visible_mentor_insight(None, [contract], visible)
+        self.assertIsNotNone(insight)
+        payload = {
+            "insight_id": insight["insight_id"],
+            "evidence_fingerprint": insight["evidence_fingerprint"],
+            "reservation_token": "8" * 32,
+        }
+        with (
+            patch.object(api, "build_live_app_data", return_value=state),
+            patch.object(api, "get_shadow_insight_contracts", return_value=([contract], "ready")),
+            patch.object(api, "build_shadow_insight_path", return_value={"v4_candidates": [contract]}),
+            patch.object(api, "get_visible_coach_v4", return_value=visible),
+        ):
+            claim = client.post("/v1/coach/insights/claim", json=payload)
+            self.assertEqual(claim.status_code, 200, claim.get_json())
+            self.assertEqual(claim.get_json()["status"], "reserved")
+            for _ in range(2):
+                ack = client.post("/v1/coach/insights/acknowledged", json=payload)
+                self.assertEqual(ack.status_code, 200, ack.get_json())
+                self.assertTrue(ack.get_json()["acknowledged"])
+            opened = client.post("/v1/coach/insights/opened", json=payload)
+            self.assertTrue(opened.get_json()["opened"])
+            repeated = client.post("/v1/coach/insights/claim", json=payload)
+            self.assertEqual(repeated.get_json()["status"], "suppressed")
+            state["mentor_candidate"] = {"id": "budget-overrun", "type": "budget_overrun", "priority": 100}
+            blocked = client.post("/v1/coach/insights/claim", json=payload)
+            self.assertEqual(blocked.status_code, 409, blocked.get_json())
+        with self.connection() as conn:
+            self.assertIsNotNone(get_opened_coach_insight_context(conn, 1))
+            self.assertIsNone(get_opened_coach_insight_context(conn, 2))
+
     def test_acknowledgement_requires_matching_user_and_live_reservation(self):
         self._prepare_api_db()
         insight = self.insight()

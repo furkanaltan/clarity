@@ -20,6 +20,13 @@ function reset() {
   shownCoachInsights = new Set();
 }
 
+function scoreFallback() {
+  return { id: 'motivation', type: 'motivation', priority: 10,
+    title: 'Deine finanzielle Basis ist stabil',
+    message: 'Dein aktueller Rov.E-Score liegt bei 81/100.',
+    action_label: 'Score ansehen', deep_link: 'score', reason: 'stable_finances' };
+}
+
 function state() {
   const result = {
     ok: true, user_id: 1, netWorth: 12500, onboardingRequired: false,
@@ -134,6 +141,7 @@ const server = http.createServer(async (req, res) => {
 
 async function flow(browser, label, viewport, standalone = false) {
   reset();
+  nextV3Candidate = scoreFallback();
   const mobile = viewport.width === 390;
   const context = await browser.newContext({ viewport, serviceWorkers: 'block',
     ...(mobile ? { isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent } : {}) });
@@ -158,6 +166,7 @@ async function flow(browser, label, viewport, standalone = false) {
     await page.locator('#app:not([hidden])').waitFor();
     await page.locator('#splash').waitFor({ state: 'detached' });
     await page.waitForFunction(() => BRIDGE_USER_ID === 1 && DATA.financialAccounts.length === 3);
+    await page.getByText(nextV3Candidate.title, { exact: true }).waitFor();
     if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
 
     await page.locator('#tab-home .mentor').click();
@@ -314,6 +323,7 @@ const mentorScenarios = [
 
 async function mentorInsightFlow(browser, label, viewport, standalone = false, scenario = mentorScenarios[0]) {
   reset();
+  nextV3Candidate = scoreFallback();
   nextCoachV4Insight = {
     insight_id: 'v4:shadow:behavior_insight:synthetic-' + scenario.key,
     evidence_fingerprint: 'a'.repeat(64),
@@ -353,7 +363,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     });
     await page.getByText('Dein Monatsplan braucht Aufmerksamkeit', { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null);
-    await page.evaluate(() => { DATA.mentorCandidate = null; mentorLine(); });
+    await page.evaluate(candidate => { DATA.mentorCandidate = candidate; mentorLine(); }, nextV3Candidate);
     await page.evaluate(() => {
       DATA.monthlyPlan = { ...DATA.monthlyPlan, incomeStatus: 'pending' };
       DATA.payday = { gebucht: false, faellig: true };
@@ -373,6 +383,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     await page.locator('#talksheet.on').waitFor();
     await page.getByText(/Du hast den Hinweis/, { exact: false }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'opened insight is suppressed for today');
+    await mentor.getByText(nextV3Candidate.title, { exact: true }).waitFor();
     for (const question of ['Warum sagst du mir das?', scenario.evidenceQuestion, 'Was kann ich konkret ändern?']) {
       await page.locator('#qsug .qs').filter({ hasText: question }).waitFor();
     }
@@ -405,6 +416,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     await page.waitForFunction(() => BRIDGE_USER_ID === 1 &&
       DATA.financialAccounts.length === 3 && DATA.coachV4Insight === null);
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'reload must not repeat the opened insight');
+    await mentor.getByText(nextV3Candidate.title, { exact: true }).waitFor();
     console.log(label.toUpperCase() + '_' + scenario.key.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
   } finally {
     await context.close();

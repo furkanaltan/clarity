@@ -149,3 +149,48 @@ Coach V4 bleibt bis zur ausdruecklichen manuellen Freigabe aus. Die in den
 Browser-Smokes simulierte Test-Sichtbarkeit ist keine Production-Abnahme. Kein
 Push, Deployment, Produktionsdatenzugriff oder Aenderung an Reports, Login,
 Mehrkonten oder Sachwerten.
+
+## Mentor-Priorisierung: Score-Fallback nach V4, 22.10.2026
+
+Arbeitsbasis: `f336a2f45e746a55fc46c4209a991d03b752d16d`. Die bisherige
+Integrationsregel sperrte jeden V4-Hinweis, sobald irgendein V3-Kandidat
+vorhanden war. Damit verdrang auch der generische Score-Hinweis `motivation`
+mit Prioritaet 10 ausreichend belegte V4-Erkenntnisse. Der vorzeitige
+V3-Return im Frontend wiederholte diese Sperre.
+
+Nur der bestehende Kandidat mit ID `motivation`, Typ `motivation` und
+Prioritaet 10 ist jetzt ein nachrangiger Fallback. Konkrete und unbekannte
+V3-Kandidaten behalten ihren bisherigen Vorrang. Der gemeinsame V4-Vertrag
+und alle Evidenzpruefungen bleiben Voraussetzung; der API-Claim verwendet
+dieselbe korrigierte Auswahl unter dem bestehenden Schreib-Lock. Im Frontend
+bleibt der Score bei fehlendem, noch nicht reserviertem oder unterdruecktem
+V4-Hinweis verfuegbar. Nach dem Oeffnen eines bestaetigten V4-Hinweises wird
+der Score wieder angezeigt; unveraenderte Evidenz bleibt nach Reload gesperrt.
+
+Regressionen pruefen Legacy- und Mehrkontenprofile, Score gegen gueltiges V4,
+V3-Vorrang, fehlende/veraltete/widerspruechliche Evidenz, echte API-Claims,
+idempotente Anzeigequittierung, Oeffnen und Nutzerisolation. Die bestehenden
+Browser-Smokes verwenden nun auch bei allen fuenf V4-Mustern einen gleichzeitig
+vorhandenen Score-Fallback. Die bisherigen dringenden V3-, Gehalts-, Chat-
+Retry- und Reload-Pruefungen bleiben erhalten.
+
+Minimaler Runtime-Umfang: `rove_coach_v4_delivery.py` und die daraus unabhaengig
+versionierte `frontend/index.html`. Kein neues Schema, keine Gate-Aenderung,
+keine Finanzformel und kein Detektor. Production-Abnahme bleibt ein separates
+Gate; diese lokale Korrektur fuehrt weder Push noch Deployment aus.
+
+Pruefnachweis: Die neuen Auswahl-/API-/Renderingregressionen reproduzierten
+vor der Runtime-Korrektur vier Fehlschlaege (einschliesslich beider
+Profil-Unterfaelle). Danach bestehen 129 gezielte Regressionen. Chromium und
+WebKit bestehen je 13 Browser-Flows mit Desktop, 390 px und Standalone-
+iPhone-PWA-Emulation; dies ist kein physischer iPhone-Test. Der Pflichtlauf
+`bash scripts/test.sh full` besteht mit 2.171 Tests in 568,128 Sekunden,
+0 Failures, 0 Errors und 0 Skips. Python 3.12.14 und die bestehende isolierte
+GPG-2.4.4-Umgebung wurden unveraendert wiederverwendet. Keine bestehenden
+Assertions wurden abgeschwaecht. Runtime- und Testquellen wurden nach dem
+Lauf gegen `tested-source.sha256` verifiziert.
+
+Protokolle und Screenshots liegen ausserhalb des Quellbaums unter
+`/Users/furkanaltan/Documents/Codex/rove-mentor-priority-20261022/`.
+SHA256 von `full-suite.log`:
+`36003b23fdc16f66b90aec9da1876bca62b1a9592818453f555f609a94ac0740`.

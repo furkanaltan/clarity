@@ -194,6 +194,64 @@ function apiFetch(_path,options){{
         self.assertTrue(payload["newRequestStillTracked"])
         self.assertEqual(payload["status"], "shown")
 
+    def test_real_mentor_render_orders_concrete_v3_v4_and_score_fallback(self):
+        start = self.frontend.index("function mentorLine(){")
+        mentor = self.frontend[start:self.frontend.index("\nlet coachV4ClaimKey", start)]
+        script = f"""
+const calls=[], card={{dataset:{{}},classList:{{remove(){{}},toggle(){{}}}},querySelector:()=>null}};
+const output={{innerHTML:""}};
+const document={{getElementById:()=>output,querySelector:()=>card}};
+const APP_MODE="bridge";
+const DATA={{monthlyCheckinActions:[],goals:[{{t:"Reserve"}}],assets:[{{value:1}}],budgets:[{{cat:"Essen",limit:100}}],monthlyPlan:{{incomeStatus:"confirmed"}}}};
+function setMentorCtaTarget(value){{card.dataset.mentorTarget=value;}}
+function shouldWelcomeFirstBudget(){{return false;}}
+function announcementEscape(value){{return value;}}
+function mentorDataReady(){{return true;}}
+function trackedOuts(){{return [{{}}];}}
+function freeBudget(){{return 100;}}
+function catSpent(){{return 10;}}
+function mentorBudgetAlert(){{return {{active:false}};}}
+function daysUntilMonthEnd(){{return 10;}}
+function mentorIncomeReminderDue(){{return false;}}
+let available=true;
+function claimMentorV4Insight(value){{calls.push(["claim",value.insight_id]);return available;}}
+function acknowledgeMentorV4AfterRender(value){{calls.push(["ack",value.insight_id]);}}
+{mentor}
+const score={{id:"motivation",type:"motivation",priority:10,title:"Score fallback",message:"Stable",deep_link:"score"}};
+const v4={{insight_id:"v4:synthetic",evidence_fingerprint:"a".repeat(64),title:"Evidence insight",message:"Validated"}};
+function render(candidate,insight,canClaim=true){{
+  DATA.mentorCandidate=candidate;DATA.coachV4Insight=insight;available=canClaim;calls.length=0;
+  mentorLine();
+  return {{html:output.innerHTML,calls:[...calls],id:card.dataset.coachV4InsightId||null,target:card.dataset.mentorTarget}};
+}}
+const results={{
+  scoreWithV4:render(score,v4),
+  concreteWithV4:render({{id:"budget-overrun",type:"budget_overrun",priority:100,title:"Urgent V3",message:"Act",deep_link:"analysis"}},v4),
+  missingV4:render(score,null),
+  suppressedV4:render(score,v4,false),
+  changedMotivation:render({{...score,priority:50,title:"Concrete motivation"}},v4),
+}};
+process.stdout.write(JSON.stringify(results));
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = json.loads(result.stdout)
+        self.assertIn("Evidence insight", cases["scoreWithV4"]["html"])
+        self.assertNotIn("Score fallback", cases["scoreWithV4"]["html"])
+        self.assertEqual(cases["scoreWithV4"]["calls"], [["claim", "v4:synthetic"], ["ack", "v4:synthetic"]])
+        self.assertEqual(cases["scoreWithV4"]["id"], "v4:synthetic")
+        for key, title, target in (("concreteWithV4", "Urgent V3", "analysis"),
+                                   ("changedMotivation", "Concrete motivation", "score")):
+            self.assertIn(title, cases[key]["html"])
+            self.assertEqual(cases[key]["calls"], [])
+            self.assertIsNone(cases[key]["id"])
+            self.assertEqual(cases[key]["target"], target)
+        for key in ("missingV4", "suppressedV4"):
+            self.assertIn("Score fallback", cases[key]["html"])
+            self.assertIsNone(cases[key]["id"])
+            self.assertEqual(cases[key]["target"], "score")
+            self.assertFalse(any(call[0] == "ack" for call in cases[key]["calls"]))
+
     def test_income_reminder_keeps_v3_priority_before_server_claim(self):
         mentor_start = self.frontend.index("function mentorLine(){")
         mentor_end = self.frontend.index("\nlet coachV4ClaimKey", mentor_start)
