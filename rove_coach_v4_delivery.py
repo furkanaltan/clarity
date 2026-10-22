@@ -6,6 +6,8 @@ It joins the existing validated insight contract to the existing visible DTO.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import sqlite3
@@ -29,6 +31,24 @@ VISIBLE_TYPES = frozenset({
 })
 MAX_EXAMPLE_SOURCE_IDS = 500
 MAX_EXAMPLES = 5
+
+
+def coach_insight_evidence_fingerprint(insight: dict[str, Any]) -> str:
+    """Fingerprint only validated user-visible evidence, never snapshot time."""
+    material = {
+        "version": 1,
+        "insight_id": insight.get("insight_id"),
+        "insight_type": insight.get("insight_type"),
+        "period": insight.get("period"),
+        "facts": insight.get("facts"),
+        "evidence": insight.get("evidence"),
+        "claim_limits": insight.get("claim_limits"),
+        "confidence": insight.get("confidence"),
+    }
+    encoded = json.dumps(
+        material, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _period(value: object) -> dict[str, str] | None:
@@ -99,6 +119,9 @@ def build_visible_mentor_insight(
         return None
     insight_id = contract.get("insight_id")
     if not isinstance(insight_id, str) or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", insight_id):
+        return None
+    dedupe_key = contract.get("dedupe_key")
+    if dedupe_key != f"coach:{insight_type}":
         return None
     period = _period(contract.get("period"))
     if not period or period != {
@@ -280,8 +303,9 @@ def build_visible_mentor_insight(
         for key in ("pattern_type", "composite_type", "direction")
         if isinstance((value := summary.get(key)), str)
     }
-    return {
+    insight = {
         "insight_id": insight_id,
+        "dedupe_key": dedupe_key,
         "insight_type": insight_type,
         "title": title[:180],
         "message": message[:500],
@@ -294,6 +318,8 @@ def build_visible_mentor_insight(
         "claim_limits": list(contract.get("claim_limits") or []),
         "confidence": contract.get("confidence"),
     }
+    insight["evidence_fingerprint"] = coach_insight_evidence_fingerprint(insight)
+    return insight
 
 
 def v4_question_mode(message: str) -> str | None:

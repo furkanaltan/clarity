@@ -1,5 +1,46 @@
 # Rov.E Migrations
 
+## Coach V4-Anzeige- und Erklaerungsgedaechtnis (22.10.2026)
+
+`ensure_app_coach_insight_memory_table()` legt `app_coach_insight_memory`
+additiv und idempotent an; die bestehende Startup-Vorbereitung fuehrt dies
+vor dem API-Betrieb aus. Der Primaerschluessel ist `(user_id, insight_id)`;
+ein Nutzer-FK mit `ON DELETE CASCADE` bindet den Eintrag an das Konto. Fuer
+Cool-downs wird zusaetzlich der bestehende Vertrags-`dedupe_key` je Nutzer
+abgeglichen, damit eine durch neue Quelldaten geaenderte Insight-ID den
+Wiederholungs-Schutz nicht umgeht. Aeltere Tabellenversionen erhalten die
+beiden Kontextspalten additiv; vorhandene Eroeffnungsnachweise werden dabei
+uebernommen.
+
+- Gespeichert werden nur die aktuelle stabile Insight-ID, ein SHA-256 ueber
+  validierte Evidenz/Fakten/Zeitraum (ohne Snapshot- oder Tageszeit), Typ,
+  Zeitraum, ein auf 64 KiB begrenzter validierter Insight-/Vertragskontext,
+  Anzeigezeit sowie die letzte explizit geoeffnete Version.
+- Ein `BEGIN IMMEDIATE`-Claim prueft V3-Prioritaet und aktuelle V4-Evidenz
+  erneut, bevor genau eine Anzeige fuer dieselbe ID/Evidenzversion zugelassen
+  wird. Reloads, neue Tage und Snapshot-Neuerstellung loesen keinen neuen Claim
+  aus. Ein verschobenes Datumsfenster oder interne Quellen-IDs allein gelten
+  nicht als wesentliche Aenderung. Gepruefte materielle Faktenaenderungen
+  koennen nach 7 Tagen, positive Rueckmeldungen nach 30 Tagen erneut erscheinen;
+  ein deutlich verschaerfter Budgetueberzug darf die Frist uebersteuern.
+  Weiterhin aktive Budgetwarnungen duerfen nach 30 Tagen auch bei gerolltem
+  Zeitraum und dadurch neuem Fingerprint erneut erscheinen. Die letzte
+  geoeffnete Erklaerung bleibt bis zum naechsten Oeffnen erhalten.
+- Der Claim-Request erstellt kein Schema. Fehlt die Tabelle trotz Startup-
+  Vorbereitung, wird V4 fail-closed mit HTTP 503 unterdrueckt. V3, Finanzwerte,
+  Buchungen und Reportdaten werden durch diesen Speicherpfad nicht geschrieben.
+- Der persoenliche Datenexport enthaelt den nutzergebundenen Coaching-Kontext;
+  die bestehende Kontoloeschung entfernt ihn ueber FK-Cascade und Tombstone-
+  Reapply. Keine Chatnachrichten, AI-Anfragen oder Transaktions-IDs werden hier
+  gespeichert.
+- Coach V4 bleibt durch das bestehende serverseitige Gate standardmaessig
+  deaktiviert. Das Schema allein aktiviert keine Sichtbarkeit.
+
+Kein Backfill bestehender Coach-Ereignisse und keine Finanzdatenmigration.
+Der bestehende V3-Ereignisspeicher bleibt unveraendert. Vor einem Production-
+Rollout gelten die ueblichen Backup-, Integritaets-, Staging-, Gate- und
+manuellen Freigabeschritte.
+
 ## Sachwerte und Onboarding-Entwuerfe (19./20.10.2026)
 
 Nachtrag fuer die bereits freigegebenen Quellen `3073a46` und `b1aa0ce`;

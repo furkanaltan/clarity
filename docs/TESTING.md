@@ -136,6 +136,36 @@ stehen in `docs/WSGI_RUNTIME.md`; sie sind keine Produktions- oder
 10.000-Nutzer-Kapazitaetsprognose. Keine Production-Daten oder -Services wurden
 verwendet.
 
+## Financial Intelligence Block 4B: Insight-Gedaechtnis, 22.10.2026
+
+Arbeitsbasis: `3deabef1a92bff8a10eb6f2fddb146ba18877f38`, Branch
+`codex/financial-intelligence-block4a`. Der task-only Aenderungssatz umfasst
+die Coach-Memory-Implementierung in `rove_app_state.py`, `rove_app_api.py`,
+`rove_coach_v4_delivery.py` und `frontend/index.html`, die neuen gezielten
+Tests in `test_coach_insight_memory.py` sowie die genannten Coach-/Frontend-
+Fixtures und Schema-Dokumentation. Kein Push, Deployment oder Production-Zugriff.
+
+Gezielte Coach-Memory-/V3-/V4-/Ask-Rovi-Regressionen: **253/253 PASS**.
+Der abschliessende Full-Suite-Lauf besteht: **2.144 Tests in 467,212 Sekunden,
+0 Failures, 0 Errors, 0 Skips**. Runtime: isoliertes Python 3.12.14,
+GnuPG 2.4.4/libgcrypt 1.10.3; voller Aufruf:
+
+```bash
+env -u PYTHONPATH -u ROVE_EXTRA_PYTHONPATH \
+  PATH=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/gpg/bin:$PATH LC_ALL=C \
+  ROVE_PYTHON=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/venv/bin/python \
+  PYTHONPYCACHEPREFIX=/tmp/rove-pycache-4b \
+  bash scripts/test.sh full
+```
+
+Die Suite enthaelt synthetische parallele Claims, Kontoisolation/-loeschung,
+fehlendes Schema, persistierte Ask-Rovi-Erklaerungen und Report-/Auth-/Finanz-
+Regressionen. Die fokussierten Tests bestaetigen ausserdem, dass ein weiterhin
+aktiver Budgethinweis nach 30 Tagen auch ueber einen rollierenden Zeitraum
+wieder erscheinen kann. Keine bestehenden Finanzformeln, Login-, Mehrkonten-,
+Sachwerte- oder Report-Implementierungen wurden geaendert; Coach V4 bleibt
+production-seitig hinter dem bestehenden Gate deaktiviert.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur

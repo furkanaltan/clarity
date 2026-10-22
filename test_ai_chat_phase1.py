@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import rove_app_api as api
 import report_ai_text
+from rove_app_state import ensure_app_coach_insight_memory_table
 
 
 class AiChatPhaseOneTests(unittest.TestCase):
@@ -57,6 +58,7 @@ class AiChatPhaseOneTests(unittest.TestCase):
                 INSERT INTO investment_events VALUES (1, 1, 1000, 'in', 'stock', 'X-Peng', CURRENT_TIMESTAMP);
             """)
             api.ensure_auth_tables(conn)
+            ensure_app_coach_insight_memory_table(conn)
             conn.execute("INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES ('one@example.test', 1, CURRENT_TIMESTAMP, 'app')")
             conn.execute("INSERT INTO app_accounts (email, user_id, verified_at, source) VALUES ('two@example.test', 2, CURRENT_TIMESTAMP, 'app')")
             conn.commit()

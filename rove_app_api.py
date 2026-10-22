@@ -98,6 +98,9 @@ from rove_app_state import (
     build_app_contract_groups,
     build_mentor_candidate,
     build_live_app_data,
+    claim_coach_insight_shown,
+    get_opened_coach_insight_context,
+    mark_coach_insight_opened,
     build_buffer_data,
     prepare_state_read_schema,
     get_app_property,
@@ -384,6 +387,7 @@ DATA_EXPORT_TABLES = (
     ("zugangsstatus", "user_access"),
     ("push_einstellungen", "app_push_preferences"),
     ("push_zustellungen", "app_push_delivery_log"),
+    ("coaching_hinweise", "app_coach_insight_memory"),
 )
 
 app = Flask(__name__)
@@ -2731,6 +2735,12 @@ def ai_chat():
         or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", selected_insight_id)
     ):
         return jsonify({"ok": False, "error": "invalid_insight_id"}), 400
+    selected_insight_fingerprint = payload.get("insight_fingerprint")
+    if selected_insight_fingerprint is not None and (
+        not isinstance(selected_insight_fingerprint, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", selected_insight_fingerprint)
+    ):
+        return jsonify({"ok": False, "error": "invalid_insight_fingerprint"}), 400
     if ai_chat_contains_obvious_secret(message):
         return jsonify({
             "ok": False,
@@ -2747,7 +2757,12 @@ def ai_chat():
             if not session:
                 return jsonify({"ok": False, "error": "not_logged_in"}), 401
             user_id, _session_id = session
-            selected_question_mode = v4_question_mode(message) if selected_insight_id else None
+            selected_question_mode = v4_question_mode(message)
+            if not selected_insight_id and selected_question_mode:
+                opened_context = get_opened_coach_insight_context(conn, user_id)
+                if opened_context:
+                    selected_insight_id = opened_context["insight_id"]
+                    selected_insight_fingerprint = opened_context["evidence_fingerprint"]
             if selected_insight_id:
                 # Pattern resolution may scan the authenticated user's bounded
                 # financial history. Release the rate-limit/auth transaction
@@ -2762,22 +2777,47 @@ def ai_chat():
                             insight_conn, user_id
                         )
                         visible = get_visible_coach_v4(insight_conn, user_id)
-                        candidate = build_visible_mentor_insight(None, contracts, visible)
-                        if not candidate or candidate.get("insight_id") != selected_insight_id:
+                        current_candidate = build_visible_mentor_insight(None, contracts, visible)
+                        current_contract = next(
+                            (item for item in contracts
+                             if isinstance(item, dict) and item.get("insight_id") == selected_insight_id),
+                            None,
+                        )
+                        current_matches = bool(
+                            current_candidate
+                            and current_candidate.get("insight_id") == selected_insight_id
+                            and (
+                                not selected_insight_fingerprint
+                                or current_candidate.get("evidence_fingerprint") == selected_insight_fingerprint
+                            )
+                        )
+                        opened_context = None
+                        if not current_matches:
+                            opened_context = get_opened_coach_insight_context(
+                                insight_conn, user_id, selected_insight_id,
+                                selected_insight_fingerprint,
+                            )
+                        if current_matches:
+                            candidate = current_candidate
+                            contract = current_contract
+                        elif opened_context:
+                            candidate = opened_context["insight"]
+                            contract = opened_context.get("contract")
+                        else:
                             return jsonify({
                                 "ok": False,
                                 "error": "insight_no_longer_current",
-                                "answer": "Dieser Hinweis ist nicht mehr aktuell oder nicht für dieses Konto verfügbar. Aktualisiere bitte deine Übersicht.",
+                                "answer": "Dieser Hinweis ist nicht mehr für dieses Konto verfügbar. Aktualisiere bitte deine Übersicht.",
                             }), 409
-                        contract = next(
-                            item for item in contracts
-                            if isinstance(item, dict) and item.get("insight_id") == selected_insight_id
-                        )
                         transactions = None
-                        if selected_question_mode == "transactions":
+                        if selected_question_mode == "transactions" and contract:
                             transactions = resolve_v4_transaction_examples(
                                 insight_conn, user_id, contract
                             )
+                            if transactions is None and opened_context:
+                                old_count = (candidate.get("facts") or {}).get("transaction_count")
+                                if isinstance(old_count, int) and old_count > 0:
+                                    transactions = {"count": old_count, "examples": []}
                         return jsonify({
                             "ok": True,
                             "kind": "rove",
@@ -4194,6 +4234,84 @@ def current_app_state():
     hydrate_crypto_logos(state)
 
     return jsonify({"ok": True, **state})
+
+
+@app.route("/v1/coach/insights/<action>", methods=["POST"])
+def update_coach_insight_memory(action: str):
+    """Atomically claim a validated V4 display or persist its explicit opening."""
+    if action not in {"claim", "opened"}:
+        return jsonify({"ok": False, "error": "invalid_coach_insight_action"}), 404
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_coach_insight_request"}), 400
+    insight_id = payload.get("insight_id")
+    fingerprint = payload.get("evidence_fingerprint")
+    if (
+        not isinstance(insight_id, str)
+        or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", insight_id)
+        or not isinstance(fingerprint, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", fingerprint)
+    ):
+        return jsonify({"ok": False, "error": "invalid_coach_insight_request"}), 400
+
+    try:
+        with db() as conn:
+            begin_write(conn)
+            user_id = user_from_token(conn, token_from_request())
+            if not user_id:
+                return jsonify({"ok": False, "error": "not_logged_in"}), 401
+            if action == "opened":
+                opened = mark_coach_insight_opened(
+                    conn, user_id, insight_id, fingerprint
+                )
+                if not opened:
+                    return jsonify({"ok": False, "error": "coach_insight_not_available"}), 404
+                conn.commit()
+                return jsonify({"ok": True, "opened": True})
+
+            # Re-check the current V3 winner and V4 evidence under SQLite's write
+            # lock, so parallel devices cannot race a stale snapshot into display.
+            state = build_live_app_data(
+                conn, user_id, activate_due_savings=False, record_mentor_events=False
+            )
+            try:
+                contracts, snapshot_status = get_shadow_insight_contracts(conn, user_id)
+            except (sqlite3.Error, TypeError, ValueError):
+                contracts, snapshot_status = [], "read_error"
+            feature_state = state.get("features") or {}
+            shadow_path = build_shadow_insight_path(
+                state.get("mentor_candidate"),
+                contracts,
+                snapshot_status=snapshot_status,
+                profile_mode=(
+                    "multi_account" if feature_state.get(FEATURE_MULTI_CASH_ACCOUNTS_V1)
+                    else "legacy"
+                ),
+            )
+            visible = get_visible_coach_v4(conn, user_id)
+            candidate = build_visible_mentor_insight(
+                state.get("mentor_candidate"), shadow_path.get("v4_candidates"), visible
+            )
+            contract = next(
+                (item for item in contracts
+                 if isinstance(item, dict) and item.get("insight_id") == insight_id),
+                None,
+            )
+            if (
+                not candidate
+                or candidate.get("insight_id") != insight_id
+                or candidate.get("evidence_fingerprint") != fingerprint
+                or not contract
+            ):
+                return jsonify({"ok": False, "error": "coach_insight_no_longer_current"}), 409
+            shown = claim_coach_insight_shown(conn, user_id, candidate, contract)
+            conn.commit()
+            return jsonify({"ok": True, "shown": shown})
+    except sqlite3.OperationalError as exc:
+        logger.warning("Coach-Insight-Speicher nicht verfuegbar (%s)", type(exc).__name__)
+        return jsonify({"ok": False, "error": "coach_insight_memory_unavailable"}), 503
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"ok": False, "error": "invalid_coach_insight_request"}), 400
 
 
 @app.route("/v1/feature-announcements/<feature_id>/<action>", methods=["POST"])

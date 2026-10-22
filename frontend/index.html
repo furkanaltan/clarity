@@ -4849,15 +4849,18 @@ function mentorLine(){
   }
 
   const coachV4Insight=DATA.coachV4Insight;
-  const coachV4Available=APP_MODE==="bridge" && coachV4Insight?.insight_id
-    && !mentorV4InsightSeenToday(coachV4Insight.insight_id);
-  if(coachV4Available && mentorIncomeReminderDue()){
+  if(APP_MODE==="bridge" && coachV4Insight?.insight_id && mentorIncomeReminderDue()){
     el.innerHTML='<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div>'+
       '<div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>';
     return;
   }
+  const coachV4Available=APP_MODE==="bridge" && coachV4Insight?.insight_id
+    && claimMentorV4Insight(coachV4Insight);
   if(coachV4Available){
-    if(mentor) mentor.dataset.coachV4InsightId=coachV4Insight.insight_id;
+    if(mentor){
+      mentor.dataset.coachV4InsightId=coachV4Insight.insight_id;
+      mentor.dataset.coachV4InsightFingerprint=coachV4Insight.evidence_fingerprint;
+    }
     el.innerHTML=`<div class="m-free"><b>${announcementEscape(coachV4Insight.title)}</b></div>`+
       `<div class="m-note">${announcementEscape(coachV4Insight.message)} · <span class="m-nudge"><b>Warum?</b></span></div>`;
     return;
@@ -4908,19 +4911,56 @@ function mentorLine(){
   el.innerHTML=selected.html;
   setMentorCtaTarget(selected.target);
 }
-function mentorV4InsightSeenToday(insightId){
+let coachV4ClaimKey=null, coachV4ClaimStatus="idle", coachV4ClaimRetryAt=0;
+function claimMentorV4Insight(insight){
+  const insightId=insight?.insight_id, fingerprint=insight?.evidence_fingerprint;
+  if(!apiReady()||!insightId||!(/^[a-f0-9]{64}$/.test(fingerprint||""))) return false;
+  const key=`${insightId}:${fingerprint}`;
+  if(key!==coachV4ClaimKey){coachV4ClaimKey=key;coachV4ClaimStatus="idle";coachV4ClaimRetryAt=0;}
+  if(coachV4ClaimStatus==="idle"||
+    (coachV4ClaimStatus==="failed"&&Date.now()>=coachV4ClaimRetryAt)){
+    coachV4ClaimStatus="pending";
+    coachV4ClaimRetryAt=Date.now()+30000;
+    apiFetch("/v1/coach/insights/claim",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({insight_id:insightId,evidence_fingerprint:fingerprint})
+    }).then(async response=>{
+      const data=await response.json().catch(()=>({}));
+      if(key!==coachV4ClaimKey) return;
+      if(!response.ok||!data.ok){
+        coachV4ClaimStatus=response.status===409?"suppressed":"failed";
+        if(response.status===409&&DATA.coachV4Insight?.evidence_fingerprint===fingerprint)
+          DATA.coachV4Insight=null;
+      }else coachV4ClaimStatus=data.shown===true?"shown":"suppressed";
+      mentorLine();
+    }).catch(()=>{
+      if(key!==coachV4ClaimKey) return;
+      coachV4ClaimStatus="failed";
+      mentorLine();
+    });
+  }
+  return coachV4ClaimStatus==="shown";
+}
+async function markMentorV4InsightOpened(insight){
+  if(!apiReady()||!insight?.insight_id||!insight?.evidence_fingerprint) return false;
   try{
-    const seen=JSON.parse(localStorage.getItem("roveCoachV4Seen")||"null");
-    return seen?.id===insightId&&seen?.day===new Date().toLocaleDateString("sv-SE");
-  }catch(e){return false;}
+    const response=await apiFetch("/v1/coach/insights/opened",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({insight_id:insight.insight_id,evidence_fingerprint:insight.evidence_fingerprint})
+    });
+    const result=await response.json().catch(()=>({}));
+    return response.ok&&result.ok===true&&result.opened===true;
+  }catch(error){
+    console.warn("Coach-Kontext konnte nicht gespeichert werden:",error);
+    return false;
+  }
 }
-function markMentorV4InsightSeen(insightId){
-  try{localStorage.setItem("roveCoachV4Seen",JSON.stringify({id:insightId,day:new Date().toLocaleDateString("sv-SE")}));}catch(e){}
-}
-function openMentorCoach(){
+async function openMentorCoach(){
   const mentor=document.querySelector("#tab-home .mentor"), insight=DATA.coachV4Insight;
-  if(insight?.insight_id&&mentor?.dataset.coachV4InsightId===insight.insight_id){
-    markMentorV4InsightSeen(insight.insight_id);
+  if(insight?.insight_id&&insight?.evidence_fingerprint&&
+    mentor?.dataset.coachV4InsightId===insight.insight_id&&
+    mentor?.dataset.coachV4InsightFingerprint===insight.evidence_fingerprint){
+    await markMentorV4InsightOpened(insight);
     mentorLine();
     openTalk({insight});
   }else openTalk();
@@ -13739,12 +13779,14 @@ function rovReply(html){
   c.appendChild(t); scrollChatToLatest(c);
   return new Promise(resolve=>setTimeout(()=>{ t.remove(); pushBub("rov", html); resolve(); }, 620));
 }
-async function askRoveAi(message,insightId=null){
+async function askRoveAi(message,insightId=null,insightFingerprint=null){
   if(!apiReady()) return {ok:false,message:"Rov.E ist gerade nicht verbunden. Prüfe deine Internetverbindung und versuche es erneut."};
   try{
     const response=await apiFetch("/v1/ai/chat",{
       method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({message,conversation_id:aiConversationId,...(insightId?{insight_id:insightId}:{})})
+      body:JSON.stringify({message,conversation_id:aiConversationId,
+        ...(insightId?{insight_id:insightId}:{}),
+        ...(insightFingerprint?{insight_fingerprint:insightFingerprint}:{})})
     });
     const data=await response.json().catch(()=>null);
     if(!response.ok || data?.ok===false){
@@ -13777,6 +13819,7 @@ function rovAiReply(text){
 let askRoveInFlight=false;
 let lastFailedAsk=null;
 let activeMentorInsightId=null;
+let activeMentorInsightFingerprint=null;
 async function askRove(text){
   const t=(text||"").trim(); if(!t||askRoveInFlight) return {ok:false};
   askRoveInFlight=true;
@@ -13802,7 +13845,7 @@ async function askRove(text){
       lastFailedAsk=null;
       return {ok:true};
     }
-    const ai=await askRoveAi(t,activeMentorInsightId);
+    const ai=await askRoveAi(t,activeMentorInsightId,activeMentorInsightFingerprint);
     if(!ai?.ok) return showFailure(ai?.message||"Rov.E kann gerade nicht antworten. Deine Frage ist erhalten geblieben – versuche es erneut.");
     if(ai.ai){
       const c=chatEl();
@@ -13829,6 +13872,7 @@ function openTalk(options={}){
   const insight=options?.insight&&typeof options.insight.insight_id==="string"
     && /^v4:[A-Za-z0-9:_-]{1,200}$/.test(options.insight.insight_id)?options.insight:null;
   activeMentorInsightId=insight?.insight_id||null;
+  activeMentorInsightFingerprint=insight?.evidence_fingerprint||null;
   if(!c.dataset.init){
     const _nm=(typeof PROFILE_META!=="undefined"&&PROFILE_META.name)?" "+PROFILE_META.name:"";
     pushBub("rov", `Hallo${_nm}. Ich bin Rov.E, dein Finanzassistent.<br>Was soll ich prüfen?`);

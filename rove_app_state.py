@@ -26,6 +26,7 @@ Migrations-Punkte"):
 import json
 import hashlib
 import logging
+import math
 import os
 import secrets
 import sqlite3
@@ -532,6 +533,283 @@ def ensure_app_mentor_event_state_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_app_coach_insight_memory_table(conn: sqlite3.Connection) -> None:
+    """Persist a bounded, user-scoped snapshot for shown/opened Coach V4 insights."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_coach_insight_memory (
+            user_id INTEGER NOT NULL,
+            dedupe_key TEXT NOT NULL DEFAULT '',
+            insight_id TEXT NOT NULL,
+            evidence_fingerprint TEXT NOT NULL,
+            insight_type TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            shown_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            opened_at TEXT,
+            last_opened_insight_id TEXT,
+            last_opened_fingerprint TEXT,
+            last_opened_context_json TEXT,
+            last_opened_at TEXT,
+            PRIMARY KEY (user_id, insight_id),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )"""
+    )
+    columns = {str(row[1]) for row in conn.execute(
+        'PRAGMA table_info("app_coach_insight_memory")'
+    )}
+    if "dedupe_key" not in columns:
+        conn.execute(
+            "ALTER TABLE app_coach_insight_memory "
+            "ADD COLUMN dedupe_key TEXT NOT NULL DEFAULT ''"
+        )
+    if "last_opened_insight_id" not in columns:
+        conn.execute(
+            "ALTER TABLE app_coach_insight_memory ADD COLUMN last_opened_insight_id TEXT"
+        )
+    conn.execute(
+        "UPDATE app_coach_insight_memory SET dedupe_key='coach:' || insight_type "
+        "WHERE dedupe_key=''"
+    )
+    conn.execute(
+        "UPDATE app_coach_insight_memory SET last_opened_insight_id=insight_id "
+        "WHERE last_opened_insight_id IS NULL AND last_opened_context_json IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_app_coach_insight_memory_opened "
+        "ON app_coach_insight_memory(user_id, last_opened_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_app_coach_insight_memory_dedupe "
+        "ON app_coach_insight_memory(user_id, dedupe_key, shown_at DESC)"
+    )
+
+
+COACH_INSIGHT_CONTEXT_MAX_BYTES = 64 * 1024
+COACH_INSIGHT_RETRIGGER_DAYS = 7
+COACH_POSITIVE_RETRIGGER_DAYS = 30
+COACH_WARNING_REPEAT_DAYS = 30
+
+
+def _coach_material_money_change(old: object, new: object) -> bool:
+    try:
+        before, after = float(old), float(new)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(before) or not math.isfinite(after):
+        return False
+    return abs(after - before) >= max(10.0, abs(before) * 0.25)
+
+
+def _coach_material_count_change(old: object, new: object, *, minimum_delta: int = 3) -> bool:
+    if isinstance(old, bool) or isinstance(new, bool):
+        return False
+    try:
+        before, after = int(old), int(new)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return abs(after - before) >= max(minimum_delta, math.ceil(abs(before) * 0.25))
+
+
+def _coach_insight_materially_changed(previous: object, current: dict) -> bool:
+    if not isinstance(previous, dict):
+        return False
+    old = previous.get("insight")
+    if not isinstance(old, dict):
+        return False
+    if old.get("insight_type") != current.get("insight_type"):
+        return True
+    old_facts = old.get("facts") if isinstance(old.get("facts"), dict) else {}
+    new_facts = current.get("facts") if isinstance(current.get("facts"), dict) else {}
+    for key in ("category", "merchant", "weekday", "service_count", "cycles_used", "months_over_budget"):
+        if key in old_facts and key in new_facts and old_facts[key] != new_facts[key]:
+            if key in {"service_count", "cycles_used", "months_over_budget"}:
+                return True
+            if key in {"category", "merchant", "weekday"}:
+                return True
+    for key in ("amount_current", "amount_reference", "amount_delta", "amount_over_budget", "budget_amount", "monthly_normalized_total"):
+        if _coach_material_money_change(old_facts.get(key), new_facts.get(key)):
+            return True
+    for key in ("transaction_count", "active_days", "weekday_opportunities"):
+        if _coach_material_count_change(old_facts.get(key), new_facts.get(key)):
+            return True
+    old_cycles, new_cycles = old_facts.get("cycles_used"), new_facts.get("cycles_used")
+    if isinstance(old_cycles, int) and isinstance(new_cycles, int) and new_cycles > old_cycles:
+        return True
+    return False
+
+
+def _coach_insight_elapsed_days(value: object) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+    return (now - parsed).total_seconds() / 86400
+
+
+def _coach_insight_urgent_escalation(previous: object, current: dict) -> bool:
+    if current.get("insight_type") != "budget_attention" or not isinstance(previous, dict):
+        return False
+    old = previous.get("insight")
+    if not isinstance(old, dict):
+        return False
+    old_facts = old.get("facts") if isinstance(old.get("facts"), dict) else {}
+    new_facts = current.get("facts") if isinstance(current.get("facts"), dict) else {}
+    try:
+        before, after = float(old_facts.get("amount_over_budget")), float(new_facts.get("amount_over_budget"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(before) and math.isfinite(after) and after - before >= max(10.0, abs(before) * 0.25)
+
+
+def claim_coach_insight_shown(
+    conn: sqlite3.Connection,
+    user_id: int,
+    insight: dict,
+    contract: dict,
+) -> bool:
+    """Atomically claim one display per stable insight/evidence version."""
+    if getattr(conn, "state_read_only", False):
+        return False
+    insight_id = str(insight.get("insight_id") or "")
+    fingerprint = str(insight.get("evidence_fingerprint") or "")
+    insight_type = str(insight.get("insight_type") or "")
+    dedupe_key = str(insight.get("dedupe_key") or contract.get("dedupe_key") or "")
+    period = insight.get("period") if isinstance(insight.get("period"), dict) else {}
+    period_start, period_end = period.get("start"), period.get("end")
+    if (
+        not all((insight_id, fingerprint, insight_type, period_start, period_end))
+        or dedupe_key != f"coach:{insight_type}"
+    ):
+        return False
+    context = json.dumps(
+        {"insight": insight, "contract": contract},
+        ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    if len(context.encode("utf-8")) > COACH_INSIGHT_CONTEXT_MAX_BYTES:
+        return False
+    row = conn.execute(
+        """SELECT rowid AS memory_rowid, insight_id, evidence_fingerprint,
+                  insight_type, shown_at, context_json
+             FROM app_coach_insight_memory
+             WHERE user_id=? AND dedupe_key=?
+             ORDER BY datetime(shown_at) DESC, rowid DESC LIMIT 1""",
+        (int(user_id), dedupe_key),
+    ).fetchone()
+    if row:
+        elapsed_days = _coach_insight_elapsed_days(row["shown_at"])
+        same_evidence = str(row["evidence_fingerprint"]) == fingerprint
+        if same_evidence:
+            if insight_type != "budget_attention" or elapsed_days is None or elapsed_days < COACH_WARNING_REPEAT_DAYS:
+                return False
+        else:
+            try:
+                previous = json.loads(row["context_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if not _coach_insight_materially_changed(previous, insight):
+                # A still-active budget warning may have a new rolling period
+                # (and therefore a new fingerprint) without changed amounts.
+                # It must not disappear forever, but remains rate-limited.
+                if (
+                    insight_type != "budget_attention"
+                    or elapsed_days is None
+                    or elapsed_days < COACH_WARNING_REPEAT_DAYS
+                ):
+                    return False
+            else:
+                positive = insight_type in {"spending_trend_improving", "budget_recovery"}
+                cooldown = COACH_POSITIVE_RETRIGGER_DAYS if positive else COACH_INSIGHT_RETRIGGER_DAYS
+                if (
+                    not _coach_insight_urgent_escalation(previous, insight)
+                    and (elapsed_days is None or elapsed_days < cooldown)
+                ):
+                    return False
+    if row:
+        exact = conn.execute(
+            "SELECT rowid FROM app_coach_insight_memory WHERE user_id=? AND insight_id=?",
+            (int(user_id), insight_id),
+        ).fetchone()
+    else:
+        exact = None
+    if exact:
+        cursor = conn.execute(
+            """UPDATE app_coach_insight_memory
+                  SET dedupe_key=?, evidence_fingerprint=?, insight_type=?, period_start=?, period_end=?,
+                      context_json=?, shown_at=CURRENT_TIMESTAMP, opened_at=NULL
+                WHERE rowid=? AND user_id=?""",
+            (dedupe_key, fingerprint, insight_type, period_start, period_end, context,
+             exact["rowid"], int(user_id)),
+        )
+    else:
+        cursor = conn.execute(
+            """INSERT INTO app_coach_insight_memory
+               (user_id,dedupe_key,insight_id,evidence_fingerprint,insight_type,period_start,period_end,context_json)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (int(user_id), dedupe_key, insight_id, fingerprint, insight_type,
+             period_start, period_end, context),
+        )
+    return cursor.rowcount == 1
+
+
+def mark_coach_insight_opened(
+    conn: sqlite3.Connection, user_id: int, insight_id: str, fingerprint: str
+) -> bool:
+    if getattr(conn, "state_read_only", False):
+        return False
+    cursor = conn.execute(
+        """UPDATE app_coach_insight_memory
+              SET opened_at=COALESCE(opened_at,CURRENT_TIMESTAMP),
+                  last_opened_insight_id=insight_id,
+                  last_opened_fingerprint=evidence_fingerprint,
+                  last_opened_context_json=context_json,
+                  last_opened_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND insight_id=? AND evidence_fingerprint=?""",
+        (int(user_id), str(insight_id), str(fingerprint)),
+    )
+    return cursor.rowcount == 1
+
+
+def get_opened_coach_insight_context(
+    conn: sqlite3.Connection,
+    user_id: int,
+    insight_id: str | None = None,
+    fingerprint: str | None = None,
+) -> dict | None:
+    clauses = ["user_id=?", "last_opened_context_json IS NOT NULL"]
+    params: list[object] = [int(user_id)]
+    if insight_id:
+        clauses.append("last_opened_insight_id=?")
+        params.append(str(insight_id))
+    if fingerprint:
+        clauses.append("last_opened_fingerprint=?")
+        params.append(str(fingerprint))
+    row = conn.execute(
+        "SELECT last_opened_insight_id,last_opened_fingerprint,last_opened_context_json "
+        "FROM app_coach_insight_memory WHERE " + " AND ".join(clauses) +
+        " ORDER BY datetime(last_opened_at) DESC LIMIT 1",
+        params,
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        context = json.loads(row["last_opened_context_json"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(context, dict) or not isinstance(context.get("insight"), dict):
+        return None
+    insight = context["insight"]
+    if insight.get("insight_id") != row["last_opened_insight_id"] or insight.get("evidence_fingerprint") != row["last_opened_fingerprint"]:
+        return None
+    return {
+        "insight_id": str(row["last_opened_insight_id"]),
+        "evidence_fingerprint": str(row["last_opened_fingerprint"]),
+        "insight": insight,
+        "contract": context.get("contract") if isinstance(context.get("contract"), dict) else None,
+    }
+
+
 def _mentor_event_id(event_type: str, source_id: object, period_key: str) -> str:
     """Build a stable, non-sensitive identifier from event type/source/period."""
     raw = f"{event_type}|{source_id}|{period_key}".encode("utf-8")
@@ -562,6 +840,7 @@ def _observe_mentor_event(
     event: dict,
     *,
     worsening: bool = False,
+    persist_state: bool = True,
 ) -> dict:
     """Upsert one event and report whether it is new since the last display."""
     _prepare_for_read(conn, ensure_app_mentor_event_state_table)
@@ -573,7 +852,7 @@ def _observe_mentor_event(
     ).fetchone()
     fingerprint = str(event.get("fingerprint") or "")
     is_new = row is None or row["seen_at"] is None
-    persist = not getattr(conn, "state_read_only", False)
+    persist = persist_state and not getattr(conn, "state_read_only", False)
     needs_reset = row is not None and (row["resolved_at"] or (worsening and row["fingerprint"] != fingerprint))
     if needs_reset:
         is_new = True
@@ -625,8 +904,10 @@ def mark_mentor_event_seen(conn: sqlite3.Connection, user_id: int, event_id: obj
     )
 
 
-def _resolve_mentor_event(conn: sqlite3.Connection, user_id: int, event_id: str) -> None:
-    if getattr(conn, "state_read_only", False):
+def _resolve_mentor_event(
+    conn: sqlite3.Connection, user_id: int, event_id: str, *, persist_state: bool = True
+) -> None:
+    if not persist_state or getattr(conn, "state_read_only", False):
         return
     ensure_app_mentor_event_state_table(conn)
     conn.execute(
@@ -644,6 +925,7 @@ def build_mentor_events(
     budget_truth: dict,
     income: float = 0.0,
     now: datetime | None = None,
+    persist_state: bool = True,
 ) -> list[dict]:
     """Detect only events proven by existing canonical data.
 
@@ -674,9 +956,9 @@ def build_mentor_events(
             "shortfall": shortfall,
         }
         event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], month_key)
-        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True, persist_state=persist_state))
     else:
-        _resolve_mentor_event(conn, user_id, _mentor_event_id("budget_overrun", "monthly_budget", month_key))
+        _resolve_mentor_event(conn, user_id, _mentor_event_id("budget_overrun", "monthly_budget", month_key), persist_state=persist_state)
 
     try:
         debt_rows = conn.execute(
@@ -716,7 +998,7 @@ def build_mentor_events(
             "amount": round(float(row["outstanding_balance"] or 0), 2),
         }
         event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], period_key)
-        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True, persist_state=persist_state))
         break
 
     try:
@@ -749,7 +1031,7 @@ def build_mentor_events(
             "amount": round(amount, 2),
         }
         event["event_id"] = _mentor_event_id(event["event_type"], event["source_id"], period_key)
-        events.append(_observe_mentor_event(conn, user_id, event))
+        events.append(_observe_mentor_event(conn, user_id, event, persist_state=persist_state))
         break
 
     try:
@@ -778,7 +1060,7 @@ def build_mentor_events(
             "name": str(row["name"]),
         }
         event["event_id"] = _mentor_event_id(event["event_type"], source_id, period_key)
-        events.append(_observe_mentor_event(conn, user_id, event, worsening=True))
+        events.append(_observe_mentor_event(conn, user_id, event, worsening=True, persist_state=persist_state))
         break
 
     try:
@@ -801,7 +1083,7 @@ def build_mentor_events(
         period_key = str(row["report_month"] or month_key)
         event_id = _mentor_event_id("report_ready", period_key, period_key)
         if row["opened_at"]:
-            _resolve_mentor_event(conn, user_id, event_id)
+            _resolve_mentor_event(conn, user_id, event_id, persist_state=persist_state)
             continue
         event = {
             "event_type": "report_ready",
@@ -813,7 +1095,7 @@ def build_mentor_events(
             "fingerprint": period_key,
         }
         event["event_id"] = event_id
-        events.append(_observe_mentor_event(conn, user_id, event))
+        events.append(_observe_mentor_event(conn, user_id, event, persist_state=persist_state))
         break
 
     return events
@@ -2656,7 +2938,8 @@ def prepare_state_read_schema(conn: sqlite3.Connection) -> None:
     """Run the existing state schema/backfills before accepting prepared reads."""
     for prepare in (
         ensure_app_properties_table, ensure_debt_status_column,
-        ensure_app_mentor_event_state_table, ensure_app_asset_order_table,
+        ensure_app_mentor_event_state_table, ensure_app_coach_insight_memory_table,
+        ensure_app_asset_order_table,
         ensure_app_monthly_plan_table, ensure_app_month_close_table,
         ensure_app_etf_savings_plan_table, ensure_app_etf_position_plans_table,
         ensure_app_scheduled_savings_table, ensure_app_goals_table,
@@ -2668,7 +2951,11 @@ def prepare_state_read_schema(conn: sqlite3.Connection) -> None:
 
 
 def build_live_app_data(
-    conn: sqlite3.Connection, user_id: int, *, activate_due_savings: bool = True
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    activate_due_savings: bool = True,
+    record_mentor_events: bool = True,
 ) -> dict:
     """Liefert die Bot-Felder, die eine bereits gekoppelte App sicher aktualisieren kann.
 
@@ -2839,6 +3126,7 @@ def build_live_app_data(
         user_id,
         budget_truth=budget_truth,
         income=income,
+        persist_state=record_mentor_events,
     )
     mentor_candidate = build_mentor_candidate(
         score=score,
@@ -2852,7 +3140,7 @@ def build_live_app_data(
         debt_status=normalize_debt_status(u.get("debt_status")),
         events=mentor_events,
     )
-    if mentor_candidate and mentor_candidate.get("id", "").startswith("coach:"):
+    if record_mentor_events and mentor_candidate and mentor_candidate.get("id", "").startswith("coach:"):
         mark_mentor_event_seen(conn, user_id, mentor_candidate["id"])
     onboarding_step = int(u.get("onboarding_step") or 0)
     onboarding_required = onboarding_step < 10

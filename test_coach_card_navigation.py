@@ -21,56 +21,79 @@ class CoachCardNavigationTests(unittest.TestCase):
         start = self.frontend.index('document.querySelector(".mentor").addEventListener("click",e=>{')
         handler = self.frontend[start:self.frontend.index("\n});", start) + 4]
         helper = ""
-        if "function openMentorCoach(){" in self.frontend:
-            helper_start = self.frontend.index("function openMentorCoach(){")
+        if "async function openMentorCoach(){" in self.frontend:
+            helper_start = self.frontend.index("async function openMentorCoach(){")
             helper = self.frontend[helper_start:self.frontend.index("\n}", helper_start) + 2]
         script = f"""
-const DATA={{coachV4Insight:{{insight_id:"v4:synthetic",title:"Ausgaben"}}}}, calls=[];
+const fingerprint="a".repeat(64);
+const DATA={{coachV4Insight:{{insight_id:"v4:synthetic",evidence_fingerprint:fingerprint,title:"Ausgaben"}}}}, calls=[];
 let listener;
-const card={{dataset:{{coachV4InsightId:"v4:synthetic"}},
+const card={{dataset:{{coachV4InsightId:"v4:synthetic",coachV4InsightFingerprint:fingerprint}},
   addEventListener:(_name,fn)=>listener=fn}};
 const document={{querySelector:()=>card}};
 function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||null]);}}
-function markMentorV4InsightSeen(id){{calls.push(["seen",id]);}}
+function markMentorV4InsightOpened(insight){{calls.push(["opened",insight.insight_id,insight.evidence_fingerprint]);return Promise.resolve().then(()=>{{calls.push(["saved"]);return true;}});}}
 function mentorLine(){{}}
 function buzz(){{}}
 {helper}
 {handler}
-listener({{target:{{closest:()=>({{dataset:{{mentorTarget:"coach"}}}})}},stopImmediatePropagation(){{}}}});
-process.stdout.write(JSON.stringify(calls));
+(async()=>{{
+  listener({{target:{{closest:()=>({{dataset:{{mentorTarget:"coach"}}}})}},stopImmediatePropagation(){{}}}});
+  await new Promise(resolve=>setImmediate(resolve));
+  process.stdout.write(JSON.stringify(calls));
+}})();
 """
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), [["seen", "v4:synthetic"], ["talk", "v4:synthetic"]])
+        self.assertEqual(json.loads(result.stdout), [
+            ["opened", "v4:synthetic", "a" * 64], ["saved"], ["talk", "v4:synthetic"]
+        ])
 
     def test_card_surface_opens_coach_and_preserves_v4_insight_context(self):
         start = self.frontend.index("// A due check-in owns the complete card;")
         end = self.frontend.index("\n\n// ===================== EMPTY STATES:", start)
         handler = self.frontend[start:end]
-        helper_start = self.frontend.index("function openMentorCoach(){")
+        helper_start = self.frontend.index("async function openMentorCoach(){")
         helper = self.frontend[helper_start:self.frontend.index("\n}", helper_start) + 2]
-        insight = {"insight_id": "v4:category-trend", "title": "Ausgaben im Blick"}
+        insight = {"insight_id": "v4:category-trend", "evidence_fingerprint": "b" * 64, "title": "Ausgaben im Blick"}
         script = f"""
 const DATA={{coachV4Insight:{json.dumps(insight)}}}, calls=[], listeners={{}};
-const card={{dataset:{{coachV4InsightId:"v4:category-trend"}},style:{{}},
+const card={{dataset:{{coachV4InsightId:"v4:category-trend",coachV4InsightFingerprint:"{'b' * 64}"}},style:{{}},
   addEventListener:(name,fn)=>listeners[name]=fn}};
 const document={{querySelector:selector=>selector==="#tab-home .mentor"?card:null}};
-function markMentorV4InsightSeen(id){{calls.push(["seen",id]);}}
+function markMentorV4InsightOpened(value){{calls.push(["opened",value.insight_id,value.evidence_fingerprint]);return Promise.resolve(true);}}
 function mentorLine(){{calls.push(["render"]);}}
 function openTalk(options){{calls.push(["talk",options?.insight?.insight_id||null]);}}
 {helper}
 {handler}
-listeners.click();
-card.dataset.coachV4InsightId="v4:another-insight";
-listeners.click();
-process.stdout.write(JSON.stringify(calls));
+(async()=>{{
+  listeners.click();
+  await new Promise(resolve=>setImmediate(resolve));
+  card.dataset.coachV4InsightId="v4:another-insight";
+  listeners.click();
+  await new Promise(resolve=>setImmediate(resolve));
+  process.stdout.write(JSON.stringify(calls));
+}})();
 """
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [
-            ["seen", "v4:category-trend"], ["render"],
+            ["opened", "v4:category-trend", "b" * 64], ["render"],
             ["talk", "v4:category-trend"], ["talk", None],
         ])
+
+    def test_v4_deduplication_is_server_owned_not_daily_local_storage(self):
+        self.assertIn('"/v1/coach/insights/claim"', self.frontend)
+        self.assertIn('"/v1/coach/insights/opened"', self.frontend)
+        self.assertNotIn("roveCoachV4Seen", self.frontend)
+
+    def test_income_reminder_keeps_v3_priority_before_server_claim(self):
+        mentor_start = self.frontend.index("function mentorLine(){")
+        mentor_end = self.frontend.index("\nlet coachV4ClaimKey", mentor_start)
+        mentor = self.frontend[mentor_start:mentor_end]
+        reminder = mentor.index('if(APP_MODE==="bridge" && coachV4Insight?.insight_id && mentorIncomeReminderDue())')
+        claim = mentor.index("claimMentorV4Insight(coachV4Insight)")
+        self.assertLess(reminder, claim)
 
     def test_arrow_is_explicit_cta_with_coach_fallback(self):
         self.assertIn(

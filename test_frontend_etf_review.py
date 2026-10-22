@@ -107,7 +107,7 @@ console.log(JSON.stringify(before === JSON.stringify(DATA)));
         self.assertIn(route, self.source)
         self.assertLess(
             self.source.index(route),
-            self.source.index("const ai=await askRoveAi(t,activeMentorInsightId)"),
+            self.source.index("const ai=await askRoveAi(t,activeMentorInsightId,activeMentorInsightFingerprint)"),
         )
 
 
