@@ -1364,6 +1364,8 @@ def _visible_projection(insight: dict[str, Any]) -> tuple[dict[str, Any] | None,
         payload["coach_timing_hint"] = insight["coach_timing_hint"]
     if insight.get("confidence_class") in {"high", "medium", "low"}:
         payload["confidence_class"] = insight["confidence_class"]
+    if insight.get("pattern_strength") in {"high", "medium", "low"}:
+        payload["pattern_strength"] = insight["pattern_strength"]
 
     monthly_amounts = _visible_monthly_amounts(metrics)
     if monthly_amounts:

@@ -58,6 +58,10 @@ _ALLOWED_SOURCE_FIELDS = frozenset({
     "amount_over_budget",
     "overall_budget_status",
     "months_compared",
+    "coach_timing_hint",
+    "pattern_strength",
+    "transaction_count",
+    "active_days",
 })
 _INTERNAL_OR_UNSAFE_FIELDS = frozenset({
     "merchant", "merchant_display", "source_ids", "source_pattern_ids",
@@ -213,6 +217,14 @@ def _safe_monthly_amounts(value: object) -> list[dict[str, Any]] | None:
         amount = _finite_number(item.get("amount"), minimum=0)
         if not isinstance(month, str) or not _MONTH_RE.fullmatch(month) or amount is None:
             return None
+        try:
+            parsed = datetime.strptime(month, "%Y-%m")
+        except ValueError:
+            return None
+        if result:
+            previous = datetime.strptime(result[-1]["month"], "%Y-%m")
+            if (parsed.year - previous.year) * 12 + parsed.month - previous.month != 1:
+                return None
         result.append({"month": month, "amount": amount})
     return result
 
@@ -224,6 +236,25 @@ def _source_payload_is_safe(payload: dict[str, Any]) -> bool:
         return False
     if payload.get("visible_behavior_contract_version") != VISIBLE_BEHAVIOR_CONTRACT_VERSION:
         return False
+    if "coach_timing_hint" in payload and (
+        not isinstance(payload["coach_timing_hint"], str)
+        or payload["coach_timing_hint"] not in {
+            "immediate", "next_checkin", "weekend_prevention", "post_salary_window", "month_end",
+        }
+    ):
+        return False
+    if "pattern_strength" in payload and (
+        not isinstance(payload["pattern_strength"], str)
+        or payload["pattern_strength"] not in {"low", "medium", "high"}
+    ):
+        return False
+    if payload.get("confidence_class") == "high" and payload.get("pattern_strength", "high") != "high":
+        return False
+    for field in ("transaction_count", "active_days"):
+        if field in payload:
+            value = _finite_number(payload[field], minimum=0)
+            if value is None or not value.is_integer():
+                return False
     return True
 
 
@@ -246,7 +277,7 @@ def _render_budget_attention(payload: dict[str, Any]) -> dict[str, Any] | None:
     amount_over = _finite_number(payload.get("amount_over_budget"), minimum=0.01)
     if amount_current is None or budget_amount is None or amount_over is None:
         return None
-    if amount_current <= budget_amount:
+    if amount_current <= budget_amount or round(amount_current - budget_amount, 2) != round(amount_over, 2):
         return None
     result = {
         "visible_behavior_contract_version": VISIBLE_BEHAVIOR_CONTRACT_VERSION,
@@ -260,6 +291,8 @@ def _render_budget_attention(payload: dict[str, Any]) -> dict[str, Any] | None:
         "amount_current": amount_current,
         "budget_amount": budget_amount,
         "amount_over_budget": amount_over,
+        "overall_budget_status": "under_pressure",
+        "confidence_class": payload["confidence_class"],
     }
     for field in ("period_start", "period_end"):
         value = _safe_period(payload.get(field))
@@ -271,14 +304,19 @@ def _render_budget_attention(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _render_spending_improvement(payload: dict[str, Any]) -> dict[str, Any] | None:
     category = _safe_category(payload.get("category_display"))
     monthly = _safe_monthly_amounts(payload.get("monthly_amounts"))
+    # Positive patterns have medium financial relevance in the existing engine.
+    # Keep their confidence label and require the engine's high pattern strength.
+    strong_evidence = payload.get("confidence_class") == "high" or (
+        payload.get("confidence_class") == "medium" and payload.get("pattern_strength") == "high"
+    )
     if (
         payload.get("insight_type") != "spending_trend_improving"
-        or payload.get("confidence_class") != "high"
+        or not strong_evidence
         or payload.get("direction") != "improving"
         or not category
         or not monthly
         or len(monthly) < 3
-        or monthly[-1]["amount"] >= monthly[0]["amount"]
+        or not all(left["amount"] > right["amount"] for left, right in zip(monthly, monthly[1:]))
     ):
         return None
     result = {
@@ -287,11 +325,12 @@ def _render_spending_improvement(payload: dict[str, Any]) -> dict[str, Any] | No
         "category_display": category,
         "title": "Deine Ausgaben entwickeln sich positiv",
         "message": (
-            f"Bei {category} sind deine Ausgaben über {len(monthly)} Monate "
+            f"Bei {category} sind deine erfassten Ausgaben über {len(monthly)} Monate "
             f"von {_euro(monthly[0]['amount'])} auf {_euro(monthly[-1]['amount'])} gesunken."
         ),
         "monthly_amounts": monthly,
         "months_compared": len(monthly),
+        "confidence_class": payload["confidence_class"],
     }
     for field in ("period_start", "period_end"):
         value = _safe_period(payload.get(field))

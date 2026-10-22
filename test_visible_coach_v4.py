@@ -183,6 +183,52 @@ class VisibleCoachV4Tests(unittest.TestCase):
         self.assertNotIn("source", json.dumps(result).lower())
         self.assertNotIn("merchant", json.dumps(result).lower())
 
+    def test_engine_metadata_preserves_budget_status_and_rejects_inconsistent_totals(self):
+        payload = self.budget_payload(coach_timing_hint="immediate", pattern_strength="high",
+                                      transaction_count=4, active_days=4)
+        self.snapshot(payload)
+        result = self.call(payload)
+        self.assertEqual(result["overall_budget_status"], "under_pressure")
+        self.assertEqual(result["confidence_class"], "high")
+        payload["amount_over_budget"] = 999
+        self.snapshot(payload)
+        self.assertIsNone(self.call(payload))
+        for field in ("coach_timing_hint", "pattern_strength", "transaction_count", "active_days"):
+            for invalid in ({}, []):
+                with self.subTest(field=field, invalid=invalid):
+                    payload = self.budget_payload(**{field: invalid})
+                    self.snapshot(payload)
+                    self.assertIsNone(self.call(payload))
+
+    def test_strong_positive_evidence_keeps_its_original_confidence_label(self):
+        payload = self.improvement_payload(confidence_class="medium", pattern_strength="high",
+                                           coach_timing_hint="next_checkin")
+        self.snapshot(payload)
+        result = self.call(payload)
+        self.assertEqual(result["confidence_class"], "medium")
+        self.assertIn("erfassten Ausgaben", result["message"])
+        for confidence, strength in (("medium", "medium"), ("medium", "low"),
+                                     ("low", "high"), ("high", "low")):
+            with self.subTest(confidence=confidence, strength=strength):
+                payload.update(confidence_class=confidence, pattern_strength=strength)
+                self.snapshot(payload)
+                self.assertIsNone(self.call(payload))
+
+    def test_invalid_gapped_or_contradictory_monthly_evidence_is_suppressed(self):
+        cases = (
+            [("2026-06", 180), ("2026-06", 140), ("2026-08", 95)],
+            [("2026-05", 180), ("2026-07", 140), ("2026-08", 95)],
+            [("2026-06", 180), ("2026-07", 190), ("2026-08", 95)],
+            [("2026-06", 180), ("2026-07", 140), ("2026-13", 95)],
+        )
+        for values in cases:
+            with self.subTest(values=values):
+                payload = self.improvement_payload(monthly_amounts=[
+                    {"month": month, "amount": amount} for month, amount in values
+                ])
+                self.snapshot(payload)
+                self.assertIsNone(self.call(payload))
+
     def test_short_improvement_history_is_suppressed(self):
         payload = self.improvement_payload(
             monthly_amounts=[

@@ -251,6 +251,14 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
     await page.evaluate(() => {
+      DATA.mentorCandidate = { type: 'budget_overrun', priority: 100,
+        title: 'Dein Monatsplan braucht Aufmerksamkeit', message: 'Prüfe den aktuellen Rahmen.' };
+      mentorLine();
+    });
+    await page.getByText('Dein Monatsplan braucht Aufmerksamkeit', { exact: true }).waitFor();
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null);
+    await page.evaluate(() => { DATA.mentorCandidate = null; mentorLine(); });
+    await page.evaluate(() => {
       DATA.monthlyPlan = { ...DATA.monthlyPlan, incomeStatus: 'pending' };
       DATA.payday = { gebucht: false, faellig: true };
       mentorLine();
@@ -264,9 +272,11 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     await page.getByText('Dein Budget ist diesen Monat unter Druck', { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
     if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
-    await mentor.click();
+    if (standalone || !mobile) await mentor.locator('[data-mentor-cta]').click();
+    else await mentor.click();
     await page.locator('#talksheet.on').waitFor();
     await page.getByText(/Du hast den Hinweis/, { exact: false }).waitFor();
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'opened insight is suppressed for today');
     for (const question of ['Warum sagst du mir das?', 'Welche Ausgaben meinst du?', 'Was kann ich konkret ändern?']) {
       await page.locator('#qsug .qs').filter({ hasText: question }).waitFor();
     }
@@ -293,6 +303,11 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false) {
     } else {
       await page.screenshot({ path: path.join(output, label + '-mentor-insight-desktop.png') });
     }
+    await page.reload();
+    await page.locator('#app:not([hidden])').waitFor();
+    await page.locator('#splash').waitFor({ state: 'detached' });
+    await page.waitForFunction(() => DATA.coachV4Insight?.insight_id === 'v4:shadow:behavior_insight:synthetic-7');
+    assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), null, 'reload must not repeat the opened insight');
     console.log(label.toUpperCase() + '_V4_MENTOR_CONTEXT_RETRY=PASS');
   } finally {
     await context.close();

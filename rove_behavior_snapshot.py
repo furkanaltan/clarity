@@ -689,14 +689,21 @@ def recompute_behavior_snapshot(
             return {"status": "stale", "reason": "source_changed_during_recompute"}
 
         insights = inspector.get("insight_candidates") or []
-        primary = next((item for item in insights if item.get("primary_coach_insight")), None)
+        primaries = [item for item in insights if item.get("primary_coach_insight")]
+        selected_id = inspector.get("primary_coach_insight")
+        # The inspector already chooses across independent subjects. Reuse that
+        # decision instead of taking the first subject or introducing a ranking.
+        selected = [item for item in primaries if item.get("insight_id") == selected_id]
+        primary = selected[0] if len(selected) == 1 else (
+            primaries[0] if not selected_id and len(primaries) == 1 else None
+        )
         payload = build_visible_behavior_insight(primary) if primary else None
         primary_report = next((item for item in insights if item.get("primary_report_insight")), None)
         generated_at = _now_text()
         from rove_financial_insights import build_v4_shadow_contracts
 
         shadow_contracts = build_v4_shadow_contracts(
-            insights, generated_at=generated_at, source_watermark=after
+            [primary] if primary else [], generated_at=generated_at, source_watermark=after
         )
         shadow_contract_json = json.dumps(
             shadow_contracts, ensure_ascii=True, sort_keys=True, separators=(",", ":")

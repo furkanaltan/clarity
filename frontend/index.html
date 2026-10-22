@@ -4917,6 +4917,14 @@ function mentorV4InsightSeenToday(insightId){
 function markMentorV4InsightSeen(insightId){
   try{localStorage.setItem("roveCoachV4Seen",JSON.stringify({id:insightId,day:new Date().toLocaleDateString("sv-SE")}));}catch(e){}
 }
+function openMentorCoach(){
+  const mentor=document.querySelector("#tab-home .mentor"), insight=DATA.coachV4Insight;
+  if(insight?.insight_id&&mentor?.dataset.coachV4InsightId===insight.insight_id){
+    markMentorV4InsightSeen(insight.insight_id);
+    mentorLine();
+    openTalk({insight});
+  }else openTalk();
+}
 let reportOpenInFlight=null;
 async function markReportOpened(reportMonth){
   const month=String(reportMonth||"").trim();
@@ -4980,7 +4988,7 @@ document.querySelector(".mentor").addEventListener("click",e=>{
     else if(target==="budget-setup") openWelcomeBudget();
     else if(target==="score") openScore();
     else if(target==="report"||target==="reports") openReports();
-    else openTalk();
+    else openMentorCoach();
     return;
   }
   const r=e.target.closest("[data-mentoract]"); if(!r) return;
@@ -13828,7 +13836,7 @@ function openTalk(options={}){
   }
   if(insight&&c.dataset.contextInsightId!==insight.insight_id){
     c.dataset.contextInsightId=insight.insight_id;
-    pushBub("rov",`Du hast den Hinweis „${announcementEscape(insight.title)}“ geöffnet. Ich erkläre ihn anhand der dazu gespeicherten Evidenz.`);
+    pushBub("rov",`Du hast den Hinweis „${announcementEscape(insight.title)}“ geöffnet. Ich erkläre dir den Hinweis anhand deiner erfassten Daten.`);
   }else if(!insight){delete c.dataset.contextInsightId;}
   const suggestions=insight?["Warum sagst du mir das?","Welche Ausgaben meinst du?","Was kann ich konkret ändern?"]:SUGGESTIONS;
   document.getElementById("qsug").innerHTML = suggestions.map(q=>`<span class="qs">${announcementEscape(q)}</span>`).join("");
@@ -13859,14 +13867,7 @@ talkIn.addEventListener("keydown",e=>{
 });
 // A due check-in owns the complete card; otherwise it remains the assistant shortcut.
 const mentorCard=document.querySelector("#tab-home .mentor");
-if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>{
-  const insight=DATA.coachV4Insight;
-  if(insight?.insight_id&&mentorCard.dataset.coachV4InsightId===insight.insight_id){
-    markMentorV4InsightSeen(insight.insight_id);
-    mentorLine();
-    openTalk({insight});
-  }else openTalk();
-}); }
+if(mentorCard){ mentorCard.style.cursor="pointer"; mentorCard.addEventListener("click",()=>openMentorCoach()); }
 
 // ===================== EMPTY STATES: Verkabelung + Home-Kopf + Demo =====================
 // Home-Kopf im leeren Zustand beruhigen — keine 0,00-€-Wüste, kein leeres Diagramm

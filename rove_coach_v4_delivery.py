@@ -86,6 +86,8 @@ def build_visible_mentor_insight(
     insight_type = contract.get("insight_type")
     if insight_type not in VISIBLE_TYPES or visible.get("insight_type") != insight_type:
         return None
+    if "confidence_class" in visible and visible["confidence_class"] != contract.get("confidence"):
+        return None
     insight_id = contract.get("insight_id")
     if not isinstance(insight_id, str) or not re.fullmatch(r"v4:[A-Za-z0-9:_-]{1,200}", insight_id):
         return None
@@ -178,6 +180,20 @@ def _booking_count(value: int) -> str:
     return f"{value} Buchung" if value == 1 else f"{value} Buchungen"
 
 
+def _display_date(value: object) -> str:
+    try:
+        return datetime.fromisoformat(str(value)).strftime("%d.%m.%Y")
+    except ValueError:
+        return ""
+
+
+def _display_month(value: str) -> str:
+    months = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+              "August", "September", "Oktober", "November", "Dezember")
+    parsed = datetime.strptime(value, "%Y-%m")
+    return f"{months[parsed.month - 1]} {parsed.year}"
+
+
 def answer_v4_question(
     mode: str,
     insight: dict[str, Any],
@@ -194,11 +210,12 @@ def answer_v4_question(
         examples = transactions.get("examples")
         if not isinstance(count, int) or count < 1 or not isinstance(examples, list):
             return "Für diesen Hinweis reichen die gespeicherten Daten nicht aus, um einzelne Buchungen sicher zu benennen."
-        start, end = period.get("start"), period.get("end")
-        lines = [f"Der Hinweis stützt sich auf {_booking_count(count)} für {category or 'diese Kategorie'} vom {start} bis {end}."]
+        start, end = _display_date(period.get("start")), _display_date(period.get("end"))
+        timeframe = f" vom {start} bis {end}" if start and end else ""
+        lines = [f"Der Hinweis stützt sich auf {_booking_count(count)} für {category or 'diese Kategorie'}{timeframe}."]
         if examples:
             lines.append("Beispiele: " + "; ".join(
-                f"{item['date']} – {item['label']} – {_euro(item['amount'])}"
+                f"{_display_date(item['date'])} – {item['label']} – {_euro(item['amount'])}"
                 for item in examples if isinstance(item, dict)
             ) + ".")
         else:
@@ -207,8 +224,8 @@ def answer_v4_question(
         return " ".join(lines)
     if mode == "action":
         if insight.get("insight_type") == "budget_attention":
-            return "Du kannst die aufgeführten Buchungen prüfen und danach selbst entscheiden, ob du deinen Rahmen für den nächsten Monat anpassen möchtest. Es wird nichts automatisch verändert."
-        return "Du kannst die Monatswerte vergleichen oder deine bisherige Entwicklung beibehalten. Der Hinweis verlangt keine Änderung und erklärt keine Ursache."
+            return "Du kannst die zugehörigen Buchungen prüfen, weitere Ausgaben in dieser Kategorie planen oder deinen Budgetrahmen bei Bedarf selbst anpassen. Es wird nichts automatisch verändert."
+        return "Wenn der Verlauf deinem Ziel entspricht, kannst du deinen bisherigen Plan beibehalten. Alternativ prüfst du die Buchungen und entscheidest, ob du deinen Rahmen anpassen möchtest."
     if mode == "why":
         if insight.get("insight_type") == "budget_attention":
             amount = _euro(facts.get("amount_current"))
@@ -218,13 +235,13 @@ def answer_v4_question(
                 return "Die vorhandenen Daten reichen nicht aus, um diesen Hinweis sicher zu erklären."
             source_count = facts.get("transaction_count")
             count_clause = (
-                f" Sie stützt sich auf {_booking_count(source_count)}."
+                f" Grundlage: {_booking_count(source_count)}."
                 if isinstance(source_count, int) and not isinstance(source_count, bool)
                 else ""
             )
             return (
-                f"Der Hinweis bezieht sich auf {category} vom {period['start']} bis {period['end']}. "
-                f"Die belegte Ausgabe liegt bei {amount} gegenüber deinem Rahmen von {limit}"
+                f"Der Hinweis bezieht sich auf {category} vom {_display_date(period['start'])} bis {_display_date(period['end'])}. "
+                f"Die erfassten Ausgaben liegen bei {amount} gegenüber deinem Rahmen von {limit}"
                 f"; die Abweichung beträgt {over}."
                 f"{count_clause} Das zeigt eine Differenz, aber nicht ihre Ursache."
             )
@@ -239,9 +256,8 @@ def answer_v4_question(
             else ""
         )
         return (
-            f"Für {category} zeigt der Monatsverlauf "
-            f"{_euro(first['amount'])} "
-            f"im {first['month']} auf {_euro(last['amount'])} im {last['month']}. "
+            f"Bei {category} sind die erfassten Ausgaben von {_euro(first['amount'])} "
+            f"im {_display_month(first['month'])} auf {_euro(last['amount'])} im {_display_month(last['month'])} gesunken."
             f"{count_clause} "
             "Das beschreibt den Verlauf; eine Ursache lässt sich daraus nicht ableiten."
         )
