@@ -1,0 +1,14 @@
+[Unit]
+Description=Clean Rov.E Web reports and archive old PDFs
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.env
+ExecStart=/usr/bin/python3 /root/clarity/rove_report_worker.py maintain
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=15min

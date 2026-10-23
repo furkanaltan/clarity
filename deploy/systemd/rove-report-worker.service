@@ -1,0 +1,16 @@
+[Unit]
+Description=Process due Rov.E App report jobs
+Wants=network-online.target
+After=network-online.target rove-app-api.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+EnvironmentFile=-/root/clarity/.env
+ExecStart=/usr/bin/python3 /root/clarity/rove_report_worker.py process
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=30min

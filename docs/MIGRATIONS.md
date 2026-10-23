@@ -1,0 +1,396 @@
+# Rov.E Migrations
+
+## Coach V4-Anzeige- und Erklaerungsgedaechtnis (22.10.2026, Block 4C)
+
+`ensure_app_coach_insight_memory_table()` legt den bestehenden
+`app_coach_insight_memory`-Speicher und die neue Tabelle
+`app_coach_insight_display_reservations` additiv und idempotent an; die
+Startup-Vorbereitung fuehrt dies vor dem API-Betrieb aus. Die Memory-Tabelle
+bleibt unveraendert; bestehende Anzeige- und Erklaerungsnachweise werden nicht
+umgeschrieben. Ihr Primaerschluessel ist `(user_id, insight_id)`;
+ein Nutzer-FK mit `ON DELETE CASCADE` bindet den Eintrag an das Konto. Fuer
+Cool-downs wird zusaetzlich der bestehende Vertrags-`dedupe_key` je Nutzer
+abgeglichen, damit eine durch neue Quelldaten geaenderte Insight-ID den
+Wiederholungs-Schutz nicht umgeht. Aeltere Tabellenversionen erhalten die
+beiden Kontextspalten additiv; vorhandene Eroeffnungsnachweise werden dabei
+uebernommen.
+
+- Gespeichert werden nur die aktuelle stabile Insight-ID, ein SHA-256 ueber
+  validierte Evidenz/Fakten/Zeitraum (ohne Snapshot- oder Tageszeit), Typ,
+  Zeitraum, ein auf 64 KiB begrenzter validierter Insight-/Vertragskontext,
+  Anzeigezeit sowie die letzte explizit geoeffnete Version.
+- Die Reservierungstabelle hat `(user_id,dedupe_key)` als Primaerschluessel,
+  speichert Token, Insight/Evidenz, Kontext und Ablaufzeit und besitzt einen
+  Nutzer-FK mit `ON DELETE CASCADE`. Sie enthaelt nur kurzlebige, noch nicht
+  bestaetigte Anzeigeversuche.
+- Ein `BEGIN IMMEDIATE`-Claim prueft V3-Prioritaet und aktuelle V4-Evidenz
+  erneut und reserviert den Dedupeschluessel nutzerbezogen fuer 60 Sekunden.
+  Die bestehende Memory-Zeile bleibt bis zur Bestaetigung unveraendert. Erst das
+  Frontend sendet nach zwei Renderframes bei sichtbarer Mentor-Kachel ein
+  Acknowledge; dieses uebernimmt den Kontext atomar in den Memory-Speicher und
+  loest die Reservierung. Gleiches Token macht Claim- und
+  Acknowledge-Wiederholungen idempotent; andere Geraete warten die kurze
+  Reservierung ab. Bei Transportabbruch ohne Anzeige verfaellt sie, ohne die
+  Dedupe-Frist zu starten. Reloads nach bestaetigter Anzeige, neue Tage und
+  Snapshot-Neuerstellung loesen keinen neuen Claim aus. Ein verschobenes
+  Datumsfenster oder interne Quellen-IDs allein gelten
+  nicht als wesentliche Aenderung. Gepruefte materielle Faktenaenderungen
+  koennen nach 7 Tagen, positive Rueckmeldungen nach 30 Tagen erneut erscheinen;
+  ein deutlich verschaerfter Budgetueberzug darf die Frist uebersteuern.
+  Weiterhin aktive Budgetwarnungen duerfen nach 30 Tagen auch bei gerolltem
+  Zeitraum und dadurch neuem Fingerprint erneut erscheinen. Die letzte
+  geoeffnete Erklaerung bleibt bis zum naechsten Oeffnen erhalten.
+- Claim- und Acknowledge-Requests erstellen kein Schema. Fehlt die Tabelle trotz Startup-
+  Vorbereitung, wird V4 fail-closed mit HTTP 503 unterdrueckt. V3, Finanzwerte,
+  Buchungen und Reportdaten werden durch diesen Speicherpfad nicht geschrieben.
+- Der persoenliche Datenexport enthaelt den nutzergebundenen Coaching-Kontext;
+  die bestehende Kontoloeschung entfernt ihn ueber FK-Cascade und Tombstone-
+  Reapply. Keine Chatnachrichten, AI-Anfragen oder Transaktions-IDs werden hier
+  gespeichert.
+- Coach V4 bleibt durch das bestehende serverseitige Gate standardmaessig
+  deaktiviert. Das Schema allein aktiviert keine Sichtbarkeit.
+
+Kein Backfill bestehender Coach-Ereignisse und keine Finanzdatenmigration.
+Der bestehende V3-Ereignisspeicher bleibt unveraendert. Vor einem Production-
+Rollout gelten die ueblichen Backup-, Integritaets-, Staging-, Gate- und
+manuellen Freigabeschritte.
+
+## Sachwerte und Onboarding-Entwuerfe (19./20.10.2026)
+
+Nachtrag fuer die bereits freigegebenen Quellen `3073a46` und `b1aa0ce`;
+dieser Dokumentationsnachtrag fuehrt keine Schemaoperation aus.
+
+- `rove_app_api.ensure_onboarding_drafts_table()` legt
+  `app_onboarding_drafts(user_id, step, draft_json, updated_at)` additiv an.
+  `user_id` ist Primaerschluessel und Nutzer-FK mit `ON DELETE CASCADE`.
+  Schritte bleiben 1 bis 9; die JSON-Struktur wird am bestehenden Endpunkt
+  validiert. `valuables` und `completionId` sind optionale Erweiterungen,
+  alte Entwuerfe werden nicht umgeschrieben.
+- `rove_valuables.ensure_valuables_schema()` legt `app_valuables` mit
+  `(user_id, position_id)` als Primaerschluessel, manuellem Namen,
+  ganzzahligem `value_cents`, Herkunft sowie Zeitstempeln an. Positions-IDs
+  sind 32-stellige Hexwerte; Werte sind per CHECK positiv und begrenzt.
+- `app_valuable_requests` besitzt `(user_id, request_id)` als Primaerschluessel
+  und speichert den Payload-Hash statt einer zweiten Position. Nutzer-FKs
+  entfernen Positionen und Quittungen beim bestehenden Account-Delete.
+- Vorbereitung ist `CREATE TABLE IF NOT EXISTS`, kein Tabellenumbau,
+  Salden-Backfill oder Import lokaler Browserdaten. Lesehelfer legen kein
+  Schema an. Bestehende Startup-/Write-Pfade bereiten es vor; Write-Aufrufer
+  halten die Transaktion und rollen bei Fehlern vollstaendig zurueck.
+- Onboarding-Abschluss schreibt Sachwerte und Abschluss atomar; Wiederholungen
+  nutzen dieselben IDs und die nutzergebundene Abschlussquittung. Kein Bezug
+  zu Kredit-/Leasingvertraegen und keine Aenderung der Vermoegenshistorie.
+
+Die Operator-Belege des Releases vom 20.10. enthalten die ausgelieferten
+Runtime-Hashes; hier wurde keine erneute Live-Schemainventur durchgefuehrt.
+Code-Rollback darf diese Tabellen und neu gespeicherte Sachwerte nicht
+loeschen oder durch eine alte Datenbank ersetzen. Frontend-Kompatibilitaet
+und fortgesetzter Zugriff auf vorhandene Sachwerte sind gesondert zu pruefen.
+
+## Mehrkonten-Quittungen und Modellmarkierung (20./21.10.2026)
+
+Nachtrag fuer `27af4c9ccaff71c60939481fcfaae2d256f1b518`.
+`rove_financial_accounts.ensure_financial_accounts_schema()` ergaenzt additiv:
+
+- `app_financial_account_requests`: `(user_id, request_id)` als Primaerschluessel,
+  Payload-Hash und resultierende Konto-ID; zusammengesetzter FK verhindert
+  eine Quittung auf ein fremdes Konto. Anlage und Quittung werden gemeinsam
+  committed. Nutzerloeschung entfernt die Quittungen.
+- `app_financial_account_migrations`: eine Zeile pro Nutzer, Quelle
+  `onboarding` oder `reconciled`, optionale Plan-/Vorher-/Nachher-Pruefsummen.
+  Die Tabelle ist eine Modellmarkierung/Quittung, keine Freigabe einer
+  automatischen Bestandsmigration. Nutzer-FK mit `ON DELETE CASCADE`.
+
+Bestehende Konten-/Rollen-/Featuretabellen bleiben erhalten. Neue Nutzer
+werden im vorhandenen Onboarding-Abschluss konsistent initialisiert; ein
+Schemaaufruf allein migriert oder aktiviert keine Bestandskonten. Der alte
+Feature-Schluessel bleibt Kompatibilitaetsspiegel, nicht allgemeine Pilotpflicht.
+Widerspruechliche Bestandswerte duerfen HTTP 409 liefern; kein stiller Ausgleich.
+
+Der Operator hat die fuenf Backend-Dateien am 21.10. hashverifiziert bereitgestellt
+und nur die API neu gestartet. Das ist kein neuer Apply-Auftrag. Vor einem
+weiteren Lauf gelten die bestehenden Backup-/Integrity-/Freigabe-Gates.
+Nach neuen kanonischen Konto-IDs/Buchungen ist Legacy-Backend-Code **kein**
+sicherer Rollback: kompatiblen Forward-Fix vorbereiten, keine Tabellenloeschung,
+Saldenkorrektur, Bestandsmigration oder automatische DB-Ruecksicherung.
+
+Gezielte bestehende Nachweise: `test_onboarding_draft.py`, `test_valuables_model.py`,
+`test_valuables_api.py`, `test_financial_accounts_final.py`. Der aktuelle
+Full-Suite-Status steht separat in `TESTING.md`, nicht als pauschaler PASS hier.
+
+## Contract cancellation finalization V3 (28.09.2026)
+
+The API-owned savepoint migration extends case/event CHECK constraints for
+`FOLLOW_UP_DUE`, `FOLLOW_UP_PREPARED`, `MANUAL_REVIEW_REQUIRED` and their audit
+events. It preserves V2 case IDs, revisions, confirmation hashes, ordered messages,
+receipt IDs, response evidence and all original timestamps. V1 migrations still
+rename `CONFIRMED` to `USER_CONFIRMED`, never to a provider confirmation.
+
+The nullable `confirmed_provider_name` captures the provider at text confirmation.
+For existing confirmed cases it is recovered only from the deterministic notice's
+explicit cancellation heading; no current contract rename is substituted as
+historical evidence. Missing proof blocks follow-up preparation and requires
+manual review. The existing V2 payload hash is not recalculated or silently
+repaired during this migration.
+
+`app_contract_cancellation_followups` stores one user-prepared, immutable text per
+owned case, linked to its original dispatch. It cascades with case/message deletion
+and participates in private export and existing deletion/tombstone lifecycle.
+There is no automatic sender, follow-up queue, public link, persisted PDF or new
+financial column. PDF generation is private, on demand and in memory.
+
+The existing daily report maintenance adds a bounded (100 changes/run) VKS reminder
+step only after the API schema exists. An accepted send without any documented
+reply becomes due after 14 days, and manual review after 28 days. These are internal
+product intervals, not legal deadlines. No reminder after a response/final state;
+late evidence is still accepted for manually reviewed cases. A contract's enddate
+only affects a server-derived display label, never cash/fixed-cost calculations.
+
+Release prerequisites: verified DB backup/integrity/FKs, V1/V2/V3 and privacy tests,
+PDF runtime availability and maintenance timer verification. Do not downgrade code
+against V3 states; keep code/DB rollback coordinated. Mail remains OFF; an exact
+internal test allowlist and separate live approval are required. See
+`docs/VKS_OPERATIONS.md`. No deployment or real mail test has been performed.
+
+## Contract cancellation send/proof V2 (28.09.2026)
+
+`ensure_cancellation_schema()` extends V1 during controlled API startup. Its
+savepoint rebuilds the case/event tables to extend their CHECK constraints,
+preserves IDs, notices, revisions and original timestamps, and renames V1
+`CONFIRMED` to `USER_CONFIRMED` (never provider confirmation). Historical events
+are marked `legacy/v1_migration`; confirmed V1 payload hashes are recorded without
+changing the notice. The migration is idempotent and rolls back on failure.
+`ensure_app_contracts_table()` adds nullable `cancellation_status`,
+`effective_end_date`, `cancellation_confirmed_at`; no financial column changes.
+
+`app_contract_cancellation_messages` owns outbound attempts and manually entered
+inbound responses, scoped by user/case with cascade deletion. Outbound notice text
+is not duplicated; the case remains its source. The case history, messages and
+contract metadata are included in private export and existing account deletion /
+restore-tombstone cleanup. No new external artifacts or public report links exist.
+Cases are retained with the owned contract until its/account deletion, not in a
+separate retention store. Inbound messages are capped at 20 per case / 6,000 chars.
+
+The send gate is OFF unless `ROVE_VKS_EMAIL_ENABLED=1`. Transport reuses
+`BREVO_API_KEY`, `ROVE_LOGIN_FROM_EMAIL` and `ROVE_LOGIN_FROM_NAME`; From must be a
+registered platform sender and Reply-To is the user's verified account email.
+Only explicitly confirmed notice text is sent. Attempts are committed before
+network I/O, at most 3 per case / 10 per user per rolling 24 hours. No automatic
+retries: timeout, 5xx, 409, malformed receipt or process exit keep resend locked.
+Only a known rejection permits a new explicit audited attempt. A crash can leave
+SENDING indefinitely: support must reconcile the provider receipt/correlation
+before any future recovery procedure, never blindly reset or resend.
+
+Brevo acceptance is SENT; only an authenticated, exactly correlated delivered
+event from its events API records delivery. No unauthenticated webhook exists.
+Without secure inbound infrastructure, the user documents the received response
+and explicitly confirms its result; source is `user_confirmed_provider_message`.
+No end date is inferred. A confirmation changes only contract metadata, not its
+amount/active fixed costs. No AI adjudication or automatic follow-up exists.
+
+Before release: consistent DB backup, integrity/FK checks, Python-3.12 V1/V2 /
+privacy gates, registered sender/Reply-To approval, provider data-retention review
+and an explicitly authorized internal end-to-end delivery test. Local tests must
+mock transport (no real emails). Deletion stops persisted queued cases; a network
+request already in flight cannot be recalled. Brevo/recipient copies are external
+mail records, not artifacts deleted by local account cleanup.
+
+Rollback: keep a verified pre-V2 DB backup. Do not run V1 against dispatched V2
+states or silently downgrade the schema; disable the send gate first and plan
+DB/code recovery together. No migration/backfill of financial data. NOT DEPLOYED.
+
+## Contract cancellation preparation V1 (28.09.2026)
+
+`rove_contract_cancellation.ensure_cancellation_schema()` adds
+`app_contract_cancellations` and `app_contract_cancellation_events` during
+controlled API startup, before requests are accepted. The schema is additive
+and idempotent; no contract or historical data is migrated. Requests fail with
+503 if preparation is missing. A partial unique index allows at most one open
+case per user/contract. Composite foreign keys enforce ownership and cascade
+on explicit contract/account deletion. Both tables carry `user_id` and use
+the existing account-delete, tombstone-reapply and private export lifecycle.
+
+Contract/provider identity stays in `app_contracts`; only user-supplied review
+information and the reviewed notice are stored in the case. The current
+contract schema has no trustworthy termination dates/contact data. No debit
+day, inferred profile name, or legacy display text is used as such evidence.
+Dates are explicitly user supplied; `next_possible` requires a conscious choice.
+Confirmation binds to the persisted revision and notice SHA-256, checks that
+the contract identity is unchanged, and records CONFIRMED then READY_TO_SEND
+atomically. No sender, queue, PDF, financial mutation or contract-status change.
+
+Before rollout: production DB backup, controlled schema preparation, integrity
+and FK checks, Python-3.12 API/privacy tests and internal review. Code rollback
+leaves the new tables intact. Production status: NOT DEPLOYED.
+
+## Personal buffer target (25.09.2026)
+
+`users.buffer_target_amount` is an optional, user-owned amount, not a goal or
+an allocation. `ensure_buffer_target_column()` runs in the existing API startup
+schema-preparation block. The nullable REAL column is additive/idempotent;
+existing users remain NULL, with no backfill and no balance changes. Positive
+targets up to the existing profile-amount limit of EUR 1,000,000 are accepted;
+an explicit JSON null removes the target. The existing `/v1/profile` write and
+`/v1/state` response carry the preference and the derived `buffer` object.
+Requests never add this column; writes fail with 503 if startup preparation
+was omitted. User export/deletion already include the owning `users` row.
+
+Before rollout: DB backup, inspect `PRAGMA table_info(users)`, apply through
+controlled API startup, then integrity/FK checks. A code rollback leaves the
+nullable column and targets intact. Production status: NOT DEPLOYED.
+
+## Property coverage boundary (12.09.2026)
+
+`app_properties.coverage_started_at` is an additive, user-scoped asset
+metadata field. New properties receive `CURRENT_TIMESTAMP` when first
+created. Existing properties without a value receive the one-time rollout
+timestamp on schema preparation; no purchase date or historical value is
+inferred. The frontend reads this server value and may cache only a mirror;
+the field does not change net-worth calculations or financial history.
+
+`app_properties.coverage_equity_at_start` is an additive snapshot of the
+property equity known when coverage began. It is set only on first creation;
+updates leave it unchanged. Existing rows receive their current stored equity
+once during schema preparation as the rollout baseline, never as a backdated
+historical value. The V2 chart uses this snapshot for post-boundary comparison;
+current equity remains the source for current net worth.
+
+## Cash request receipts (09.09.2026)
+
+`rove_app_api.cash_request_replay()` creates `app_cash_request_receipts`
+additively inside the existing `BEGIN IMMEDIATE` transaction. The primary key
+is `(user_id, request_id)`. Operation, canonical payload and original response
+are request receipts, not another balance source. Income and legacy
+transfer/adjust writes commit or roll back together with their receipt.
+No historical movements are migrated. Calls without request IDs remain
+compatible but cannot be deduplicated; the current frontend supplies IDs.
+
+
+Stand: 31.08.2026. Migrationen werden niemals allein aufgrund ihres Namens
+erneut ausgefuehrt. Der produktive Anwendungsstatus ist in diesem Repository
+nicht beweisbar und wird deshalb als `UNKNOWN` dokumentiert.
+
+| Datei | Eingefuehrt | Zweck | Idempotent | Produktion angewandt | Sicher erneut ausfuehrbar | Abhaengigkeit |
+|---|---|---|---|---|---|---|
+| `backfill_app_card_expenses.py` | 25.07.2026 | Karten-Ausgaben in Cash-Zustand nachtragen | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Scope-Pruefung | `rove_app_state.py` |
+| `migrate_financial_accounts.py` | 15.08.2026 | Finanzkonten Sprint 1 | Bedingt/UNKNOWN | UNKNOWN | Dry-run ja; Apply UNKNOWN | `rove_financial_accounts.py` |
+| `migrate_financial_account_references.py` | 15.08.2026 | Nullable Kontoreferenzen | Schema-seitig ja | UNKNOWN | Dry-run ja; Apply nur nach Preconditions | `migrate_financial_accounts.py`, `rove_financial_accounts.py` |
+| `migrate_etf_contribution_schema.py` | 20.08.2026 | `holding_id` fuer ETF-Beitraege | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `rove_investment_contributions.py` |
+| `repair_etf_contribution_assignments.py` | 20.08.2026 | Legacy-ETF-Zuordnungen reparieren | Bedingt | UNKNOWN | UNKNOWN ohne Nutzer- und Schema-Pruefung | `rove_investment_contributions.py` |
+| `prepare_multi_account_active_testers.py` | 20.08.2026 | Aktive Tester fuer Multi-Account vorbereiten | Nein/bedingt | UNKNOWN | Nein ohne Rollout-Pruefung | `migrate_financial_accounts.py`, `rove_financial_accounts.py` |
+| `migrate_report_snapshots_v2.py` | 21.08.2026 | Additive Report-Snapshot-Tabelle | Ja | UNKNOWN | Ja, aber zuerst Dry-run | `report_engine.py` |
+| `migrate_behavior_snapshot.py` | 18.09./21.10.2026 | Additive Coach-V4-Snapshot-Tabelle, Queue-Index und interner V3/V4-Shadow-Vertrag | Ja | UNKNOWN | Ja, zuerst strikt read-only Dry-run | `rove_behavior_snapshot.py` |
+| `migrate_legacy_contracts.py` | 24.08.2026 | Legacy-Fixkosten in Vertraege normalisieren | Laut Script ja | UNKNOWN | Dry-run ja; Apply nur nach Gate | `rove_app_state.py` |
+| `retire_legacy_app_state.py` | 24.08.2026 | Legacy-State sichern, widerrufen und entfernen | Inventory ja; Apply bedingt | UNKNOWN | Apply UNKNOWN | `app_state_links`, State-Verzeichnis |
+| `monthly_financial_snapshots` | 07.09.2026 | Immutable Finanzwerte fuer abgeschlossene Monatsreports | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_app_state.py`, Monatsabschluss |
+| `app_vehicle_financings` | 09.09.2026 | User-scoped Fahrzeugfinanzierungen, verknuepft mit `app_contracts` | Runtime `CREATE TABLE IF NOT EXISTS` | UNKNOWN | Ja, additiv | `rove_vehicle_financing.py`, `rove_app_api.py` |
+
+`app_cash_movements.request_id` wird durch die bestehende additive
+Schema-Vorbereitung in `rove_app_state.py` und
+`rove_financial_accounts.py` nachgeruestet. Der user-scoped Unique-Index ist
+idempotent; historische Bewegungen behalten einen leeren Wert und werden nicht
+nachtraeglich dedupliziert.
+
+### Gemeinsamer V3/V4-Insight-Shadow-Vertrag (21.10.2026)
+
+`migrate_behavior_snapshot.py` ergaenzt `app_behavior_snapshot` additiv um
+`shadow_insight_contract_json` (nullable TEXT). Die Spalte speichert hoechstens
+den bereits durch Coach V4 ausgewaehlten, coach-geeigneten Shadow-Kandidaten im
+versionierten gemeinsamen Vertrag. Sie enthaelt keine Rohbuchungs-IDs oder
+Nutzerkennung. Bestehende Snapshot-Zeilen bleiben unveraendert; bis zur
+expliziten Migration liefert die neue Shadow-Lesehilfe fail-closed keine V4-
+Kandidaten. Das API-GET legt kein Schema an.
+
+Der Snapshot-Worker schreibt den Vertrag nur nach unveraendertem Source-
+Watermark. Der Leseweg prueft Snapshot-/Engine-/Vertragsversion, Ready-/Idle-
+Status, Alter und aktuellen nutzerbezogenen Source-Watermark. Fehlende,
+veraltete, widerspruechliche oder nicht eindeutig priorisierte Evidenz wird
+nicht weitergereicht. Die V3-Mentorentscheidung bleibt der aktive Kandidat;
+V4 bleibt intern im Shadow Mode. Der gemeinsame Pfad wird nicht an das
+Frontend, Ask Rovi oder Reports ausgegeben. Die allgemeine Pilot-Flag und die
+Allowlist werden nicht aktiviert oder veraendert.
+
+Die Production-Anwendung dieser Spalte ist `UNKNOWN`; es wurde in diesem Block
+keine Production-Pruefung oder -Migration ausgefuehrt.
+
+`migrate_behavior_snapshot.py --dry-run` verwendet einen SQLite-URI mit
+`mode=ro`, setzt `query_only=ON` und sperrt nicht freigegebene SQL-Aktionen per
+Authorizer. Es liest Schema, Integritaet und Foreign Keys, erstellt weder Backup
+noch Sidecar und schreibt keine Aenderungen. Der Vorabcheck bricht absichtlich
+ab, wenn `-wal`, `-shm` oder `-journal` vorhanden ist, die DB ein WAL-Dateiformat
+verwendet oder ein gleichnamiger Queue-Index nicht exakt auf
+`(recompute_state, updated_at)` der Snapshot-Tabelle zeigt. In diesen Faellen
+nicht auf `immutable=1`, eine schreibbare Verbindung oder das Entfernen von
+Sidecars ausweichen; zuerst einen separat freigegebenen, konsistenten
+Read-only-Snapshot-Weg klaeren.
+
+`--apply` ist davon getrennt und bleibt eine schreibende, explizit
+freizugebende Migration. Vor der Transaktion muss das root-only Backup-Verzeichnis
+Modus `0700` haben; die Sicherungsdatei wird mit Modus `0600` angelegt und vor
+Schemaaenderungen auf SQLite-Integritaet und Foreign Keys geprueft. Ein ungueltig
+geschuetztes Backup-Verzeichnis oder eine ungueltige Sicherung blockiert den
+Apply-Pfad. Dieser
+wendet nur fehlende additive Elemente an; eine vorhandene, aber abweichende
+Indexdefinition ist ein Konflikt und wird nicht ersetzt. Bei Fehlern wird die
+Schema-Transaktion zurueckgerollt und das Backup behalten. Nach erfolgreicher
+Migration wird die additive nullable Spalte nicht isoliert aus der aktiven DB
+entfernt oder per Datenbank-Restore zurueckgerollt. Bei Codeproblemen gilt nur
+ein vorher kompatibilitaetsgepruefter Code-Rueckweg; andernfalls Forward-Fix.
+
+`app_auth_login_limits` wird additiv und idempotent durch `ensure_auth_tables()`
+in `rove_app_api.py` angelegt. Die Tabelle speichert ausschliesslich gehashte
+Login-Subjekte sowie temporaere Fehlerzaehler und Backoff-Zeitpunkte; keine
+E-Mail-Adressen oder Passwoerter. Ein separater Produktions-Migrationslauf ist
+nicht erforderlich.
+
+`monthly_financial_snapshots` wird beim bestaetigten Monatsabschluss additiv und
+idempotent angelegt. Pro `(user_id, report_month)` wird genau ein Snapshot in
+derselben Transaktion wie `app_month_closures` geschrieben. Es gibt bewusst
+keinen Backfill aus aktuellen Profilwerten: Fuer alte Monate ohne Snapshot
+bleiben nicht beweisbare Finanzwerte im Report nicht verfuegbar.
+
+## Ausfuehrungsregeln
+
+Consumer Debt V1: `rove_consumer_debt.ensure_consumer_debt_schema()` legt
+`app_consumer_debts` beim ersten Write additiv/idempotent an. Keine Migration
+aus `fixed_costs_details.kredite.restschuld`. Monatsraten bleiben in Vertraegen;
+die neue Tabelle speichert nur positive/Null-Restschulden, aktiv/inaktiv und Typ.
+Hypothek, Fahrzeugfinanzierung und Dispo sind keine erlaubten Typen. Bereits
+negative Cash-Konten werden ausschliesslich im Cash-Aggregat beruecksichtigt.
+Create-Requests tragen eine optionale user-scoped `request_id` mit einem
+Payload-Fingerprint. Der eindeutige Index verhindert doppelte Anlagen bei
+Responseverlust; ein abweichender Retry wird als Konflikt abgewiesen. Die
+additive `app_consumer_debt_events`-Tabelle speichert Create-, Balance-,
+Deactivate- und Delete-Zeitpunkte. Bestandszeilen erhalten hoechstens einen
+`legacy_baseline` ab `created_at`; es gibt keinen Backfill des heutigen Saldos
+auf fruehere Zeitraeume.
+
+Vehicle Financing V1: `rove_vehicle_financing.ensure_vehicle_financing_schema()`
+legt `app_vehicle_financings` additiv/idempotent an. Die Tabelle speichert nur
+user-scoped Fahrzeugmetadaten und verweist auf genau einen bestehenden
+`app_contracts`-Datensatz; die Monatsrate bleibt ausschliesslich in
+`app_contracts.amount`. Finanzierung und Leasing werden nicht als Asset,
+Eigenkapital oder Consumer Debt behandelt. Bestehende Auto-/Leasingvertraege
+werden nicht automatisch migriert; neue Datensaetze werden atomar mit ihrem
+Rate-Vertrag angelegt und bei Loeschung gemeinsam entfernt.
+
+`monthly_financial_snapshots.total_consumer_debt` wird durch die vorhandene
+Snapshot-Schemavorbereitung nullable hinzugefuegt. Neue Snapshots (Version 2)
+frieren die Summe in der bestehenden Abschluss-Transaktion ein. Alte Zeilen
+bleiben NULL und unveraendert; neu erzeugte historische Reports zeigen dann
+kein behauptetes schuldenbereinigtes Nettovermoegen. Kein Backfill, keine
+Aenderung vorhandener `report_snapshots_v2`. Allocation zeigt positive Assets,
+nicht Anteile am nach Schulden moeglicherweise negativen Nettovermoegen.
+User-Export enthaelt die Positionen; bestehende user-scoped Account-Loeschung
+erfasst die Tabelle automatisch. Produktionsstatus: UNKNOWN, nicht deployed.
+
+1. Produktionsstatus und betroffene Nutzer read-only pruefen.
+2. Datenbankbackup mit restriktiven Rechten erstellen und validieren.
+3. Wenn vorhanden, zuerst Dry-run beziehungsweise Inventory ausfuehren.
+4. Preconditions, erwartete Zeilenzahl und Idempotenz dokumentieren.
+5. Migration nur gegen den explizit gewaehlten DB-Pfad ausfuehren.
+6. Danach Integritaet, Foreign Keys und fachliche Drift-Gates pruefen.
+7. Backup- und Migrationspfad im Deployment-Protokoll festhalten.
+
+`UNKNOWN` ist eine Sperre fuer blindes Wiederholen, kein Hinweis auf einen
+Fehler im Script.

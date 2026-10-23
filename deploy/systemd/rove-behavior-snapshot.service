@@ -1,0 +1,13 @@
+[Unit]
+Description=Process one bounded Rov.E Coach V4 snapshot batch
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/root/clarity
+ExecStart=/root/rove-app-api-venv/bin/python /root/clarity/rove_behavior_snapshot.py /root/clarity/clarity.db --process-pending --limit 3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=30s

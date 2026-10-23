@@ -1,0 +1,29 @@
+[Unit]
+Description=Rov.E independent recovery freshness and timer watchdog
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/opt/rove-recovery/venv/bin/python -B /opt/rove-recovery/current/rove_recovery_operations.py watch --config /etc/rove-recovery/operations.json
+Environment=PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+Environment=GIT_OPTIONAL_LOCKS=0
+LoadCredential=TELEGRAM_TOKEN:/etc/rove-recovery/credentials/TELEGRAM_TOKEN
+LoadCredential=BREVO_API_KEY:/etc/rove-recovery/credentials/BREVO_API_KEY
+RuntimeDirectory=rove-recovery-gpg
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=60s
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/root/clarity /root/rove-recovery-control /etc/rove-recovery /opt/rove-recovery
+ReadWritePaths=/var/lib/rove-recovery /run/rove-recovery-gpg
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal

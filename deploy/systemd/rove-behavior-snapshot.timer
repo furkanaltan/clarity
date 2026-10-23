@@ -1,0 +1,11 @@
+[Unit]
+Description=Run one Rov.E Coach V4 snapshot batch every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+Persistent=true
+AccuracySec=1min
+Unit=rove-behavior-snapshot.service
+
+[Install]
+WantedBy=timers.target

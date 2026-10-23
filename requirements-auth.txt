@@ -1,0 +1,2 @@
+# Required by the password endpoints in rove_app_api.py.
+argon2-cffi==25.1.0

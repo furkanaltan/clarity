@@ -1,0 +1,6 @@
+-r base.txt
+
+# Verified on production system Python 3.12.3 on 31.08.2026.
+APScheduler==3.11.2
+openai==2.38.0
+pyTelegramBotAPI==4.33.0

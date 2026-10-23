@@ -1,0 +1,8 @@
+[Unit]
+Description=Rov.E Monthly Check Push
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/clarity
+EnvironmentFile=/root/clarity/.rove-app-api.env
+ExecStart=/root/rove-app-api-venv/bin/python /root/clarity/rove_monthly_reminders.py
