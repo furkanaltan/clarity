@@ -17,6 +17,102 @@ class CoachCardNavigationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.frontend = FRONTEND_PATH.read_text(encoding="utf-8")
 
+    def rendered_candidate(self, route="score", label="Score ansehen"):
+        renderer = self.frontend[self.frontend.index("function setMentorCtaTarget("):
+                                 self.frontend.index("let reportOpenInFlight=")]
+        candidate = {"id": "motivation", "type": "motivation", "priority": 10,
+                     "deep_link": route, "title": "Stabile Basis",
+                     "message": "Dein Score liegt bei 81/100.", "action_label": label}
+        setup = """
+const APP_MODE='bridge', body={innerHTML:''};
+const arrow={dataset:{mentorTarget:'coach'},setAttribute(name,value){this.dataset.mentorTarget=value;}};
+const mentor={dataset:{},classList:{remove(){},toggle(){}},querySelector:()=>arrow};
+const document={querySelector:()=>mentor,getElementById:()=>body};
+const announcementEscape=value=>String(value);
+""" + "\nconst DATA={mentorCandidate:" + json.dumps(candidate) + "};\n"
+        result = subprocess.run(["node", "-e", setup + renderer + """
+mentorLine();
+process.stdout.write(JSON.stringify({html:body.innerHTML,arrowTarget:arrow.dataset.mentorTarget}));
+"""], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def click_action(self, *, action=None, arrow=False, target="score", route="score"):
+        start = self.frontend.index('document.querySelector(".mentor").addEventListener("click",e=>{')
+        handler = self.frontend[start:self.frontend.index("\n// Chart-Zustand", start)]
+        routes = self.frontend[self.frontend.index("function openFeatureDeepLink("):
+                               self.frontend.index("async function openFeatureAnnouncement(")]
+        script = """
+const calls=[], listeners=[];
+const mentorCard={dataset:{mentorDeepLink:ROUTE},addEventListener:(_type,handler)=>listeners.push(handler)};
+const DATA={mentorCandidate:{id:'motivation',type:'motivation'}};
+const document={querySelector:()=>mentorCard};
+function buzz(){}
+function openTalk(){calls.push('talk');}
+function openMentorCoach(){calls.push('coach');}
+function openScore(){calls.push('score');}
+function openReports(){calls.push('reports');}
+function openMonthlyPlan(){calls.push('monthly');}
+function openWelcomeBudget(){calls.push('budget-setup');}
+function openSheet(){calls.push('quick-add');}
+function openMentorCandidate(candidate,route){return openFeatureDeepLink(route);}
+""".replace("ROUTE", json.dumps(route)) + routes + handler + """
+mentorCard.addEventListener('click',()=>openMentorCoach());
+let stopped=false;
+const event={stopImmediatePropagation(){stopped=true;},target:{closest(selector){
+  if(ARROW && selector==='[data-mentor-cta]')return {dataset:{mentorTarget:TARGET}};
+  if(ACTION && selector==='[data-mentoract]')return {dataset:{mentoract:ACTION}};
+  return null;
+}}};
+for(const listener of listeners){if(!stopped)listener(event);}
+process.stdout.write(JSON.stringify(calls));
+""".replace("ARROW", json.dumps(arrow)).replace("ACTION", json.dumps(action)).replace("TARGET", json.dumps(target))
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_score_action_is_its_own_button_and_opens_only_score(self):
+        rendered = self.rendered_candidate()
+        markup = ET.fromstring("<div>" + rendered["html"] + "</div>")
+        button = markup.find(".//button[@data-mentoract='candidate']")
+        self.assertIsNotNone(button)
+        self.assertEqual("".join(button.itertext()), "Score ansehen")
+        self.assertEqual(button.get("type"), "button")
+        self.assertEqual(self.click_action(action=button.get("data-mentoract")), ["score"])
+
+    def test_score_candidate_does_not_retarget_the_chat_arrow(self):
+        self.assertEqual(self.rendered_candidate()["arrowTarget"], "coach")
+
+    def test_arrow_always_opens_coach_once_despite_module_targets(self):
+        for target, route in (("score", "score"), ("reports", "reports"),
+                              ("budget-setup", ""), ("coach", "")):
+            with self.subTest(target=target):
+                self.assertEqual(self.click_action(arrow=True, target=target, route=route), ["coach"])
+
+    def test_explicit_module_actions_keep_their_routes_without_opening_chat(self):
+        for route, expected in (("score", "score"), ("reports", "reports"),
+                                ("monthly-checkin", "monthly")):
+            with self.subTest(route=route):
+                self.assertEqual(self.click_action(action="candidate", route=route), [expected])
+        self.assertEqual(self.click_action(action="budget-setup"), ["budget-setup"])
+        self.assertEqual(self.click_action(action="add"), ["quick-add"])
+
+    def test_background_and_unknown_action_route_remain_safe(self):
+        self.assertEqual(self.click_action(), ["coach"])
+        self.assertEqual(self.click_action(action="candidate", route="unknown-route"), [])
+
+    def test_score_message_does_not_end_with_a_separator(self):
+        markup = ET.fromstring("<div>" + self.rendered_candidate()["html"] + "</div>")
+        self.assertNotIn("\u00b7", markup.find(".//div[@class='m-note']").text)
+
+    def test_rovi_icon_is_an_explicit_keyboard_accessible_chat_button(self):
+        markup = self.frontend[self.frontend.index('<div class="mentor">'):]
+        tag = re.search(r'<button\b[^>]*class="face"[^>]*>', markup)
+        self.assertIsNotNone(tag)
+        self.assertIn('type="button"', tag.group())
+        self.assertIn('data-mentor-cta', tag.group())
+        self.assertIn('aria-label="Ask Rovi öffnen"', tag.group())
+
     def test_v4_arrow_opens_the_same_insight_context_as_the_card(self):
         start = self.frontend.index('document.querySelector(".mentor").addEventListener("click",e=>{')
         handler = self.frontend[start:self.frontend.index("\n});", start) + 4]
@@ -260,13 +356,14 @@ process.stdout.write(JSON.stringify(results));
         claim = mentor.index("claimMentorV4Insight(coachV4Insight)")
         self.assertLess(reminder, claim)
 
-    def test_arrow_is_explicit_cta_with_coach_fallback(self):
+    def test_arrow_is_explicit_coach_cta_and_text_actions_keep_module_routes(self):
         self.assertIn(
             'data-mentor-cta data-mentor-target="coach"',
             self.frontend,
         )
-        self.assertIn('if(target==="score") openScore();', self.frontend)
-        self.assertIn('else if(target==="report"||target==="reports") openReports();', self.frontend)
+        self.assertEqual(self.click_action(arrow=True, target="score"), ["coach"])
+        self.assertEqual(self.click_action(action="score"), ["score"])
+        self.assertEqual(self.click_action(action="report"), ["reports"])
         self.assertIn('else openTalk();', self.frontend)
 
     def test_score_and_report_candidates_define_targets(self):
@@ -278,10 +375,8 @@ process.stdout.write(JSON.stringify(results));
 
     def test_server_candidate_deep_link_is_not_card_navigation(self):
         self.assertIn('setMentorCtaTarget(deepLink);', self.frontend)
-        self.assertIn(
-            'if(deepLink && target!=="coach") openMentorCandidate(DATA.mentorCandidate,deepLink);',
-            self.frontend,
-        )
+        self.assertEqual(self.click_action(arrow=True, target="reports", route="reports"), ["coach"])
+        self.assertEqual(self.click_action(action="candidate", route="reports"), ["reports"])
         self.assertIn(
             'if(route) openMentorCandidate(DATA.mentorCandidate,route);\n    else openTalk();',
             self.frontend,
@@ -479,8 +574,9 @@ const announcementEscape=value=>String(value);
         result = subprocess.run([node, "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         markup = ET.fromstring("<div>" + result.stdout + "</div>")
-        action = markup.find(".//span[@class='m-nudge']")
+        action = markup.find(".//button[@data-mentoract='candidate']")
         self.assertIsNotNone(action)
+        self.assertEqual(action.get("type"), "button")
         self.assertEqual("".join(action.itertext()), "Report öffnen")
         self.assertEqual(action.get("data-mentoract"), "candidate")
 

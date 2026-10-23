@@ -738,7 +738,7 @@
   @keyframes monthlyDuePulse{0%,100%{box-shadow:0 0 0 0 rgba(42,171,238,0)}50%{box-shadow:0 0 0 5px rgba(42,171,238,.10)}}
   @keyframes mentorFeatureIn{0%{box-shadow:0 0 0 0 rgba(42,171,238,0)}45%{box-shadow:0 0 0 4px rgba(42,171,238,.09)}100%{box-shadow:0 0 0 0 rgba(42,171,238,0)}}
   @media (prefers-reduced-motion:reduce){.mentor.monthly-due,.mentor.feature-announcement{animation:none}}
-  .mentor .face{width:38px;height:38px;border-radius:12px;color:#F4F1EA;flex-shrink:0;
+  .mentor .face{width:38px;height:38px;border-radius:12px;color:#F4F1EA;flex-shrink:0;padding:0;cursor:pointer;
     display:flex;align-items:center;justify-content:center;
     background:linear-gradient(145deg,rgba(244,241,234,.26),rgba(244,241,234,.08));
     border:1px solid rgba(244,241,234,.34);
@@ -779,6 +779,7 @@
      bleibt, das ist der Klick-Anker, keine Größen-Abweichung. */
   .mentor .say .m-nudge{display:block;font-size:12.5px;line-height:1.4;color:var(--muted);font-weight:400;margin-top:3px}
   .mentor .say .m-nudge b{color:var(--blue);font-weight:700}
+  .mentor .say .mentor-action{appearance:none;background:none;border:0;padding:0;text-align:left;font-family:inherit;cursor:pointer}
   .mentor .say .mentor-budget-cta{appearance:none;background:none;border:0;padding:0;text-align:left;font:inherit;cursor:pointer}
   .mentor .mentor-talk{margin-left:auto;color:var(--blue);font-size:18px;line-height:1;opacity:.78;flex-shrink:0;appearance:none;background:transparent;border:0;padding:0;font:inherit;cursor:pointer}
   .brand-logo{height:26px;width:auto;display:block;opacity:.96}
@@ -3144,15 +3145,15 @@
     wirkte mit Datum+Titel+Mentor+Hero-Zahl gestapelt "überladen") — sitzt jetzt als kurzer
     Reflexions-Moment NACH Zahl+Chart, bevor die Vermögensaufteilung anfängt. -->
     <div class="mentor">
-      <div class="face">
+      <button class="face" type="button" data-mentor-cta aria-label="Ask Rovi öffnen">
         <svg viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.6"/>
           <rect class="eye" x="8.2" y="9.2" width="2.6" height="5" rx="1.3" fill="currentColor"/>
           <rect class="eye" x="13.2" y="9.2" width="2.6" height="5" rx="1.3" fill="currentColor"/>
         </svg>
-      </div>
+      </button>
       <div class="say" id="mentorSay"></div>
-      <button class="mentor-talk" type="button" data-mentor-cta data-mentor-target="coach" aria-label="Coach öffnen">›</button>
+      <button class="mentor-talk" type="button" data-mentor-cta data-mentor-target="coach" aria-label="Ask Rovi öffnen">›</button>
     </div>
 
     <div class="sec">
@@ -4711,7 +4712,6 @@ function setMentorCtaTarget(target){
   const mentor=document.querySelector(".mentor");
   if(!mentor) return;
   mentor.dataset.mentorTarget=safeTarget;
-  mentor.querySelector("[data-mentor-cta]")?.setAttribute("data-mentor-target",safeTarget);
 }
 function shouldWelcomeFirstBudget(){
   const days=DATA.score?.platform_days;
@@ -4753,7 +4753,7 @@ function mentorLine(){
       setMentorCtaTarget(deepLink);
     }
     el.innerHTML=`<div class="m-free" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.title)}</b></div>`+
-      `<div class="m-note">${announcementEscape(serverCandidate.message)} · <span class="m-nudge"${deepLink==="reports"?' data-mentoract="candidate"':""}><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></span></div>`;
+      `<div class="m-note">${announcementEscape(serverCandidate.message)}<button type="button" class="m-nudge mentor-action" data-mentoract="candidate"><b>${announcementEscape(serverCandidate.action_label||"Öffnen")}</b></button></div>`;
   };
   if(shouldWelcomeFirstBudget()){
     mentor?.classList.remove("monthly-due");
@@ -4783,7 +4783,7 @@ function mentorLine(){
     mentor?.classList.add("feature-announcement");
     if(mentor) mentor.dataset.featureId=coachAnnouncement.feature_id;
     el.innerHTML=`<div class="m-free" data-mentoract="feature" data-feature-id="${announcementEscape(coachAnnouncement.feature_id)}"><b>${announcementEscape(label)}</b></div>`+
-      `<div class="m-note">${announcementEscape(message)} · <b>Ausprobieren</b></div>`;
+      `<div class="m-note">${announcementEscape(message)} <b>Ausprobieren</b></div>`;
     return;
   }
   // Tag-1 / komplett leerer Zustand: ruhiger Onboarding-Impuls statt Kennzahlen
@@ -4841,7 +4841,7 @@ function mentorLine(){
   // Refresh neue Texte ausspielen.
   const daysLeft = daysUntilMonthEnd();
   const nudge = (daysLeft<=3)
-    ? ` <span class="m-nudge">${daysLeft<=1?"Morgen":`In ${daysLeft} Tagen`} kommt dein <b>Report</b>.</span>`
+    ? ` <button type="button" class="m-nudge mentor-action" data-mentoract="report">${daysLeft<=1?"Morgen":`In ${daysLeft} Tagen`} kommt dein <b>Report</b>.</button>`
     : !DATA.goals.length ? ` <span class="m-nudge">Leg dir ein <b>Ziel</b> an.</span>` : "";
   if(daysLeft<=3){
     el.innerHTML = free>0
@@ -4867,7 +4867,7 @@ function mentorLine(){
       mentor.dataset.coachV4InsightFingerprint=coachV4Insight.evidence_fingerprint;
     }
     el.innerHTML=`<div class="m-free"><b>${announcementEscape(coachV4Insight.title)}</b></div>`+
-      `<div class="m-note">${announcementEscape(coachV4Insight.message)} · <span class="m-nudge"><b>Warum?</b></span></div>`;
+      `<div class="m-note">${announcementEscape(coachV4Insight.message)}<span class="m-nudge"><b>Warum?</b></span></div>`;
     acknowledgeMentorV4AfterRender(coachV4Insight);
     return;
   }
@@ -4895,7 +4895,7 @@ function mentorLine(){
     !score.savings_confirmed && Number(score.savings_ratio||0)>=0.20;
   if(score.value!=null && score.next_lever && !savingsAwaitingClose){
     candidates.push({
-      html:`<div class="m-free">Dein Rov.E Score: <b>${score.value} von 100</b>.</div><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`,
+      html:`<button type="button" class="m-free mentor-action" data-mentoract="score">Dein Rov.E Score: <b>${score.value} von 100</b>.</button><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`,
       target:"score"
     });
   }
@@ -5112,20 +5112,13 @@ async function openMentorCandidate(candidate,route){
   return openFeatureDeepLink(route);
 }
 mentorLine();
-// Explizite Mentor-CTAs dürfen ein Zielmodul öffnen; die Kartenfläche bleibt immer beim Coach.
+// Icon und Pfeil oeffnen den Coach; Textaktionen behalten ihren eigenen Navigationsweg.
 document.querySelector(".mentor").addEventListener("click",e=>{
   const cta=e.target.closest("[data-mentor-cta]");
   if(cta){
     e.stopImmediatePropagation();
-    const mentor=document.querySelector(".mentor");
-    const target=cta.dataset.mentorTarget||"coach";
-    const deepLink=mentor?.dataset.mentorDeepLink||"";
     buzz();
-    if(deepLink && target!=="coach") openMentorCandidate(DATA.mentorCandidate,deepLink);
-    else if(target==="budget-setup") openWelcomeBudget();
-    else if(target==="score") openScore();
-    else if(target==="report"||target==="reports") openReports();
-    else openMentorCoach();
+    openMentorCoach();
     return;
   }
   const r=e.target.closest("[data-mentoract]"); if(!r) return;
@@ -5142,6 +5135,8 @@ document.querySelector(".mentor").addEventListener("click",e=>{
   else if(a==="budget-setup") openWelcomeBudget();
   else if(a==="talk") openTalk();
   else if(a==="budget") openTalk();
+  else if(a==="score") openScore();
+  else if(a==="report") openReports();
   else if(a==="monthly") openMonthlyPlan();
   else if(a==="feature") openFeatureAnnouncement(r.dataset.featureId);
   else if(a==="candidate"){

@@ -272,6 +272,89 @@ starten; Timerkonfiguration und Bot bleiben unveraendert. Nach lokalem PASS
 sind frischer Production-Hashvergleich, persoenlicher Push, manueller Deploy
 und Betreiberabnahme eigenstaendige Gates.
 
+## Mentorleiste: Score- und Chat-Navigation, 23.10.2026
+
+Basis: `80b6c7e1d884e3a7f527c0d44aaf08ecf3e114f5`, Branch
+`codex/mentor-score-navigation`. Runtime-Scope nur `frontend/index.html`.
+Der serverseitige Aktionslabel erhielt zuvor ausschliesslich fuer Reports
+`data-mentoract="candidate"`. Der Score-Link fiel deshalb zum Karten-Listener
+durch und oeffnete den Chat. Gleichzeitig schrieb `setMentorCtaTarget` den
+Pfeil auf das aktuelle Modulziel um. Der eingefuegte Trennpunkt blieb wegen
+der blockweisen Darstellung des nachfolgenden Labels am Satzende stehen.
+
+Die Textaktion ist nun ein eigener Button mit bestehendem Deep-Link-Pfad.
+Rovi-Icon und Pfeil verwenden ausschliesslich `openMentorCoach`; der vorhandene
+V4-Kontext, ACK und Opened-Pfad bleiben erhalten. `stopImmediatePropagation`
+verhindert einen zweiten Aufruf durch den Karten-Listener. Auch die bisherigen
+lokalen Score-/Monatsende-Reportziele bleiben ueber Textaktionen erreichbar.
+Die Budgeteinrichtung bleibt am eigenen Textbutton. Ueberfluessige Trennpunkte
+werden nur aus den Mentor-Templates entfernt. Keine Auswahl-, Finanz-, Score-
+oder Evidenzlogik geaendert.
+
+Sieben neue Regressionen reproduzierten vor dem Fix sieben Fehlschlaege
+einschliesslich der Pfeil-Unterfaelle. Bestehende Erwartungen an einen zum
+Modul navigierenden Pfeil wurden durch die ausdruecklich freigegebene Trennung
+ersetzt: Text oeffnet das Modul, Pfeil den Chat. Report-Monatszuordnung,
+Monatscheck, Budgeteinrichtung, Quick-Add und V4-Kontext bleiben geprueft.
+Gezielte Python-/Node-Regressionen: **155/155 PASS**.
+
+`test_ask_rovi_browser.cjs` ergaenzt echte Klick-, Touch- und Tastaturtests fuer
+Score-Button, Icon, Pfeil und Kartenhintergrund. Geprueft werden genau ein
+Zielaufruf, nicht ueberlappende Klickflaechen, sauberer Text und der bestehende
+Reportdetail-/Archiv-Rueckweg. Desktop, 390 px und Standalone-iPhone-PWA laufen
+gegen eine ausschliesslich lokale synthetische API. Die vorhandenen Chat-
+Retry-/Wallet- und fuenf V4-Muster-Smokes bleiben erhalten. Das ersetzt keine
+physische iPhone- oder Production-Abnahme.
+
+Protokolle, Screenshots und Quellpruefsummen liegen ausserhalb des Quellbaums
+unter `/Users/furkanaltan/Documents/Codex/rove-mentor-navigation-20261023/`.
+Chromium und WebKit: **je 16/16 Browser-Flows PASS**, einschliesslich der drei
+neuen Navigationsprofile. Chromium: Google Chrome 156.0.8078.47 mit Playwright
+1.62.1; WebKit ueber die vorhandene macOS-kompatible Playwright-1.49.1-Runtime.
+Die beiden Mentor-Screenshots fuer Desktop und 390-px-PWA wurden visuell
+geprueft. Bestehende Tests bleiben erhalten; zwei alte Pfeil-Zielerwartungen
+werden entsprechend dem neuen Auftrag als getrennte Text-/Chat-Aktionen
+getestet. Die neue Browserpruefung beruecksichtigt den bereits vorhandenen
+Rueckweg vom Reportdetail ueber das Archiv, statt diesen als Fehler zu werten.
+
+Probe-Build mit `scripts/build_frontend_release.py --allow-dirty` besteht.
+Dieser Preview traegt die Basis-ID und darf nicht deployed werden. Der finale
+Build wird nach dem Commit ohne `--allow-dirty` erstellt. Die bekannte
+Production-Frontend-Basis `frontend-6573904` reproduziert sich aus der
+Quellbasis exakt zu
+`d6d3f2c5083a3daee89602f6a7ba25572646c8e7db59aaab9424300dffc41872`.
+Erster Full-Suite-Lauf: 2.203 Tests in 550,710 Sekunden, ein Failure im
+unveraenderten WSGI-Zwei-Worker-Test
+`test_ai_rate_limit_is_shared_across_workers_and_survives_restart`. Dessen
+Starthelfer wartet auf den ersten erfolgreichen Healthcheck. Alle 48 kurzen
+PID-Proben trafen diesmal denselben Worker; der Test brach vor seiner
+Zwei-Worker-Limitpruefung ab. API, WSGI-Konfiguration und dieser Test sind
+gegenueber der Basis unveraendert. Derselbe Test besteht isoliert ohne
+Code-/Testaenderung in 5,869 Sekunden, einschliesslich beider Worker und
+persistiertem Limit nach Neustart (`wsgi-recheck.log`). Der rote Erstlauf
+bleibt als `full-suite.log` erhalten und zaehlt nicht als bestandenes Gate.
+Der unveraenderte vollstaendige Wiederholungslauf besteht:
+**2.203/2.203 PASS** in 491,180 Sekunden, 0 Failures, 0 Errors, 0 Skips.
+`full-suite-recheck.log` ist der abschliessende Gate-Nachweis; SHA256:
+`6f034cefc1f155bcc9a32c06dc646cd439e6259c0c4bfc4ef778600ab5cc83e6`.
+Runtime Python 3.12.14 und GnuPG 2.4.4. Aufruf im kanonischen Checkout:
+
+```bash
+env -u PYTHONPATH -u ROVE_EXTRA_PYTHONPATH \
+  PATH=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/gpg/bin:$PATH LC_ALL=C \
+  ROVE_PYTHON=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/venv/bin/python \
+  PYTHONPYCACHEPREFIX=/private/tmp/rove-mentor-navigation-pycache \
+  bash scripts/test.sh full
+```
+
+Alle vier Frontend-/Testquellen blieben gemaess `tested-source.sha256` seit
+den Browser- und Full-Suite-Laeufen unveraendert. Inline-JavaScript-Syntax
+und `git diff --check` bestehen. Die vorhandene instabile Worker-Startprobe
+bleibt als Restrisiko der Testsuite dokumentiert; sie wurde nicht repariert,
+abgeschwaecht oder uebersprungen.
+Keine Backend-, ENV- oder Datenbankaenderung im Produkt;
+kein Push, Deployment oder Production-Zugriff.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur

@@ -28,7 +28,7 @@ const assert=require('node:assert/strict');
 const elements=new Map();
 function element(){return {innerHTML:'',textContent:'',hidden:false,disabled:false,dataset:{},style:{},
   classList:{add(){},remove(){},toggle(){}},setAttribute(){},append(){}};}
-const mentor=element(), arrow={setAttribute:(name,value)=>{arrow[name]=value;}};
+const mentor=element(), arrow={'data-mentor-target':'coach',setAttribute:(name,value)=>{arrow[name]=value;}};
 mentor.querySelector=()=>arrow;
 mentor.addEventListener=(_type,handler)=>{mentor.clickHandler=handler;};
 const events=[];
@@ -123,7 +123,7 @@ assert.ok(html.includes('Willkommen bei Rov.E!'));
 assert.ok(html.includes('Dein Finanzüberblick beginnt hier. Richte jetzt dein erstes Budget ein und behalte deine Ausgaben im Blick.'));
 assert.ok(html.includes('Budget einrichten'));
 assert.ok(!html.includes('Notgroschen'));
-assert.equal(arrow['data-mentor-target'],'budget-setup');
+assert.equal(arrow['data-mentor-target'],'coach');
 """, MENTOR)
 
     def test_budget_setup_restores_normal_coach_and_stays_normal_after_deletion(self):
@@ -159,16 +159,17 @@ free=1000;DATA.txHistory={'2026-09':[{items:[{a:-10}]}]};assert.equal(shouldWelc
 DATA.txHistory={};DATA.reports=[{status:'ready'}];assert.equal(shouldWelcomeFirstBudget(),false);
 """, MENTOR)
 
-    def test_welcome_text_and_arrow_use_existing_budget_navigation(self):
+    def test_welcome_text_keeps_budget_navigation_and_arrow_opens_coach(self):
         handler = section('document.querySelector(".mentor").addEventListener("click",e=>{', '// Chart-Zustand')
         self.run_js("""
 mentorLine();
 const event=target=>({target,stopImmediatePropagation(){}});
+function openMentorCoach(){events.push('coach');}
 mentor.clickHandler(event({closest:selector=>selector==='[data-mentoract]'?{dataset:{mentoract:'budget-setup'}}:null}));
 assert.deepEqual(events,['tx','budget-tab']);
 events.length=0;
 mentor.clickHandler(event({closest:selector=>selector==='[data-mentor-cta]'?{dataset:{mentorTarget:'budget-setup'}}:null}));
-assert.deepEqual(events,['tx','budget-tab']);
+assert.deepEqual(events,['coach']);
 """, MENTOR + handler)
 
     def budget_script(self, budgets, body, offset=0):

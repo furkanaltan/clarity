@@ -169,7 +169,7 @@ async function flow(browser, label, viewport, standalone = false) {
     await page.getByText(nextV3Candidate.title, { exact: true }).waitFor();
     if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
 
-    await page.locator('#tab-home .mentor').click();
+    await page.locator('#tab-home .mentor .mentor-talk').click();
     await page.locator('#talksheet.on').waitFor();
     const input = page.locator('#talkIn');
     await input.focus();
@@ -258,6 +258,102 @@ async function flow(browser, label, viewport, standalone = false) {
       await page.screenshot({ path: path.join(output, label + '-desktop.png') });
     }
     console.log(label.toUpperCase() + '_WALLET_ERROR_RETRY_DEDUP_LAYOUT=PASS');
+  } finally {
+    await context.close();
+  }
+}
+
+async function mentorNavigationFlow(browser, label, viewport, standalone = false) {
+  reset();
+  nextV3Candidate = scoreFallback();
+  const mobile = viewport.width === 390;
+  const context = await browser.newContext({ viewport, serviceWorkers: 'block',
+    ...(mobile ? { isMobile: true, hasTouch: true, userAgent: devices['iPhone 13'].userAgent } : {}) });
+  if (standalone) await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'standalone', { get: () => true, configurable: true });
+  });
+  await context.route('**/*', route => new URL(route.request().url()).origin === origin
+    ? route.continue() : route.abort('blockedbyclient'));
+  const page = await context.newPage(), errors = [];
+  page.setDefaultTimeout(10000);
+  page.on('pageerror', error => errors.push(error.message));
+  const activate = locator => mobile ? locator.tap() : locator.click();
+  try {
+    await page.goto(origin + '/app/');
+    await page.locator('#app:not([hidden])').waitFor();
+    await page.locator('#splash').waitFor({ state: 'detached' });
+    const mentor = page.locator('#tab-home .mentor');
+    const scoreAction = mentor.getByRole('button', { name: 'Score ansehen', exact: true });
+    await scoreAction.waitFor();
+    if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
+    await page.evaluate(() => {
+      window.__mentorNavigation = { score: 0, chat: 0 };
+      const score = openScore, coach = openMentorCoach;
+      openScore = (...args) => { window.__mentorNavigation.score++; return score(...args); };
+      openMentorCoach = (...args) => { window.__mentorNavigation.chat++; return coach(...args); };
+    });
+    assert.equal((await mentor.innerText()).includes('\u00b7'), false);
+    const face = mentor.locator('button.face'), arrow = mentor.locator('.mentor-talk');
+    assert.equal(await face.getAttribute('aria-label'), 'Ask Rovi öffnen');
+    for (const control of [face, arrow, scoreAction]) {
+      assert.equal(await control.getAttribute('type'), 'button');
+    }
+    const [faceBox, scoreBox, arrowBox] = await Promise.all([
+      face.boundingBox(), scoreAction.boundingBox(), arrow.boundingBox(),
+    ]);
+    assert.ok(faceBox && scoreBox && arrowBox);
+    assert.ok(faceBox.x + faceBox.width <= scoreBox.x, 'icon and score must not overlap');
+    assert.ok(scoreBox.x + scoreBox.width <= arrowBox.x, 'score and arrow must not overlap');
+    await mentor.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(output, label + '-mentor-score-actions.png') });
+
+    await activate(scoreAction);
+    await page.locator('#scoresheet.on').waitFor();
+    assert.equal(await page.locator('#talksheet.on').count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 1, chat: 0 });
+    await page.evaluate(() => closeSheet());
+    for (const [index, control] of [arrow, face].entries()) {
+      await activate(control);
+      await page.locator('#talksheet.on').waitFor();
+      assert.equal(await page.locator('#scoresheet.on').count(), 0);
+      assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 1, chat: index + 1 });
+      await page.evaluate(() => closeSheet());
+    }
+    const cardBox = await mentor.boundingBox();
+    await mentor.click({ position: { x: cardBox.width / 2, y: 5 } });
+    await page.locator('#talksheet.on').waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 1, chat: 3 });
+    await page.evaluate(() => closeSheet());
+    await scoreAction.focus();
+    await scoreAction.press('Enter');
+    await page.locator('#scoresheet.on').waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 2, chat: 3 });
+    await page.evaluate(() => closeSheet());
+    await face.focus();
+    await face.press('Space');
+    await page.locator('#talksheet.on').waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 2, chat: 4 });
+    await page.evaluate(() => closeSheet());
+
+    await page.evaluate(() => {
+      DATA.mentorCandidate = { id: 'report:2026-09', type: 'report', deep_link: 'reports',
+        title: 'Dein Monatsreport ist bereit', message: 'September 2026', action_label: 'Report öffnen' };
+      DATA.reports = [{ month: '2026-09', m: 'September 2026', status: 'running' }];
+      mentorLine();
+    });
+    await activate(mentor.getByRole('button', { name: 'Report öffnen', exact: true }));
+    await page.locator('#repdetailsheet.on').waitFor();
+    assert.equal(await page.locator('#talksheet.on').count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 2, chat: 4 });
+    await page.evaluate(() => closeSheet());
+    await page.locator('#repsheet.on').waitFor();
+    await page.evaluate(() => closeSheet());
+    await page.locator('#sheetBg.on').waitFor({ state: 'hidden' });
+    await activate(arrow);
+    await page.locator('#talksheet.on').waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 2, chat: 5 });
+    assert.deepEqual(errors, []);
+    console.log(label.toUpperCase() + '_MENTOR_SCORE_CHAT_REPORT_NAVIGATION=PASS');
   } finally {
     await context.close();
   }
@@ -378,7 +474,7 @@ async function mentorInsightFlow(browser, label, viewport, standalone = false, s
     await page.getByText(scenario.title, { exact: true }).waitFor();
     assert.equal(await mentor.getAttribute('data-coach-v4-insight-id'), nextCoachV4Insight.insight_id);
     if (standalone) assert.equal(await page.locator('html.is-standalone').count(), 1);
-    if (standalone || !mobile) await mentor.locator('[data-mentor-cta]').click();
+    if (standalone || !mobile) await mentor.locator('.mentor-talk').click();
     else await mentor.click();
     await page.locator('#talksheet.on').waitFor();
     await page.getByText(/Du hast den Hinweis/, { exact: false }).waitFor();
@@ -431,6 +527,9 @@ async function main() {
   try {
     const engine = process.env.ROVE_BROWSER_ENGINE === 'webkit' ? webkit : chromium;
     browser = await engine.launch({ headless: true, executablePath: process.env.ROVE_BROWSER_BIN || undefined });
+    await mentorNavigationFlow(browser, 'desktop', { width: 1280, height: 900 });
+    await mentorNavigationFlow(browser, 'mobile-390', { width: 390, height: 844 });
+    await mentorNavigationFlow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
     await flow(browser, 'desktop', { width: 1280, height: 900 });
     await flow(browser, 'mobile-390', { width: 390, height: 844 });
     await flow(browser, 'iphone-pwa-390', { width: 390, height: 844 }, true);
