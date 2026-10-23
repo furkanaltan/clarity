@@ -62,6 +62,7 @@ from rove_contract_cancellation import (
 from rove_contract_cancellation_mail import CancellationTransportError, send_cancellation_email, fetch_cancellation_delivery
 from rove_behavior_patterns import build_shadow_inspector
 from rove_behavior_snapshot import (
+    behavior_snapshot_refresh_reason,
     delete_behavior_snapshot,
     get_behavior_snapshot_metrics,
     get_shadow_insight_contracts,
@@ -4187,6 +4188,10 @@ def current_app_state():
             conn.execute("SAVEPOINT state_read")
         state = build_live_app_data(conn, user_id, activate_due_savings=refresh)
         try:
+            if refresh:
+                refresh_reason = behavior_snapshot_refresh_reason(conn, user_id)
+                if refresh_reason:
+                    invalidate_behavior_snapshot_safely(conn, user_id, refresh_reason)
             v4_shadow_candidates, shadow_snapshot_status = get_shadow_insight_contracts(
                 conn, user_id
             )

@@ -510,6 +510,48 @@ def get_behavior_snapshot_status(
     return result
 
 
+def behavior_snapshot_refresh_reason(
+    conn: sqlite3.Connection, user_id: int, now: datetime | None = None
+) -> str | None:
+    """Inspect one user's metadata; callers may queue it in an existing write transaction."""
+    if not _table_exists(conn, SNAPSHOT_TABLE):
+        return None
+    row = conn.execute(
+        f"""SELECT status, recompute_state, snapshot_version, engine_version,
+                   behavior_contract_version, generated_at, source_watermark
+              FROM {SNAPSHOT_TABLE} WHERE user_id=?""",
+        (int(user_id),),
+    ).fetchone()
+    if not row:
+        return "snapshot_missing"
+    if row[1] in {SNAPSHOT_RECOMPUTE_PENDING, SNAPSHOT_RECOMPUTE_RUNNING}:
+        return None
+    # Failed jobs need their own diagnosis, not an unbounded retry on every app refresh.
+    if row[0] == SNAPSHOT_STATUS_ERROR:
+        return None
+    if row[0] != SNAPSHOT_STATUS_READY:
+        return "snapshot_stale"
+    if (row[2], row[3], row[4]) != (
+        SNAPSHOT_VERSION, BEHAVIOR_ENGINE_VERSION, BEHAVIOR_CONTRACT_VERSION
+    ):
+        return "snapshot_version_mismatch"
+    try:
+        generated = datetime.fromisoformat(str(row[5]))
+        current = now or datetime.now(timezone.utc)
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age = (current - generated).total_seconds()
+    except (TypeError, ValueError):
+        return "snapshot_stale"
+    if age < -60 or age > SNAPSHOT_MAX_AGE_SECONDS:
+        return "snapshot_stale"
+    if str(row[6] or "") != compute_behavior_source_watermark(conn, int(user_id)):
+        return "source_watermark_mismatch"
+    return None
+
+
 def get_visible_behavior_snapshot(
     conn: sqlite3.Connection, user_id: int, now: datetime | None = None
 ) -> dict[str, Any] | None:

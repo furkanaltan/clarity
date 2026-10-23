@@ -4763,7 +4763,7 @@ function mentorLine(){
       '<button type="button" class="m-nudge mentor-budget-cta" data-mentoract="budget-setup"><b>Budget einrichten</b></button>';
     return;
   }
-  if(serverCandidate && (!scoreFallback || !DATA.coachV4Insight?.insight_id)){
+  if(serverCandidate && !scoreFallback){
     renderServerCandidate();
     return;
   }

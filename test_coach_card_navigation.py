@@ -29,7 +29,11 @@ const arrow={dataset:{mentorTarget:'coach'},setAttribute(name,value){this.datase
 const mentor={dataset:{},classList:{remove(){},toggle(){}},querySelector:()=>arrow};
 const document={querySelector:()=>mentor,getElementById:()=>body};
 const announcementEscape=value=>String(value);
-""" + "\nconst DATA={mentorCandidate:" + json.dumps(candidate) + "};\n"
+function mentorDataReady(){return false;}
+function freeBudget(){return 100;}
+function daysUntilMonthEnd(){return 10;}
+function mentorIncomeReminderDue(){return false;}
+""" + "\nconst DATA={goals:[{}],assets:[{}],budgets:[],mentorCandidate:" + json.dumps(candidate) + "};\n"
         result = subprocess.run(["node", "-e", setup + renderer + """
 mentorLine();
 process.stdout.write(JSON.stringify({html:body.innerHTML,arrowTarget:arrow.dataset.mentorTarget}));

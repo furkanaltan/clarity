@@ -6,6 +6,39 @@ Das Inventar mit 26 Dateien und 281 Tests weiter unten ist die historische
 Baseline vom 31.08.2026, nicht die heutige Suite. Die Tests bleiben im
 Repository-Root, weil Imports, Discovery und Frontendpfade darauf abgestimmt sind.
 
+## Mentor-Snapshot-Aktualitaet, 23.10.2026
+
+Basis `fe2393f`, Arbeitsbranch `codex/mentor-snapshot-refresh`. Ein isolierter
+Vorher-Nachweis bestaetigt: TTL- oder Quellenabweichung bei `ready/idle`
+liefert keinen Worker-Auftrag. `test_mentor_snapshot_refresh.py` verwendet
+synthetische Datenbanken, echte Cookie-Authentifizierung und den bestehenden
+State-Endpunkt. Elf neue Regressionen pruefen die einmalige nutzerbezogene
+Einplanung, alte nicht invalidierte Profilwerte, unveraenderte No-Candidate-
+Snapshots, Pending/Running, Read-only-GET, fehlende Tabellen/Zeilen, falsche
+Versionen/Zeiten, Rollback sowie Worker -> bestehender V4-Vertrag -> API vor
+dem Score-Fallback. OFF bleibt gesperrt; keine Engine-Ausfuehrung im Request.
+Eine weitere Renderingregression belegt den vorzeitigen Score-Return vor
+aktiven Kategoriehinweisen und Monatsaktionen. Die bestehenden
+Navigationsassertions bleiben erhalten; die Score-Testprofile enthalten nun
+den vollstaendigen ruhigen Bestandsnutzerzustand fuer den nachrangigen Render.
+Die erweiterten gezielten Coach-/Profil-/Snapshot-/Navigationsregressionen
+bestehen mit **259/259 PASS**. Kein Production-Zugriff; der einzige Frontend-
+Runtime-Diff ist die Bedingung des vorzeitigen Returns, kein Klickhandler.
+Chromium und WebKit: jeweils **16/16 Browser-Flows PASS** fuer Desktop,
+390 px und iPhone-PWA-Emulation, einschliesslich Kategoriehinweis ohne V4,
+Ablauf der bestehenden Hinweisfrist und unveraenderter Score-/Chat-Navigation.
+Der Frontend-Build-Check und die Syntaxpruefung aller vier Inline-Skripte
+bestehen; der `--allow-dirty`-Vorabbuild ist kein Deploy-Artefakt.
+Protokolle: `/Users/furkanaltan/Documents/Codex/rove-mentor-snapshot-refresh-20261023/`.
+Ein begonnener Gesamtlauf wurde vor dem zusaetzlichen Frontend-Fix abgebrochen
+und bleibt als `full-suite-interrupted.log` erhalten, nicht als Gate gewertet.
+Abschliessender Pflichtlauf: **2.215/2.215 PASS** in 531,810 Sekunden,
+0 Failures, 0 Errors, 0 Skips. Python 3.12.14, GnuPG 2.4.4,
+`bash scripts/test.sh full`, Protokoll `full-suite-final.log`, SHA256:
+`c4e5e78fcf10380dbe067a548e53ca2b2b3b37e36c3ab3d4cb97f6dc04fa6cfb`.
+`tested-source-final.sha256` bindet alle sieben Runtime-/Testquellen; nach dem
+Gesamtlauf unveraendert verifiziert. Keine bestehende Assertion abgeschwaecht.
+
 ## Zentraler Einstieg
 
 ```bash

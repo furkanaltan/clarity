@@ -194,3 +194,61 @@ Protokolle und Screenshots liegen ausserhalb des Quellbaums unter
 `/Users/furkanaltan/Documents/Codex/rove-mentor-priority-20261022/`.
 SHA256 von `full-suite.log`:
 `36003b23fdc16f66b90aec9da1876bca62b1a9592818453f555f609a94ac0740`.
+
+## Snapshot-Aktualitaet und dauerhafter Score-Fallback, 23.10.2026
+
+Basis: `fe2393fd88873b78f51b10b33e04e1aa456e9aa6`. Der gemeinsame Backend-
+Pfad bevorzugt konkrete V3-Aktionen, danach den validierten V4-Hinweis und
+erst danach `motivation` mit Prioritaet 10. Eine einzelne Kategorieueberschreitung
+im Chat ist kein Beweis fuer V4-Coach-Eignung: unter anderem koennen
+`healthy_overall_budget`, `essential_spending`, `single_outlier` und
+`low_financial_relevance` die Ausgabe absichtlich ausschliessen.
+
+Reproduzierter Auswahlfehler: Ohne V4-DTO renderte `mentorLine()` den
+Score sofort und uebersprang vorhandene Monatsaktionen, den negativen freien
+Monatsrahmen und aktive Kategorie-Budgethinweise. Der fruehe Return gilt nun
+nur noch fuer konkrete V3-Kandidaten. Die bestehende nachrangige Score-
+Darstellung bleibt erhalten, wenn kein wichtigerer Hinweis vorliegt.
+Keine neue Budgetberechnung oder Warnung: Die vorhandenen zwei Tage fuer
+Kategoriehinweise und alle bisherigen Evidenzregeln gelten unveraendert.
+Die Score-/Chat-/Report-Klickhandler und ihre Ziele wurden nicht veraendert.
+
+Synthetisch nachgewiesener Laufzeitfehler: Ein abgelaufener Snapshot bleibt
+`ready/idle`, obwohl der Lese-Gate ihn nach 24 Stunden verwirft. Der bestehende
+Worker verarbeitet ausschliesslich `pending`. Auch eine frueher ohne
+Invalidierung veraenderte Quelle bleibt ohne Folgeauftrag. Der Profilfix
+`80b6c7e` repariert nur neue Profil-Schreibvorgaenge, nicht solche Altzustaende.
+
+Der normale authentifizierte `POST /v1/state` prueft jetzt nur den Snapshot
+dieses Nutzers und plant fehlende, abgelaufene, versionsfremde oder nicht mehr
+quellgleiche Ergebnisse ueber den bestehenden Invalidierungshelfer ein.
+Die Einplanung liegt in derselben Transaktion; bei Fehlern wird sie mit
+zurueckgerollt. Frische Ergebnisse ohne Kandidaten und bereits wartende/laufende
+Jobs werden nicht erneut invalidiert. Fehlerhafte Worker-Ergebnisse loesen
+keine endlose automatische Wiederholung aus. `GET` bleibt schreibgeschuetzt.
+Keine synchrone Engine-Ausfuehrung, kein pauschaler Neuaufbau, keine Migration.
+
+Die bestehende Queue muss anschliessend vom Timer verarbeitet werden; der
+naechste regulaere State-Abruf kann erst dann das neue Ergebnis liefern.
+Das bestehende Limit von drei Nutzern je Fuenf-Minuten-Timerlauf bleibt
+unveraendert; diese Korrektur ist kein Kapazitaetsnachweis fuer 10.000 Nutzer.
+Ohne ausreichend belegten Kandidaten bleibt der Score-Fallback zulaessig.
+Der Snapshot speichert weiterhin nur den global ausgewaehlten V4-Hinweis;
+Dedupe erzeugt weder einen Ersatzhinweis noch eine kuenstliche Rotation.
+Als separate Produktverbesserung waere ein sachlicher, nicht wechselnder
+Ruhezustand statt derselben Score-Botschaft sinnvoll; hier nicht implementiert.
+
+Kein neuer Production-Kontobefund: Die fruehere Betreiberdiagnose hatte keinen
+V4-Hauptkandidaten und gleichzeitig eine Quellenabweichung. Der aktuelle
+Kontozustand wurde in diesem Auftrag nicht erneut gelesen. Der lokal bewiesene
+Fehler ist deshalb nicht mit einem aktuellen Nachweis fuer diesen Nutzer
+gleichzusetzen. Navigation, Backend-Priorisierung, Detektoren, Finanzformeln,
+Gate, Dedupe und Display-ACK bleiben unveraendert.
+
+Gezielte Regressionen: 259 PASS. Chromium und WebKit bestehen jeweils alle
+16 Browser-Flows fuer Desktop, 390 px und Standalone-iPhone-PWA-Emulation.
+Die Erweiterung prueft insbesondere einen aktiven Kategoriehinweis ohne V4
+sowie dessen bestehendes Ablaufverhalten. Score, Icon, Pfeil, Reports, die
+fuenf V4-Muster, Kontext, Retry und Dedupe bleiben abgedeckt. Keine physische
+iPhone- oder Production-Abnahme. Der finale Full-Suite-Gate steht in
+`docs/TESTING.md`.

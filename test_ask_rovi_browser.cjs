@@ -8,7 +8,7 @@ const { chromium, webkit, devices } = require('playwright');
 
 const source = process.env.ROVE_FRONTEND_PATH || path.join(__dirname, 'frontend', 'index.html');
 const output = process.env.ROVE_ASK_ROVI_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'rove-ask-rovi-'));
-let origin, requests, nextOutcome, nextCoachV4Insight, nextV3Candidate;
+let origin, requests, nextOutcome, nextCoachV4Insight, nextV3Candidate, nextCategoryAlert;
 let coachReservations, shownCoachInsights;
 
 function reset() {
@@ -16,6 +16,7 @@ function reset() {
   nextOutcome = '';
   nextCoachV4Insight = null;
   nextV3Candidate = null;
+  nextCategoryAlert = false;
   coachReservations = new Map();
   shownCoachInsights = new Set();
 }
@@ -51,9 +52,13 @@ function state() {
     mentor_candidate: nextV3Candidate,
     coach_v4_insight: nextCoachV4Insight,
   };
-  if (nextCoachV4Insight) {
+  if (nextCoachV4Insight || nextV3Candidate?.id === 'motivation') {
     result.tx = [{ d: 'Heute', items: [{ a: -4.5, n: 'Café', cat: 'Essen', classification: 'consumption' }] }];
     result.budgets = [{ cat: 'Essen', limit: 500, source: 'bot' }];
+  }
+  if (nextCategoryAlert) {
+    result.budgets = [{ cat: 'Mobilität', limit: 100, source: 'bot' }];
+    result.tx = [{ d: 'Heute', items: [{ a: -126, cat: 'Mobilität', classification: 'consumption' }] }];
   }
   return result;
 }
@@ -352,6 +357,22 @@ async function mentorNavigationFlow(browser, label, viewport, standalone = false
     await activate(arrow);
     await page.locator('#talksheet.on').waitFor();
     assert.deepEqual(await page.evaluate(() => window.__mentorNavigation), { score: 2, chat: 5 });
+    await page.evaluate(() => closeSheet());
+    nextV3Candidate = scoreFallback();
+    nextCategoryAlert = true;
+    await page.evaluate(async () => {
+      await refreshAppDataFromServer();
+      mentorLine();
+    });
+    assert.match(await mentor.innerText(), /Mobilität.*26,00.*über Plan/s);
+    assert.equal(await scoreAction.count(), 0, 'active category alert must precede score without V4');
+    await page.evaluate(() => {
+      const records = JSON.parse(localStorage.getItem(mentorBudgetAlertKey()));
+      records['over:Mobilität'].firstSeen = Date.now() - 3 * 86400000;
+      localStorage.setItem(mentorBudgetAlertKey(), JSON.stringify(records));
+      mentorLine();
+    });
+    await scoreAction.waitFor();
     assert.deepEqual(errors, []);
     console.log(label.toUpperCase() + '_MENTOR_SCORE_CHAT_REPORT_NAVIGATION=PASS');
   } finally {
