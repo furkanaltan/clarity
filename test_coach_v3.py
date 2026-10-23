@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
+from rove_app_state import _monthly_budget_truth
 from rove_app_state import (
     build_mentor_candidate,
     build_mentor_events,
@@ -86,6 +88,77 @@ class CoachV3EventTests(unittest.TestCase):
         )[0]
         self.assertEqual(worsened["event_id"], first["event_id"])
         self.assertTrue(worsened["is_new"])
+
+    def test_category_plan_overrun_is_reported_from_canonical_consumption(self):
+        with patch("rove_app_state._build_budgets", return_value=[
+            {"cat": "Mobilität", "limit": 200},
+            {"cat": "Lebensmittel", "limit": 500},
+        ]), patch("rove_expense_domain.classified_expenses", return_value=[
+            {"category": "Mobilität", "classification": "consumption", "amount": 226},
+            {"category": "Lebensmittel", "classification": "consumption", "amount": 300},
+            {"category": "Mobilität", "classification": "refund", "amount": 50},
+            {"category": "Sonstiges", "classification": "consumption", "amount": 900},
+        ]):
+            truth = _monthly_budget_truth(
+                self.conn, 1, income=3000, fixed_costs=1000, savings=0,
+                month_key="2026-09",
+            )
+
+        self.assertEqual(truth["category_overruns"], [{
+            "category": "Mobilität", "limit": 200.0, "spent": 226.0, "over_by": 26.0,
+        }])
+        self.assertEqual(truth["free_month_remaining"], 574.0)
+
+    def test_category_overrun_precedes_score_fallback_and_is_not_repeated(self):
+        truth = {
+            "free_month_remaining": 100,
+            "category_remaining": 100,
+            "category_overruns": [{
+                "category": "Mobilität", "limit": 200, "spent": 226, "over_by": 26,
+            }],
+        }
+        events = build_mentor_events(self.conn, 1, budget_truth=truth, now=self.now)
+        result = self.candidate(
+            score=self.score(value=81), budget_truth=truth, events=events,
+            debt_status="none",
+        )
+        self.assertEqual(result["type"], "category_budget_overrun")
+        self.assertIn("26,00 € über Plan", result["message"])
+        mark_mentor_event_seen(self.conn, 1, result["id"])
+
+        repeated = build_mentor_events(self.conn, 1, budget_truth=truth, now=self.now)
+        result = self.candidate(
+            score=self.score(value=81), budget_truth=truth, events=repeated,
+            debt_status="none",
+        )
+        self.assertEqual(result["type"], "motivation")
+
+    def test_resolved_category_overrun_is_not_presented_after_spend_falls(self):
+        over_budget = {
+            "free_month_remaining": 100, "category_remaining": 100,
+            "category_overruns": [{
+                "category": "Mobilität", "limit": 200, "spent": 226, "over_by": 26,
+            }],
+        }
+        first = build_mentor_events(self.conn, 1, budget_truth=over_budget, now=self.now)
+        event = next(item for item in first if item["event_type"] == "category_budget_overrun")
+        mark_mentor_event_seen(self.conn, 1, event["event_id"])
+        recovered = build_mentor_events(
+            self.conn, 1,
+            budget_truth={
+                "free_month_remaining": 100, "category_remaining": 100,
+                "category_overruns": [],
+            },
+            now=self.now,
+        )
+        self.assertFalse(any(
+            item["event_type"] == "category_budget_overrun" for item in recovered
+        ))
+        state = self.conn.execute(
+            "SELECT resolved_at FROM app_mentor_event_state WHERE user_id=1 AND event_id=?",
+            (event["event_id"],),
+        ).fetchone()
+        self.assertIsNotNone(state[0])
 
     def test_new_consumer_debt_has_high_priority(self):
         self.conn.execute(

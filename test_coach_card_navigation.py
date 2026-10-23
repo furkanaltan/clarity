@@ -30,10 +30,12 @@ const mentor={dataset:{},classList:{remove(){},toggle(){}},querySelector:()=>arr
 const document={querySelector:()=>mentor,getElementById:()=>body};
 const announcementEscape=value=>String(value);
 function mentorDataReady(){return false;}
-function freeBudget(){return 100;}
+function freeBudget(){return 0;}
+function eur(value){return `${value} EUR`;}
+function mentorFactorLabel(value){return value;}
 function daysUntilMonthEnd(){return 10;}
 function mentorIncomeReminderDue(){return false;}
-""" + "\nconst DATA={goals:[{}],assets:[{}],budgets:[],mentorCandidate:" + json.dumps(candidate) + "};\n"
+""" + "\nconst DATA={score:{value:81,next_lever:'Mobilität',points:{},tracking_days_90:0},goals:[{}],assets:[{}],budgets:[],mentorCandidate:" + json.dumps(candidate) + "};\n"
         result = subprocess.run(["node", "-e", setup + renderer + """
 mentorLine();
 process.stdout.write(JSON.stringify({html:body.innerHTML,arrowTarget:arrow.dataset.mentorTarget}));
@@ -78,9 +80,9 @@ process.stdout.write(JSON.stringify(calls));
     def test_score_action_is_its_own_button_and_opens_only_score(self):
         rendered = self.rendered_candidate()
         markup = ET.fromstring("<div>" + rendered["html"] + "</div>")
-        button = markup.find(".//button[@data-mentoract='candidate']")
+        button = markup.find(".//button[@data-mentoract='score']")
         self.assertIsNotNone(button)
-        self.assertEqual("".join(button.itertext()), "Score ansehen")
+        self.assertIn("81 von 100", "".join(button.itertext()))
         self.assertEqual(button.get("type"), "button")
         self.assertEqual(self.click_action(action=button.get("data-mentoract")), ["score"])
 
@@ -309,6 +311,8 @@ function announcementEscape(value){{return value;}}
 function mentorDataReady(){{return true;}}
 function trackedOuts(){{return [{{}}];}}
 function freeBudget(){{return 100;}}
+function eur(value){{return `${{value}} EUR`;}}
+function mentorFactorLabel(value){{return value;}}
 function catSpent(){{return 10;}}
 function mentorBudgetAlert(){{return {{active:false}};}}
 function daysUntilMonthEnd(){{return 10;}}
@@ -347,9 +351,10 @@ process.stdout.write(JSON.stringify(results));
             self.assertIsNone(cases[key]["id"])
             self.assertEqual(cases[key]["target"], target)
         for key in ("missingV4", "suppressedV4"):
-            self.assertIn("Score fallback", cases[key]["html"])
+            self.assertNotIn("Score fallback", cases[key]["html"])
+            self.assertIn("100", cases[key]["html"])
             self.assertIsNone(cases[key]["id"])
-            self.assertEqual(cases[key]["target"], "score")
+            self.assertEqual(cases[key]["target"], "coach")
             self.assertFalse(any(call[0] == "ack" for call in cases[key]["calls"]))
 
     def test_income_reminder_keeps_v3_priority_before_server_claim(self):

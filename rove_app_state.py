@@ -472,12 +472,17 @@ def _monthly_budget_truth(
     """Return category-envelope and whole-month truth from one server calculation."""
     month_key = month_key or business_month_key()
     budgets = _build_budgets(conn, user_id, month_key)
+    category_labels = {
+        str(budget["cat"]).strip().casefold(): str(budget["cat"]).strip()
+        for budget in budgets
+    }
     limits = {
         str(budget["cat"]).strip().casefold(): float(budget["limit"] or 0)
         for budget in budgets
     }
     category_limit_total = round(sum(limits.values()), 2)
     category_spent = 0.0
+    spending_by_category = {category: 0.0 for category in limits}
     variable_expenses = 0.0
     from rove_expense_domain import classified_expenses
     rows = classified_expenses(conn, user_id, month_key)
@@ -489,8 +494,19 @@ def _monthly_budget_truth(
         variable_expenses += amount
         if category in limits:
             category_spent += amount
+            spending_by_category[category] += amount
     category_spent = round(category_spent, 2)
     variable_expenses = round(variable_expenses, 2)
+    category_overruns = [
+        {
+            "category": category_labels[category],
+            "limit": round(limits[category], 2),
+            "spent": round(spending_by_category[category], 2),
+            "over_by": round(spending_by_category[category] - limits[category], 2),
+        }
+        for category in sorted(limits)
+        if spending_by_category[category] > limits[category]
+    ]
     financial_month_budget = round(
         float(income) - float(fixed_costs) - float(savings),
         2,
@@ -499,6 +515,7 @@ def _monthly_budget_truth(
         "category_limit_total": category_limit_total,
         "category_spent": category_spent,
         "category_remaining": round(category_limit_total - category_spent, 2),
+        "category_overruns": category_overruns,
         "variable_expenses": variable_expenses,
         "financial_month_budget": financial_month_budget,
         "free_month_remaining": round(financial_month_budget - variable_expenses, 2),
@@ -1049,6 +1066,55 @@ def build_mentor_events(
     else:
         _resolve_mentor_event(conn, user_id, _mentor_event_id("budget_overrun", "monthly_budget", month_key), persist_state=persist_state)
 
+    category_overruns = budget_truth.get("category_overruns")
+    if not isinstance(category_overruns, list):
+        category_overruns = []
+    current_category_keys = set()
+    for overrun in category_overruns:
+        if not isinstance(overrun, dict):
+            continue
+        category = str(overrun.get("category") or "").strip()
+        try:
+            limit = float(overrun["limit"])
+            spent = float(overrun["spent"])
+            over_by = float(overrun["over_by"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not category or not all(math.isfinite(value) for value in (limit, spent, over_by)) or over_by <= 0:
+            continue
+        source_id = category.casefold()
+        event_id = _mentor_event_id("category_budget_overrun", source_id, month_key)
+        current_category_keys.add(event_id)
+        event = {
+            "event_type": "category_budget_overrun",
+            "source_id": source_id,
+            "period_key": month_key,
+            "occurred_at": occurred_now,
+            "priority": 80,
+            "expires_at": None,
+            "fingerprint": f"{limit:.2f}|{spent:.2f}|{over_by:.2f}",
+            "category": category,
+            "limit": round(limit, 2),
+            "spent": round(spent, 2),
+            "over_by": round(over_by, 2),
+        }
+        event["event_id"] = event_id
+        events.append(_observe_mentor_event(
+            conn, user_id, event, worsening=True, persist_state=persist_state
+        ))
+
+    try:
+        prior_category_events = conn.execute(
+            "SELECT event_id FROM app_mentor_event_state "
+            "WHERE user_id=? AND event_type='category_budget_overrun' AND period_key=?",
+            (user_id, month_key),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        prior_category_events = []
+    for row in prior_category_events:
+        if str(row[0]) not in current_category_keys:
+            _resolve_mentor_event(conn, user_id, str(row[0]), persist_state=persist_state)
+
     try:
         debt_rows = conn.execute(
             """SELECT id, debt_id, outstanding_balance, active, event_type, effective_at
@@ -1262,6 +1328,15 @@ def build_mentor_candidate(
             message = f"Rov.E kennt {amount(event.get('amount'))} an neuer Konsumschuld. Eine Hypothek wird davon getrennt betrachtet."
             action = "Schulden prüfen"
             deep_link = "settings"
+        elif event_type == "category_budget_overrun":
+            title = f"Dein Plan für {event.get('category')} ist überschritten"
+            message = (
+                f"Für {event.get('category')} sind {amount(event.get('spent'))} erfasst "
+                f"bei einem Monatsplan von {amount(event.get('limit'))}. "
+                f"Das sind {amount(event.get('over_by'))} über Plan."
+            )
+            action = "Budget prüfen"
+            deep_link = "analysis"
         elif event_type == "contract_changed":
             title = "Ein Vertrag wurde neu erfasst oder geändert"
             message = f"Prüfe den Vertrag {event.get('name') or 'in deinem Profil'} und seine monatlichen Kosten."
@@ -1336,6 +1411,15 @@ def build_mentor_candidate(
             evidence,
             "Liquidität prüfen", "score", "weak_liquidity",
         )
+
+    category_overrun_event = max(
+        (event for event in events
+         if event.get("event_type") == "category_budget_overrun" and event.get("is_new")),
+        key=lambda event: float(event.get("priority") or 0),
+        default=None,
+    )
+    if category_overrun_event:
+        return event_candidate(category_overrun_event)
 
     savings_ratio = score.get("savings_ratio")
     savings_points = score.get("savings")

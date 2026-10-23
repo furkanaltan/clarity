@@ -4871,11 +4871,6 @@ function mentorLine(){
     acknowledgeMentorV4AfterRender(coachV4Insight);
     return;
   }
-  if(scoreFallback){
-    renderServerCandidate();
-    return;
-  }
-
   const score=DATA.score||{}, points=score.points||{};
   const activeDays=Number(score.tracking_days_90||0);
   const candidates=[];

@@ -70,7 +70,8 @@ process.stdout.write(JSON.stringify(results));
         self.assertIn("Belegtes V4", cases["validV4"]["html"])
         self.assertEqual(cases["validV4"]["claims"], 1)
         for name in ("noSignals", "suppressedV4"):
-            self.assertIn("Score fallback", cases[name]["html"])
+            self.assertIn("zur freien Verfügung", cases[name]["html"])
+            self.assertNotIn("Score fallback", cases[name]["html"])
         self.assertIn("Dringendes V3", cases["concreteV3"]["html"])
         self.assertEqual(cases["concreteV3"]["claims"], 0)
 
