@@ -211,6 +211,67 @@ Alle Daten waren lokal und synthetisch. Kein Production-Zugriff, ENV-Wechsel,
 Push oder Deployment. `ON_GLOBAL` wurde in keiner Laufzeitkonfiguration
 aktiviert.
 
+## Profil-Invalidierung fuer Coach V4, 23.10.2026
+
+Basis: `65739043d85d238e91f770b6489ec3168707410a`, Arbeitsbranch
+`codex/profile-coach-invalidation`. Runtime-Scope ausschliesslich
+`rove_app_api.py:update_profile`: tatsaechlich geaenderte Einkommen markieren
+den Snapshot in derselben Transaktion ueber den bestehenden Helfer als stale
+und pending. Identische, bereits normalisierte Werte loesen keinen Aufruf aus.
+Bei kombinierten Einkommens-/Sparraten-Aenderungen bleibt es bei einem Aufruf;
+die vorhandene Behandlung erst kuenftig wirksamer Sparraten bleibt erhalten.
+Keine neue Berechnung, kein Schema- oder Queue-Mechanismus.
+
+`test_profile_snapshot_invalidation.py` verwendet echte Flask-Profilrequests,
+Cookie-Sessions und temporaere synthetische SQLite-Datenbanken. Die 25 neuen
+Tests pruefen einzelne und kombinierte Einkommen, Null/Nullbetrag, Rundung,
+identische Retries, sofortige und geplante Sparraten, Nutzerisolation,
+fehlende Snapshot-Tabelle sowie bestehende Pending-/Running-Zustaende.
+Eine zweite Datenbankverbindung sieht vor Commit weder das neue Profil noch
+die Invalidierung. Exceptions beim Antwortaufbau und ein SQL-Abbruch im
+spaeteren Sparraten-UPDATE rollen beide Aenderungen zurueck.
+
+Der vorhandene Endpunkt kann bei einem spaeteren Validierungs-Return bereits
+geschriebene Profilfelder committen. Dieses Verhalten wird hier nicht
+umgestaltet: Auch diese tatsaechlich gespeicherte Einkommensaenderung wird
+jetzt invalidiert. Der bestehende sichere Helfer bleibt bei fehlender Tabelle
+wirkungslos und faengt SQLite-Fehler weiter ab. Historisch veraltete Snapshots
+werden durch den Codewechsel allein nicht rueckwirkend eingeplant.
+
+Gezielte Regressionen einschliesslich Snapshot, sichtbarem Gate, Memory,
+Profil/Buffer, Mehrkonten und Monatscheck: **207/207 PASS**.
+Vor dem Runtime-Fix schlugen 14 der ersten 22 neuen Tests reproduzierbar fehl.
+Keine bestehenden Tests abgeschwaecht oder uebersprungen.
+Logs liegen ausserhalb des Repositories unter
+`/Users/furkanaltan/Documents/Codex/rove-profile-invalidation-20261023/`.
+Der erste Gesamtlauf wurde zur Korrektur der doppelten JSON-Kodierung eines
+synthetischen Quellenmarkers unterbrochen; er zaehlt nicht als Testnachweis.
+Abschliessender Full-Suite-Gate: **2.196/2.196 PASS** in 569,627 Sekunden,
+0 Failures, 0 Errors, 0 Skips. Runtime Python 3.12.14 und GnuPG 2.4.4.
+Aufruf im kanonischen Checkout:
+
+```bash
+env -u PYTHONPATH -u ROVE_EXTRA_PYTHONPATH \
+  PATH=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/gpg/bin:$PATH LC_ALL=C \
+  ROVE_PYTHON=/Users/furkanaltan/Documents/Codex/rove-coaching-quality-20261022/venv/bin/python \
+  PYTHONPYCACHEPREFIX=/private/tmp/rove-profile-invalidation-pycache \
+  bash scripts/test.sh full
+```
+
+Protokoll: `full-suite.log` im oben genannten Nachweisverzeichnis.
+SHA256: `8d6259b40c8e5299ee70f52fa46052bad2c3d546ff7751a9d86938b79bb237cd`.
+`tested-source.sha256` bestaetigt, dass Runtime und neue Regressionen seit
+diesem Lauf unveraendert sind. Syntax und `git diff --check` bestehen.
+Ein AST-Vergleich mit der Basis bestaetigt, dass alle API-Funktionen ausser
+`update_profile` unveraendert bleiben. Der lokale Nachweis unter Python 3.12
+ersetzt keinen spaeteren Ubuntu-/Production-Smoke.
+
+Release-Allowlist: nur `rove_app_api.py`; kein Frontend, keine ENV, kein
+Gate-Wechsel, keine Migration. Nach separater Freigabe nur den API-Dienst neu
+starten; Timerkonfiguration und Bot bleiben unveraendert. Nach lokalem PASS
+sind frischer Production-Hashvergleich, persoenlicher Push, manueller Deploy
+und Betreiberabnahme eigenstaendige Gates.
+
 ## Historischer erster Full-Suite-Lauf 21.10.2026
 
 Quellstand: `d94b3c7a846ee98a6f4130370b448743b1ce05cd`; waehrend des Laufs nur

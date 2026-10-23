@@ -6459,6 +6459,7 @@ def update_profile():
                 (day or None, user_id),
             )
 
+        profile_income_changed = False
         profile_income_updates = {}
         if "income" in payload:
             income = optional_profile_amount(payload.get("income"))
@@ -6472,10 +6473,15 @@ def update_profile():
             profile_income_updates["other_income"] = other_income
         if profile_income_updates:
             assignments = ", ".join(f"{key} = ?" for key in profile_income_updates)
-            conn.execute(
-                f"UPDATE users SET {assignments} WHERE user_id = ?",
-                (*profile_income_updates.values(), user_id),
+            unchanged = " AND ".join(f"{key} IS ?" for key in profile_income_updates)
+            updated = conn.execute(
+                f"UPDATE users SET {assignments} WHERE user_id = ? AND NOT ({unchanged})",
+                (*profile_income_updates.values(), user_id, *profile_income_updates.values()),
             )
+            profile_income_changed = updated.rowcount > 0
+            if profile_income_changed:
+                # Keep the queue write in this transaction, even on a later validation return.
+                invalidate_behavior_snapshot_safely(conn, user_id, "income_plan_changed")
 
         if "etf_plan" in payload:
             # Erst konfigurieren, dann automatisch buchen: Bei bestehenden Kunden fehlen
@@ -6606,11 +6612,13 @@ def update_profile():
                     "cash": cash_savings,
                 }
             else:
-                conn.execute(
-                    "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ?",
-                    (etf_savings, cash_savings, user_id),
+                updated = conn.execute(
+                    "UPDATE users SET etf_savings = ?, cash_savings = ? WHERE user_id = ? "
+                    "AND NOT (etf_savings IS ? AND cash_savings IS ?)",
+                    (etf_savings, cash_savings, user_id, etf_savings, cash_savings),
                 )
-                invalidate_behavior_snapshot_safely(conn, user_id, "savings_plan_changed")
+                if updated.rowcount > 0 and not profile_income_changed:
+                    invalidate_behavior_snapshot_safely(conn, user_id, "savings_plan_changed")
         if "buffer_target_amount" in payload:
             conn.execute(
                 "UPDATE users SET buffer_target_amount = ? WHERE user_id = ?",
