@@ -302,14 +302,14 @@ def failure():
             connection.close()
 
     @staticmethod
-    def request_at(port, method, path, data=None, user=None):
+    def request_at(port, method, path, data=None, user=None, timeout=12):
         headers = {"Origin": "https://getrove.de"}
         if user:
             headers["Cookie"] = f"{api.SESSION_COOKIE_NAME}=runtime-session-{user}"
         body = None if data is None else json.dumps(data)
         if body is not None:
             headers["Content-Type"] = "application/json"
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=12)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         try:
             connection.request(method, path, body, headers)
             response = connection.getresponse()
@@ -373,15 +373,35 @@ def failure():
                     "runtime_fixture:app",
                 ], cwd=ROOT, env=env, stdout=output, stderr=output, start_new_session=True)
             deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    self.fail("Two-worker Gunicorn failed to start: " + multi_log.read_text())
+
+            def probe_worker(_index):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
                 try:
-                    if self.request_at(multi_port, "GET", "/health")[0] == 200:
-                        return process
+                    status, body, _headers = self.request_at(
+                        multi_port, "GET", "/__runtime_test__/pid", timeout=min(.5, remaining)
+                    )
                 except OSError:
-                    pass
-                time.sleep(.05)
+                    return None
+                return json.loads(body)["pid"] if status == 200 else None
+
+            with ThreadPoolExecutor(max_workers=24) as pool:
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail("Two-worker Gunicorn failed to start: " + multi_log.read_text())
+                    try:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        if self.request_at(multi_port, "GET", "/health", timeout=min(.5, remaining))[0] == 200:
+                            # A healthcheck proves one worker is ready, not both.
+                            ready_pids = {pid for pid in pool.map(probe_worker, range(48)) if pid is not None}
+                            if len(ready_pids) >= 2:
+                                return process
+                    except OSError:
+                        pass
+                    time.sleep(min(.05, max(0, deadline - time.monotonic())))
             self.fail("Two-worker Gunicorn startup timed out: " + multi_log.read_text())
 
         def stop_multi_worker_server(process):

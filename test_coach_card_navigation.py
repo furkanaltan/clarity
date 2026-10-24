@@ -297,6 +297,9 @@ function apiFetch(_path,options){{
         self.assertEqual(payload["status"], "shown")
 
     def test_real_mentor_render_orders_concrete_v3_v4_and_score_fallback(self):
+        selection_start = self.frontend.index("let mentorSoftSelection=null;")
+        selection = self.frontend[selection_start:
+                                  self.frontend.index("function shouldWelcomeFirstBudget(){", selection_start)]
         start = self.frontend.index("function mentorLine(){")
         mentor = self.frontend[start:self.frontend.index("\nlet coachV4ClaimKey", start)]
         script = f"""
@@ -320,6 +323,7 @@ function mentorIncomeReminderDue(){{return false;}}
 let available=true;
 function claimMentorV4Insight(value){{calls.push(["claim",value.insight_id]);return available;}}
 function acknowledgeMentorV4AfterRender(value){{calls.push(["ack",value.insight_id]);}}
+{selection}
 {mentor}
 const score={{id:"motivation",type:"motivation",priority:10,title:"Score fallback",message:"Stable",deep_link:"score"}};
 const v4={{insight_id:"v4:synthetic",evidence_fingerprint:"a".repeat(64),title:"Evidence insight",message:"Validated"}};
@@ -361,7 +365,7 @@ process.stdout.write(JSON.stringify(results));
         mentor_start = self.frontend.index("function mentorLine(){")
         mentor_end = self.frontend.index("\nlet coachV4ClaimKey", mentor_start)
         mentor = self.frontend[mentor_start:mentor_end]
-        reminder = mentor.index('if(APP_MODE==="bridge" && coachV4Insight?.insight_id && mentorIncomeReminderDue())')
+        reminder = mentor.index('if(APP_MODE==="bridge" && mentorIncomeReminderDue())')
         claim = mentor.index("claimMentorV4Insight(coachV4Insight)")
         self.assertLess(reminder, claim)
 

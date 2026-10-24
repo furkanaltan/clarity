@@ -1056,11 +1056,17 @@ BRIDGE_USER_ID=42;assert.deepEqual(legacyValuablePositions(),[]);
     def test_browser_cleanup_preserves_other_owner_global_and_scoped_data(self):
         self.run_js(r"""
 const raw=seedLegacy();seedLegacy(legacySnapshot(41),true);seedLegacy(legacySnapshot(42),true);
+localStorage.setItem('rove-mentor-soft-selection-v1:bridge:41:last','score');
+localStorage.setItem('rove-mentor-soft-selection-v1:bridge:42:last','tracking');
+localStorage.setItem('rove-mentor-soft-selection-v1:bridge:420:last','free-budget');
 localStorage.setItem('unrelated','keep');localStorage.setItem('rove-theme','remove');
 await clearRoveBrowserData(42);
 assert.equal(localStorage.getItem(BRIDGE_LOCAL_KEY),raw);
 assert.notEqual(localStorage.getItem(scopedKey(41)),null);
 assert.equal(localStorage.getItem(scopedKey(42)),null);assert.equal(localStorage.getItem('rove-theme'),null);
+assert.equal(localStorage.getItem('rove-mentor-soft-selection-v1:bridge:41:last'),'score');
+assert.equal(localStorage.getItem('rove-mentor-soft-selection-v1:bridge:42:last'),null);
+assert.equal(localStorage.getItem('rove-mentor-soft-selection-v1:bridge:420:last'),'free-budget');
 assert.equal(localStorage.getItem('unrelated'),'keep');
 await clearRoveBrowserData();assert.equal(localStorage.getItem(BRIDGE_LOCAL_KEY),raw);
 await clearRoveBrowserData(41);assert.equal(localStorage.getItem(BRIDGE_LOCAL_KEY),null);

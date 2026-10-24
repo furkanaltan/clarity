@@ -123,7 +123,7 @@ class CoachV3EventTests(unittest.TestCase):
             debt_status="none",
         )
         self.assertEqual(result["type"], "category_budget_overrun")
-        self.assertIn("26,00 € über Plan", result["message"])
+        self.assertEqual(result["message"], "Mobilität liegt 26,00 € über Budget.")
         mark_mentor_event_seen(self.conn, 1, result["id"])
 
         repeated = build_mentor_events(self.conn, 1, budget_truth=truth, now=self.now)

@@ -1330,11 +1330,7 @@ def build_mentor_candidate(
             deep_link = "settings"
         elif event_type == "category_budget_overrun":
             title = f"Dein Plan für {event.get('category')} ist überschritten"
-            message = (
-                f"Für {event.get('category')} sind {amount(event.get('spent'))} erfasst "
-                f"bei einem Monatsplan von {amount(event.get('limit'))}. "
-                f"Das sind {amount(event.get('over_by'))} über Plan."
-            )
+            message = f"{event.get('category')} liegt {amount(event.get('over_by'))} über Budget."
             action = "Budget prüfen"
             deep_link = "analysis"
         elif event_type == "contract_changed":

@@ -4005,6 +4005,7 @@ async function clearRoveBrowserData(userId=null){
     `rove:${uid}:`,
     `rove-activity-seen:bridge:${uid}`,
     `rove-budget-alerts-v2:bridge:${uid}:`,
+    `rove-mentor-soft-selection-v1:bridge:${uid}:`,
     `rove-monthly-plan-seen:${uid}:`,
     `rove-monthly-plan-opened:${uid}:`
   ] : [];
@@ -4713,6 +4714,23 @@ function setMentorCtaTarget(target){
   if(!mentor) return;
   mentor.dataset.mentorTarget=safeTarget;
 }
+let mentorSoftSelection=null;
+function chooseMentorSoftCandidate(candidates){
+  if(!candidates.length) return null;
+  const owner=typeof mentorOwnerKey==="function"?mentorOwnerKey():APP_MODE;
+  if(mentorSoftSelection?.owner===owner){
+    const current=candidates.find(candidate=>candidate.id===mentorSoftSelection.id);
+    if(current) return current;
+  }
+  const key=`rove-mentor-soft-selection-v1:${owner}:last`;
+  let previousId="";
+  try{ previousId=localStorage.getItem(key)||""; }catch(_){ }
+  const previousIndex=candidates.findIndex(candidate=>candidate.id===previousId);
+  const selected=candidates[previousIndex<0?0:(previousIndex+1)%candidates.length];
+  mentorSoftSelection={owner,id:selected.id};
+  try{ localStorage.setItem(key,selected.id); }catch(_){ }
+  return selected;
+}
 function shouldWelcomeFirstBudget(){
   const days=DATA.score?.platform_days;
   if(APP_MODE==="bridge" && (typeof days!=="number" || !Number.isFinite(days) || days<0 || days>1)) return false;
@@ -4833,12 +4851,11 @@ function mentorLine(){
       : `Dein freies Budget ist diesen Monat ausgeschöpft`;
     el.innerHTML =
       `<div class="m-free">${alertBudgetText}</div>`+
-      `<div class="m-note"><b>${overB.cat}</b> ${eur2(catSpent(overB.cat)-overB.limit)} über Plan</div>`;
+      `<div class="m-note">${announcementEscape(overB.cat)} liegt ${eur2(catSpent(overB.cat)-overB.limit)} über Budget.</div>`;
     return;
   }
-  // Ruhiger Zustand: Eine einzige hilfreiche Einordnung pro Tag. Kritische Zustände oben
-  // haben immer Vorrang; diese Rotation darf daher weder Warnungen verdecken noch bei jedem
-  // Refresh neue Texte ausspielen.
+  // Ruhige Hinweise wechseln erst bei einer neuen App-Sitzung. Kritische Zustände oben
+  // haben immer Vorrang; wiederholte Render-Aufrufe innerhalb der Sitzung bleiben stabil.
   const daysLeft = daysUntilMonthEnd();
   const nudge = (daysLeft<=3)
     ? ` <button type="button" class="m-nudge mentor-action" data-mentoract="report">${daysLeft<=1?"Morgen":`In ${daysLeft} Tagen`} kommt dein <b>Report</b>.</button>`
@@ -4853,12 +4870,12 @@ function mentorLine(){
     return;
   }
 
-  const coachV4Insight=DATA.coachV4Insight;
-  if(APP_MODE==="bridge" && coachV4Insight?.insight_id && mentorIncomeReminderDue()){
+  if(APP_MODE==="bridge" && mentorIncomeReminderDue()){
     el.innerHTML='<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div>'+
       '<div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>';
     return;
   }
+  const coachV4Insight=DATA.coachV4Insight;
   const coachV4Available=APP_MODE==="bridge" && coachV4Insight?.insight_id
     && claimMentorV4Insight(coachV4Insight);
   if(coachV4Available){
@@ -4880,6 +4897,7 @@ function mentorLine(){
       html:incomePending
         ? `<div class="m-free">Für ${monthName} sind noch <b>${eur(free)}</b> als Ausgabenrahmen geplant.</div>`
         : `<div class="m-free">Du hast noch <b>${eur(free)}</b> zur freien Verfügung.</div>`,
+      id:"free-budget",
       target:"coach"
     });
   }
@@ -4891,18 +4909,16 @@ function mentorLine(){
   if(score.value!=null && score.next_lever && !savingsAwaitingClose){
     candidates.push({
       html:`<button type="button" class="m-free mentor-action" data-mentoract="score">Dein Rov.E Score: <b>${score.value} von 100</b>.</button><div class="m-note">Nächster Hebel: ${mentorFactorLabel(score.next_lever)}</div>`,
+      id:"score",
       target:"score"
     });
   }
   if(Number(points.value||0)>0){
     const rpNext=Number(points.to_next||0)>0?`Noch <b>${points.to_next} RP</b> bis ${points.next_rank||"zum nächsten Rang"}.`:`<b>${points.rank_name||"Rov.E Fortschritt"}</b> ist dein aktueller Fortschrittsrang.`;
-    candidates.push({html:`<div class="m-free">Du hast <b>${points.value} Rov.E Punkte</b>.</div><div class="m-note">${rpNext}</div>`,target:"coach"});
+    candidates.push({id:"points",html:`<div class="m-free">Du hast <b>${points.value} Rov.E Punkte</b>.</div><div class="m-note">${rpNext}</div>`,target:"coach"});
   }
   if(activeDays>=3){
-    candidates.push({html:`<div class="m-free">Du hast in den letzten 90 Tagen an <b>${activeDays} Tagen</b> getrackt.</div><div class="m-note">Konstanz macht dein Monatsbild belastbar.</div>`,target:"coach"});
-  }
-  if(mentorIncomeReminderDue()){
-    candidates.push({html:`<div class="m-free">Dein Gehalt ist für diesen Monat noch nicht bestätigt.</div><div class="m-note">Öffne dafür den Monatsplan im Cashflow.</div>`,target:"coach"});
+    candidates.push({id:"tracking",html:`<div class="m-free">Du hast in den letzten 90 Tagen an <b>${activeDays} Tagen</b> getrackt.</div><div class="m-note">Konstanz macht dein Monatsbild belastbar.</div>`,target:"coach"});
   }
   if(!candidates.length){
     el.innerHTML=free>0
@@ -4910,9 +4926,7 @@ function mentorLine(){
       : `<div class="m-free">Dein freies Budget ist diesen Monat ausgeschöpft.</div>`;
     return;
   }
-  const todayKey=new Date().toLocaleDateString("sv-SE");
-  const dailyIndex=[...todayKey].reduce((sum,char)=>sum+char.charCodeAt(0),0)%candidates.length;
-  const selected=candidates[dailyIndex];
+  const selected=chooseMentorSoftCandidate(candidates);
   el.innerHTML=selected.html;
   setMentorCtaTarget(selected.target);
 }
